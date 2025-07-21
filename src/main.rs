@@ -86,7 +86,9 @@ impl PrimaryViewer {
                     }
                 }
 
-                sender_p.send(PipelineCommand::Load(loaded_images)).unwrap();
+                if let Err(e) = sender_p.send(PipelineCommand::Load(loaded_images)) {
+                    eprintln!("Failed to send loaded images to pipeline: {}", e);
+                }
             })
             .detach();
         }
@@ -103,11 +105,12 @@ impl PrimaryViewer {
                             let img_frames = vec![frame];
                             let img_data = Arc::new(RenderImage::new(img_frames));
 
-                            this.update(cx, |this, cx| {
+                            if let Err(e) = this.update(cx, |this, cx| {
                                 this.display_image = ImageSource::Render(img_data);
                                 cx.notify();
-                            })
-                            .unwrap();
+                            }) {
+                                eprintln!("Failed to update display image: {}", e);
+                            }
                         }
                         _ => {}
                     }
@@ -250,16 +253,18 @@ actions!(
 );
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     env_logger::init();
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    let (mut pipeline, view_sender, view_recv) = Pipeline::new().await;
+    let (mut pipeline, view_sender, view_recv) = Pipeline::new().await?;
 
     tokio::spawn(async move {
         loop {
-            pipeline.process_commands().await;
+            if let Err(e) = pipeline.process_commands().await {
+                eprintln!("Error processing pipeline commands: {}", e);
+            }
             tokio::time::sleep(Duration::from_millis(33)).await; // Lock at 30FPS
         }
     });
@@ -272,20 +277,19 @@ async fn main() {
             let view_sender_clone = view_sender.clone();
             let view_recv_clone = view_recv.resubscribe();
 
-            cx.on_action(|_: &Quit, cx| cx.quit());
-
             cx.on_action(move |_: &CompositorSettings, cx| {
                 let mut raw_compositor =
                     CompositorView::new(view_recv_clone.resubscribe(), view_sender_clone.clone());
 
-                cx.open_window(raw_compositor.get_window_options(), |window, cx| {
+                if let Err(e) = cx.open_window(raw_compositor.get_window_options(), |window, cx| {
                     let compositor_view = cx.new(|cx| {
                         raw_compositor.initialize(window, cx);
                         raw_compositor
                     });
                     compositor_view
-                })
-                .unwrap();
+                }) {
+                    eprintln!("Failed to open compositor window: {}", e);
+                }
             });
 
             let view_sender_clone2 = view_sender.clone();
@@ -295,15 +299,19 @@ async fn main() {
                 let mut raw_contrast =
                     ContrastView::new(view_recv_clone2.resubscribe(), view_sender_clone2.clone());
 
-                cx.open_window(raw_contrast.get_window_options(), |window, cx| {
+                if let Err(e) = cx.open_window(raw_contrast.get_window_options(), |window, cx| {
                     let contrast_view = cx.new(|cx| {
                         raw_contrast.initialize(window, cx);
                         raw_contrast
                     });
                     contrast_view
-                })
-                .unwrap();
+                }) {
+                    eprintln!("Failed to open contrast window: {}", e);
+                }
             });
+
+            cx.on_action(|_: &Quit, cx| cx.quit());
+
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-o", OpenFile, None),
@@ -361,7 +369,7 @@ async fn main() {
             let img_frames = vec![frame];
             let img_data = Arc::new(RenderImage::new(img_frames));
 
-            cx.open_window(window_options, |window, cx| {
+            if let Err(e) = cx.open_window(window_options, |window, cx| {
                 let mut raw_primary_viewer = PrimaryViewer {
                     focus_handle: cx.focus_handle(),
                     zoom_level: 1.0,
@@ -390,10 +398,14 @@ async fn main() {
                 window.focus(&viewer.read(cx).focus_handle(cx));
 
                 viewer
-            })
-            .unwrap();
+            }) {
+                eprintln!("Failed to open main window: {}", e);
+                return;
+            }
 
             // Activate the app after window creation
             cx.activate(true);
         });
+
+    Ok(())
 }

@@ -48,12 +48,13 @@ impl CompositorView {
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver);
-        self.command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Compositor,
-                sender,
-            ))
-            .unwrap();
+        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
+            BackendToolType::Compositor,
+            sender,
+        )) {
+            eprintln!("Failed to send backend discovery request: {}", e);
+            return;
+        }
         println!("Sent discovery request to backend | Compositor");
         self.process_messages(window, cx);
     }
@@ -72,34 +73,49 @@ impl CompositorView {
                     PipelineCommand::FrontendMessage(message) => match message {
                         FrontendMessage::ReturnState(tool_state) => match tool_state {
                             ToolState::CompositorState(new_state) => {
-                                let mut locked_state = state.write().unwrap();
-                                if *locked_state != new_state {
-                                    *locked_state = new_state;
-                                    this.update(cx, |this, cx| cx.notify()).unwrap();
+                                if let Ok(mut locked_state) = state.write() {
+                                    if *locked_state != new_state {
+                                        *locked_state = new_state;
+                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
+                                            eprintln!(
+                                                "Failed to update UI after state change: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    eprintln!("Failed to acquire write lock on compositor state");
                                 }
                             }
                             _ => {}
                         },
                         FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
                             println!("Received backend tools | Frontend Compositor");
-                            this.update(cx, |this, cx| {
-                                *this.current_tool_index.write().unwrap() = Some(backend_ids[0]);
+                            if let Err(e) = this.update(cx, |this, cx| {
+                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                {
+                                    *current_tool_index = backend_ids.get(0).copied();
+                                } else {
+                                    eprintln!("Failed to acquire write lock on current tool index");
+                                    return;
+                                }
                                 this.backend_tool_indicies = backend_ids;
                                 this.send_channels = senders;
 
                                 // Request initial state when backend is discovered
                                 if let Some(sender) = this.send_channels.get(0) {
-                                    sender.send(PipelineCommand::RequestState()).unwrap();
+                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                        eprintln!("Failed to request initial state: {}", e);
+                                    }
                                 }
-                            })
-                            .unwrap();
+                            }) {
+                                eprintln!("Failed to update backend tools: {}", e);
+                            }
                         }
                         _ => {}
                     },
                     _ => {}
                 }
-            } else {
-                println!("Failed to process message!")
             }
         })
         .detach();
@@ -112,15 +128,32 @@ impl CompositorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let current_tool_index = self.current_tool_index.read().unwrap().unwrap();
-        self.send_channels[current_tool_index as usize]
-            .send(PipelineCommand::PipelineObject(
+        let current_tool_index = match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => index,
+                None => {
+                    eprintln!("No current tool index available");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CompositorMessage(CompositorMessage::ToggleVisibility(
                     !current_value,
                     layer_index as u16,
                 )),
-            ))
-            .unwrap();
+            )) {
+                eprintln!("Failed to send toggle layer command: {}", e);
+            }
+        } else {
+            eprintln!("Invalid tool index: {}", current_tool_index);
+        }
     }
 
     // Header component
@@ -223,7 +256,22 @@ impl CompositorView {
 
 impl Render for CompositorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
+        let state = match self.state.read() {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("Failed to read state for rendering: {}", e);
+                return div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .bg(rgb(0x505050))
+                    .size_full()
+                    .p_4()
+                    .shadow_lg()
+                    .text_color(rgb(0xffffff))
+                    .child("Error: Unable to read compositor state");
+            }
+        };
 
         div()
             .flex()

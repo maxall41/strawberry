@@ -47,12 +47,13 @@ impl ContrastView {
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver);
-        self.command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Contrast,
-                sender,
-            ))
-            .unwrap();
+        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
+            BackendToolType::Contrast,
+            sender,
+        )) {
+            eprintln!("Failed to send backend discovery request: {}", e);
+            return;
+        }
         println!("Sent discovery request to backend | Contrast");
         self.process_messages(window, cx);
     }
@@ -71,27 +72,44 @@ impl ContrastView {
                     PipelineCommand::FrontendMessage(message) => match message {
                         FrontendMessage::ReturnState(tool_state) => match tool_state {
                             ToolState::ContrastState(new_state) => {
-                                let mut locked_state = state.write().unwrap();
-                                if *locked_state != new_state {
-                                    *locked_state = new_state;
-                                    this.update(cx, |this, cx| cx.notify()).unwrap();
+                                if let Ok(mut locked_state) = state.write() {
+                                    if *locked_state != new_state {
+                                        *locked_state = new_state;
+                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
+                                            eprintln!(
+                                                "Failed to update UI after state change: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    eprintln!("Failed to acquire write lock on contrast state");
                                 }
                             }
                             _ => {}
                         },
                         FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
                             println!("Received backend tools | Frontend Contrast");
-                            this.update(cx, |this, cx| {
-                                *this.current_tool_index.write().unwrap() = Some(backend_ids[0]);
+                            if let Err(e) = this.update(cx, |this, cx| {
+                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                {
+                                    *current_tool_index = backend_ids.get(0).copied();
+                                } else {
+                                    eprintln!("Failed to acquire write lock on current tool index");
+                                    return;
+                                }
                                 this.backend_tool_indicies = backend_ids;
                                 this.send_channels = senders;
 
                                 // Request initial state when backend is discovered
                                 if let Some(sender) = this.send_channels.get(0) {
-                                    sender.send(PipelineCommand::RequestState()).unwrap();
+                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                        eprintln!("Failed to request initial state: {}", e);
+                                    }
                                 }
-                            })
-                            .unwrap();
+                            }) {
+                                eprintln!("Failed to update backend tools: {}", e);
+                            }
                         }
                         _ => {}
                     },
@@ -108,12 +126,29 @@ impl ContrastView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let current_tool_index = self.current_tool_index.read().unwrap().unwrap();
-        self.send_channels[current_tool_index as usize]
-            .send(PipelineCommand::PipelineObject(
+        let current_tool_index = match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => index,
+                None => {
+                    eprintln!("No current tool index available");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ToggleActive(!current_value),
-            ))
-            .unwrap();
+            )) {
+                eprintln!("Failed to send toggle enabled command: {}", e);
+            }
+        } else {
+            eprintln!("Invalid tool index: {}", current_tool_index);
+        }
     }
 
     fn update_min_max(
@@ -123,27 +158,50 @@ impl ContrastView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let current_tool_index = self.current_tool_index.read().unwrap().unwrap();
-        self.send_channels[current_tool_index as usize]
-            .send(PipelineCommand::PipelineObject(
+        let current_tool_index = match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => index,
+                None => {
+                    eprintln!("No current tool index available");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(min, max)),
-            ))
-            .unwrap();
+            )) {
+                eprintln!("Failed to send min/max update command: {}", e);
+            }
+        } else {
+            eprintln!("Invalid tool index: {}", current_tool_index);
+        }
     }
 
     fn adjust_min(&mut self, delta: f32, _window: &mut Window, _cx: &mut Context<Self>) {
-        let (min, max) = {
-            let state = self.state.read().unwrap();
-            (state.min, state.max)
+        let (min, max) = match self.state.read() {
+            Ok(state) => (state.min, state.max),
+            Err(e) => {
+                eprintln!("Failed to read state for min adjustment: {}", e);
+                return;
+            }
         };
         let new_min = (min + delta).clamp(0.0, max - 0.01);
         self.update_min_max(new_min, max, _window, _cx);
     }
 
     fn adjust_max(&mut self, delta: f32, _window: &mut Window, _cx: &mut Context<Self>) {
-        let (min, max) = {
-            let state = self.state.read().unwrap();
-            (state.min, state.max)
+        let (min, max) = match self.state.read() {
+            Ok(state) => (state.min, state.max),
+            Err(e) => {
+                eprintln!("Failed to read state for max adjustment: {}", e);
+                return;
+            }
         };
         let new_max = (max + delta).clamp(min + 0.01, 1.0);
         self.update_min_max(min, new_max, _window, _cx);
@@ -356,7 +414,22 @@ impl ContrastView {
 
 impl Render for ContrastView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
+        let state = match self.state.read() {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("Failed to read state for rendering: {}", e);
+                return div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .bg(rgb(0x505050))
+                    .size_full()
+                    .p_4()
+                    .shadow_lg()
+                    .text_color(rgb(0xffffff))
+                    .child("Error: Unable to read contrast state");
+            }
+        };
 
         div()
             .flex()
