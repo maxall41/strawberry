@@ -208,7 +208,7 @@ impl GpuCompositor {
         // Create result image from the GPU buffer data
         let result_image = RgbaImage::from_raw(width, height, result_bytes.to_vec())
             .expect("Failed to create image from GPU buffer");
-
+        println!("Returnig composited image");
         Some(result_image)
     }
 }
