@@ -6,6 +6,7 @@ use compositor::{Compositor, CompositorState};
 use contrast::{Contrast, ContrastState};
 use image::RgbaImage;
 
+use futures::future::try_join_all;
 use tokio::sync::broadcast;
 
 use crate::gpu::GpuImageProcessor;
@@ -34,23 +35,13 @@ pub enum PipelineObjectMessage {
 #[derive(Debug, Clone)]
 pub enum FrontendMessage {
     ReturnState(ToolState),
-    ReturnBackendTools(BackendToolType),
+    ReturnBackendTools(Vec<u16>, Vec<(flume::Sender<PipelineCommand>)>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendToolType {
-    Compositor(Vec<u16>),
-    Contrast(Vec<u16>),
-}
-
-impl BackendToolType {
-    /// Create a new instance of the same variant with different data
-    pub fn with_data(&self, data: Vec<u16>) -> Self {
-        match self {
-            BackendToolType::Compositor(_) => BackendToolType::Compositor(data),
-            BackendToolType::Contrast(_) => BackendToolType::Contrast(data),
-        }
-    }
+    Compositor,
+    Contrast,
 }
 
 /// Commands that can be sent to the pipeline
@@ -63,13 +54,13 @@ pub enum PipelineCommand {
     /// Return output image from the pipeline
     Output(RgbaImage),
     /// Message to pipeline object
-    PipelineObject(u16, PipelineObjectMessage),
+    PipelineObject(PipelineObjectMessage),
     /// Message to frontend
     FrontendMessage(FrontendMessage),
     /// Request state from pipeline object
-    RequestState(u16),
+    RequestState(),
     /// Discover
-    DiscoverBackend(BackendToolType),
+    DiscoverBackend(BackendToolType, flume::Sender<PipelineCommand>),
 }
 
 /// Result of pipeline processing
@@ -90,7 +81,7 @@ pub trait ToolBackend: Send + Sync {
     fn is_enabled(&self) -> bool;
 
     /// Receive messages from the pipeline
-    async fn receive_message(&mut self, message: &PipelineObjectMessage) -> anyhow::Result<()>;
+    async fn receive_messages(&mut self) -> anyhow::Result<()>;
 
     /// Enable or disable this tool
     fn set_enabled(&mut self, enabled: bool);
@@ -100,6 +91,10 @@ pub trait ToolBackend: Send + Sync {
 
     /// Identify
     fn iam(&self) -> BackendToolType;
+
+    fn get_sender(&self) -> flume::Sender<PipelineCommand>;
+
+    fn set_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>);
 }
 
 /// Pipeline that processes images through a series of tools
@@ -130,7 +125,6 @@ impl Pipeline {
             Box::new(Compositor::new(command_tx.clone(), gpu_image_processor.clone()).await),
             Box::new(Contrast::new(command_tx.clone(), gpu_image_processor.clone()).await),
         ];
-
         let pipeline = Self {
             tools,
             command_receiver: command_rx,
@@ -171,7 +165,7 @@ impl Pipeline {
 
     /// Process all pending commands
     pub async fn process_commands(&mut self) {
-        while let Ok(cmd) = self.command_receiver.try_recv() {
+        if let Ok(cmd) = self.command_receiver.try_recv() {
             match &cmd {
                 PipelineCommand::Refresh(index) => self.process_from(*index).await.unwrap(),
                 PipelineCommand::Load(images) => {
@@ -182,42 +176,31 @@ impl Pipeline {
                     }
                     self.process_from(0).await.unwrap();
                 }
-                PipelineCommand::PipelineObject(object_index, message) => {
-                    println!("Got pipeline object command!");
-                    let i = *object_index as usize;
-                    self.tools[i].receive_message(message).await.unwrap();
-                }
-                PipelineCommand::RequestState(index) => {
-                    let state = self.tools[*index as usize].get_state();
-                    self.output_sender
-                        .send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(state),
-                        ))
-                        .unwrap();
-                }
-                PipelineCommand::DiscoverBackend(backend_tool_type) => {
-                    println!(
-                        "Received backend tools request | Pipeline | {:?}",
-                        backend_tool_type
-                    );
+                PipelineCommand::DiscoverBackend(backend_tool_type, sender) => {
                     let mut discovered = vec![];
-                    for (i, tool) in self.tools.iter().enumerate() {
+                    let mut channels = vec![];
+                    let mut i = 0;
+                    for tool in self.tools.iter_mut() {
                         let iam = tool.iam();
                         println!("Tool {}: {:?}", i, iam);
                         if iam == *backend_tool_type {
                             discovered.push(i as u16);
+                            tool.set_frontend_sender(sender.clone());
+                            channels.push(tool.get_sender());
+                            i += 1;
                         }
                     }
-                    self.output_sender
-                        .send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnBackendTools(
-                                backend_tool_type.with_data(discovered),
-                            ),
-                        ))
-                        .unwrap();
+
+                    let r = FrontendMessage::ReturnBackendTools(discovered, channels);
+
+                    println!("Returning discovery request {:?}", r);
+
+                    sender.send(PipelineCommand::FrontendMessage(r)).unwrap();
                 }
                 _ => {}
             };
         }
+        let futures = self.tools.iter_mut().map(|tool| tool.receive_messages());
+        try_join_all(futures).await.unwrap();
     }
 }

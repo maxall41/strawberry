@@ -25,6 +25,8 @@ pub struct CompositorView {
     pub state: Arc<RwLock<CompositorState>>,
     pub backend_tool_indicies: Vec<u16>,
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
+    pub send_channels: Vec<flume::Sender<PipelineCommand>>,
+    pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
 }
 
 impl CompositorView {
@@ -38,80 +40,66 @@ impl CompositorView {
             state: Arc::new(RwLock::new(CompositorState::default())),
             backend_tool_indicies: vec![],
             current_tool_index: Arc::new(RwLock::new(None)),
+            send_channels: vec![],
+            receive_channel: None,
         }
     }
 
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (sender, receiver) = flume::unbounded();
+        self.receive_channel = Some(receiver);
         self.command_sender
             .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Compositor(vec![]),
+                BackendToolType::Compositor,
+                sender,
             ))
             .unwrap();
-        println!("Send discovery request to backend | Compositor");
+        println!("Sent discovery request to backend | Compositor");
         self.process_messages(window, cx);
     }
 
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sender_ref = self.command_sender.clone();
-        let mut receiver_ref = self.command_receiver.resubscribe();
         let state = self.state.clone();
-        let current_tool_index_ref = self.current_tool_index.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            loop {
-                let mut recv = false;
-                while !recv {
-                    if let Ok(command) = receiver_ref.try_recv() {
-                        match command {
-                            PipelineCommand::FrontendMessage(message) => match message {
-                                FrontendMessage::ReturnState(tool_state) => match tool_state {
-                                    ToolState::CompositorState(new_state) => {
-                                        let mut locked_state = state.write().unwrap();
-                                        if *locked_state != new_state {
-                                            *locked_state = new_state;
-                                            this.update(cx, |this, cx| cx.notify()).unwrap();
-                                        }
-                                        recv = true;
-                                    }
-                                    _ => {}
-                                },
-                                FrontendMessage::ReturnBackendTools(backend_tool_type) => {
-                                    match backend_tool_type {
-                                        BackendToolType::Compositor(data) => {
-                                            println!("AHFAHJ");
-                                            this.update(cx, |this, cx| {
-                                                let index = data[0];
-                                                this.backend_tool_indicies = data;
-                                                *this.current_tool_index.write().unwrap() =
-                                                    Some(index);
-                                                cx.notify()
-                                            })
-                                            .unwrap();
-                                            recv = true; // Exit the loop when we get backend tools
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                _ => {}
-                            },
-                            _ => {}
-                        }
-                    }
-                    cx.background_executor()
-                        .timer(Duration::from_millis(10))
-                        .await;
-                }
+        let channel_receiver_ref = self
+            .receive_channel
+            .clone()
+            .expect("Should never fire: Created during init");
 
-                // Check if we have a current tool index before sending RequestState
-                let current_tool_index = current_tool_index_ref.read().unwrap();
-                if let Some(tool_index) = *current_tool_index {
-                    // println!("Sending state request! | Compositor");
-                    sender_ref
-                        .send(PipelineCommand::RequestState(tool_index))
-                        .unwrap();
+        // Spawn message processing thread
+        cx.spawn_in(window, async move |this, cx| loop {
+            if let Ok(command) = channel_receiver_ref.recv_async().await {
+                match command {
+                    PipelineCommand::FrontendMessage(message) => match message {
+                        FrontendMessage::ReturnState(tool_state) => match tool_state {
+                            ToolState::CompositorState(new_state) => {
+                                let mut locked_state = state.write().unwrap();
+                                if *locked_state != new_state {
+                                    *locked_state = new_state;
+                                    this.update(cx, |this, cx| cx.notify()).unwrap();
+                                }
+                            }
+                            _ => {}
+                        },
+                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                            println!("Received backend tools | Frontend Compositor");
+                            this.update(cx, |this, cx| {
+                                *this.current_tool_index.write().unwrap() = Some(backend_ids[0]);
+                                this.backend_tool_indicies = backend_ids;
+                                this.send_channels = senders;
+
+                                // Request initial state when backend is discovered
+                                if let Some(sender) = this.send_channels.get(0) {
+                                    sender.send(PipelineCommand::RequestState()).unwrap();
+                                }
+                            })
+                            .unwrap();
+                        }
+                        _ => {}
+                    },
+                    _ => {}
                 }
-                cx.background_executor()
-                    .timer(Duration::from_millis(33))
-                    .await; // 30FPS
+            } else {
+                println!("Failed to process message!")
             }
         })
         .detach();
@@ -125,9 +113,8 @@ impl CompositorView {
         cx: &mut Context<Self>,
     ) {
         let current_tool_index = self.current_tool_index.read().unwrap().unwrap();
-        self.command_sender
+        self.send_channels[current_tool_index as usize]
             .send(PipelineCommand::PipelineObject(
-                self.backend_tool_indicies[current_tool_index as usize],
                 PipelineObjectMessage::CompositorMessage(CompositorMessage::ToggleVisibility(
                     !current_value,
                     layer_index as u16,

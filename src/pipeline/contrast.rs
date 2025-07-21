@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use crate::gpu::{compositor::GpuCompositor, contrast::GpuContrast, GpuImageProcessor};
+use crate::gpu::{contrast::GpuContrast, GpuImageProcessor};
 
 use super::{
-    BackendToolType, CompositorMessage, ContrastMessage, PipelineCommand, PipelineObjectMessage,
+    BackendToolType, ContrastMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,
     ToolBackend, ToolState,
 };
 use async_trait::async_trait;
@@ -19,6 +19,9 @@ pub struct Contrast {
     pub state: ContrastState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub contrast: GpuContrast,
+    pub sender: flume::Sender<PipelineCommand>,
+    pub receiver: flume::Receiver<PipelineCommand>,
+    pub frontend_sender: Option<flume::Sender<PipelineCommand>>,
 }
 
 #[async_trait]
@@ -26,11 +29,17 @@ impl ToolBackend for Contrast {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
+    fn get_sender(&self) -> flume::Sender<PipelineCommand> {
+        self.sender.clone()
+    }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
     }
     fn get_state(&self) -> ToolState {
         ToolState::ContrastState(self.state.clone())
+    }
+    fn set_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
+        self.frontend_sender = Some(sender);
     }
     async fn process(
         &mut self,
@@ -48,30 +57,55 @@ impl ToolBackend for Contrast {
         Ok(output)
     }
 
-    async fn receive_message(&mut self, message: &PipelineObjectMessage) -> anyhow::Result<()> {
+    async fn receive_messages(&mut self) -> anyhow::Result<()> {
         let old_state = self.state.clone();
-        match message {
-            PipelineObjectMessage::ToggleActive(value) => {
-                self.state.is_enabled = *value;
-            }
-            PipelineObjectMessage::ContrastMessage(message) => match message {
-                ContrastMessage::SetMinMax(min, max) => {
-                    self.state.min = *min;
-                    self.state.max = *max;
+
+        if let Ok(message) = self.receiver.try_recv() {
+            match message {
+                PipelineCommand::RequestState() => {
+                    self.frontend_sender
+                        .as_ref()
+                        .unwrap()
+                        .send(PipelineCommand::FrontendMessage(
+                            FrontendMessage::ReturnState(self.get_state()),
+                        ))
+                        .unwrap();
                 }
-            },
-            _ => {}
+                PipelineCommand::PipelineObject(message) => match message {
+                    PipelineObjectMessage::ToggleActive(value) => {
+                        self.state.is_enabled = value;
+                    }
+                    PipelineObjectMessage::ContrastMessage(message) => match message {
+                        ContrastMessage::SetMinMax(min, max) => {
+                            self.state.min = min;
+                            self.state.max = max;
+                        }
+                    },
+                    _ => {}
+                },
+                _ => {}
+            }
+            if old_state != self.state {
+                self.command_sender
+                    .send(PipelineCommand::Refresh(0))
+                    .unwrap();
+
+                // Push state update to frontend
+                if let Some(frontend_sender) = &self.frontend_sender {
+                    frontend_sender
+                        .send(PipelineCommand::FrontendMessage(
+                            FrontendMessage::ReturnState(self.get_state()),
+                        ))
+                        .unwrap();
+                }
+            }
         }
-        if old_state != self.state {
-            self.command_sender
-                .send(PipelineCommand::Refresh(0))
-                .unwrap();
-        }
+
         Ok(())
     }
 
     fn iam(&self) -> BackendToolType {
-        BackendToolType::Contrast(vec![])
+        BackendToolType::Contrast
     }
 }
 
@@ -80,6 +114,7 @@ impl Contrast {
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
+        let (sender, receiver) = flume::unbounded();
         Self {
             state: ContrastState {
                 is_enabled: false,
@@ -87,7 +122,10 @@ impl Contrast {
                 max: 1.0,
             },
             contrast: GpuContrast::new(gpu_image_processor).await,
+            frontend_sender: None,
             command_sender,
+            sender,
+            receiver,
         }
     }
 }
