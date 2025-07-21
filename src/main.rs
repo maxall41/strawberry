@@ -1,23 +1,25 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use anyhow::Result;
-use composite::GpuCompositor;
 use gpui::{
-    actions, div, img, prelude::*, px, size, App, AppContext, Application, AssetSource, AsyncApp,
-    Bounds, Context, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent,
-    Menu, MenuItem, Point, RenderImage, SharedString, TitlebarOptions, WeakEntity, Window,
-    WindowBounds, WindowOptions,
+    actions, div, img, prelude::*, px, size, App, AppContext, Application, AssetSource, Bounds,
+    Context, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent, Menu,
+    MenuItem, Point, RenderImage, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 use image::{Frame, ImageReader, RgbaImage};
 use rfd::FileDialog;
+use tools::{compositor::Compositor, Pipeline, PipelineCommand};
 
 struct Assets {
     base: PathBuf,
 }
 
 mod composite;
+mod tools;
 
 const MOVEMENT_SPEED: f32 = 25.0;
 
@@ -46,50 +48,35 @@ impl AssetSource for Assets {
 
 struct PrimaryViewer {
     focus_handle: FocusHandle,
-    image: ImageSource,
     zoom_level: f32,
     original_width: u32,
     original_height: u32,
     pan_x: f32,
     pan_y: f32,
     pressed_keys: std::collections::HashSet<String>,
+    command_receiver: flume::Receiver<PipelineCommand>,
+    command_sender: flume::Sender<PipelineCommand>,
+    display_image: ImageSource,
 }
 
 impl PrimaryViewer {
-    fn create_default_image() -> ImageSource {
-        // Create a default 800x600 black image
-        let width = 800u32;
-        let height = 600u32;
-        let mut data = RgbaImage::new(width, height);
-
-        // Fill with black pixels (BGRA format for GPUI)
-        for pixel in data.chunks_exact_mut(4) {
-            pixel[0] = 0; // B
-            pixel[1] = 0; // G
-            pixel[2] = 0; // R
-            pixel[3] = 255; // A
-        }
-
-        let frame = Frame::new(data);
-        let img_frames = vec![frame];
-        let img_data = Arc::new(RenderImage::new(img_frames));
-        ImageSource::Render(img_data)
-    }
-
-    fn load_image_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn load_image_file(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(files) = FileDialog::new()
             .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
             .set_directory("/")
             .pick_files()
         {
-            cx.spawn_in(window, async move |this, cx| {
-                let start = std::time::Instant::now();
-                let compositer = GpuCompositor::new().await;
-                let init_duration = start.elapsed();
-                println!("GpuCompositor initialization took: {:?}", init_duration);
-                let mut loaded_images = Vec::new();
+            // // Process commands immediately
+            // futures::executor::block_on(async {
+            //     self.pipeline.load_input_images(loaded_images).await;
+            // });
+            //
+            let sender_p = self.command_sender.clone();
+            let recv_p = self.command_receiver.clone();
 
-                let load_start = std::time::Instant::now();
+            cx.spawn_in(_window, async move |this, cx| {
+                let mut loaded_images = vec![];
+                //TODO: Is file loading blocking main thread???
                 for file in files {
                     if let Ok(reader) = ImageReader::open(&file) {
                         if let Ok(decoded) = reader.decode() {
@@ -98,43 +85,42 @@ impl PrimaryViewer {
                         }
                     }
                 }
-                let load_duration = load_start.elapsed();
-                println!(
-                    "Loading {} images took: {:?}",
-                    loaded_images.len(),
-                    load_duration
-                );
 
-                if loaded_images.is_empty() {
-                    return;
-                }
+                sender_p
+                    .send_async(PipelineCommand::Load(loaded_images))
+                    .await
+                    .unwrap();
+                let mut recv = false;
+                //TODO: Very dangerous would loop forever if pipeline breaks
+                while !recv {
+                    if let Ok(command) = recv_p.recv_async().await {
+                        match command {
+                            PipelineCommand::Output(output) => {
+                                let frame = Frame::new(output);
+                                let img_frames = vec![frame];
+                                let img_data = Arc::new(RenderImage::new(img_frames));
 
-                let composite_start = std::time::Instant::now();
-                if let Some(mut composited) = compositer.composite_images(&loaded_images).await {
-                    let composite_duration = composite_start.elapsed();
-                    println!("Compositing took: {:?}", composite_duration);
-
-                    let w = composited.width();
-                    let h = composited.height();
-
-                    let frame = Frame::new(composited);
-                    let img_frames = vec![frame];
-                    let img_data = Arc::new(RenderImage::new(img_frames));
-
-                    this.update(cx, |this, cx| {
-                        this.image = ImageSource::Render(img_data);
-                        this.zoom_level = 1.0;
-                        this.pan_x = 0.0;
-                        this.pan_y = 0.0;
-
-                        this.original_width = w;
-                        this.original_height = h;
-
-                        cx.notify();
-                    });
+                                this.update(cx, |this, cx| {
+                                    this.display_image = ImageSource::Render(img_data);
+                                    cx.notify();
+                                })
+                                .unwrap();
+                                recv = true;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             })
             .detach();
+
+            self.zoom_level = 1.0;
+            self.pan_x = 0.0;
+            self.pan_y = 0.0;
+            // self.original_width = self.pipeline.width.clone();
+            // self.original_height = self.pipeline.height.clone();
+            println!("Finished composition");
+            cx.notify();
         }
     }
 
@@ -146,14 +132,14 @@ impl PrimaryViewer {
         let old_zoom = self.zoom_level;
         self.zoom_level = self.zoom_level * 1.25;
         self.adjust_pan_for_center_zoom(window, old_zoom, self.zoom_level);
-        self.update_image(cx);
+        cx.notify();
     }
 
     fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let old_zoom = self.zoom_level;
         self.zoom_level = self.zoom_level / 1.25;
         self.adjust_pan_for_center_zoom(window, old_zoom, self.zoom_level);
-        self.update_image(cx);
+        cx.notify();
     }
 
     fn adjust_pan_for_center_zoom(&mut self, window: &mut Window, old_zoom: f32, new_zoom: f32) {
@@ -170,18 +156,11 @@ impl PrimaryViewer {
         self.pan_y = viewport_center_y - (image_center_y * new_zoom);
     }
 
-    fn update_image(&mut self, cx: &mut Context<Self>) {
-        // Just notify for re-render - let GPUI handle the scaling
-        cx.notify();
-    }
-
     fn handle_zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
-        println!("Zooming in");
         self.zoom_in(window, cx);
     }
 
     fn handle_zoom_out(&mut self, _: &ZoomOut, window: &mut Window, cx: &mut Context<Self>) {
-        println!("Zooming out");
         self.zoom_out(window, cx);
     }
 
@@ -253,7 +232,7 @@ impl Render for PrimaryViewer {
                     .left(px(self.pan_x))
                     .top(px(self.pan_y))
                     .child(
-                        img(self.image.clone())
+                        img(self.display_image.clone())
                             .use_nearest_filter(true)
                             .w(px(self.original_width as f32 * self.zoom_level))
                             .h(px(self.original_height as f32 * self.zoom_level)),
@@ -262,13 +241,22 @@ impl Render for PrimaryViewer {
     }
 }
 
-actions!(image, [Quit, ZoomIn, ZoomOut, OpenFile]);
+actions!(image, [Quit, ZoomIn, ZoomOut, OpenFile, CompositorSettings]);
 
 #[tokio::main]
 async fn main() {
     env_logger::init();
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let (mut pipeline, view_sender, view_recv) = Pipeline::new(vec![Box::new(Compositor::new())]);
+
+    tokio::spawn(async move {
+        loop {
+            pipeline.process_commands().await;
+            tokio::time::sleep(Duration::from_millis(33)).await; // Lock at 30FPS
+        }
+    });
 
     Application::new()
         .with_assets(Assets {
@@ -292,6 +280,10 @@ async fn main() {
                     name: "File".into(),
                     items: vec![MenuItem::action("Open Images...", OpenFile)],
                 },
+                Menu {
+                    name: "Tools".into(),
+                    items: vec![MenuItem::action("Compositor", CompositorSettings)],
+                },
             ]);
 
             let window_options = WindowOptions {
@@ -309,16 +301,35 @@ async fn main() {
                 ..Default::default()
             };
 
+            // Create a default 800x600 black image
+            let width = 800u32;
+            let height = 600u32;
+            let mut data = RgbaImage::new(width, height);
+
+            // Fill with black pixels (BGRA format for GPUI)
+            for pixel in data.chunks_exact_mut(4) {
+                pixel[0] = 0; // B
+                pixel[1] = 0; // G
+                pixel[2] = 0; // R
+                pixel[3] = 255; // A
+            }
+
+            let frame = Frame::new(data);
+            let img_frames = vec![frame];
+            let img_data = Arc::new(RenderImage::new(img_frames));
+
             cx.open_window(window_options, |window, cx| {
                 let viewer = cx.new(|cx| PrimaryViewer {
                     focus_handle: cx.focus_handle(),
-                    image: PrimaryViewer::create_default_image(),
                     zoom_level: 1.0,
                     original_width: 800,
                     original_height: 600,
                     pan_x: 0.0,
                     pan_y: 0.0,
                     pressed_keys: std::collections::HashSet::new(),
+                    command_receiver: view_recv,
+                    command_sender: view_sender,
+                    display_image: ImageSource::Render(img_data),
                 });
 
                 // Bind keys locally to the viewer
