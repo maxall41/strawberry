@@ -1,5 +1,6 @@
 use std::{borrow::Cow, sync::Arc};
 
+use anyhow::Result;
 use image::RgbaImage;
 use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
@@ -53,7 +54,7 @@ impl GpuContrast {
         image: &RgbaImage,
         min_value: f32,
         max_value: f32,
-    ) -> Option<RgbaImage> {
+    ) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
         let pixel_count = (width * height) as usize;
 
@@ -164,23 +165,29 @@ impl GpuContrast {
         let buffer_slice = staging_buffer.slice(..);
         let (sender, receiver) = flume::unbounded();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).unwrap();
+            if let Err(e) = sender.send(result) {
+                eprintln!("Failed to send GPU buffer mapping result: {}", e);
+            }
         });
 
         self.gpu.device.poll(wgpu::MaintainBase::Wait);
-        receiver.recv_async().await.unwrap().unwrap();
+        let map_result = receiver
+            .recv_async()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {}", e))?;
+        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {:?}", e))?;
 
         let data = buffer_slice.get_mapped_range();
         let result_bytes: &[u8] = &data;
 
         // Create result image from the GPU buffer data
         let result_image = RgbaImage::from_raw(width, height, result_bytes.to_vec())
-            .expect("Failed to create image from GPU buffer");
+            .ok_or_else(|| anyhow::anyhow!("Failed to create image from GPU buffer data"))?;
 
         println!(
             "Applied contrast remapping with min: {}, max: {}",
             min_value, max_value
         );
-        Some(result_image)
+        Ok(result_image)
     }
 }

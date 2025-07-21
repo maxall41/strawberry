@@ -111,11 +111,11 @@ pub struct Pipeline {
 
 impl Pipeline {
     /// Create a new pipeline with the given tools
-    pub async fn new() -> (
+    pub async fn new() -> anyhow::Result<(
         Self,
         broadcast::Sender<PipelineCommand>,
         broadcast::Receiver<PipelineCommand>,
-    ) {
+    )> {
         let (command_tx, command_rx) = broadcast::channel(1000);
         let (output_tx, output_rx) = broadcast::channel(1000);
 
@@ -132,7 +132,7 @@ impl Pipeline {
             input_images: vec![],
         };
 
-        (pipeline, command_tx, output_rx)
+        Ok((pipeline, command_tx, output_rx))
     }
 
     /// Process images through the pipeline starting from the given index
@@ -153,9 +153,12 @@ impl Pipeline {
             ));
         }
 
-        let _ = self
+        if let Err(e) = self
             .output_sender
-            .send(PipelineCommand::Output(images[0].clone()));
+            .send(PipelineCommand::Output(images[0].clone()))
+        {
+            eprintln!("Failed to send output image: {}", e);
+        }
 
         let duration = start_time.elapsed();
         println!("Pipeline processing took: {:?}", duration);
@@ -164,17 +167,23 @@ impl Pipeline {
     }
 
     /// Process all pending commands
-    pub async fn process_commands(&mut self) {
+    pub async fn process_commands(&mut self) -> anyhow::Result<()> {
         if let Ok(cmd) = self.command_receiver.try_recv() {
             match &cmd {
-                PipelineCommand::Refresh(index) => self.process_from(*index).await.unwrap(),
+                PipelineCommand::Refresh(index) => {
+                    if let Err(e) = self.process_from(*index).await {
+                        eprintln!("Failed to process pipeline from index {}: {}", index, e);
+                    }
+                }
                 PipelineCommand::Load(images) => {
                     println!("Got load command!");
                     self.input_images = images.clone(); //TODO: Performance
                     if images.len() > 1 {
                         self.tools[0].set_enabled(true);
                     }
-                    self.process_from(0).await.unwrap();
+                    if let Err(e) = self.process_from(0).await {
+                        eprintln!("Failed to process pipeline after loading images: {}", e);
+                    }
                 }
                 PipelineCommand::DiscoverBackend(backend_tool_type, sender) => {
                     let mut discovered = vec![];
@@ -195,12 +204,18 @@ impl Pipeline {
 
                     println!("Returning discovery request {:?}", r);
 
-                    sender.send(PipelineCommand::FrontendMessage(r)).unwrap();
+                    if let Err(e) = sender.send(PipelineCommand::FrontendMessage(r)) {
+                        eprintln!("Failed to send backend discovery response: {}", e);
+                    }
                 }
                 _ => {}
             };
         }
         let futures = self.tools.iter_mut().map(|tool| tool.receive_messages());
-        try_join_all(futures).await.unwrap();
+        if let Err(e) = try_join_all(futures).await {
+            eprintln!("Failed to process tool messages: {}", e);
+        }
+
+        Ok(())
     }
 }

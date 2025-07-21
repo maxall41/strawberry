@@ -1,5 +1,6 @@
 use std::{borrow::Cow, sync::Arc};
 
+use anyhow::Result;
 use image::RgbaImage;
 use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
@@ -47,9 +48,9 @@ impl GpuCompositor {
             gpu,
         }
     }
-    pub async fn composite_images(&self, images: &[RgbaImage]) -> Option<RgbaImage> {
+    pub async fn composite_images(&self, images: &[RgbaImage]) -> Result<RgbaImage> {
         if images.is_empty() {
-            return None;
+            return Err(anyhow::anyhow!("Cannot composite empty image list"));
         }
 
         let (width, height) = images[0].dimensions();
@@ -71,7 +72,10 @@ impl GpuCompositor {
 
         // Ensure we don't exceed shader limits (max 7 images for now)
         if image_buffers.len() > 7 {
-            panic!("GPU compositor currently supports max 7 images");
+            return Err(anyhow::anyhow!(
+                "GPU compositor currently supports max 7 images, got {}",
+                image_buffers.len()
+            ));
         }
 
         // Output buffer
@@ -192,19 +196,25 @@ impl GpuCompositor {
         let buffer_slice = staging_buffer.slice(..);
         let (sender, receiver) = flume::unbounded();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).unwrap();
+            if let Err(e) = sender.send(result) {
+                eprintln!("Failed to send GPU buffer mapping result: {}", e);
+            }
         });
 
         self.gpu.device.poll(wgpu::MaintainBase::Wait);
-        receiver.recv_async().await.unwrap().unwrap();
+        let map_result = receiver
+            .recv_async()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {}", e))?;
+        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {:?}", e))?;
 
         let data = buffer_slice.get_mapped_range();
         let result_bytes: &[u8] = &data;
 
         // Create result image from the GPU buffer data
         let result_image = RgbaImage::from_raw(width, height, result_bytes.to_vec())
-            .expect("Failed to create image from GPU buffer");
+            .ok_or_else(|| anyhow::anyhow!("Failed to create image from GPU buffer data"))?;
         println!("Returning composited image");
-        Some(result_image)
+        Ok(result_image)
     }
 }

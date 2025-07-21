@@ -50,8 +50,7 @@ impl ToolBackend for Contrast {
             let output_image = self
                 .contrast
                 .apply_contrast(&image, self.state.min, self.state.max)
-                .await
-                .unwrap();
+                .await?;
             output.push(output_image);
         }
         Ok(output)
@@ -63,13 +62,15 @@ impl ToolBackend for Contrast {
         if let Ok(message) = self.receiver.try_recv() {
             match message {
                 PipelineCommand::RequestState() => {
-                    self.frontend_sender
-                        .as_ref()
-                        .unwrap()
-                        .send(PipelineCommand::FrontendMessage(
+                    if let Some(sender) = &self.frontend_sender {
+                        if let Err(e) = sender.send(PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
-                        ))
-                        .unwrap();
+                        )) {
+                            eprintln!("Failed to send state to frontend: {}", e);
+                        }
+                    } else {
+                        eprintln!("No frontend sender available for state request");
+                    }
                 }
                 PipelineCommand::PipelineObject(message) => match message {
                     PipelineObjectMessage::ToggleActive(value) => {
@@ -86,17 +87,17 @@ impl ToolBackend for Contrast {
                 _ => {}
             }
             if old_state != self.state {
-                self.command_sender
-                    .send(PipelineCommand::Refresh(0))
-                    .unwrap();
+                if let Err(e) = self.command_sender.send(PipelineCommand::Refresh(0)) {
+                    eprintln!("Failed to send refresh command: {}", e);
+                }
 
                 // Push state update to frontend
                 if let Some(frontend_sender) = &self.frontend_sender {
-                    frontend_sender
-                        .send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(self.get_state()),
-                        ))
-                        .unwrap();
+                    if let Err(e) = frontend_sender.send(PipelineCommand::FrontendMessage(
+                        FrontendMessage::ReturnState(self.get_state()),
+                    )) {
+                        eprintln!("Failed to send state update to frontend: {}", e);
+                    }
                 }
             }
         }
