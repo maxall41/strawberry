@@ -1,6 +1,6 @@
 use image::RgbaImage;
 use std::borrow::Cow;
-use wgpu::{util::DeviceExt, PipelineCompilationOptions};
+use wgpu::{util::DeviceExt, PipelineCompilationOptions, Trace};
 
 pub struct GpuCompositor {
     device: wgpu::Device,
@@ -11,7 +11,7 @@ pub struct GpuCompositor {
 impl GpuCompositor {
     pub async fn new() -> Self {
         // Initialize wgpu
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
@@ -26,14 +26,13 @@ impl GpuCompositor {
             .unwrap();
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                trace: Trace::Off,
+            })
             .await
             .unwrap();
 
@@ -47,8 +46,9 @@ impl GpuCompositor {
             label: Some("Composite Pipeline"),
             layout: None,
             module: &shader,
-            entry_point: "main",
+            entry_point: Some("main"),
             compilation_options: PipelineCompilationOptions::default(),
+            cache: None,
         });
 
         Self {
@@ -200,7 +200,7 @@ impl GpuCompositor {
             sender.send(result).unwrap();
         });
 
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::MaintainBase::Wait);
         receiver.recv_async().await.unwrap().unwrap();
 
         let data = buffer_slice.get_mapped_range();
