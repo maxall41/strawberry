@@ -1,6 +1,6 @@
 use image::RgbaImage;
 use std::borrow::Cow;
-use wgpu::util::DeviceExt;
+use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
 pub struct GpuCompositor {
     device: wgpu::Device,
@@ -48,6 +48,7 @@ impl GpuCompositor {
             layout: None,
             module: &shader,
             entry_point: "main",
+            compilation_options: PipelineCompilationOptions::default(),
         });
 
         Self {
@@ -208,7 +209,7 @@ impl GpuCompositor {
         // Create result image from the GPU buffer data
         let result_image = RgbaImage::from_raw(width, height, result_bytes.to_vec())
             .expect("Failed to create image from GPU buffer");
-        println!("Returnig composited image");
+        println!("Returning composited image");
         Some(result_image)
     }
 }
