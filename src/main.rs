@@ -11,14 +11,18 @@ use gpui::{
     WindowOptions,
 };
 use image::{Frame, ImageReader, RgbaImage};
+use pipeline::compositor::CompositorState;
+use pipeline::{Pipeline, PipelineCommand};
 use rfd::FileDialog;
-use tools::{compositor::Compositor, Pipeline, PipelineCommand};
+use tools::compositor::CompositorView;
+use tools::ToolFrontend;
 
 struct Assets {
     base: PathBuf,
 }
 
 mod composite;
+mod pipeline;
 mod tools;
 
 const MOVEMENT_SPEED: f32 = 25.0;
@@ -54,8 +58,8 @@ struct PrimaryViewer {
     pan_x: f32,
     pan_y: f32,
     pressed_keys: std::collections::HashSet<String>,
-    command_receiver: flume::Receiver<PipelineCommand>,
-    command_sender: flume::Sender<PipelineCommand>,
+    command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
+    command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     display_image: ImageSource,
 }
 
@@ -66,13 +70,8 @@ impl PrimaryViewer {
             .set_directory("/")
             .pick_files()
         {
-            // // Process commands immediately
-            // futures::executor::block_on(async {
-            //     self.pipeline.load_input_images(loaded_images).await;
-            // });
-            //
             let sender_p = self.command_sender.clone();
-            let recv_p = self.command_receiver.clone();
+            let mut recv_p = self.command_receiver.resubscribe();
 
             cx.spawn_in(_window, async move |this, cx| {
                 let mut loaded_images = vec![];
@@ -86,42 +85,38 @@ impl PrimaryViewer {
                     }
                 }
 
-                sender_p
-                    .send_async(PipelineCommand::Load(loaded_images))
-                    .await
-                    .unwrap();
-                let mut recv = false;
-                //TODO: Very dangerous would loop forever if pipeline breaks
-                while !recv {
-                    if let Ok(command) = recv_p.recv_async().await {
-                        match command {
-                            PipelineCommand::Output(output) => {
-                                let frame = Frame::new(output);
-                                let img_frames = vec![frame];
-                                let img_data = Arc::new(RenderImage::new(img_frames));
-
-                                this.update(cx, |this, cx| {
-                                    this.display_image = ImageSource::Render(img_data);
-                                    cx.notify();
-                                })
-                                .unwrap();
-                                recv = true;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                sender_p.send(PipelineCommand::Load(loaded_images)).unwrap();
             })
             .detach();
-
-            self.zoom_level = 1.0;
-            self.pan_x = 0.0;
-            self.pan_y = 0.0;
-            // self.original_width = self.pipeline.width.clone();
-            // self.original_height = self.pipeline.height.clone();
-            println!("Finished composition");
-            cx.notify();
         }
+    }
+
+    pub fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut receiver_ref = self.command_receiver.resubscribe();
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                if let Ok(command) = receiver_ref.try_recv() {
+                    match command {
+                        PipelineCommand::Output(output) => {
+                            let frame = Frame::new(output);
+                            let img_frames = vec![frame];
+                            let img_data = Arc::new(RenderImage::new(img_frames));
+
+                            this.update(cx, |this, cx| {
+                                this.display_image = ImageSource::Render(img_data);
+                                cx.notify();
+                            })
+                            .unwrap();
+                        }
+                        _ => {}
+                    }
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(33))
+                    .await; // 30 FPS
+            }
+        })
+        .detach();
     }
 
     fn handle_open_file(&mut self, _: &OpenFile, _window: &mut Window, cx: &mut Context<Self>) {
@@ -249,7 +244,7 @@ async fn main() {
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    let (mut pipeline, view_sender, view_recv) = Pipeline::new(vec![Box::new(Compositor::new())]);
+    let (mut pipeline, view_sender, view_recv) = Pipeline::new();
 
     tokio::spawn(async move {
         loop {
@@ -319,7 +314,7 @@ async fn main() {
             let img_data = Arc::new(RenderImage::new(img_frames));
 
             cx.open_window(window_options, |window, cx| {
-                let viewer = cx.new(|cx| PrimaryViewer {
+                let mut raw_primary_viewer = PrimaryViewer {
                     focus_handle: cx.focus_handle(),
                     zoom_level: 1.0,
                     original_width: 800,
@@ -327,9 +322,14 @@ async fn main() {
                     pan_x: 0.0,
                     pan_y: 0.0,
                     pressed_keys: std::collections::HashSet::new(),
-                    command_receiver: view_recv,
-                    command_sender: view_sender,
+                    command_receiver: view_recv.resubscribe(),
+                    command_sender: view_sender.clone(),
                     display_image: ImageSource::Render(img_data),
+                };
+
+                let viewer = cx.new(|cx| {
+                    raw_primary_viewer.process_messages(window, cx);
+                    raw_primary_viewer
                 });
 
                 // Bind keys locally to the viewer
@@ -342,6 +342,22 @@ async fn main() {
                 window.focus(&viewer.read(cx).focus_handle(cx));
 
                 viewer
+            })
+            .unwrap();
+
+            let mut raw_compositor = CompositorView {
+                command_receiver: view_recv.resubscribe(),
+                command_sender: view_sender,
+                state: Arc::new(RwLock::new(CompositorState::default())),
+            };
+
+            cx.open_window(raw_compositor.get_window_options(), |window, cx| {
+                let compositor_view = cx.new(|cx| {
+                    raw_compositor.process_messages(window, cx);
+                    raw_compositor
+                });
+
+                compositor_view
             })
             .unwrap();
 
