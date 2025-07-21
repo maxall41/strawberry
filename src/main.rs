@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -11,17 +11,18 @@ use gpui::{
     WindowOptions,
 };
 use image::{Frame, ImageReader, RgbaImage};
-use pipeline::compositor::CompositorState;
+
 use pipeline::{Pipeline, PipelineCommand};
 use rfd::FileDialog;
 use tools::compositor::CompositorView;
+use tools::contrast::ContrastView;
 use tools::ToolFrontend;
 
 struct Assets {
     base: PathBuf,
 }
 
-mod composite;
+mod gpu;
 mod pipeline;
 mod tools;
 
@@ -236,7 +237,17 @@ impl Render for PrimaryViewer {
     }
 }
 
-actions!(image, [Quit, ZoomIn, ZoomOut, OpenFile, CompositorSettings]);
+actions!(
+    image,
+    [
+        Quit,
+        ZoomIn,
+        ZoomOut,
+        OpenFile,
+        CompositorSettings,
+        ContrastSettings
+    ]
+);
 
 #[tokio::main]
 async fn main() {
@@ -244,7 +255,7 @@ async fn main() {
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    let (mut pipeline, view_sender, view_recv) = Pipeline::new();
+    let (mut pipeline, view_sender, view_recv) = Pipeline::new().await;
 
     tokio::spawn(async move {
         loop {
@@ -258,7 +269,41 @@ async fn main() {
             base: manifest_dir.join("examples"),
         })
         .run(move |cx: &mut App| {
+            let view_sender_clone = view_sender.clone();
+            let view_recv_clone = view_recv.resubscribe();
+
             cx.on_action(|_: &Quit, cx| cx.quit());
+
+            cx.on_action(move |_: &CompositorSettings, cx| {
+                let mut raw_compositor =
+                    CompositorView::new(view_recv_clone.resubscribe(), view_sender_clone.clone());
+
+                cx.open_window(raw_compositor.get_window_options(), |window, cx| {
+                    let compositor_view = cx.new(|cx| {
+                        raw_compositor.initialize(window, cx);
+                        raw_compositor
+                    });
+                    compositor_view
+                })
+                .unwrap();
+            });
+
+            let view_sender_clone2 = view_sender.clone();
+            let view_recv_clone2 = view_recv.resubscribe();
+
+            cx.on_action(move |_: &ContrastSettings, cx| {
+                let mut raw_contrast =
+                    ContrastView::new(view_recv_clone2.resubscribe(), view_sender_clone2.clone());
+
+                cx.open_window(raw_contrast.get_window_options(), |window, cx| {
+                    let contrast_view = cx.new(|cx| {
+                        raw_contrast.initialize(window, cx);
+                        raw_contrast
+                    });
+                    contrast_view
+                })
+                .unwrap();
+            });
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-o", OpenFile, None),
@@ -277,7 +322,10 @@ async fn main() {
                 },
                 Menu {
                     name: "Tools".into(),
-                    items: vec![MenuItem::action("Compositor", CompositorSettings)],
+                    items: vec![
+                        MenuItem::action("Compositor", CompositorSettings),
+                        MenuItem::action("Contrast", ContrastSettings),
+                    ],
                 },
             ]);
 
@@ -342,22 +390,6 @@ async fn main() {
                 window.focus(&viewer.read(cx).focus_handle(cx));
 
                 viewer
-            })
-            .unwrap();
-
-            let mut raw_compositor = CompositorView {
-                command_receiver: view_recv.resubscribe(),
-                command_sender: view_sender,
-                state: Arc::new(RwLock::new(CompositorState::default())),
-            };
-
-            cx.open_window(raw_compositor.get_window_options(), |window, cx| {
-                let compositor_view = cx.new(|cx| {
-                    raw_compositor.process_messages(window, cx);
-                    raw_compositor
-                });
-
-                compositor_view
             })
             .unwrap();
 
