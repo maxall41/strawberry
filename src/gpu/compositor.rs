@@ -1,63 +1,52 @@
+use std::{borrow::Cow, sync::Arc};
+
 use image::RgbaImage;
-use std::borrow::Cow;
-use wgpu::{util::DeviceExt, PipelineCompilationOptions, Trace};
+use wgpu::{util::DeviceExt, PipelineCompilationOptions};
+
+use super::GpuImageProcessor;
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CompositeUniforms {
+    width: u32,
+    height: u32,
+    layer_count: u32,
+    _padding: u32,
+}
 
 pub struct GpuCompositor {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
     compute_pipeline: wgpu::ComputePipeline,
+    gpu: Arc<GpuImageProcessor>,
 }
 
 impl GpuCompositor {
-    pub async fn new() -> Self {
-        // Initialize wgpu
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .unwrap();
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::default(),
-                trace: Trace::Off,
-            })
-            .await
-            .unwrap();
-
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         // Compute shader for additive blending
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Composite Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("composite.wgsl"))),
-        });
+        let shader = gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Composite Shader"),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
+                    "shaders/composite.wgsl"
+                ))),
+            });
 
-        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Composite Pipeline"),
-            layout: None,
-            module: &shader,
-            entry_point: Some("main"),
-            compilation_options: PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let compute_pipeline =
+            gpu.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("Composite Pipeline"),
+                    layout: None,
+                    module: &shader,
+                    entry_point: Some("main"),
+                    compilation_options: PipelineCompilationOptions::default(),
+                    cache: None,
+                });
 
         Self {
-            device,
-            queue,
             compute_pipeline,
+            gpu,
         }
     }
-
     pub async fn composite_images(&self, images: &[RgbaImage]) -> Option<RgbaImage> {
         if images.is_empty() {
             return None;
@@ -70,6 +59,7 @@ impl GpuCompositor {
         let mut image_buffers = Vec::new();
         for img in images {
             let buffer = self
+                .gpu
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Input Image Buffer"),
@@ -85,7 +75,7 @@ impl GpuCompositor {
         }
 
         // Output buffer
-        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let output_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Output Buffer"),
             size: (pixel_count * 4) as u64, // 4 bytes per RGBA pixel
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
@@ -93,7 +83,7 @@ impl GpuCompositor {
         });
 
         // Staging buffer to read results back to CPU
-        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let staging_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Staging Buffer"),
             size: (pixel_count * 4) as u64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
@@ -108,13 +98,14 @@ impl GpuCompositor {
             _padding: 0,
         };
 
-        let uniform_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Uniform Buffer"),
-                contents: bytemuck::cast_slice(&[uniforms]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+        let uniform_buffer =
+            self.gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Uniform Buffer"),
+                    contents: bytemuck::cast_slice(&[uniforms]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
 
         // Create bind group with separate buffers
         let mut entries = vec![
@@ -137,7 +128,7 @@ impl GpuCompositor {
         }
 
         // Fill remaining slots with dummy buffers if needed
-        let dummy_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let dummy_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Dummy Buffer"),
             size: 4, // Minimum size
             usage: wgpu::BufferUsages::STORAGE,
@@ -152,14 +143,18 @@ impl GpuCompositor {
         }
 
         let bind_group_layout = self.compute_pipeline.get_bind_group_layout(0);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &bind_group_layout,
-            entries: &entries,
-            label: Some("Composite Bind Group"),
-        });
+        let bind_group = self
+            .gpu
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &bind_group_layout,
+                entries: &entries,
+                label: Some("Composite Bind Group"),
+            });
 
         // Dispatch compute shader
         let mut encoder = self
+            .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Composite Encoder"),
@@ -191,7 +186,7 @@ impl GpuCompositor {
         );
 
         // Submit commands
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.gpu.queue.submit(std::iter::once(encoder.finish()));
 
         // Read back results
         let buffer_slice = staging_buffer.slice(..);
@@ -200,7 +195,7 @@ impl GpuCompositor {
             sender.send(result).unwrap();
         });
 
-        self.device.poll(wgpu::MaintainBase::Wait);
+        self.gpu.device.poll(wgpu::MaintainBase::Wait);
         receiver.recv_async().await.unwrap().unwrap();
 
         let data = buffer_slice.get_mapped_range();
@@ -212,13 +207,4 @@ impl GpuCompositor {
         println!("Returning composited image");
         Some(result_image)
     }
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CompositeUniforms {
-    width: u32,
-    height: u32,
-    layer_count: u32,
-    _padding: u32,
 }

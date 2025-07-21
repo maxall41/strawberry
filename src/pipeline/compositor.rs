@@ -1,6 +1,11 @@
-use crate::composite::GpuCompositor;
+use std::sync::Arc;
 
-use super::{CompositorMessage, PipelineCommand, PipelineObjectMessage, ToolBackend, ToolState};
+use crate::gpu::{compositor::GpuCompositor, GpuImageProcessor};
+
+use super::{
+    BackendToolType, CompositorMessage, PipelineCommand, PipelineObjectMessage, ToolBackend,
+    ToolState,
+};
 use async_trait::async_trait;
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -13,7 +18,7 @@ pub struct CompositorState {
 pub struct Compositor {
     pub state: CompositorState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub compositer: Option<GpuCompositor>,
+    pub compositer: GpuCompositor,
 }
 
 #[async_trait]
@@ -33,10 +38,6 @@ impl ToolBackend for Compositor {
     ) -> anyhow::Result<Vec<image::RgbaImage>> {
         self.state.real_layers_len = input.len();
 
-        if self.compositer.is_none() {
-            self.compositer = Some(GpuCompositor::new().await);
-        }
-
         let images: Vec<image::RgbaImage> = input
             .into_iter()
             .enumerate()
@@ -49,13 +50,7 @@ impl ToolBackend for Compositor {
             })
             .collect();
 
-        let composited = self
-            .compositer
-            .as_ref()
-            .expect("We just checked that it is not None/Ensured it is not None")
-            .composite_images(&images)
-            .await
-            .unwrap();
+        let composited = self.compositer.composite_images(&images).await.unwrap();
 
         Ok(vec![composited])
     }
@@ -78,6 +73,7 @@ impl ToolBackend for Compositor {
                     self.state.enabled_layers = mutated;
                 }
             },
+            _ => {}
         }
         if old_state != self.state {
             self.command_sender
@@ -86,17 +82,24 @@ impl ToolBackend for Compositor {
         }
         Ok(())
     }
+
+    fn iam(&self) -> BackendToolType {
+        BackendToolType::Compositor(vec![])
+    }
 }
 
 impl Compositor {
-    pub fn new(command_sender: tokio::sync::broadcast::Sender<PipelineCommand>) -> Self {
+    pub async fn new(
+        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Self {
         Compositor {
             state: CompositorState {
                 is_enabled: false,
                 enabled_layers: vec![true; 8], //TODO: Mmmm danger. Should be fine since buffer only supports 7 input images anyways...
                 real_layers_len: 0,
             },
-            compositer: None,
+            compositer: GpuCompositor::new(gpu_image_processor).await,
             command_sender,
         }
     }
