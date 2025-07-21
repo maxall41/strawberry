@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use flume;
 use gpui::{
     div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, Point, SharedString,
     TitlebarOptions, Window, WindowBounds, WindowOptions,
@@ -23,6 +24,8 @@ pub struct ContrastView {
     pub state: Arc<RwLock<ContrastState>>,
     pub backend_tool_indicies: Vec<u16>,
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
+    pub send_channels: Vec<flume::Sender<PipelineCommand>>,
+    pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
 }
 
 impl ContrastView {
@@ -36,81 +39,64 @@ impl ContrastView {
             state: Arc::new(RwLock::new(ContrastState::default())),
             backend_tool_indicies: vec![],
             current_tool_index: Arc::new(RwLock::new(None)),
+            send_channels: vec![],
+            receive_channel: None,
         }
     }
 
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (sender, receiver) = flume::unbounded();
+        self.receive_channel = Some(receiver);
         self.command_sender
-            .send(PipelineCommand::DiscoverBackend(BackendToolType::Contrast(
-                vec![],
-            )))
+            .send(PipelineCommand::DiscoverBackend(
+                BackendToolType::Contrast,
+                sender,
+            ))
             .unwrap();
-        println!("Send discovery request to backend | Contrast");
+        println!("Sent discovery request to backend | Contrast");
         self.process_messages(window, cx);
     }
 
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sender_ref = self.command_sender.clone();
-        let mut receiver_ref = self.command_receiver.resubscribe();
         let state = self.state.clone();
-        let current_tool_index_ref = self.current_tool_index.clone();
+        let channel_receiver_ref = self
+            .receive_channel
+            .clone()
+            .expect("Should never fire: Created during init");
 
-        cx.spawn_in(window, async move |this, cx| {
-            loop {
-                let mut recv = false;
-                while !recv {
-                    if let Ok(command) = receiver_ref.try_recv() {
-                        match command {
-                            PipelineCommand::FrontendMessage(message) => match message {
-                                FrontendMessage::ReturnState(tool_state) => match tool_state {
-                                    ToolState::ContrastState(new_state) => {
-                                        let mut locked_state = state.write().unwrap();
-                                        if *locked_state != new_state {
-                                            *locked_state = new_state;
-                                            this.update(cx, |this, cx| cx.notify()).unwrap();
-                                        }
-                                        recv = true;
-                                    }
-                                    _ => {}
-                                },
-                                FrontendMessage::ReturnBackendTools(backend_tool_type) => {
-                                    match backend_tool_type {
-                                        BackendToolType::Contrast(data) => {
-                                            println!("Got backend tools for Contrast: {:?}", data);
-                                            this.update(cx, |this, cx| {
-                                                let index = data[0];
-                                                this.backend_tool_indicies = data;
-                                                *this.current_tool_index.write().unwrap() =
-                                                    Some(index);
-                                                cx.notify()
-                                            })
-                                            .unwrap();
-                                            recv = true; // Exit the loop when we get backend tools
-                                        }
-                                        _ => {}
-                                    }
+        // Spawn message processing thread
+        cx.spawn_in(window, async move |this, cx| loop {
+            if let Ok(command) = channel_receiver_ref.recv_async().await {
+                match command {
+                    PipelineCommand::FrontendMessage(message) => match message {
+                        FrontendMessage::ReturnState(tool_state) => match tool_state {
+                            ToolState::ContrastState(new_state) => {
+                                let mut locked_state = state.write().unwrap();
+                                if *locked_state != new_state {
+                                    *locked_state = new_state;
+                                    this.update(cx, |this, cx| cx.notify()).unwrap();
                                 }
-                                _ => {}
-                            },
+                            }
                             _ => {}
-                        }
-                    }
-                    cx.background_executor()
-                        .timer(Duration::from_millis(10))
-                        .await;
-                }
+                        },
+                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                            println!("Received backend tools | Frontend Contrast");
+                            this.update(cx, |this, cx| {
+                                *this.current_tool_index.write().unwrap() = Some(backend_ids[0]);
+                                this.backend_tool_indicies = backend_ids;
+                                this.send_channels = senders;
 
-                // Check if we have a current tool index before sending RequestState
-                let current_tool_index = current_tool_index_ref.read().unwrap();
-                if let Some(tool_index) = *current_tool_index {
-                    // println!("Sending state request! | Contrast");
-                    sender_ref
-                        .send(PipelineCommand::RequestState(tool_index))
-                        .unwrap();
+                                // Request initial state when backend is discovered
+                                if let Some(sender) = this.send_channels.get(0) {
+                                    sender.send(PipelineCommand::RequestState()).unwrap();
+                                }
+                            })
+                            .unwrap();
+                        }
+                        _ => {}
+                    },
+                    _ => {}
                 }
-                cx.background_executor()
-                    .timer(Duration::from_millis(33))
-                    .await; // 30FPS
             }
         })
         .detach();
@@ -122,15 +108,12 @@ impl ContrastView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let current_tool_index = self.current_tool_index.read().unwrap();
-        if let Some(tool_index) = *current_tool_index {
-            self.command_sender
-                .send(PipelineCommand::PipelineObject(
-                    tool_index,
-                    PipelineObjectMessage::ToggleActive(!current_value),
-                ))
-                .unwrap();
-        }
+        let current_tool_index = self.current_tool_index.read().unwrap().unwrap();
+        self.send_channels[current_tool_index as usize]
+            .send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::ToggleActive(!current_value),
+            ))
+            .unwrap();
     }
 
     fn update_min_max(
@@ -140,15 +123,12 @@ impl ContrastView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let current_tool_index = self.current_tool_index.read().unwrap();
-        if let Some(tool_index) = *current_tool_index {
-            self.command_sender
-                .send(PipelineCommand::PipelineObject(
-                    tool_index,
-                    PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(min, max)),
-                ))
-                .unwrap();
-        }
+        let current_tool_index = self.current_tool_index.read().unwrap().unwrap();
+        self.send_channels[current_tool_index as usize]
+            .send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(min, max)),
+            ))
+            .unwrap();
     }
 
     fn adjust_min(&mut self, delta: f32, _window: &mut Window, _cx: &mut Context<Self>) {
