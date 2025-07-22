@@ -2,6 +2,7 @@ use gpui::WindowOptions;
 
 pub mod compositor;
 pub mod contrast;
+pub mod counter;
 pub mod gaussian_blur;
 pub mod local_maxima;
 pub mod manager;

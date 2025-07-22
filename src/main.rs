@@ -16,6 +16,7 @@ use pipeline::{Pipeline, PipelineCommand};
 use rfd::FileDialog;
 use tools::compositor::CompositorView;
 use tools::contrast::ContrastView;
+use tools::counter::CounterView;
 use tools::gaussian_blur::GaussianBlurView;
 use tools::local_maxima::LocalMaximaView;
 use tools::manager::ManagerView;
@@ -254,6 +255,7 @@ actions!(
         OpenFile,
         CompositorSettings,
         ContrastSettings,
+        CounterSettings,
         GaussianBlurSettings,
         LocalMaximaSettings,
         ManagerSettings,
@@ -318,6 +320,26 @@ async fn main() -> Result<()> {
                     contrast_view
                 }) {
                     eprintln!("Failed to open contrast window: {}", e);
+                }
+            });
+
+            let view_sender_clone_counter = view_sender.clone();
+            let view_recv_clone_counter = view_recv.resubscribe();
+
+            cx.on_action(move |_: &CounterSettings, cx| {
+                let mut raw_counter = CounterView::new(
+                    view_recv_clone_counter.resubscribe(),
+                    view_sender_clone_counter.clone(),
+                );
+
+                if let Err(e) = cx.open_window(raw_counter.get_window_options(), |window, cx| {
+                    let counter_view = cx.new(|cx| {
+                        raw_counter.initialize(window, cx);
+                        raw_counter
+                    });
+                    counter_view
+                }) {
+                    eprintln!("Failed to open counter window: {}", e);
                 }
             });
 
@@ -425,6 +447,7 @@ async fn main() -> Result<()> {
                         MenuItem::action("Pipeline", ManagerSettings),
                         MenuItem::action("Compositor", CompositorSettings),
                         MenuItem::action("Contrast", ContrastSettings),
+                        MenuItem::action("Counter", CounterSettings),
                         MenuItem::action("Gaussian Blur", GaussianBlurSettings),
                         MenuItem::action("Local Maxima", LocalMaximaSettings),
                         MenuItem::action("Threshold", ThresholdSettings),
