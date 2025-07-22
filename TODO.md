@@ -2,6 +2,7 @@
 - [ ] Fallback to CPU for all image processors
 - [ ] If compositing > 7 images then just batch into 7 image batches and run each and then composite them together (supports up to 49 images which should be enough for pretty much everything)
 - [ ] ImageJ file loading is faster?
+- [ ] Abstract drop menu in tools/manager.rs into GUI component
 
 ## Features:
 - [ ] Support dragging and dropping images into viewer
@@ -9,7 +10,7 @@
 - [ ] Support stitching
 - [X] Thresholding
 - [ ] Watershed segmentation
-- [ ] Local maxima detection/segmentation (OPTION: Post processing with signed distance function)
+- [X] Local maxima detection/segmentation
 - [ ] Weka segmentation with weka-rs
 - [ ] Manual/Autocell counter (Name: Counter, Segmented results get dumped into cell counter tool)
 - [ ] Background subtraction
@@ -17,6 +18,7 @@
 - [ ] Colocalization analysis tool
 - [ ] Saving and loading pipelines
 - [ ] Morphological operations (Binary dilation, erosion, opening, closing)
+- [ ] Allow user to type values directly into value control
 
 ## Big features:
 - [ ] Parallel node based editor instead of linear flow
