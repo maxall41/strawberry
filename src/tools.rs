@@ -3,7 +3,9 @@ use gpui::WindowOptions;
 pub mod compositor;
 pub mod contrast;
 pub mod gaussian_blur;
+pub mod local_maxima;
 pub mod manager;
+pub mod threshold;
 
 /// RAII guard that automatically sends disconnect command when dropped
 pub struct CleanupGuard {

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::gpu::{compositor::GpuCompositor, GpuImageProcessor};
+use crate::processing::{compositor::GpuCompositor, GpuImageProcessor};
 
 use super::{
     BackendToolType, CompositorMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,

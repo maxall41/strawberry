@@ -20,7 +20,7 @@ pub struct DragState {
     pub dragging_tool_position: u16,
     pub drag_start_position: Point<f32>,
     pub current_position: Point<f32>,
-    pub original_index: usize,
+    pub original_position: u16,
 }
 
 pub struct ManagerView {
@@ -32,6 +32,7 @@ pub struct ManagerView {
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     pub drag_state: Option<DragState>,
+    pub tool_positions: Vec<(f32, u16)>,
     _cleanup_guard: crate::tools::CleanupGuard,
 }
 
@@ -49,6 +50,7 @@ impl ManagerView {
             send_channels: vec![],
             receive_channel: None,
             drag_state: None,
+            tool_positions: vec![],
             _cleanup_guard: crate::tools::CleanupGuard::new(
                 command_sender,
                 crate::pipeline::BackendToolType::Compositor,
@@ -189,7 +191,7 @@ impl ManagerView {
                                     let tool_position = tool.position;
                                     move |this: &mut ManagerView, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<ManagerView>| {
                                         cx.stop_propagation();
-                                        this.start_drag(tool_position, Point::new(event.position.x.into(), event.position.y.into()), index);
+                                        this.start_drag(tool_position, Point::new(event.position.x.into(), event.position.y.into()));
                                         cx.notify();
                                     }
                                 }),
@@ -206,18 +208,26 @@ impl ManagerView {
                 div()
                     .text_xs()
                     .text_color(rgb(0xCCCCCC))
-                    .child(format!("#{}", tool.position)),
+                    .child(format!("#{}", index)),
             )
     }
 
     // Tools list component
     fn render_tools(
-        &self,
-        state: &crate::pipeline::manager::ManagerState,
+        &mut self,
+        sorted_tools: &mut Vec<ToolProxy>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let mut sorted_tools = state.proxy_tools.clone();
         sorted_tools.sort_by_key(|tool| tool.position);
+
+        // Estimate tool positions based on layout
+        self.tool_positions.clear();
+        let header_height = 40.0; // "Tools" header height
+        let tool_height = 58.0; // p_3 (12px) + content + gap
+        for (i, tool) in sorted_tools.iter().enumerate() {
+            let estimated_y = header_height + (i as f32 * tool_height);
+            self.tool_positions.push((estimated_y, tool.position));
+        }
 
         div()
             .flex()
@@ -238,17 +248,14 @@ impl ManagerView {
             )
     }
 
-    fn start_drag(&mut self, tool_position: u16, position: Point<f32>, index: usize) {
+    fn start_drag(&mut self, tool_position: u16, position: Point<f32>) {
         self.drag_state = Some(DragState {
             dragging_tool_position: tool_position,
             drag_start_position: position,
             current_position: position,
-            original_index: index,
+            original_position: tool_position,
         });
-        println!(
-            "Started dragging tool {} from index {}",
-            tool_position, index
-        );
+        println!("Started dragging tool from position {}", tool_position);
     }
 
     fn update_drag(&mut self, position: Point<f32>) {
@@ -273,24 +280,54 @@ impl ManagerView {
                 }
             };
 
-            // Calculate new position based on mouse position
-            let drop_index = if let Ok(state) = self.state.read() {
+            // Calculate new position based on closest tool element position
+            let (original_index, drop_index) = if let Ok(state) = self.state.read() {
                 let mut sorted_tools = state.proxy_tools.clone();
                 sorted_tools.sort_by_key(|tool| tool.position);
 
-                if position.y > drag_state.drag_start_position.y {
-                    (drag_state.original_index + 1).min(sorted_tools.len() - 1)
-                } else {
-                    drag_state.original_index.saturating_sub(1)
+                // Find the original index in the enabled tools vector
+                let original_index = self.tool_positions[sorted_tools
+                    .iter()
+                    .position(|tool| tool.position == drag_state.original_position)
+                    .unwrap_or(0)]
+                .1;
+
+                // Get mouse Y position relative to the drop location
+                let drop_y = position.y;
+                let going_up = drop_y < drag_state.drag_start_position.y;
+
+                // Find the closest tool element position
+                let mut closest_index = original_index;
+                let mut closest_distance = f32::INFINITY;
+
+                for &(tool_y, pos_index) in self.tool_positions.iter() {
+                    let distance = (drop_y - tool_y).abs();
+                    if distance < closest_distance {
+                        closest_distance = distance;
+                        closest_index = pos_index;
+                    }
                 }
+
+                // Apply the logic: if going up get min(index-1, 0), if going down get index+1
+                let target_index = if going_up {
+                    closest_index.saturating_sub(1)
+                } else {
+                    // Going down
+                    closest_index + 1
+                };
+
+                (original_index, target_index)
             } else {
                 eprintln!("Failed to read state!");
-                drag_state.original_index
+                (0, 0)
             };
 
             let manager_message =
-                ManagerMessage::ReorderTool(drag_state.original_index as u16, drop_index as u16);
-            println!("Moving {} to {}", drag_state.original_index, drop_index);
+                ManagerMessage::ReorderTool(original_index as u16, drop_index as u16);
+            println!(
+                "=== REORDER TOOL ===\nOriginal index: {}\nDrop index: {}\nPipeline position: #{} -> moving to position near index {}",
+                original_index, drop_index, drag_state.original_position, drop_index
+            );
             self.send_channels[current_tool_index as usize]
                 .send(PipelineCommand::PipelineObject(
                     PipelineObjectMessage::ManagerMessage(manager_message),
@@ -329,7 +366,11 @@ impl Render for ManagerView {
             .shadow_lg()
             .text_color(rgb(0xffffff))
             .child(self.render_header())
-            .child(self.render_tools(&state, cx))
+            .child({
+                let mut tools_clone = state.proxy_tools.clone();
+                drop(state); // Explicitly drop the guard
+                self.render_tools(&mut tools_clone, cx)
+            })
             .on_mouse_move(cx.listener(
                 |this: &mut ManagerView,
                  event: &MouseMoveEvent,

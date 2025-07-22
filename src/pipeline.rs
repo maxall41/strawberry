@@ -7,17 +7,23 @@ use compositor::{Compositor, CompositorState};
 use contrast::{Contrast, ContrastState};
 use gaussian_blur::{GaussianBlur, GaussianBlurState};
 use image::RgbaImage;
+use local_maxima::{LocalMaxima, LocalMaximaState};
 use manager::{ManagerState, ToolManager, ToolProxy};
 
+use crate::processing::local_maxima::ThresholdType;
+
 use futures::future::try_join_all;
+use threshold::{Threshold, ThresholdState};
 use tokio::sync::broadcast;
 
-use crate::gpu::GpuImageProcessor;
+use crate::processing::GpuImageProcessor;
 
 pub mod compositor;
 pub mod contrast;
 pub mod gaussian_blur;
+pub mod local_maxima;
 pub mod manager;
+pub mod threshold;
 
 #[derive(Debug, Clone)]
 pub enum CompositorMessage {
@@ -35,8 +41,18 @@ pub enum GaussianBlurMessage {
 }
 
 #[derive(Debug, Clone)]
+pub enum LocalMaximaMessage {
+    SetParameters(u32, ThresholdType, bool), // min_distance, threshold, exclude_border
+}
+
+#[derive(Debug, Clone)]
 pub enum ManagerMessage {
     ReorderTool(u16, u16),
+}
+
+#[derive(Debug, Clone)]
+pub enum ThresholdMessage {
+    SetThresholdValue(f32),
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +60,8 @@ pub enum PipelineObjectMessage {
     CompositorMessage(CompositorMessage),
     ContrastMessage(ContrastMessage),
     GaussianBlurMessage(GaussianBlurMessage),
+    LocalMaximaMessage(LocalMaximaMessage),
+    ThresholdMessage(ThresholdMessage),
     ToggleActive(bool),
     ManagerMessage(ManagerMessage),
 }
@@ -59,7 +77,9 @@ pub enum BackendToolType {
     Compositor,
     Contrast,
     GaussianBlur,
+    LocalMaxima,
     Manager,
+    Threshold,
 }
 
 impl fmt::Display for BackendToolType {
@@ -95,7 +115,9 @@ pub enum ToolState {
     CompositorState(CompositorState),
     ContrastState(ContrastState),
     GaussianBlurState(GaussianBlurState),
+    LocalMaximaState(LocalMaximaState),
     ManagerState(ManagerState),
+    ThresholdState(ThresholdState),
 }
 
 /// Trait for image processing tools
@@ -165,6 +187,8 @@ impl Pipeline {
                 Box::new(Compositor::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(Contrast::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(GaussianBlur::new(command_tx.clone(), gpu_image_processor.clone()).await),
+                Box::new(LocalMaxima::new(command_tx.clone(), gpu_image_processor.clone()).await),
+                Box::new(Threshold::new(command_tx.clone(), gpu_image_processor.clone()).await),
             ],
             command_tx.clone(),
         );
