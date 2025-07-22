@@ -17,6 +17,7 @@ use rfd::FileDialog;
 use tools::compositor::CompositorView;
 use tools::contrast::ContrastView;
 use tools::gaussian_blur::GaussianBlurView;
+use tools::manager::ManagerView;
 use tools::ToolFrontend;
 
 struct Assets {
@@ -251,7 +252,8 @@ actions!(
         OpenFile,
         CompositorSettings,
         ContrastSettings,
-        GaussianBlurSettings
+        GaussianBlurSettings,
+        ManagerSettings
     ]
 );
 
@@ -337,6 +339,24 @@ async fn main() -> Result<()> {
                 }
             });
 
+            let view_sender_clone4 = view_sender.clone();
+            let view_recv_clone4 = view_recv.resubscribe();
+
+            cx.on_action(move |_: &ManagerSettings, cx| {
+                let mut raw_manager =
+                    ManagerView::new(view_recv_clone4.resubscribe(), view_sender_clone4.clone());
+
+                if let Err(e) = cx.open_window(raw_manager.get_window_options(), |window, cx| {
+                    let manager_view = cx.new(|cx| {
+                        raw_manager.initialize(window, cx);
+                        raw_manager
+                    });
+                    manager_view
+                }) {
+                    eprintln!("Failed to open manager window: {}", e);
+                }
+            });
+
             cx.on_action(|_: &Quit, cx| cx.quit());
 
             cx.bind_keys([
@@ -358,6 +378,7 @@ async fn main() -> Result<()> {
                 Menu {
                     name: "Tools".into(),
                     items: vec![
+                        MenuItem::action("Pipeline", ManagerSettings),
                         MenuItem::action("Compositor", CompositorSettings),
                         MenuItem::action("Contrast", ContrastSettings),
                         MenuItem::action("Gaussian Blur", GaussianBlurSettings),
