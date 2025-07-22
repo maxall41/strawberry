@@ -20,6 +20,7 @@ pub enum CounterTool {
     Place,
     Delete,
     LassoDelete,
+    Review,
 }
 
 impl Default for CounterTool {
@@ -599,6 +600,12 @@ impl CounterView {
                 CounterTool::LassoDelete,
                 "Lasso | Delete".to_string(),
                 *current_tool == CounterTool::LassoDelete,
+                cx,
+            ))
+            .child(self.render_tool_button(
+                CounterTool::Review,
+                "Review".to_string(),
+                *current_tool == CounterTool::Review,
                 cx,
             ))
     }
