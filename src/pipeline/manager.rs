@@ -1,3 +1,5 @@
+use std::cmp::{max, min};
+
 use async_trait::async_trait;
 
 use super::{
@@ -107,8 +109,9 @@ impl ToolBackend for ToolManager {
                     }
                     PipelineObjectMessage::ManagerMessage(message) => match message {
                         ManagerMessage::ReorderTool(start_index, new_index) => {
-                            let tool = self.tools.remove(start_index as usize);
-                            self.tools.insert(new_index as usize, tool);
+                            let tool = self.tools.remove(max(start_index as usize, 0));
+                            self.tools
+                                .insert(min(new_index as usize, self.tools.len()), tool);
 
                             if let Err(e) = self.command_sender.send(PipelineCommand::Refresh(0)) {
                                 eprintln!("Failed to send refresh command: {}", e);

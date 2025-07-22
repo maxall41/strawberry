@@ -17,16 +17,18 @@ use rfd::FileDialog;
 use tools::compositor::CompositorView;
 use tools::contrast::ContrastView;
 use tools::gaussian_blur::GaussianBlurView;
+use tools::local_maxima::LocalMaximaView;
 use tools::manager::ManagerView;
+use tools::threshold::ThresholdView;
 use tools::ToolFrontend;
 
 struct Assets {
     base: PathBuf,
 }
 
-mod gpu;
 mod gui;
 mod pipeline;
+mod processing;
 mod tools;
 
 const MOVEMENT_SPEED: f32 = 25.0;
@@ -253,7 +255,9 @@ actions!(
         CompositorSettings,
         ContrastSettings,
         GaussianBlurSettings,
-        ManagerSettings
+        LocalMaximaSettings,
+        ManagerSettings,
+        ThresholdSettings
     ]
 );
 
@@ -342,9 +346,49 @@ async fn main() -> Result<()> {
             let view_sender_clone4 = view_sender.clone();
             let view_recv_clone4 = view_recv.resubscribe();
 
+            cx.on_action(move |_: &ThresholdSettings, cx| {
+                let mut raw_threshold =
+                    ThresholdView::new(view_recv_clone4.resubscribe(), view_sender_clone4.clone());
+
+                if let Err(e) = cx.open_window(raw_threshold.get_window_options(), |window, cx| {
+                    let threshold_view = cx.new(|cx| {
+                        raw_threshold.initialize(window, cx);
+                        raw_threshold
+                    });
+                    threshold_view
+                }) {
+                    eprintln!("Failed to open threshold window: {}", e);
+                }
+            });
+
+            let view_sender_clone5 = view_sender.clone();
+            let view_recv_clone5 = view_recv.resubscribe();
+
+            cx.on_action(move |_: &LocalMaximaSettings, cx| {
+                let mut raw_local_maxima = LocalMaximaView::new(
+                    view_recv_clone5.resubscribe(),
+                    view_sender_clone5.clone(),
+                );
+
+                if let Err(e) =
+                    cx.open_window(raw_local_maxima.get_window_options(), |window, cx| {
+                        let local_maxima_view = cx.new(|cx| {
+                            raw_local_maxima.initialize(window, cx);
+                            raw_local_maxima
+                        });
+                        local_maxima_view
+                    })
+                {
+                    eprintln!("Failed to open local maxima window: {}", e);
+                }
+            });
+
+            let view_sender_clone6 = view_sender.clone();
+            let view_recv_clone6 = view_recv.resubscribe();
+
             cx.on_action(move |_: &ManagerSettings, cx| {
                 let mut raw_manager =
-                    ManagerView::new(view_recv_clone4.resubscribe(), view_sender_clone4.clone());
+                    ManagerView::new(view_recv_clone6.resubscribe(), view_sender_clone6.clone());
 
                 if let Err(e) = cx.open_window(raw_manager.get_window_options(), |window, cx| {
                     let manager_view = cx.new(|cx| {
@@ -382,6 +426,8 @@ async fn main() -> Result<()> {
                         MenuItem::action("Compositor", CompositorSettings),
                         MenuItem::action("Contrast", ContrastSettings),
                         MenuItem::action("Gaussian Blur", GaussianBlurSettings),
+                        MenuItem::action("Local Maxima", LocalMaximaSettings),
+                        MenuItem::action("Threshold", ThresholdSettings),
                     ],
                 },
             ]);

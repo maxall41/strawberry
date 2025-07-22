@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::gpu::{contrast::GpuContrast, GpuImageProcessor};
+use crate::processing::{contrast::GpuContrast, GpuImageProcessor};
 
 use super::{
     BackendToolType, ContrastMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,

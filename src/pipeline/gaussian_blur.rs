@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::gpu::{gaussian_blur::GpuGaussianBlur, GpuImageProcessor};
+use crate::processing::{gaussian_blur::GpuGaussianBlur, GpuImageProcessor};
 
 use super::{
     BackendToolType, FrontendMessage, GaussianBlurMessage, PipelineCommand, PipelineObjectMessage,
