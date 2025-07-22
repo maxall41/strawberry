@@ -4,6 +4,7 @@ use wgpu::{util::DeviceExt, PipelineCompilationOptions, Trace};
 
 pub mod compositor;
 pub mod contrast;
+pub mod gaussian_blur;
 
 pub struct GpuImageProcessor {
     device: wgpu::Device,

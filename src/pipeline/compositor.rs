@@ -41,6 +41,9 @@ impl ToolBackend for Compositor {
     fn set_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
         self.frontend_sender = Some(sender);
     }
+    fn disconnect(&mut self) {
+        self.frontend_sender = None;
+    }
     async fn process(
         &mut self,
         input: Vec<image::RgbaImage>,
@@ -71,7 +74,7 @@ impl ToolBackend for Compositor {
             match message {
                 PipelineCommand::RequestState() => {
                     if let Some(sender) = &self.frontend_sender {
-                        if let Err(e) = sender.send(PipelineCommand::FrontendMessage(
+                        if let Err(e) = sender.try_send(PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         )) {
                             eprintln!("Failed to send state to frontend: {}", e);
@@ -107,7 +110,7 @@ impl ToolBackend for Compositor {
 
                 // Push state update to frontend
                 if let Some(frontend_sender) = &self.frontend_sender {
-                    if let Err(e) = frontend_sender.send(PipelineCommand::FrontendMessage(
+                    if let Err(e) = frontend_sender.try_send(PipelineCommand::FrontendMessage(
                         FrontendMessage::ReturnState(self.get_state()),
                     )) {
                         eprintln!("Failed to send state update to frontend: {}", e);

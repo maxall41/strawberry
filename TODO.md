@@ -1,1 +1,3 @@
 - [ ] Cache in compositor.rs and contrast.rs
+- [ ] If you open a tool, close it, and then reopen it, it will hang the main thread. (Need to handle window cleanup)
+- [ ] Don't block on failure to send to channel
