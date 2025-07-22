@@ -21,6 +21,7 @@ pub struct Threshold {
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_sender: Option<flume::Sender<PipelineCommand>>,
+    pub index: usize,
 }
 
 #[async_trait]
@@ -88,7 +89,10 @@ impl ToolBackend for Threshold {
                 _ => {}
             }
             if old_state != self.state {
-                if let Err(e) = self.command_sender.send(PipelineCommand::Refresh(0)) {
+                if let Err(e) = self
+                    .command_sender
+                    .send(PipelineCommand::Refresh(self.index))
+                {
                     eprintln!("Failed to send refresh command: {}", e);
                 }
 
@@ -109,6 +113,14 @@ impl ToolBackend for Threshold {
     fn iam(&self) -> BackendToolType {
         BackendToolType::Threshold
     }
+
+    fn get_index(&self) -> usize {
+        self.index
+    }
+
+    fn set_index(&mut self, index: usize) {
+        self.index = index;
+    }
 }
 
 impl Threshold {
@@ -127,6 +139,7 @@ impl Threshold {
             command_sender,
             sender,
             receiver,
+            index: 0,
         }
     }
 }

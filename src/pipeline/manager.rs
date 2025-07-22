@@ -26,6 +26,7 @@ pub struct ToolManager {
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_sender: Option<flume::Sender<PipelineCommand>>,
+    pub index: usize,
 }
 
 fn update_proxy_tools(input: &Vec<Box<dyn ToolBackend>>) -> Vec<ToolProxy> {
@@ -42,10 +43,16 @@ fn update_proxy_tools(input: &Vec<Box<dyn ToolBackend>>) -> Vec<ToolProxy> {
 
 impl ToolManager {
     pub fn new(
-        input: Vec<Box<dyn ToolBackend>>,
+        mut input: Vec<Box<dyn ToolBackend>>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
+
+        // Assign indices to all tools
+        for (index, tool) in input.iter_mut().enumerate() {
+            tool.set_index(index);
+        }
+
         ToolManager {
             state: ManagerState {
                 proxy_tools: update_proxy_tools(&input),
@@ -56,6 +63,7 @@ impl ToolManager {
             command_sender,
             sender,
             receiver,
+            index: 0,
         }
     }
 }
@@ -113,6 +121,11 @@ impl ToolBackend for ToolManager {
                             self.tools
                                 .insert(min(new_index as usize, self.tools.len()), tool);
 
+                            // Reassign indices to all tools after reordering
+                            for (index, tool) in self.tools.iter_mut().enumerate() {
+                                tool.set_index(index);
+                            }
+
                             if let Err(e) = self.command_sender.send(PipelineCommand::Refresh(0)) {
                                 eprintln!("Failed to send refresh command: {}", e);
                             }
@@ -148,5 +161,13 @@ impl ToolBackend for ToolManager {
 
     fn supports_processing(&self) -> bool {
         false
+    }
+
+    fn get_index(&self) -> usize {
+        self.index
+    }
+
+    fn set_index(&mut self, index: usize) {
+        self.index = index;
     }
 }

@@ -22,6 +22,7 @@ pub struct Compositor {
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_sender: Option<flume::Sender<PipelineCommand>>,
+    pub index: usize,
 }
 
 #[async_trait]
@@ -104,7 +105,10 @@ impl ToolBackend for Compositor {
                 _ => {}
             }
             if old_state != self.state {
-                if let Err(e) = self.command_sender.send(PipelineCommand::Refresh(0)) {
+                if let Err(e) = self
+                    .command_sender
+                    .send(PipelineCommand::Refresh(self.index))
+                {
                     eprintln!("Failed to send refresh command: {}", e);
                 }
 
@@ -125,6 +129,14 @@ impl ToolBackend for Compositor {
     fn iam(&self) -> BackendToolType {
         BackendToolType::Compositor
     }
+
+    fn get_index(&self) -> usize {
+        self.index
+    }
+
+    fn set_index(&mut self, index: usize) {
+        self.index = index;
+    }
 }
 
 impl Compositor {
@@ -144,6 +156,7 @@ impl Compositor {
             command_sender,
             sender,
             receiver,
+            index: 0,
         }
     }
 }

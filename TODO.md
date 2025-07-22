@@ -2,6 +2,8 @@
 - [ ] Fallback to CPU for all image processors
 - [ ] If compositing > 7 images then just batch into 7 image batches and run each and then composite them together (supports up to 49 images which should be enough for pretty much everything)
 - [ ] Abstract drop menu in tools/manager.rs into GUI component
+- [ ] Colors are inverted when loading a single image
+- [ ] Update pipeline tool backends to only send Refresh(ThisToolIndex) instead of Refresh(0)
 
 ## Features:
 - [ ] Support dragging and dropping images into viewer

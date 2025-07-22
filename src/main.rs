@@ -6,9 +6,9 @@ use std::time::Duration;
 use anyhow::Result;
 use gpui::{
     actions, div, img, prelude::*, px, size, App, AppContext, Application, AssetSource, Bounds,
-    Context, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent, Menu,
-    MenuItem, Point, RenderImage, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions,
+    Context, FocusHandle, Focusable, ImageSource, Img, KeyBinding, KeyDownEvent, KeyUpEvent, Menu,
+    MenuItem, MouseDownEvent, Point, RenderImage, SharedString, TitlebarOptions, Window,
+    WindowBounds, WindowOptions,
 };
 use image::{Frame, ImageReader, RgbaImage};
 
@@ -27,6 +27,7 @@ struct Assets {
     base: PathBuf,
 }
 
+mod consts;
 mod gui;
 mod pipeline;
 mod processing;
@@ -112,6 +113,8 @@ impl PrimaryViewer {
                             let img_data = Arc::new(RenderImage::new(img_frames));
 
                             if let Err(e) = this.update(cx, |this, cx| {
+                                this.original_width = img_data.size(0).width.0 as u32;
+                                this.original_height = img_data.size(0).height.0 as u32;
                                 this.display_image = ImageSource::Render(img_data);
                                 cx.notify();
                             }) {
@@ -220,6 +223,48 @@ impl Render for PrimaryViewer {
         // Ensure this element is always focused
         window.focus(&self.focus_handle(cx));
 
+        let mut _img = img(self.display_image.clone())
+            .use_nearest_filter(true)
+            .w(px(self.original_width as f32 * self.zoom_level))
+            .h(px(self.original_height as f32 * self.zoom_level));
+
+        let coords = _img.coords.clone();
+
+        let image_size = (self.original_width.clone(), self.original_height.clone());
+
+        let mouse_down_sender = self.command_sender.clone();
+
+        let mut _img = _img.on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener({
+                move |this: &mut PrimaryViewer,
+                      event: &MouseDownEvent,
+                      _window: &mut Window,
+                      cx: &mut Context<PrimaryViewer>| {
+                    let mouse_x = event.position.x.0;
+                    let mouse_y = event.position.y.0;
+
+                    if let Some(coords) = coords.read().unwrap().clone() {
+                        let relative_x = (mouse_x - coords.origin.x.0) / coords.size.width.0;
+                        let relative_y = (mouse_y - coords.origin.y.0) / coords.size.height.0;
+
+                        let image_pixel_x = (relative_x * image_size.0 as f32) as u64;
+                        let image_pixel_y = (relative_y * image_size.1 as f32) as u64;
+
+                        if let Err(e) = mouse_down_sender
+                            .send(PipelineCommand::HandleClick(image_pixel_x, image_pixel_y))
+                        {
+                            eprintln!("Error sending click event: {}", e);
+                        }
+                    } else {
+                        eprintln!("Image layout ID is None");
+                    }
+
+                    // println!("Rendered image size: {:?}", rendered_img_size);
+                }
+            }),
+        );
+
         div()
             .id("main")
             .key_context("PrimaryViewer")
@@ -236,12 +281,7 @@ impl Render for PrimaryViewer {
                     .absolute()
                     .left(px(self.pan_x))
                     .top(px(self.pan_y))
-                    .child(
-                        img(self.display_image.clone())
-                            .use_nearest_filter(true)
-                            .w(px(self.original_width as f32 * self.zoom_level))
-                            .h(px(self.original_height as f32 * self.zoom_level)),
-                    ),
+                    .child(_img),
             )
     }
 }
@@ -457,7 +497,7 @@ async fn main() -> Result<()> {
 
             let window_options = WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some(SharedString::from("Image Example")),
+                    title: Some(SharedString::from("Strawberry")),
                     appears_transparent: false,
                     ..Default::default()
                 }),
