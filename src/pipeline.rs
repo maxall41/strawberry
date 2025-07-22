@@ -11,7 +11,7 @@ use image::RgbaImage;
 use local_maxima::{LocalMaxima, LocalMaximaState};
 use manager::{ManagerState, ToolManager, ToolProxy};
 
-use crate::processing::local_maxima::ThresholdType;
+use crate::{processing::local_maxima::ThresholdType, tools::counter::CounterTool};
 
 use futures::future::try_join_all;
 use threshold::{Threshold, ThresholdState};
@@ -65,11 +65,10 @@ pub struct Polygon {
 #[derive(Debug, Clone)]
 pub enum CountMessage {
     NewCountType(u16),
-    PlaceCount(u16, u64, u64),  // count id/type, pos x, pos y
-    DeleteCount(u16, u64, u64), // count id/type, pos x, pos y
-    DeleteLasso(u16, Polygon),
     DeleteCountType(u16),
     SetMode(counter::CounterMode),
+    SetActiveCountType(u16),
+    SetActiveTool(CounterTool),
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +125,10 @@ pub enum PipelineCommand {
     DiscoverBackend(BackendToolType, flume::Sender<PipelineCommand>),
     /// Disconnect frontend tool
     DisconnectFrontend(BackendToolType),
+    /// Handle click at x and y image pixels
+    HandleClick(u64, u64),
+    /// Register click receiver
+    RegisterClickReceiver(flume::Sender<PipelineCommand>),
 }
 
 /// Result of pipeline processing
@@ -176,6 +179,12 @@ pub trait ToolBackend: Send + Sync {
     fn supports_processing(&self) -> bool {
         true
     }
+
+    /// Get the tool's index in the pipeline
+    fn get_index(&self) -> usize;
+
+    /// Set the tool's index in the pipeline
+    fn set_index(&mut self, index: usize);
 }
 
 /// Pipeline that processes images through a series of tools
@@ -188,6 +197,10 @@ pub struct Pipeline {
     output_sender: broadcast::Sender<PipelineCommand>,
     /// Input images to process
     input_images: Vec<RgbaImage>,
+    /// Click receivers
+    click_receivers: Vec<flume::Sender<PipelineCommand>>,
+    /// Cached compositor output when input images haven't changed
+    cached_compositor_output: Option<Vec<RgbaImage>>,
 }
 
 impl Pipeline {
@@ -218,6 +231,8 @@ impl Pipeline {
             command_receiver: command_rx,
             output_sender: output_tx,
             input_images: vec![],
+            click_receivers: vec![],
+            cached_compositor_output: None,
         };
 
         Ok((pipeline, command_tx, output_rx))
@@ -230,9 +245,36 @@ impl Pipeline {
         let mut images = self.input_images.clone(); //TODO: Performance
 
         // Process through each tool starting from start_index
+        if start_index > 0 && images.len() > 1 {
+            if self.cached_compositor_output.is_some() {
+                images = self
+                    .cached_compositor_output
+                    .clone()
+                    .expect("Never fire: Checked is some");
+            } else {
+                images = self.tool_manager.tools[0].process(images).await?; // Run compositor
+                if self.cached_compositor_output.is_none() {
+                    self.cached_compositor_output = Some(images.clone());
+                }
+            }
+        }
         for tool in self.tool_manager.tools.iter_mut().skip(start_index) {
             if tool.is_enabled() && tool.supports_processing() {
-                images = tool.process(images).await?;
+                if tool.iam() == BackendToolType::Compositor
+                    && self.cached_compositor_output.is_none()
+                {
+                    images = tool.process(images).await?;
+                    self.cached_compositor_output = Some(images.clone());
+                } else if tool.iam() == BackendToolType::Compositor
+                    && self.cached_compositor_output.is_some()
+                {
+                    images = self
+                        .cached_compositor_output
+                        .clone()
+                        .expect("Never fire: Checked is some");
+                } else {
+                    images = tool.process(images).await?;
+                }
             }
         }
         if images.len() > 1 {
@@ -265,9 +307,11 @@ impl Pipeline {
                 }
                 PipelineCommand::Load(images) => {
                     println!("Got load command!");
+                    self.cached_compositor_output = None;
                     self.input_images = images.clone(); //TODO: Performance
                     if images.len() > 1 {
                         self.tool_manager.tools[0].set_enabled(true);
+                        //TODO: Push state to frontend
                     }
                     if let Err(e) = self.process_from(0).await {
                         eprintln!("Failed to process pipeline after loading images: {}", e);
@@ -316,6 +360,18 @@ impl Pipeline {
                     for tool in self.tool_manager.tools.iter_mut() {
                         if tool.iam() == *backend_tool_type {
                             tool.disconnect();
+                        }
+                    }
+                }
+                PipelineCommand::RegisterClickReceiver(click_sender) => {
+                    self.click_receivers.push(click_sender.clone()); //TODO: Ehhhhh
+                }
+                PipelineCommand::HandleClick(image_pixel_x, image_pixel_y) => {
+                    for recv in &self.click_receivers {
+                        if let Err(e) =
+                            recv.send(PipelineCommand::HandleClick(*image_pixel_x, *image_pixel_y))
+                        {
+                            eprintln!("Failed to send handle click event to downstream click receiver {:?}: {}", recv, e);
                         }
                     }
                 }

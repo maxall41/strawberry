@@ -6,11 +6,15 @@ use gpui::{
     div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, Point, SharedString,
     TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
+use image::Rgba;
 
-use crate::pipeline::{
-    counter::{CounterMode, CounterState},
-    BackendToolType, CountMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,
-    ToolState,
+use crate::{
+    consts::{image_rgba_to_gpui_rgba, CIRCLE_COLORS},
+    pipeline::{
+        counter::{CounterMode, CounterState},
+        BackendToolType, CountMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,
+        ToolState,
+    },
 };
 
 use super::ToolFrontend;
@@ -37,8 +41,7 @@ pub struct CounterView {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
-    pub selected_count_type: Arc<RwLock<Option<u16>>>,
-    pub current_tool: Arc<RwLock<CounterTool>>,
+
     pub next_count_type_id: Arc<RwLock<u16>>,
     _cleanup_guard: crate::tools::CleanupGuard,
 }
@@ -56,8 +59,7 @@ impl CounterView {
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
-            selected_count_type: Arc::new(RwLock::new(None)),
-            current_tool: Arc::new(RwLock::new(CounterTool::default())),
+
             next_count_type_id: Arc::new(RwLock::new(0)),
             _cleanup_guard: crate::tools::CleanupGuard::new(
                 command_sender,
@@ -195,9 +197,13 @@ impl CounterView {
             *next_id += 1;
         }
 
-        // Set as selected
-        if let Ok(mut selected) = self.selected_count_type.write() {
-            *selected = Some(new_id);
+        // Set as selected by sending message to backend
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::CountMessage(CountMessage::SetActiveCountType(new_id)),
+            )) {
+                eprintln!("Failed to send set active count type command: {}", e);
+            }
         }
 
         println!("Added count type {}", new_id);
@@ -229,26 +235,88 @@ impl CounterView {
         }
 
         // Clear selection if this was the selected type
-        if let Ok(mut selected) = self.selected_count_type.write() {
-            if *selected == Some(count_type_id) {
-                *selected = None;
+        if let Ok(state) = self.state.read() {
+            if state.active_count_type == Some(count_type_id) {
+                if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+                    // Set active count type to None by finding another type or clearing
+                    let remaining_types: Vec<u16> = state
+                        .counts
+                        .keys()
+                        .filter(|&&id| id != count_type_id)
+                        .copied()
+                        .collect();
+                    let new_active = remaining_types.first().copied();
+
+                    if let Some(new_active_id) = new_active {
+                        if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                            PipelineObjectMessage::CountMessage(CountMessage::SetActiveCountType(
+                                new_active_id,
+                            )),
+                        )) {
+                            eprintln!("Failed to send set active count type command: {}", e);
+                        }
+                    }
+                }
             }
         }
     }
 
-    fn select_count_type(&mut self, count_type_id: u16) {
-        if let Ok(mut selected) = self.selected_count_type.write() {
-            *selected = Some(count_type_id);
+    fn select_count_type(
+        &mut self,
+        count_type_id: u16,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        let current_tool_index = match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => index,
+                None => {
+                    eprintln!("No current tool index available");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::CountMessage(CountMessage::SetActiveCountType(
+                    count_type_id,
+                )),
+            )) {
+                eprintln!("Failed to send set active count type command: {}", e);
+            }
         } else {
-            eprintln!("Failed to acquire write lock on selected count type");
+            eprintln!("Invalid tool index: {}", current_tool_index);
         }
     }
 
-    fn set_tool(&mut self, tool: CounterTool) {
-        if let Ok(mut current_tool) = self.current_tool.write() {
-            *current_tool = tool;
+    fn set_tool(&mut self, tool: CounterTool, _window: &mut Window, _cx: &mut Context<Self>) {
+        let current_tool_index = match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => index,
+                None => {
+                    eprintln!("No current tool index available");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::CountMessage(CountMessage::SetActiveTool(tool)),
+            )) {
+                eprintln!("Failed to send set active tool command: {}", e);
+            }
         } else {
-            eprintln!("Failed to acquire write lock on current tool");
+            eprintln!("Invalid tool index: {}", current_tool_index);
         }
     }
 
@@ -411,6 +479,8 @@ impl CounterView {
         is_selected: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let ii = (count_type_id as usize % CIRCLE_COLORS.len()) as usize;
+        let color = image_rgba_to_gpui_rgba(CIRCLE_COLORS[ii]);
         div()
             .flex()
             .items_center()
@@ -456,20 +526,15 @@ impl CounterView {
                     .w_3()
                     .h_3()
                     .rounded_full()
-                    .bg(if is_selected {
-                        rgb(0x00aa00)
-                    } else {
-                        rgb(0x888888)
-                    })
+                    .bg(if is_selected { color } else { rgb(0x888888) })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
                             move |this: &mut CounterView,
                                   _event: &MouseDownEvent,
-                                  _window: &mut Window,
+                                  window: &mut Window,
                                   cx: &mut Context<CounterView>| {
-                                this.select_count_type(count_type_id);
-                                cx.notify();
+                                this.select_count_type(count_type_id, window, cx);
                             },
                         ),
                     ),
@@ -485,7 +550,7 @@ impl CounterView {
             }
         };
 
-        let selected_type = *self.selected_count_type.read().unwrap();
+        let selected_type = state.active_count_type;
 
         div().flex().flex_col().gap_1().children({
             let mut sorted_counts: Vec<_> = state.counts.iter().collect();
@@ -557,9 +622,9 @@ impl CounterView {
                 cx.listener(
                     move |this: &mut CounterView,
                           _event: &MouseDownEvent,
-                          _window: &mut Window,
-                          _cx: &mut Context<CounterView>| {
-                        this.set_tool(tool.clone());
+                          window: &mut Window,
+                          cx: &mut Context<CounterView>| {
+                        this.set_tool(tool.clone(), window, cx);
                     },
                 ),
             )
@@ -576,7 +641,13 @@ impl CounterView {
 
     // Tools bar component
     fn render_tools_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let current_tool = self.current_tool.read().unwrap();
+        let state = match self.state.read() {
+            Ok(state) => state,
+            Err(_) => {
+                return div().child("Error reading state");
+            }
+        };
+        let current_tool = &state.active_tool;
 
         div()
             .flex()
@@ -611,26 +682,53 @@ impl CounterView {
     }
 
     // Save button component
-    fn render_save_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_storage_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .px_4()
-            .py_2()
-            .bg(rgb(0x006600))
-            .hover(|style| style.bg(rgb(0x007700)))
-            .rounded_md()
-            .text_sm()
-            .child("Save")
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(
-                    |_this: &mut CounterView,
-                     _event: &MouseDownEvent,
-                     _window: &mut Window,
-                     _cx: &mut Context<CounterView>| {
-                        // TODO: Implement save functionality
-                        println!("Save clicked");
-                    },
-                ),
+            .flex()
+            .gap_2()
+            .child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .bg(rgb(0x006600))
+                    .hover(|style| style.bg(rgb(0x007700)))
+                    .rounded_md()
+                    .text_sm()
+                    .child("Save")
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(
+                            |_this: &mut CounterView,
+                             _event: &MouseDownEvent,
+                             _window: &mut Window,
+                             _cx: &mut Context<CounterView>| {
+                                // TODO: Implement save functionality
+                                println!("Save clicked");
+                            },
+                        ),
+                    ),
+            )
+            .child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .bg(rgb(0x0066cc))
+                    .hover(|style| style.bg(rgb(0x0077dd)))
+                    .rounded_md()
+                    .text_sm()
+                    .child("Load")
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(
+                            |_this: &mut CounterView,
+                             _event: &MouseDownEvent,
+                             _window: &mut Window,
+                             _cx: &mut Context<CounterView>| {
+                                // TODO: Implement load functionality
+                                println!("Load clicked");
+                            },
+                        ),
+                    ),
             )
     }
 
@@ -699,7 +797,7 @@ impl Render for CounterView {
                     .flex()
                     .justify_start()
                     .mt_auto()
-                    .child(self.render_save_button(cx)),
+                    .child(self.render_storage_buttons(cx)),
             )
     }
 }
