@@ -27,6 +27,7 @@ pub struct CompositorView {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
+    _cleanup_guard: crate::tools::CleanupGuard,
 }
 
 impl CompositorView {
@@ -36,12 +37,16 @@ impl CompositorView {
     ) -> Self {
         Self {
             command_receiver,
-            command_sender,
+            command_sender: command_sender.clone(),
             state: Arc::new(RwLock::new(CompositorState::default())),
             backend_tool_indicies: vec![],
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
+            _cleanup_guard: crate::tools::CleanupGuard::new(
+                command_sender,
+                crate::pipeline::BackendToolType::Compositor,
+            ),
         }
     }
 
@@ -116,6 +121,8 @@ impl CompositorView {
                     },
                     _ => {}
                 }
+            } else {
+                break;
             }
         })
         .detach();

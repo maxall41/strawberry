@@ -16,6 +16,7 @@ use pipeline::{Pipeline, PipelineCommand};
 use rfd::FileDialog;
 use tools::compositor::CompositorView;
 use tools::contrast::ContrastView;
+use tools::gaussian_blur::GaussianBlurView;
 use tools::ToolFrontend;
 
 struct Assets {
@@ -23,6 +24,7 @@ struct Assets {
 }
 
 mod gpu;
+mod gui;
 mod pipeline;
 mod tools;
 
@@ -248,7 +250,8 @@ actions!(
         ZoomOut,
         OpenFile,
         CompositorSettings,
-        ContrastSettings
+        ContrastSettings,
+        GaussianBlurSettings
     ]
 );
 
@@ -295,6 +298,8 @@ async fn main() -> Result<()> {
             let view_sender_clone2 = view_sender.clone();
             let view_recv_clone2 = view_recv.resubscribe();
 
+            cx.on_window_closed(move |cx| {});
+
             cx.on_action(move |_: &ContrastSettings, cx| {
                 let mut raw_contrast =
                     ContrastView::new(view_recv_clone2.resubscribe(), view_sender_clone2.clone());
@@ -307,6 +312,28 @@ async fn main() -> Result<()> {
                     contrast_view
                 }) {
                     eprintln!("Failed to open contrast window: {}", e);
+                }
+            });
+
+            let view_sender_clone3 = view_sender.clone();
+            let view_recv_clone3 = view_recv.resubscribe();
+
+            cx.on_action(move |_: &GaussianBlurSettings, cx| {
+                let mut raw_gaussian_blur = GaussianBlurView::new(
+                    view_recv_clone3.resubscribe(),
+                    view_sender_clone3.clone(),
+                );
+
+                if let Err(e) =
+                    cx.open_window(raw_gaussian_blur.get_window_options(), |window, cx| {
+                        let gaussian_blur_view = cx.new(|cx| {
+                            raw_gaussian_blur.initialize(window, cx);
+                            raw_gaussian_blur
+                        });
+                        gaussian_blur_view
+                    })
+                {
+                    eprintln!("Failed to open gaussian blur window: {}", e);
                 }
             });
 
@@ -333,6 +360,7 @@ async fn main() -> Result<()> {
                     items: vec![
                         MenuItem::action("Compositor", CompositorSettings),
                         MenuItem::action("Contrast", ContrastSettings),
+                        MenuItem::action("Gaussian Blur", GaussianBlurSettings),
                     ],
                 },
             ]);

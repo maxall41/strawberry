@@ -11,6 +11,7 @@ use gpui::{
     TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
+use crate::gui::value_control::{render_button_value_control, ButtonControlConfig};
 use crate::pipeline::{
     contrast::ContrastState, BackendToolType, ContrastMessage, FrontendMessage, PipelineCommand,
     PipelineObjectMessage, ToolState,
@@ -26,6 +27,7 @@ pub struct ContrastView {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
+    _cleanup_guard: crate::tools::CleanupGuard,
 }
 
 impl ContrastView {
@@ -35,12 +37,16 @@ impl ContrastView {
     ) -> Self {
         Self {
             command_receiver,
-            command_sender,
+            command_sender: command_sender.clone(),
             state: Arc::new(RwLock::new(ContrastState::default())),
             backend_tool_indicies: vec![],
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
+            _cleanup_guard: crate::tools::CleanupGuard::new(
+                command_sender,
+                crate::pipeline::BackendToolType::Contrast,
+            ),
         }
     }
 
@@ -115,6 +121,8 @@ impl ContrastView {
                     },
                     _ => {}
                 }
+            } else {
+                break;
             }
         })
         .detach();
@@ -250,96 +258,29 @@ impl ContrastView {
     }
 
     // Value control component (reusable for min/max)
-    fn render_value_control(
-        &self,
-        label: String,
-        value: f32,
-        adjust_callback: impl Fn(&mut Self, f32, &mut Window, &mut Context<Self>) + 'static + Clone,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(label),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .bg(rgb(0x666666))
-                            .text_sm()
-                            .child(format!("{:.3}", value)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(rgb(0x444444))
-                                    .text_sm()
-                                    .child("-")
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        {
-                                            let callback = adjust_callback.clone();
-                                            cx.listener(move |this: &mut ContrastView, _event: &MouseDownEvent, window: &mut Window, cx: &mut Context<ContrastView>| {
-                                                callback(this, -0.01, window, cx);
-                                            })
-                                        },
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(rgb(0x444444))
-                                    .text_sm()
-                                    .child("+")
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        {
-                                            let callback = adjust_callback;
-                                            cx.listener(move |this: &mut ContrastView, _event: &MouseDownEvent, window: &mut Window, cx: &mut Context<ContrastView>| {
-                                                callback(this, 0.01, window, cx);
-                                            })
-                                        },
-                                    ),
-                            ),
-                    ),
-            )
-    }
 
     // Min value control component
-    fn render_min_control(
-        &self,
-        state: &ContrastState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        self.render_value_control("Min Value:".to_string(), state.min, Self::adjust_min, cx)
+    fn render_min_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.state.read().unwrap();
+        render_button_value_control(
+            "Min".to_string(),
+            state.min,
+            ButtonControlConfig::default(),
+            Self::adjust_min,
+            cx,
+        )
     }
 
     // Max value control component
-    fn render_max_control(
-        &self,
-        state: &ContrastState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        self.render_value_control("Max Value:".to_string(), state.max, Self::adjust_max, cx)
+    fn render_max_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.state.read().unwrap();
+        render_button_value_control(
+            "Max".to_string(),
+            state.max,
+            ButtonControlConfig::default(),
+            Self::adjust_max,
+            cx,
+        )
     }
 
     // Preset button component
@@ -398,17 +339,13 @@ impl ContrastView {
     }
 
     // Controls section component
-    fn render_controls_section(
-        &self,
-        state: &ContrastState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_controls_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_min_control(state, cx))
-            .child(self.render_max_control(state, cx))
+            .child(self.render_min_control(cx))
+            .child(self.render_max_control(cx))
     }
 }
 
@@ -442,7 +379,7 @@ impl Render for ContrastView {
             .text_color(rgb(0xffffff))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
-            .child(self.render_controls_section(&state, cx))
+            .child(self.render_controls_section(cx))
             .child(self.render_presets_section(cx))
     }
 }

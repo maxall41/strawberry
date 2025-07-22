@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use compositor::{Compositor, CompositorState};
 
 use contrast::{Contrast, ContrastState};
+use gaussian_blur::{GaussianBlur, GaussianBlurState};
 use image::RgbaImage;
 
 use futures::future::try_join_all;
@@ -14,6 +15,7 @@ use crate::gpu::GpuImageProcessor;
 pub mod cell_counter;
 pub mod compositor;
 pub mod contrast;
+pub mod gaussian_blur;
 
 #[derive(Debug, Clone)]
 pub enum CompositorMessage {
@@ -26,9 +28,15 @@ pub enum ContrastMessage {
 }
 
 #[derive(Debug, Clone)]
+pub enum GaussianBlurMessage {
+    SetRadiusSigma(f32, f32),
+}
+
+#[derive(Debug, Clone)]
 pub enum PipelineObjectMessage {
     CompositorMessage(CompositorMessage),
     ContrastMessage(ContrastMessage),
+    GaussianBlurMessage(GaussianBlurMessage),
     ToggleActive(bool),
 }
 
@@ -42,6 +50,7 @@ pub enum FrontendMessage {
 pub enum BackendToolType {
     Compositor,
     Contrast,
+    GaussianBlur,
 }
 
 /// Commands that can be sent to the pipeline
@@ -61,6 +70,8 @@ pub enum PipelineCommand {
     RequestState(),
     /// Discover
     DiscoverBackend(BackendToolType, flume::Sender<PipelineCommand>),
+    /// Disconnect frontend tool
+    DisconnectFrontend(BackendToolType),
 }
 
 /// Result of pipeline processing
@@ -68,6 +79,7 @@ pub enum PipelineCommand {
 pub enum ToolState {
     CompositorState(CompositorState),
     ContrastState(ContrastState),
+    GaussianBlurState(GaussianBlurState),
 }
 
 /// Trait for image processing tools
@@ -95,6 +107,9 @@ pub trait ToolBackend: Send + Sync {
     fn get_sender(&self) -> flume::Sender<PipelineCommand>;
 
     fn set_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>);
+
+    /// Disconnect the frontend by clearing the frontend sender
+    fn disconnect(&mut self);
 }
 
 /// Pipeline that processes images through a series of tools
@@ -124,6 +139,7 @@ impl Pipeline {
         let tools: Vec<Box<dyn ToolBackend>> = vec![
             Box::new(Compositor::new(command_tx.clone(), gpu_image_processor.clone()).await),
             Box::new(Contrast::new(command_tx.clone(), gpu_image_processor.clone()).await),
+            Box::new(GaussianBlur::new(command_tx.clone(), gpu_image_processor.clone()).await),
         ];
         let pipeline = Self {
             tools,
@@ -206,6 +222,17 @@ impl Pipeline {
 
                     if let Err(e) = sender.send(PipelineCommand::FrontendMessage(r)) {
                         eprintln!("Failed to send backend discovery response: {}", e);
+                    }
+                }
+                PipelineCommand::DisconnectFrontend(backend_tool_type) => {
+                    println!(
+                        "Disconnecting frontend for tool type: {:?}",
+                        backend_tool_type
+                    );
+                    for tool in self.tools.iter_mut() {
+                        if tool.iam() == *backend_tool_type {
+                            tool.disconnect();
+                        }
                     }
                 }
                 _ => {}
