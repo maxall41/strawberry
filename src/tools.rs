@@ -3,6 +3,7 @@ use gpui::WindowOptions;
 pub mod compositor;
 pub mod contrast;
 pub mod gaussian_blur;
+pub mod manager;
 
 /// RAII guard that automatically sends disconnect command when dropped
 pub struct CleanupGuard {
@@ -37,11 +38,6 @@ impl Drop for CleanupGuard {
             eprintln!(
                 "Failed to send disconnect command for {:?}: {}",
                 self.backend_tool_type, e
-            );
-        } else {
-            println!(
-                "Successfully sent disconnect command for {:?}",
-                self.backend_tool_type
             );
         }
     }

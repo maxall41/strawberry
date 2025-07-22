@@ -1,3 +1,4 @@
+use core::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -6,16 +7,17 @@ use compositor::{Compositor, CompositorState};
 use contrast::{Contrast, ContrastState};
 use gaussian_blur::{GaussianBlur, GaussianBlurState};
 use image::RgbaImage;
+use manager::{ManagerState, ToolManager, ToolProxy};
 
 use futures::future::try_join_all;
 use tokio::sync::broadcast;
 
 use crate::gpu::GpuImageProcessor;
 
-pub mod cell_counter;
 pub mod compositor;
 pub mod contrast;
 pub mod gaussian_blur;
+pub mod manager;
 
 #[derive(Debug, Clone)]
 pub enum CompositorMessage {
@@ -33,17 +35,23 @@ pub enum GaussianBlurMessage {
 }
 
 #[derive(Debug, Clone)]
+pub enum ManagerMessage {
+    ReorderTool(u16, u16),
+}
+
+#[derive(Debug, Clone)]
 pub enum PipelineObjectMessage {
     CompositorMessage(CompositorMessage),
     ContrastMessage(ContrastMessage),
     GaussianBlurMessage(GaussianBlurMessage),
     ToggleActive(bool),
+    ManagerMessage(ManagerMessage),
 }
 
 #[derive(Debug, Clone)]
 pub enum FrontendMessage {
     ReturnState(ToolState),
-    ReturnBackendTools(Vec<u16>, Vec<(flume::Sender<PipelineCommand>)>),
+    ReturnBackendTools(Vec<u16>, Vec<flume::Sender<PipelineCommand>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +59,13 @@ pub enum BackendToolType {
     Compositor,
     Contrast,
     GaussianBlur,
+    Manager,
+}
+
+impl fmt::Display for BackendToolType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 /// Commands that can be sent to the pipeline
@@ -80,9 +95,11 @@ pub enum ToolState {
     CompositorState(CompositorState),
     ContrastState(ContrastState),
     GaussianBlurState(GaussianBlurState),
+    ManagerState(ManagerState),
 }
 
 /// Trait for image processing tools
+///Todo: seperate tool from backend proc trait everything except process
 #[async_trait]
 pub trait ToolBackend: Send + Sync {
     /// Process input images and return modified images
@@ -104,18 +121,25 @@ pub trait ToolBackend: Send + Sync {
     /// Identify
     fn iam(&self) -> BackendToolType;
 
+    /// Get the sender for frontend->backend communication
     fn get_sender(&self) -> flume::Sender<PipelineCommand>;
 
+    /// Set the sender for backend->frontend communication
     fn set_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>);
 
     /// Disconnect the frontend by clearing the frontend sender
     fn disconnect(&mut self);
+
+    /// Supports processing
+    fn supports_processing(&self) -> bool {
+        true
+    }
 }
 
 /// Pipeline that processes images through a series of tools
 pub struct Pipeline {
     /// Tools in the pipeline, processed in order
-    tools: Vec<Box<dyn ToolBackend>>,
+    tool_manager: ToolManager,
     /// Channel for receiving commands
     command_receiver: broadcast::Receiver<PipelineCommand>,
     /// Channel for sending output results
@@ -136,13 +160,16 @@ impl Pipeline {
 
         let gpu_image_processor = Arc::new(GpuImageProcessor::new().await);
 
-        let tools: Vec<Box<dyn ToolBackend>> = vec![
-            Box::new(Compositor::new(command_tx.clone(), gpu_image_processor.clone()).await),
-            Box::new(Contrast::new(command_tx.clone(), gpu_image_processor.clone()).await),
-            Box::new(GaussianBlur::new(command_tx.clone(), gpu_image_processor.clone()).await),
-        ];
+        let tool_manager = ToolManager::new(
+            vec![
+                Box::new(Compositor::new(command_tx.clone(), gpu_image_processor.clone()).await),
+                Box::new(Contrast::new(command_tx.clone(), gpu_image_processor.clone()).await),
+                Box::new(GaussianBlur::new(command_tx.clone(), gpu_image_processor.clone()).await),
+            ],
+            command_tx.clone(),
+        );
         let pipeline = Self {
-            tools,
+            tool_manager,
             command_receiver: command_rx,
             output_sender: output_tx,
             input_images: vec![],
@@ -158,8 +185,8 @@ impl Pipeline {
         let mut images = self.input_images.clone(); //TODO: Performance
 
         // Process through each tool starting from start_index
-        for tool in self.tools.iter_mut().skip(start_index) {
-            if tool.is_enabled() {
+        for tool in self.tool_manager.tools.iter_mut().skip(start_index) {
+            if tool.is_enabled() && tool.supports_processing() {
                 images = tool.process(images).await?;
             }
         }
@@ -195,7 +222,7 @@ impl Pipeline {
                     println!("Got load command!");
                     self.input_images = images.clone(); //TODO: Performance
                     if images.len() > 1 {
-                        self.tools[0].set_enabled(true);
+                        self.tool_manager.tools[0].set_enabled(true);
                     }
                     if let Err(e) = self.process_from(0).await {
                         eprintln!("Failed to process pipeline after loading images: {}", e);
@@ -205,9 +232,21 @@ impl Pipeline {
                     let mut discovered = vec![];
                     let mut channels = vec![];
                     let mut i = 0;
-                    for tool in self.tools.iter_mut() {
+
+                    if *backend_tool_type == BackendToolType::Manager {
+                        self.tool_manager.set_frontend_sender(sender.clone());
+                        let r = FrontendMessage::ReturnBackendTools(
+                            vec![0],
+                            vec![self.tool_manager.get_sender()],
+                        );
+                        if let Err(e) = sender.send(PipelineCommand::FrontendMessage(r)) {
+                            eprintln!("Failed to send backend discovery response: {}", e);
+                        }
+                        return Ok(());
+                    }
+
+                    for tool in self.tool_manager.tools.iter_mut() {
                         let iam = tool.iam();
-                        println!("Tool {}: {:?}", i, iam);
                         if iam == *backend_tool_type {
                             discovered.push(i as u16);
                             tool.set_frontend_sender(sender.clone());
@@ -225,11 +264,11 @@ impl Pipeline {
                     }
                 }
                 PipelineCommand::DisconnectFrontend(backend_tool_type) => {
-                    println!(
-                        "Disconnecting frontend for tool type: {:?}",
-                        backend_tool_type
-                    );
-                    for tool in self.tools.iter_mut() {
+                    if *backend_tool_type == BackendToolType::Manager {
+                        self.tool_manager.disconnect();
+                        return Ok(());
+                    }
+                    for tool in self.tool_manager.tools.iter_mut() {
                         if tool.iam() == *backend_tool_type {
                             tool.disconnect();
                         }
@@ -238,9 +277,17 @@ impl Pipeline {
                 _ => {}
             };
         }
-        let futures = self.tools.iter_mut().map(|tool| tool.receive_messages());
+        let futures = self
+            .tool_manager
+            .tools
+            .iter_mut()
+            .map(|tool| tool.receive_messages());
         if let Err(e) = try_join_all(futures).await {
             eprintln!("Failed to process tool messages: {}", e);
+        }
+
+        if let Err(e) = self.tool_manager.receive_messages().await {
+            eprintln!("Failed to receive message from tool_manager: {}", e);
         }
 
         Ok(())
