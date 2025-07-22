@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use compositor::{Compositor, CompositorState};
 
 use contrast::{Contrast, ContrastState};
+use counter::{Counter, CounterState};
 use gaussian_blur::{GaussianBlur, GaussianBlurState};
 use image::RgbaImage;
 use local_maxima::{LocalMaxima, LocalMaximaState};
@@ -20,6 +21,7 @@ use crate::processing::GpuImageProcessor;
 
 pub mod compositor;
 pub mod contrast;
+pub mod counter;
 pub mod gaussian_blur;
 pub mod local_maxima;
 pub mod manager;
@@ -56,6 +58,21 @@ pub enum ThresholdMessage {
 }
 
 #[derive(Debug, Clone)]
+pub struct Polygon {
+    vertices: Vec<(f32, f32)>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CountMessage {
+    NewCountType(u16),
+    PlaceCount(u16, u64, u64),  // count id/type, pos x, pos y
+    DeleteCount(u16, u64, u64), // count id/type, pos x, pos y
+    DeleteLasso(u16, Polygon),
+    DeleteCountType(u16),
+    SetMode(counter::CounterMode),
+}
+
+#[derive(Debug, Clone)]
 pub enum PipelineObjectMessage {
     CompositorMessage(CompositorMessage),
     ContrastMessage(ContrastMessage),
@@ -64,6 +81,7 @@ pub enum PipelineObjectMessage {
     ThresholdMessage(ThresholdMessage),
     ToggleActive(bool),
     ManagerMessage(ManagerMessage),
+    CountMessage(CountMessage),
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +93,7 @@ pub enum FrontendMessage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendToolType {
     Compositor,
+    Counter,
     Contrast,
     GaussianBlur,
     LocalMaxima,
@@ -118,6 +137,7 @@ pub enum ToolState {
     LocalMaximaState(LocalMaximaState),
     ManagerState(ManagerState),
     ThresholdState(ThresholdState),
+    CounterState(CounterState),
 }
 
 /// Trait for image processing tools
@@ -189,6 +209,7 @@ impl Pipeline {
                 Box::new(GaussianBlur::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(LocalMaxima::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(Threshold::new(command_tx.clone(), gpu_image_processor.clone()).await),
+                Box::new(Counter::new(command_tx.clone()).await),
             ],
             command_tx.clone(),
         );
