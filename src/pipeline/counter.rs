@@ -11,6 +11,7 @@ use super::{
     PipelineObjectMessage, ToolBackend, ToolState,
 };
 use async_trait::async_trait;
+use imageproc::region_labelling::{connected_components, Connectivity};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CountData {
@@ -67,6 +68,33 @@ impl ToolBackend for Counter {
         input: Vec<image::RgbaImage>,
     ) -> anyhow::Result<Vec<image::RgbaImage>> {
         let mut output_images = input.clone();
+
+        if self.state.mode == CounterMode::Auto {
+            let mut regions: HashMap<u32, CountData> = HashMap::new();
+            self.state.counts = HashMap::new();
+            for image in output_images.iter() {
+                let labeled = connected_components(
+                    image,
+                    Connectivity::Eight,
+                    image::Rgba([0u8, 0u8, 0u8, 0u8]),
+                );
+                for (x, y, pixel) in labeled.enumerate_pixels() {
+                    let label = pixel[0];
+                    if label != 0 {
+                        // skip background
+                        regions.insert(
+                            label,
+                            CountData {
+                                position: (x as u64, y as u64),
+                            },
+                        );
+                    }
+                }
+            }
+            let counts: Vec<CountData> = regions.values().cloned().collect();
+            self.state.counts.insert(0, counts);
+        }
+
         let mut sorted_counts: Vec<_> = self.state.counts.iter().collect();
         sorted_counts.sort_by_key(|(key, _)| *key);
 
@@ -184,10 +212,7 @@ impl ToolBackend for Counter {
                 _ => {}
             }
             if old_state != self.state {
-                if let Err(e) = self
-                    .command_sender
-                    .send(PipelineCommand::Refresh(self.index))
-                {
+                if let Err(e) = self.command_sender.send(PipelineCommand::Refresh(0)) {
                     eprintln!("Failed to send refresh command: {}", e);
                 }
 
