@@ -23,6 +23,8 @@
 - [ ] Add mode toggle to "Threshold" that in addition to manual thresholding supports otsu thresholding
 - [ ] Settings menu with option to force CPU processing
 - [ ] Multiple tool instances
+- [ ] Grayscale tool
+- [ ] Hold counter state in mode enum so swithcing between auto and manual does not overwrite manual counts
 
 ## Big features:
 - [ ] Parallel node based editor instead of linear flow

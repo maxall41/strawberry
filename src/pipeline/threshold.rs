@@ -89,10 +89,7 @@ impl ToolBackend for Threshold {
                 _ => {}
             }
             if old_state != self.state {
-                if let Err(e) = self
-                    .command_sender
-                    .send(PipelineCommand::Refresh(self.index))
-                {
+                if let Err(e) = self.command_sender.send(PipelineCommand::Refresh(0)) {
                     eprintln!("Failed to send refresh command: {}", e);
                 }
 

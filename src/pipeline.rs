@@ -199,8 +199,6 @@ pub struct Pipeline {
     input_images: Vec<RgbaImage>,
     /// Click receivers
     click_receivers: Vec<flume::Sender<PipelineCommand>>,
-    /// Cached compositor output when input images haven't changed
-    cached_compositor_output: Option<Vec<RgbaImage>>,
 }
 
 impl Pipeline {
@@ -232,7 +230,6 @@ impl Pipeline {
             output_sender: output_tx,
             input_images: vec![],
             click_receivers: vec![],
-            cached_compositor_output: None,
         };
 
         Ok((pipeline, command_tx, output_rx))
@@ -244,37 +241,9 @@ impl Pipeline {
         println!("Got process_from command!");
         let mut images = self.input_images.clone(); //TODO: Performance
 
-        // Process through each tool starting from start_index
-        if start_index > 0 && images.len() > 1 {
-            if self.cached_compositor_output.is_some() {
-                images = self
-                    .cached_compositor_output
-                    .clone()
-                    .expect("Never fire: Checked is some");
-            } else {
-                images = self.tool_manager.tools[0].process(images).await?; // Run compositor
-                if self.cached_compositor_output.is_none() {
-                    self.cached_compositor_output = Some(images.clone());
-                }
-            }
-        }
         for tool in self.tool_manager.tools.iter_mut().skip(start_index) {
             if tool.is_enabled() && tool.supports_processing() {
-                if tool.iam() == BackendToolType::Compositor
-                    && self.cached_compositor_output.is_none()
-                {
-                    images = tool.process(images).await?;
-                    self.cached_compositor_output = Some(images.clone());
-                } else if tool.iam() == BackendToolType::Compositor
-                    && self.cached_compositor_output.is_some()
-                {
-                    images = self
-                        .cached_compositor_output
-                        .clone()
-                        .expect("Never fire: Checked is some");
-                } else {
-                    images = tool.process(images).await?;
-                }
+                images = tool.process(images).await?;
             }
         }
         if images.len() > 1 {
@@ -307,7 +276,6 @@ impl Pipeline {
                 }
                 PipelineCommand::Load(images) => {
                     println!("Got load command!");
-                    self.cached_compositor_output = None;
                     self.input_images = images.clone(); //TODO: Performance
                     if images.len() > 1 {
                         self.tool_manager.tools[0].set_enabled(true);
