@@ -4,7 +4,7 @@
 - [ ] Colors are inverted when loading a single image
 - [ ] Latency from clicking to count showing up is enormoues
 - [ ] Auto counter not getting new state for `Count {x}` text???
-- [ ] Proper pipeline tool caching (cache output and then invalidate downstream cache in Refresh command handler)
+- [X] Proper pipeline tool caching (cache output and then invalidate downstream caches in Refresh command handler)
 
 ## Features:
 - [ ] Support dragging and dropping images into viewer
