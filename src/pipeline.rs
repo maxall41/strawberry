@@ -9,7 +9,7 @@ use counter::{Counter, CounterState};
 use gaussian_blur::{GaussianBlur, GaussianBlurState};
 use image::RgbaImage;
 use local_maxima::{LocalMaxima, LocalMaximaState};
-use manager::{ManagerState, ToolManager, ToolProxy};
+use manager::{ManagerState, ToolManager};
 
 use crate::{processing::local_maxima::ThresholdType, tools::counter::CounterTool};
 
@@ -192,6 +192,22 @@ pub trait ToolBackend: Send + Sync {
 
     /// Set the tool's index in the pipeline
     fn set_index(&mut self, index: usize);
+
+    /// Check if cached output is valid (based on tool state)
+    fn has_valid_cache(&self) -> bool {
+        false
+    }
+
+    /// Get cached output if available
+    fn get_cached_output(&self) -> Option<Vec<RgbaImage>> {
+        None
+    }
+
+    /// Cache the output
+    fn set_cached_output(&mut self, _output: Vec<RgbaImage>) {}
+
+    /// Invalidate the cache
+    fn invalidate_cache(&mut self) {}
 }
 
 /// Pipeline that processes images through a series of tools
@@ -248,11 +264,51 @@ impl Pipeline {
         println!("Got process_from command!");
         let mut images = self.input_images.clone(); //TODO: Performance
 
-        for tool in self.tool_manager.tools.iter_mut().skip(start_index) {
+        let mut earliest_processing_index = start_index;
+
+        for (i, tool) in self.tool_manager.tools.iter().enumerate() {
+            if i >= start_index {
+                break;
+            }
+
             if tool.is_enabled() && tool.supports_processing() {
-                images = tool.process(images).await?;
+                if let Some(cached_output) = tool.get_cached_output() {
+                    if tool.has_valid_cache() {
+                        images = cached_output;
+                    } else {
+                        earliest_processing_index = i;
+                        images = self.input_images.clone();
+                        break;
+                    }
+                } else {
+                    earliest_processing_index = i;
+                    images = self.input_images.clone();
+                    break;
+                }
             }
         }
+
+        for tool in self
+            .tool_manager
+            .tools
+            .iter_mut()
+            .skip(earliest_processing_index)
+        {
+            tool.invalidate_cache();
+        }
+
+        for tool in self
+            .tool_manager
+            .tools
+            .iter_mut()
+            .skip(earliest_processing_index)
+        {
+            if tool.is_enabled() && tool.supports_processing() {
+                images = tool.process(images).await?;
+                tool.set_cached_output(images.clone());
+            }
+        }
+
         if images.len() > 1 {
             return Err(anyhow::anyhow!(
                 "Pipeline output should have only one image"

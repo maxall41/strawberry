@@ -38,6 +38,8 @@ pub struct LocalMaxima {
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_sender: Option<flume::Sender<PipelineCommand>>,
     pub index: usize,
+    pub cached_output: Option<Vec<image::RgbaImage>>,
+    pub cached_state: Option<LocalMaximaState>,
 }
 
 #[async_trait]
@@ -116,7 +118,13 @@ impl ToolBackend for LocalMaxima {
                 _ => {}
             }
             if old_state != self.state {
-                if let Err(e) = self.command_sender.send(PipelineCommand::Refresh(0)) {
+                // Invalidate cache when state changes
+                self.invalidate_cache();
+
+                if let Err(e) = self
+                    .command_sender
+                    .send(PipelineCommand::Refresh(self.index))
+                {
                     eprintln!("Failed to send refresh command: {}", e);
                 }
 
@@ -145,6 +153,28 @@ impl ToolBackend for LocalMaxima {
     fn set_index(&mut self, index: usize) {
         self.index = index;
     }
+
+    fn has_valid_cache(&self) -> bool {
+        if let Some(cached_state) = &self.cached_state {
+            cached_state == &self.state
+        } else {
+            false
+        }
+    }
+
+    fn get_cached_output(&self) -> Option<Vec<image::RgbaImage>> {
+        self.cached_output.clone()
+    }
+
+    fn set_cached_output(&mut self, output: Vec<image::RgbaImage>) {
+        self.cached_output = Some(output);
+        self.cached_state = Some(self.state.clone());
+    }
+
+    fn invalidate_cache(&mut self) {
+        self.cached_output = None;
+        self.cached_state = None;
+    }
 }
 
 impl LocalMaxima {
@@ -161,6 +191,8 @@ impl LocalMaxima {
             sender,
             receiver,
             index: 0,
+            cached_output: None,
+            cached_state: None,
         }
     }
 }
