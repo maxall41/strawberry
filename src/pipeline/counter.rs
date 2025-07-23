@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use crate::{
     consts::{flip_rgba_to_bgra, CIRCLE_COLORS},
@@ -7,15 +7,17 @@ use crate::{
 };
 
 use super::{
-    BackendToolType, ContrastMessage, CountMessage, FrontendMessage, PipelineCommand,
-    PipelineObjectMessage, ToolBackend, ToolState,
+    BackendToolType, ContrastMessage, CountMessage, FilterMessage, FrontendMessage,
+    PipelineCommand, PipelineObjectMessage, ToolBackend, ToolState,
 };
 use async_trait::async_trait;
-use imageproc::region_labelling::{connected_components, Connectivity};
+use lutz::{lutz, Image as LutzImage, Pixel};
+// Alternative: use opencv::{core, imgproc, prelude::*};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CountData {
     pub position: (u64, u64), // X, Y
+    pub size: u16,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -25,13 +27,115 @@ pub enum CounterMode {
     Auto,
 }
 
+pub struct SizeFilter {
+    pub is_enabled: bool,
+    pub min_size: u16,
+}
+
+impl Filter for SizeFilter {
+    fn is_enabled(&self) -> bool {
+        self.is_enabled
+    }
+    fn name(&self) -> &str {
+        "Filter by Size"
+    }
+    fn process(&self, counts: &Vec<CountData>) -> Vec<CountData> {
+        let mut out = counts.clone();
+        out.retain(|count| count.size > self.min_size);
+        out
+    }
+    fn receive_message(&mut self, message: &FilterMessage) {
+        match message {
+            FilterMessage::ConfigureSizeFilter(min_size) => {
+                self.min_size = *min_size;
+            }
+        }
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.is_enabled = enabled
+    }
+    fn get_values(&self) -> Vec<f64> {
+        vec![self.min_size as f64]
+    }
+}
+
+impl SizeFilter {
+    pub fn new(min_size: u16) -> Self {
+        Self {
+            is_enabled: false,
+            min_size,
+        }
+    }
+}
+
+pub trait Filter: Send + Sync {
+    fn is_enabled(&self) -> bool;
+    fn name(&self) -> &str;
+    fn process(&self, counts: &Vec<CountData>) -> Vec<CountData>;
+    fn receive_message(&mut self, message: &FilterMessage);
+    fn set_enabled(&mut self, enabled: bool);
+    fn get_values(&self) -> Vec<f64>;
+}
+
+fn update_filter_proxys(input: &Vec<Box<dyn Filter>>) -> Vec<FilterProxy> {
+    input
+        .iter()
+        .map(|filter| FilterProxy {
+            name: filter.name().to_string(),
+            is_enabled: filter.is_enabled(),
+            values: filter.get_values(),
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FilterProxy {
+    pub name: String,
+    pub is_enabled: bool,
+    pub values: Vec<f64>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CounterState {
     pub is_enabled: bool,
-    pub counts: HashMap<u16, Vec<CountData>>,
+    pub manual_counts: HashMap<u16, Vec<CountData>>,
+    pub auto_counts: Vec<CountData>,
     pub mode: CounterMode,
     pub active_tool: CounterTool,
     pub active_count_type: Option<u16>,
+    pub filter_proxys: Vec<FilterProxy>,
+}
+
+// Image wrapper for lutz algorithm
+struct BinaryImageWrapper<'a> {
+    image: &'a image::RgbaImage,
+    threshold: u8,
+}
+
+impl<'a> BinaryImageWrapper<'a> {
+    fn new(image: &'a image::RgbaImage, threshold: u8) -> Self {
+        Self { image, threshold }
+    }
+}
+
+impl<'a> LutzImage for BinaryImageWrapper<'a> {
+    fn width(&self) -> u32 {
+        self.image.width()
+    }
+
+    fn height(&self) -> u32 {
+        self.image.height()
+    }
+
+    fn has_pixel(&self, x: u32, y: u32) -> bool {
+        if x >= self.width() || y >= self.height() {
+            return false;
+        }
+        let pixel = self.image.get_pixel(x, y);
+        // Consider pixel as foreground if it's not transparent and has sufficient brightness
+        pixel[3] > 0
+            && (pixel[0] as u16 + pixel[1] as u16 + pixel[2] as u16) / 3 > self.threshold as u16
+    }
 }
 
 pub struct Counter {
@@ -40,6 +144,7 @@ pub struct Counter {
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_sender: Option<flume::Sender<PipelineCommand>>,
+    pub filters: Vec<Box<dyn Filter>>,
     pub index: usize,
 }
 
@@ -70,43 +175,66 @@ impl ToolBackend for Counter {
         let mut output_images = input.clone();
 
         if self.state.mode == CounterMode::Auto {
-            let mut regions: HashMap<u32, CountData> = HashMap::new();
-            self.state.counts = HashMap::new();
+            self.state.auto_counts.clear();
+
             for image in output_images.iter() {
-                let labeled = connected_components(
-                    image,
-                    Connectivity::Eight,
-                    image::Rgba([0u8, 0u8, 0u8, 0u8]),
-                );
-                for (x, y, pixel) in labeled.enumerate_pixels() {
-                    let label = pixel[0];
-                    if label != 0 {
-                        // skip background
-                        regions.insert(
-                            label,
-                            CountData {
-                                position: (x as u64, y as u64),
-                            },
-                        );
+                let binary_wrapper = BinaryImageWrapper::new(image, 128); // Use threshold of 128
+                for blob_pixels in lutz::<BinaryImageWrapper, Vec<Pixel>>(binary_wrapper) {
+                    if !blob_pixels.is_empty() {
+                        // Calculate centroid of this blob
+                        let sum_x: u64 = blob_pixels.iter().map(|p| p.x as u64).sum();
+                        let sum_y: u64 = blob_pixels.iter().map(|p| p.y as u64).sum();
+                        let count = blob_pixels.len() as u64;
+
+                        self.state.auto_counts.push(CountData {
+                            position: (sum_x / count, sum_y / count),
+                            size: blob_pixels.len() as u16,
+                        });
+                    }
+                }
+
+                for filter in self.filters.iter() {
+                    if filter.is_enabled() {
+                        self.state.auto_counts = filter.process(&self.state.auto_counts);
                     }
                 }
             }
-            let counts: Vec<CountData> = regions.values().cloned().collect();
-            self.state.counts.insert(0, counts);
         }
 
-        let mut sorted_counts: Vec<_> = self.state.counts.iter().collect();
-        sorted_counts.sort_by_key(|(key, _)| *key);
-
         for image in output_images.iter_mut() {
-            for (index, (_, count_types)) in sorted_counts.iter().enumerate() {
-                for count in count_types.iter() {
-                    // Draw a circle around the count position
+            // Draw auto-detected counts
+            if self.state.mode == CounterMode::Auto {
+                for count in &self.state.auto_counts {
                     let (cx, cy) = count.position;
                     let radius = 10;
-                    let color = flip_rgba_to_bgra(CIRCLE_COLORS[index % CIRCLE_COLORS.len()]);
+                    let color = flip_rgba_to_bgra(CIRCLE_COLORS[0]);
 
-                    // Draw circle by setting pixels in a circular pattern
+                    for angle in 0..360 {
+                        let radian = (angle as f32) * std::f32::consts::PI / 180.0;
+                        let x = cx as i32 + (radius as f32 * radian.cos()) as i32;
+                        let y = cy as i32 + (radius as f32 * radian.sin()) as i32;
+
+                        if x >= 0
+                            && y >= 0
+                            && (x as u32) < image.width()
+                            && (y as u32) < image.height()
+                        {
+                            image.put_pixel(x as u32, y as u32, color);
+                        }
+                    }
+                }
+            }
+
+            // Draw manual counts
+            let mut sorted_counts: Vec<_> = self.state.manual_counts.iter().collect();
+            sorted_counts.sort_by_key(|(key, _)| *key);
+
+            for (index, (_, count_types)) in sorted_counts.iter().enumerate() {
+                for count in count_types.iter() {
+                    let (cx, cy) = count.position;
+                    let radius = 10;
+                    let color = flip_rgba_to_bgra(CIRCLE_COLORS[(index + 1) % CIRCLE_COLORS.len()]);
+
                     for angle in 0..360 {
                         let radian = (angle as f32) * std::f32::consts::PI / 180.0;
                         let x = cx as i32 + (radius as f32 * radian.cos()) as i32;
@@ -123,6 +251,16 @@ impl ToolBackend for Counter {
                 }
             }
         }
+
+        // Push state update to frontend
+        if let Some(frontend_sender) = &self.frontend_sender {
+            if let Err(e) = frontend_sender.try_send(PipelineCommand::FrontendMessage(
+                FrontendMessage::ReturnState(self.get_state()),
+            )) {
+                eprintln!("Failed to send state update to frontend: {}", e);
+            }
+        }
+
         Ok(output_images)
     }
 
@@ -149,26 +287,33 @@ impl ToolBackend for Counter {
                     if let Some(id) = self.state.active_count_type {
                         match self.state.active_tool {
                             CounterTool::Place => {
-                                if self.state.counts.contains_key(&id) {
+                                if self.state.manual_counts.contains_key(&id) {
                                     let mut count_type = self
                                         .state
-                                        .counts
+                                        .manual_counts
                                         .get(&id)
                                         .expect("Should never fire: Confirmed that key exists")
                                         .clone();
-                                    count_type.push(CountData { position: (x, y) });
-                                    self.state.counts.insert(id, count_type);
+                                    count_type.push(CountData {
+                                        position: (x, y),
+                                        size: 0,
+                                    });
+                                    self.state.manual_counts.insert(id, count_type);
                                 } else {
-                                    self.state
-                                        .counts
-                                        .insert(id, vec![CountData { position: (x, y) }]);
+                                    self.state.manual_counts.insert(
+                                        id,
+                                        vec![CountData {
+                                            position: (x, y),
+                                            size: 0,
+                                        }],
+                                    );
                                 }
                             }
                             CounterTool::Delete => {
-                                if self.state.counts.contains_key(&id) {
+                                if self.state.manual_counts.contains_key(&id) {
                                     let counts = self
                                         .state
-                                        .counts
+                                        .manual_counts
                                         .get(&id)
                                         .expect("Should never fire: Confirmed that key exists")
                                         .clone();
@@ -177,13 +322,11 @@ impl ToolBackend for Counter {
                                         .filter(|count| count.position != (x, y))
                                         .cloned()
                                         .collect();
-                                    self.state.counts.insert(id, new_counts);
+                                    self.state.manual_counts.insert(id, new_counts);
                                 }
                             }
                             _ => {}
                         }
-                    } else {
-                        eprintln!("No active count type!");
                     };
                 }
                 PipelineCommand::PipelineObject(message) => match message {
@@ -192,7 +335,7 @@ impl ToolBackend for Counter {
                     }
                     PipelineObjectMessage::CountMessage(count_message) => match count_message {
                         CountMessage::NewCountType(id) => {
-                            self.state.counts.insert(id, vec![]);
+                            self.state.manual_counts.insert(id, vec![]);
                         }
                         CountMessage::SetActiveCountType(id) => {
                             self.state.active_count_type = Some(id);
@@ -201,21 +344,30 @@ impl ToolBackend for Counter {
                             self.state.active_tool = tool;
                         }
                         CountMessage::DeleteCountType(id) => {
-                            self.state.counts.remove(&id);
+                            self.state.manual_counts.remove(&id);
                         }
                         CountMessage::SetMode(new_mode) => {
                             self.state.mode = new_mode;
+                        }
+                        CountMessage::FilterMessage(message) => {
+                            for filter in &mut self.filters {
+                                filter.receive_message(&message);
+                            }
+                        }
+                        CountMessage::ToggleFilter(filter_index, enabled) => {
+                            self.filters[filter_index as usize].set_enabled(enabled);
                         }
                     },
                     _ => {}
                 },
                 _ => {}
             }
-            if old_state != self.state {
-                if let Err(e) = self.command_sender.send(PipelineCommand::Refresh(0)) {
-                    eprintln!("Failed to send refresh command: {}", e);
-                }
 
+            let new_filter_proxys = update_filter_proxys(&self.filters);
+            if new_filter_proxys != self.state.filter_proxys {
+                self.state.filter_proxys = new_filter_proxys;
+            }
+            if old_state != self.state {
                 // Push state update to frontend
                 if let Some(frontend_sender) = &self.frontend_sender {
                     if let Err(e) = frontend_sender.try_send(PipelineCommand::FrontendMessage(
@@ -223,6 +375,9 @@ impl ToolBackend for Counter {
                     )) {
                         eprintln!("Failed to send state update to frontend: {}", e);
                     }
+                }
+                if let Err(e) = self.command_sender.send(PipelineCommand::Refresh(0)) {
+                    eprintln!("Failed to send refresh command: {}", e);
                 }
             }
         }
@@ -250,19 +405,26 @@ impl Counter {
         {
             eprintln!("Failed to register click receiver: {}", e);
         }
+
+        let filters: Vec<Box<dyn Filter>> = vec![Box::new(SizeFilter::new(10))];
+        let filter_proxys = update_filter_proxys(&filters);
+
         Self {
             state: CounterState {
                 is_enabled: false,
-                counts: HashMap::new(),
+                manual_counts: HashMap::new(),
+                auto_counts: Vec::new(),
                 mode: CounterMode::Manual,
                 active_tool: CounterTool::Place,
                 active_count_type: None,
+                filter_proxys,
             },
             frontend_sender: None,
+            index: 0,
+            filters,
             command_sender,
             sender,
             receiver,
-            index: 0,
         }
     }
 }

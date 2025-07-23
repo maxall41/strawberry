@@ -63,12 +63,19 @@ pub struct Polygon {
 }
 
 #[derive(Debug, Clone)]
+pub enum FilterMessage {
+    ConfigureSizeFilter(u16), // Min size
+}
+
+#[derive(Debug, Clone)]
 pub enum CountMessage {
     NewCountType(u16),
     DeleteCountType(u16),
     SetMode(counter::CounterMode),
     SetActiveCountType(u16),
     SetActiveTool(CounterTool),
+    ToggleFilter(u16, bool),
+    FilterMessage(FilterMessage),
 }
 
 #[derive(Debug, Clone)]
