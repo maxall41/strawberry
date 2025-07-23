@@ -6,31 +6,26 @@ use gpui::{
     div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, Point, SharedString,
     TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
-use image::Rgba;
 
 use crate::{
     consts::{image_rgba_to_gpui_rgba, CIRCLE_COLORS},
+    gui::value_control::{render_button_value_control, ButtonControlConfig},
     pipeline::{
         counter::{CounterMode, CounterState},
-        BackendToolType, CountMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,
-        ToolState,
+        BackendToolType, CountMessage, FilterMessage, FrontendMessage, PipelineCommand,
+        PipelineObjectMessage, ToolState,
     },
 };
 
 use super::ToolFrontend;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum CounterTool {
+    #[default]
     Place,
     Delete,
     LassoDelete,
     Review,
-}
-
-impl Default for CounterTool {
-    fn default() -> Self {
-        CounterTool::Place
-    }
 }
 
 pub struct CounterView {
@@ -102,7 +97,7 @@ impl CounterView {
                                         // Update next_count_type_id based on existing count types
                                         if let Ok(mut next_id) = next_count_type_id.write() {
                                             *next_id = new_state
-                                                .counts
+                                                .manual_counts
                                                 .keys()
                                                 .max()
                                                 .map(|&k| k + 1)
@@ -240,7 +235,7 @@ impl CounterView {
                 if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
                     // Set active count type to None by finding another type or clearing
                     let remaining_types: Vec<u16> = state
-                        .counts
+                        .manual_counts
                         .keys()
                         .filter(|&&id| id != count_type_id)
                         .copied()
@@ -553,7 +548,7 @@ impl CounterView {
         let selected_type = state.active_count_type;
 
         div().flex().flex_col().gap_1().children({
-            let mut sorted_counts: Vec<_> = state.counts.iter().collect();
+            let mut sorted_counts: Vec<_> = state.manual_counts.iter().collect();
             sorted_counts.sort_by_key(|(id, _)| **id);
             sorted_counts
                 .into_iter()
@@ -751,10 +746,259 @@ impl CounterView {
             .flex()
             .flex_col()
             .gap_3()
-            .justify_center()
-            .items_center()
-            .flex_1()
-            .child("Placeholder")
+            .p_3()
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("Auto Detection"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .mb_3()
+                    .child("Detected Counts:")
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(rgb(0x444444))
+                            .child(format!("{}", state.auto_counts.len())),
+                    ),
+            )
+            .child(self.render_filters_section(state, cx))
+    }
+
+    fn render_filters_section(
+        &self,
+        state: &CounterState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_3()
+            .rounded_md()
+            .bg(rgb(0x2a2a2a))
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_lg()
+                    .child("Filters"),
+            )
+            .when(state.filter_proxys.is_empty(), |el| {
+                el.child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(0xaaaaaa))
+                        .child("No filters available"),
+                )
+            })
+            .when(!state.filter_proxys.is_empty(), |el| {
+                el.child(
+                    div().flex().flex_col().gap_2().children(
+                        state
+                            .filter_proxys
+                            .iter()
+                            .enumerate()
+                            .map(|(index, filter_proxy)| {
+                                self.render_filter_item(filter_proxy, index, cx)
+                            }),
+                    ),
+                )
+            })
+    }
+
+    fn render_filter_item(
+        &self,
+        filter_proxy: &crate::pipeline::counter::FilterProxy,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_enabled = filter_proxy.is_enabled;
+        let filter_index = index as u16;
+
+        let is_size_filter = filter_proxy.name == "Filter by Size";
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded_md()
+            .bg(if is_enabled {
+                rgb(0x404040)
+            } else {
+                rgb(0x333333)
+            })
+            .hover(|style| {
+                style.bg(if is_enabled {
+                    rgb(0x505050)
+                } else {
+                    rgb(0x404040)
+                })
+            })
+            .border_1()
+            .border_color(if is_enabled {
+                rgb(0x00aa00)
+            } else {
+                rgb(0x555555)
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child(filter_proxy.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .bg(if is_enabled {
+                                        rgb(0x00aa00)
+                                    } else {
+                                        rgb(0xaa0000)
+                                    })
+                                    .child(if is_enabled { "ACTIVE" } else { "DISABLED" }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(0xaaaaaa))
+                            .child("Click to toggle"),
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(
+                            move |this: &mut CounterView,
+                                  _event: &MouseDownEvent,
+                                  _window: &mut Window,
+                                  _cx: &mut Context<CounterView>| {
+                                this.toggle_filter(filter_index, !is_enabled);
+                            },
+                        ),
+                    ),
+            )
+            .when(is_size_filter, |el| {
+                let current_value = filter_proxy
+                    .values
+                    .get(0)
+                    .map(|v| *v as f32)
+                    .unwrap_or(10.0);
+
+                let config = ButtonControlConfig {
+                    step: 1.0,
+                    decimal_places: 0,
+                };
+
+                el.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .pt_2()
+                        .border_t_1()
+                        .border_color(rgb(0x555555))
+                        .child(render_button_value_control(
+                            "Minimum Object Size".to_string(),
+                            current_value,
+                            config,
+                            |this: &mut CounterView,
+                             delta: f32,
+                             _window: &mut Window,
+                             _cx: &mut Context<CounterView>| {
+                                this.adjust_size_filter(delta as i16);
+                            },
+                            cx,
+                        )),
+                )
+            })
+    }
+
+    fn toggle_filter(&mut self, filter_index: u16, enabled: bool) {
+        let current_tool_index = match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => index,
+                None => {
+                    eprintln!("No current tool index available");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::CountMessage(CountMessage::ToggleFilter(
+                    filter_index,
+                    enabled,
+                )),
+            )) {
+                eprintln!("Failed to send toggle filter command: {}", e);
+            }
+        } else {
+            eprintln!("Invalid tool index: {}", current_tool_index);
+        }
+    }
+
+    fn adjust_size_filter(&mut self, delta: i16) {
+        let current_tool_index = match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => index,
+                None => {
+                    eprintln!("No current tool index available");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            let current_value = {
+                let state = self.state.read().unwrap();
+                state
+                    .filter_proxys
+                    .iter()
+                    .find(|f| f.name == "Filter by Size")
+                    .and_then(|f| f.values.get(0))
+                    .copied()
+                    .unwrap_or(10.0)
+            };
+
+            let new_min_size = ((current_value as i16) + delta).max(1) as u16;
+
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::CountMessage(CountMessage::FilterMessage(
+                    FilterMessage::ConfigureSizeFilter(new_min_size),
+                )),
+            )) {
+                eprintln!("Failed to send size filter configuration: {}", e);
+            }
+        } else {
+            eprintln!("Invalid tool index: {}", current_tool_index);
+        }
     }
 }
 
