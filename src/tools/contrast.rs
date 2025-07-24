@@ -128,24 +128,30 @@ impl ContrastView {
         .detach();
     }
 
+    fn get_current_tool_index(&self) -> Option<u16> {
+        match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => Some(index),
+                None => {
+                    eprintln!("No current tool index available");
+                    None
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                None
+            }
+        }
+    }
+
     fn toggle_enabled(
         &mut self,
         current_value: bool,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let current_tool_index = match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
-                return;
-            }
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
         };
 
         if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
@@ -166,18 +172,8 @@ impl ContrastView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let current_tool_index = match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
-                return;
-            }
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
         };
 
         if let Some(sender) = self.send_channels.get(current_tool_index as usize) {

@@ -6,15 +6,16 @@ use gpui::{
     div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, Point, SharedString,
     TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
+use rfd::FileDialog;
 
 use crate::{
-    consts::{image_rgba_to_gpui_rgba, CIRCLE_COLORS},
     gui::value_control::{render_button_value_control, ButtonControlConfig},
     pipeline::{
-        counter::{CounterMode, CounterState},
-        BackendToolType, CountMessage, FilterMessage, FrontendMessage, PipelineCommand,
-        PipelineObjectMessage, ToolState,
+        counter::{CountData, CounterMode, CounterState},
+        BackendToolType, CountMessage, CrossFrontendMessage, FilterMessage, FrontendMessage,
+        PipelineCommand, PipelineObjectMessage, ToolState,
     },
+    utils::consts::{image_rgba_to_gpui_rgba, CIRCLE_COLORS},
 };
 
 use super::ToolFrontend;
@@ -36,7 +37,6 @@ pub struct CounterView {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
-
     pub next_count_type_id: Arc<RwLock<u16>>,
     _cleanup_guard: crate::tools::CleanupGuard,
 }
@@ -54,7 +54,6 @@ impl CounterView {
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
-
             next_count_type_id: Arc::new(RwLock::new(0)),
             _cleanup_guard: crate::tools::CleanupGuard::new(
                 command_sender,
@@ -65,10 +64,10 @@ impl CounterView {
 
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver);
+        self.receive_channel = Some(receiver.clone());
         if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
             BackendToolType::Counter,
-            sender,
+            sender.clone(),
         )) {
             eprintln!("Failed to send backend discovery request: {}", e);
             return;
@@ -147,6 +146,88 @@ impl CounterView {
                 }
             } else {
                 break;
+            }
+        })
+        .detach();
+    }
+
+    fn get_current_tool_index(&self) -> Option<u16> {
+        match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => Some(index),
+                None => {
+                    eprintln!("No current tool index available");
+                    None
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                None
+            }
+        }
+    }
+
+    fn save_counts(&self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
+        };
+
+        cx.spawn_in(_window, async move |this, cx| {
+            let file = FileDialog::new()
+                .add_filter("xml", &["xml"])
+                .set_directory("/")
+                .save_file();
+
+            if let Some(file) = file {
+                if let Err(e) = this.update(cx, |this, cx| {
+                    if let Some(sender) = this.send_channels.get(current_tool_index as usize) {
+                        if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                            PipelineObjectMessage::CountMessage(CountMessage::SaveCounts(file)),
+                        )) {
+                            eprintln!("Failed to send save counts command: {}", e);
+                            return;
+                        }
+                    } else {
+                        eprintln!("Invalid tool index: {}", current_tool_index);
+                        return;
+                    }
+                }) {
+                    eprintln!("Failed to update count types: {}", e);
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn load_counts(&self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
+        };
+
+        cx.spawn_in(_window, async move |this, cx| {
+            let file = FileDialog::new()
+                .add_filter("xml", &["xml"])
+                .set_directory("/")
+                .pick_file();
+
+            if let Some(file) = file {
+                if let Err(e) = this.update(cx, |this, cx| {
+                    if let Some(sender) = this.send_channels.get(current_tool_index as usize) {
+                        if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                            PipelineObjectMessage::CountMessage(CountMessage::LoadCounts(file)),
+                        )) {
+                            eprintln!("Failed to send load counts command: {}", e);
+                            return;
+                        }
+                    } else {
+                        eprintln!("Invalid tool index: {}", current_tool_index);
+                        return;
+                    }
+                }) {
+                    eprintln!("Failed to update count types: {}", e);
+                    return;
+                }
             }
         })
         .detach();
@@ -286,6 +367,26 @@ impl CounterView {
             }
         } else {
             eprintln!("Invalid tool index: {}", current_tool_index);
+        }
+    }
+
+    fn copy_to_manual(&self) {
+        let current_tool_index = match self.get_current_tool_index() {
+            Some(index) => index,
+            None => {
+                eprintln!("No current tool index available for copy to manual");
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::CountMessage(CountMessage::CopyToManual),
+            )) {
+                eprintln!("Failed to send copy to manual command: {}", e);
+            }
+        } else {
+            eprintln!("No sender available for copy to manual command");
         }
     }
 
@@ -697,8 +798,7 @@ impl CounterView {
                              _event: &MouseDownEvent,
                              _window: &mut Window,
                              _cx: &mut Context<CounterView>| {
-                                // TODO: Implement save functionality
-                                println!("Save clicked");
+                                _this.save_counts(_window, _cx);
                             },
                         ),
                     ),
@@ -720,7 +820,7 @@ impl CounterView {
                              _window: &mut Window,
                              _cx: &mut Context<CounterView>| {
                                 // TODO: Implement load functionality
-                                println!("Load clicked");
+                                _this.load_counts(_window, _cx);
                             },
                         ),
                     ),
@@ -729,7 +829,7 @@ impl CounterView {
 
     // Manual UI rendering
     fn render_manual_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let mut ui = div()
             .flex()
             .flex_col()
             .gap_3()
@@ -737,7 +837,14 @@ impl CounterView {
             .child(self.render_count_types_list(cx))
             .child(self.render_add_button(cx))
             .child(self.render_tools_subheader())
-            .child(self.render_tools_bar(cx))
+            .child(self.render_tools_bar(cx));
+
+        // Add review UI when Review tool is active
+        if state.active_tool == CounterTool::Review {
+            ui = ui.child(self.render_review_ui(state, cx));
+        }
+
+        ui
     }
 
     // Auto UI rendering (placeholder)
@@ -1000,6 +1107,162 @@ impl CounterView {
             eprintln!("Invalid tool index: {}", current_tool_index);
         }
     }
+
+    fn render_review_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement {
+        let current_index = state.review_current_index;
+
+        let review_counts = if let Some(active_count_type) = state.active_count_type {
+            state.manual_counts.get(&active_count_type).unwrap() //TODO: Handle error
+        } else {
+            &vec![]
+        };
+
+        if review_counts.is_empty() {
+            return div().p_3().bg(rgb(0x333333)).rounded_md().child(
+                div()
+                    .text_center()
+                    .text_sm()
+                    .child("No counts to review. Add some counts first."),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .bg(rgb(0x333333))
+            .rounded_md()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_sm()
+                            .child("Review Mode"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(format!("{} / {}", current_index + 1, review_counts.len())),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .px_3()
+                            .py_1()
+                            .bg(rgb(0x666666))
+                            .hover(|style| style.bg(rgb(0x777777)))
+                            .rounded_md()
+                            .text_sm()
+                            .child("← Prev")
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(
+                                    |this: &mut CounterView,
+                                     _event: &MouseDownEvent,
+                                     _window: &mut Window,
+                                     _cx: &mut Context<CounterView>| {
+                                        this.send_review_navigate_previous();
+                                        _cx.notify();
+                                    },
+                                ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px_3()
+                            .py_1()
+                            .bg(rgb(0x666666))
+                            .hover(|style| style.bg(rgb(0x777777)))
+                            .rounded_md()
+                            .text_sm()
+                            .child("Next →")
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(
+                                    |this: &mut CounterView,
+                                     _event: &MouseDownEvent,
+                                     _window: &mut Window,
+                                     _cx: &mut Context<CounterView>| {
+                                        this.send_review_navigate_next();
+                                        _cx.notify();
+                                    },
+                                ),
+                            ),
+                    )
+                    .child(if current_index < review_counts.len() {
+                        let count = &review_counts[current_index];
+                        div()
+                            .flex_1()
+                            .text_right()
+                            .text_sm()
+                            .child(format!("({}, {})", count.position.0, count.position.1))
+                    } else {
+                        div()
+                    }),
+            )
+    }
+
+    // Review functionality methods - now sends messages to backend
+    fn send_review_navigate_previous(&self) {
+        let current_tool_index = match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => index,
+                None => {
+                    eprintln!("No current tool index available");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::CountMessage(CountMessage::ReviewNavigatePrevious),
+            )) {
+                eprintln!("Failed to send review navigate previous command: {}", e);
+            }
+        } else {
+            eprintln!("Invalid tool index: {}", current_tool_index);
+        }
+    }
+
+    fn send_review_navigate_next(&self) {
+        let current_tool_index = match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => index,
+                None => {
+                    eprintln!("No current tool index available");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::CountMessage(CountMessage::ReviewNavigateNext),
+            )) {
+                eprintln!("Failed to send review navigate next command: {}", e);
+            }
+        } else {
+            eprintln!("Invalid tool index: {}", current_tool_index);
+        }
+    }
 }
 
 impl Render for CounterView {
@@ -1039,9 +1302,30 @@ impl Render for CounterView {
             .child(
                 div()
                     .flex()
-                    .justify_start()
+                    .justify_between()
                     .mt_auto()
-                    .child(self.render_storage_buttons(cx)),
+                    .child(self.render_storage_buttons(cx))
+                    .child(
+                        div()
+                            .px_4()
+                            .py_2()
+                            .bg(rgb(0x0066cc))
+                            .hover(|style| style.bg(rgb(0x0077dd)))
+                            .rounded_md()
+                            .text_sm()
+                            .child("Copy to Manual")
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(
+                                    |this: &mut CounterView,
+                                     _event: &MouseDownEvent,
+                                     _window: &mut Window,
+                                     _cx: &mut Context<CounterView>| {
+                                        this.copy_to_manual();
+                                    },
+                                ),
+                            )
+                    ),
             )
     }
 }

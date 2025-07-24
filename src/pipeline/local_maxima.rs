@@ -36,7 +36,7 @@ pub struct LocalMaxima {
     pub local_maxima: GpuLocalMaxima,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
-    pub frontend_sender: Option<flume::Sender<PipelineCommand>>,
+    pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
     pub cached_state: Option<LocalMaximaState>,
@@ -56,19 +56,15 @@ impl ToolBackend for LocalMaxima {
     fn get_state(&self) -> ToolState {
         ToolState::LocalMaximaState(self.state.clone())
     }
-    fn set_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
-        self.frontend_sender = Some(sender);
+    fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
+        self.frontend_senders.push(sender);
     }
     fn disconnect(&mut self) {
-        self.frontend_sender = None;
+        self.frontend_senders.clear();
     }
-    async fn process(
-        &mut self,
-        input: Vec<image::RgbaImage>,
-    ) -> anyhow::Result<Vec<image::RgbaImage>> {
-        let mut output = Vec::new();
+    async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
-            let output_image = self
+            *image = self
                 .local_maxima
                 .apply_local_maxima(
                     &image,
@@ -77,9 +73,8 @@ impl ToolBackend for LocalMaxima {
                     self.state.exclude_border,
                 )
                 .await?;
-            output.push(output_image);
         }
-        Ok(output)
+        Ok(())
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
@@ -88,15 +83,9 @@ impl ToolBackend for LocalMaxima {
         if let Ok(message) = self.receiver.try_recv() {
             match message {
                 PipelineCommand::RequestState() => {
-                    if let Some(sender) = &self.frontend_sender {
-                        if let Err(e) = sender.try_send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(self.get_state()),
-                        )) {
-                            eprintln!("Failed to send state to frontend: {}", e);
-                        }
-                    } else {
-                        eprintln!("No frontend sender available for state request");
-                    }
+                    self.send_to_frontend(PipelineCommand::FrontendMessage(
+                        FrontendMessage::ReturnState(self.get_state()),
+                    ));
                 }
                 PipelineCommand::PipelineObject(message) => match message {
                     PipelineObjectMessage::ToggleActive(value) => {
@@ -129,13 +118,9 @@ impl ToolBackend for LocalMaxima {
                 }
 
                 // Push state update to frontend
-                if let Some(frontend_sender) = &self.frontend_sender {
-                    if let Err(e) = frontend_sender.try_send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(self.get_state()),
-                    )) {
-                        eprintln!("Failed to send state update to frontend: {}", e);
-                    }
-                }
+                self.send_to_frontend(PipelineCommand::FrontendMessage(
+                    FrontendMessage::ReturnState(self.get_state()),
+                ));
             }
         }
 
@@ -186,13 +171,21 @@ impl LocalMaxima {
         Self {
             state: LocalMaximaState::default(),
             local_maxima: GpuLocalMaxima::new(gpu_image_processor).await,
-            frontend_sender: None,
+            frontend_senders: Vec::new(),
             command_sender,
             sender,
             receiver,
             index: 0,
             cached_output: None,
             cached_state: None,
+        }
+    }
+
+    fn send_to_frontend(&self, message: PipelineCommand) {
+        for sender in &self.frontend_senders {
+            if let Err(e) = sender.try_send(message.clone()) {
+                eprintln!("Failed to send message to frontend: {}", e);
+            }
         }
     }
 }

@@ -1,23 +1,28 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, time::Instant};
 
 use crate::{
-    consts::{flip_rgba_to_bgra, CIRCLE_COLORS},
-    processing::{contrast::GpuContrast, GpuImageProcessor},
     tools::counter::CounterTool,
+    utils::consts::{flip_rgba_to_bgra, CIRCLE_COLORS},
 };
 
 use super::{
-    BackendToolType, ContrastMessage, CountMessage, FilterMessage, FrontendMessage,
-    PipelineCommand, PipelineObjectMessage, ToolBackend, ToolState,
+    BackendToolType, CountMessage, FilterMessage, FrontendMessage, PipelineCommand,
+    PipelineObjectMessage, ToolBackend, ToolState,
 };
+use crate::utils::io::export_counter_to_xml_file;
 use async_trait::async_trait;
 use lutz::{lutz, Image as LutzImage, Pixel};
-// Alternative: use opencv::{core, imgproc, prelude::*};
+use serde::Serialize;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct CountData {
     pub position: (u64, u64), // X, Y
     pub size: u16,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct CountDataContainer {
+    pub counts: Vec<CountData>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -104,6 +109,8 @@ pub struct CounterState {
     pub active_tool: CounterTool,
     pub active_count_type: Option<u16>,
     pub filter_proxys: Vec<FilterProxy>,
+    // Review state fields
+    pub review_current_index: usize,
 }
 
 // Image wrapper for lutz algorithm
@@ -143,7 +150,7 @@ pub struct Counter {
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
-    pub frontend_sender: Option<flume::Sender<PipelineCommand>>,
+    pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub filters: Vec<Box<dyn Filter>>,
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
@@ -164,23 +171,20 @@ impl ToolBackend for Counter {
     fn get_state(&self) -> ToolState {
         ToolState::CounterState(self.state.clone())
     }
-    fn set_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
-        self.frontend_sender = Some(sender);
+    fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
+        self.frontend_senders.push(sender);
     }
     fn disconnect(&mut self) {
-        self.frontend_sender = None;
+        self.frontend_senders.clear();
     }
-    async fn process(
-        &mut self,
-        input: Vec<image::RgbaImage>,
-    ) -> anyhow::Result<Vec<image::RgbaImage>> {
-        let mut output_images = input.clone();
-
+    async fn process(&mut self, output_images: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
+        let now = Instant::now();
         if self.state.mode == CounterMode::Auto {
             self.state.auto_counts.clear();
 
             for image in output_images.iter() {
                 let binary_wrapper = BinaryImageWrapper::new(image, 128); // Use threshold of 128
+                                                                          //TODO: move to gpu
                 for blob_pixels in lutz::<BinaryImageWrapper, Vec<Pixel>>(binary_wrapper) {
                     if !blob_pixels.is_empty() {
                         // Calculate centroid of this blob
@@ -203,67 +207,15 @@ impl ToolBackend for Counter {
             }
         }
 
-        for image in output_images.iter_mut() {
-            // Draw auto-detected counts
-            if self.state.mode == CounterMode::Auto {
-                for count in &self.state.auto_counts {
-                    let (cx, cy) = count.position;
-                    let radius = 10;
-                    let color = flip_rgba_to_bgra(CIRCLE_COLORS[0]);
-
-                    for angle in 0..360 {
-                        let radian = (angle as f32) * std::f32::consts::PI / 180.0;
-                        let x = cx as i32 + (radius as f32 * radian.cos()) as i32;
-                        let y = cy as i32 + (radius as f32 * radian.sin()) as i32;
-
-                        if x >= 0
-                            && y >= 0
-                            && (x as u32) < image.width()
-                            && (y as u32) < image.height()
-                        {
-                            image.put_pixel(x as u32, y as u32, color);
-                        }
-                    }
-                }
-            }
-
-            // Draw manual counts
-            let mut sorted_counts: Vec<_> = self.state.manual_counts.iter().collect();
-            sorted_counts.sort_by_key(|(key, _)| *key);
-
-            for (index, (_, count_types)) in sorted_counts.iter().enumerate() {
-                for count in count_types.iter() {
-                    let (cx, cy) = count.position;
-                    let radius = 10;
-                    let color = flip_rgba_to_bgra(CIRCLE_COLORS[(index + 1) % CIRCLE_COLORS.len()]);
-
-                    for angle in 0..360 {
-                        let radian = (angle as f32) * std::f32::consts::PI / 180.0;
-                        let x = cx as i32 + (radius as f32 * radian.cos()) as i32;
-                        let y = cy as i32 + (radius as f32 * radian.sin()) as i32;
-
-                        if x >= 0
-                            && y >= 0
-                            && (x as u32) < image.width()
-                            && (y as u32) < image.height()
-                        {
-                            image.put_pixel(x as u32, y as u32, color);
-                        }
-                    }
-                }
-            }
-        }
-
         // Push state update to frontend
-        if let Some(frontend_sender) = &self.frontend_sender {
-            if let Err(e) = frontend_sender.try_send(PipelineCommand::FrontendMessage(
-                FrontendMessage::ReturnState(self.get_state()),
-            )) {
-                eprintln!("Failed to send state update to frontend: {}", e);
-            }
-        }
+        self.send_to_frontend(PipelineCommand::FrontendMessage(
+            FrontendMessage::ReturnState(self.get_state()),
+        ));
 
-        Ok(output_images)
+        let elapsed = now.elapsed();
+        println!("Elapsed: {:.2?}", elapsed);
+
+        Ok(())
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
@@ -272,15 +224,9 @@ impl ToolBackend for Counter {
         if let Ok(message) = self.receiver.try_recv() {
             match message {
                 PipelineCommand::RequestState() => {
-                    if let Some(sender) = &self.frontend_sender {
-                        if let Err(e) = sender.try_send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(self.get_state()),
-                        )) {
-                            eprintln!("Failed to send state to frontend: {}", e);
-                        }
-                    } else {
-                        eprintln!("No frontend sender available for state request");
-                    }
+                    self.send_to_frontend(PipelineCommand::FrontendMessage(
+                        FrontendMessage::ReturnState(self.get_state()),
+                    ));
                 }
                 PipelineCommand::HandleClick(x, y) => {
                     if !self.state.is_enabled {
@@ -321,7 +267,12 @@ impl ToolBackend for Counter {
                                         .clone();
                                     let new_counts: Vec<CountData> = counts
                                         .iter()
-                                        .filter(|count| count.position != (x, y))
+                                        .filter(|count| {
+                                            let dx = (count.position.0 as i64 - x as i64).abs();
+                                            let dy = (count.position.1 as i64 - y as i64).abs();
+                                            let distance = ((dx * dx + dy * dy) as f64).sqrt();
+                                            distance > 6.0
+                                        })
                                         .cloned()
                                         .collect();
                                     self.state.manual_counts.insert(id, new_counts);
@@ -359,6 +310,89 @@ impl ToolBackend for Counter {
                         CountMessage::ToggleFilter(filter_index, enabled) => {
                             self.filters[filter_index as usize].set_enabled(enabled);
                         }
+                        CountMessage::SaveCounts(file) => {
+                            // Use the utils::io module to export to XML
+                            if let Err(e) = export_counter_to_xml_file(&self.state, &file).await {
+                                eprintln!("Error saving counts to file: {}", e);
+                                self.send_to_frontend(PipelineCommand::FrontendMessage(
+                                    FrontendMessage::UserFeedback(
+                                        "Error saving counts: XML export failed".to_string(),
+                                    ),
+                                ));
+                                return Ok(());
+                            }
+                            self.send_to_frontend(PipelineCommand::FrontendMessage(
+                                FrontendMessage::UserFeedback(
+                                    "Counts saved successfully!".to_string(),
+                                ),
+                            ));
+                        }
+                        CountMessage::LoadCounts(file) => {
+                            match crate::utils::io::import_counter_from_xml_file(&file).await {
+                                Ok(loaded_state) => {
+                                    self.state.manual_counts = loaded_state.manual_counts;
+                                    self.state.auto_counts = loaded_state.auto_counts;
+                                    self.state.mode = loaded_state.mode;
+                                    self.state.active_count_type = loaded_state.active_count_type;
+
+                                    self.send_to_frontend(PipelineCommand::FrontendMessage(
+                                        FrontendMessage::UserFeedback(
+                                            "Counts loaded successfully!".to_string(),
+                                        ),
+                                    ));
+                                }
+                                Err(e) => {
+                                    eprintln!("Error loading counts from file: {}", e);
+                                    self.send_to_frontend(PipelineCommand::FrontendMessage(
+                                        FrontendMessage::UserFeedback(
+                                            "Error loading counts: XML import failed".to_string(),
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        CountMessage::CopyToManual => {
+                            let new_key = self.state.manual_counts.len() as u16;
+                            self.state
+                                .manual_counts
+                                .insert(new_key, self.state.auto_counts.clone());
+                            self.state.mode = CounterMode::Manual;
+                            self.state.active_count_type = Some(0)
+                        }
+                        CountMessage::ReviewNavigatePrevious => {
+                            if let Some(active_count_type) = self.state.active_count_type {
+                                if let Some(counts) =
+                                    self.state.manual_counts.get(&active_count_type)
+                                {
+                                    let current_index = self.state.review_current_index;
+                                    let counts_len = counts.len();
+
+                                    if counts_len > 0 {
+                                        let new_index = if current_index == 0 {
+                                            counts_len - 1
+                                        } else {
+                                            current_index - 1
+                                        };
+                                        self.state.review_current_index = new_index;
+                                    }
+                                }
+                            }
+                        }
+                        CountMessage::ReviewNavigateNext => {
+                            if let Some(active_count_type) = self.state.active_count_type {
+                                if let Some(counts) =
+                                    self.state.manual_counts.get(&active_count_type)
+                                {
+                                    let current_index = self.state.review_current_index;
+                                    let counts_len = counts.len();
+
+                                    if counts_len > 0 {
+                                        let new_index = (current_index + 1) % counts_len;
+                                        self.state.review_current_index = new_index;
+                                    }
+                                }
+                            }
+                        }
                     },
                     _ => {}
                 },
@@ -374,13 +408,11 @@ impl ToolBackend for Counter {
                 self.invalidate_cache();
 
                 // Push state update to frontend
-                if let Some(frontend_sender) = &self.frontend_sender {
-                    if let Err(e) = frontend_sender.try_send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(self.get_state()),
-                    )) {
-                        eprintln!("Failed to send state update to frontend: {}", e);
-                    }
-                }
+                let message = PipelineCommand::FrontendMessage(FrontendMessage::ReturnState(
+                    self.get_state(),
+                ));
+                self.send_to_frontend(message);
+                // Refresh pipeline
                 if let Err(e) = self
                     .command_sender
                     .send(PipelineCommand::Refresh(self.index))
@@ -447,9 +479,10 @@ impl Counter {
                 mode: CounterMode::Manual,
                 active_tool: CounterTool::Place,
                 active_count_type: None,
+                review_current_index: 0,
                 filter_proxys,
             },
-            frontend_sender: None,
+            frontend_senders: vec![],
             index: 0,
             filters,
             command_sender,
@@ -457,6 +490,14 @@ impl Counter {
             receiver,
             cached_output: None,
             cached_state: None,
+        }
+    }
+    fn send_to_frontend(&self, message: PipelineCommand) {
+        let l = self.frontend_senders.len();
+        for (i, sender) in self.frontend_senders.iter().enumerate() {
+            if let Err(e) = sender.send(message.clone()) {
+                eprintln!("Failed to send message to sender {} of {} {}", i, l, e)
+            };
         }
     }
 }

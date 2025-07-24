@@ -5,6 +5,8 @@
 - [ ] Latency from clicking to count showing up is enormoues
 - [ ] Auto counter not getting new state for `Count {x}` text???
 - [X] Proper pipeline tool caching (cache output and then invalidate downstream caches in Refresh command handler)
+- [ ] Run Lutz on GPU
+- [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
 
 ## Features:
 - [ ] Support dragging and dropping images into viewer
@@ -14,7 +16,7 @@
 - [ ] Watershed segmentation
 - [X] Local maxima detection/segmentation
 - [ ] Weka segmentation with weka-rs
-- [ ] Manual/Autocell counter (Name: Counter, Segmented results get dumped into cell counter tool)
+- [X] Manual/Autocell counter
 - [ ] Background subtraction
 - [ ] Flourescene intensity measurment tool
 - [ ] Colocalization analysis tool
@@ -26,6 +28,7 @@
 - [ ] Multiple tool instances
 - [ ] Grayscale tool
 - [ ] Make it so swithcing between auto and manual does not overwrite manual counts
+- [ ] Slicer/Splitter thingy that takes in one image and splits out each color channel as it's own image
 
 ## Big features:
 - [ ] Parallel node based editor instead of linear flow

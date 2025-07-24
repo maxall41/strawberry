@@ -264,20 +264,26 @@ impl ManagerView {
         }
     }
 
+    fn get_current_tool_index(&self) -> Option<u16> {
+        match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => Some(index),
+                None => {
+                    eprintln!("No current tool index available");
+                    None
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {}", e);
+                None
+            }
+        }
+    }
+
     fn end_drag(&mut self, position: Point<f32>) {
         if let Some(drag_state) = self.drag_state.take() {
-            let current_tool_index = match self.current_tool_index.read() {
-                Ok(guard) => match *guard {
-                    Some(index) => index,
-                    None => {
-                        eprintln!("No current tool index available");
-                        return;
-                    }
-                },
-                Err(e) => {
-                    eprintln!("Failed to read current tool index: {}", e);
-                    return;
-                }
+            let Some(current_tool_index) = self.get_current_tool_index() else {
+                return;
             };
 
             // Calculate new position based on closest tool element position
