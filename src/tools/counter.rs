@@ -3,7 +3,7 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, Point, SharedString,
+    div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Point, SharedString,
     TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use rfd::FileDialog;

@@ -81,6 +81,7 @@ pub enum CountMessage {
     CopyToManual,
     ReviewNavigatePrevious,
     ReviewNavigateNext,
+    DeletionLasso(Vec<(u64, u64)>),
 }
 
 #[derive(Debug, Clone)]

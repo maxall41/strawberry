@@ -2,7 +2,10 @@ use std::{collections::HashMap, time::Instant};
 
 use crate::{
     tools::counter::CounterTool,
-    utils::consts::{flip_rgba_to_bgra, CIRCLE_COLORS},
+    utils::{
+        consts::CIRCLE_COLORS,
+        fitting::{find_counts_within_polygon, ramer_douglas_peucker_closed},
+    },
 };
 
 use super::{
@@ -289,6 +292,17 @@ impl ToolBackend for Counter {
                     PipelineObjectMessage::CountMessage(count_message) => match count_message {
                         CountMessage::NewCountType(id) => {
                             self.state.manual_counts.insert(id, vec![]);
+                        }
+                        CountMessage::DeletionLasso(points) => {
+                            println!("Got lasso deletion command");
+                            if let Some(active_count_type) = &self.state.active_count_type {
+                                let polygon = ramer_douglas_peucker_closed(points);
+                                let counts = self.state.manual_counts[active_count_type].clone();
+                                self.state.manual_counts.insert(
+                                    *active_count_type,
+                                    find_counts_within_polygon(polygon, counts),
+                                );
+                            }
                         }
                         CountMessage::SetActiveCountType(id) => {
                             self.state.active_count_type = Some(id);

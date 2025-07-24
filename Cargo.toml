@@ -1,10 +1,10 @@
 [package]
-name = "strawberry"
+name = "app"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" }
+gpui = { git = "https://github.com/maxall41/gpui-m" }
 anyhow = "1.0"
 rfd = "0.15"
 futures = "0.3"
@@ -19,6 +19,3 @@ lutz = "1.4.1"
 serde = "1.0.219"
 quick-xml = { version = "0.38.0", features = ["serialize"] }
 native-dialog = "0.9.0"
-
-[patch."https://github.com/zed-industries/zed"]
-gpui = { path = "/Users/maxcampbell/zed/crates/gpui" }

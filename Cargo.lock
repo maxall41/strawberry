@@ -76,6 +76,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
 
 [[package]]
+name = "app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytemuck",
+ "env_logger",
+ "flume",
+ "futures",
+ "gpui",
+ "image",
+ "lutz",
+ "native-dialog",
+ "quick-xml 0.38.0",
+ "rfd",
+ "serde",
+ "tokio",
+ "wgpu",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -184,9 +205,9 @@ dependencies = [
 
 [[package]]
 name = "async-compression"
-version = "0.4.25"
+version = "0.4.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40f6024f3f856663b45fd0c9b6f2024034a702f453549449e0d84a305900dad4"
+checksum = "ddb939d66e4ae03cee6091612804ba446b12878410cfa17f785f4dd67d4014e8"
 dependencies = [
  "deflate64",
  "flate2",
@@ -212,9 +233,9 @@ dependencies = [
 
 [[package]]
 name = "async-fs"
-version = "2.1.2"
+version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebcd09b382f40fcd159c2d695175b2ae620ffa5f3bd6f664131efff4e8b9e04a"
+checksum = "09f7e37c0ed80b2a977691c47dae8625cfb21e205827106c64f7c588766b2e50"
 dependencies = [
  "async-lock",
  "blocking",
@@ -844,6 +865,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
+source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
 dependencies = [
  "indexmap",
  "rustc-hash 2.1.1",
@@ -1172,6 +1194,7 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
+source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2061,6 +2084,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.1.0"
+source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
 dependencies = [
  "anyhow",
  "as-raw-xcb-connection",
@@ -2153,6 +2177,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
+source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2163,9 +2188,9 @@ dependencies = [
 
 [[package]]
 name = "grid"
-version = "0.13.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d196ffc1627db18a531359249b2bf8416178d84b729f3cebeb278f285fb9b58c"
+checksum = "71b01d27060ad58be4663b9e4ac9e2d4806918e8876af8912afbddd1a91d5eaa"
 
 [[package]]
 name = "half"
@@ -2264,14 +2289,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-body"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1efedce1fb8e6913f23e0c92de8e62cd5b772a67e7b3946df930a62566c93184"
+dependencies = [
+ "bytes",
+ "http",
+]
+
+[[package]]
 name = "http_client"
 version = "0.1.0"
+source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
 dependencies = [
  "anyhow",
  "bytes",
  "derive_more",
  "futures",
  "http",
+ "http-body",
  "log",
  "serde",
  "serde_json",
@@ -2439,9 +2476,9 @@ checksum = "d0263a3d970d5c054ed9312c0057b4f3bde9c0b33836d3637361d4a9e6e7a408"
 
 [[package]]
 name = "indexmap"
-version = "2.9.0"
+version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cea70ddb795996207ad57735b50c5982d8844f38ba9ee5f1aedcfb708a2aa11e"
+checksum = "fe4cd85333e22411419a0bcae1297d25e58c9443848b11dc6a86fefe8c78a661"
 dependencies = [
  "equivalent",
  "hashbrown 0.15.4",
@@ -2857,6 +2894,7 @@ dependencies = [
 [[package]]
 name = "media"
 version = "0.1.0"
+source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -4029,6 +4067,7 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
+source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
 dependencies = [
  "derive_refineable",
  "workspace-hack",
@@ -4269,7 +4308,7 @@ dependencies = [
 [[package]]
 name = "scap"
 version = "0.0.8"
-source = "git+https://github.com/zed-industries/scap?rev=270538dc780f5240723233ff901e1054641ed318#270538dc780f5240723233ff901e1054641ed318"
+source = "git+https://github.com/zed-industries/scap?rev=808aa5c45b41e8f44729d02e38fd00a2fe2722e7#808aa5c45b41e8f44729d02e38fd00a2fe2722e7"
 dependencies = [
  "anyhow",
  "cocoa 0.25.0",
@@ -4363,6 +4402,7 @@ checksum = "0f7d95a54511e0c7be3f51e8867aa8cf35148d7b9445d44de2f943e2b206e749"
 [[package]]
 name = "semantic_version"
 version = "0.1.0"
+source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
 dependencies = [
  "anyhow",
  "serde",
@@ -4618,27 +4658,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "strawberry"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytemuck",
- "env_logger",
- "flume",
- "futures",
- "gpui",
- "image",
- "lutz",
- "native-dialog",
- "quick-xml 0.38.0",
- "rfd",
- "serde",
- "tokio",
- "wgpu",
-]
-
-[[package]]
 name = "strict-num"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4700,6 +4719,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
+source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
 dependencies = [
  "arrayvec",
  "log",
@@ -4883,13 +4903,12 @@ dependencies = [
 
 [[package]]
 name = "taffy"
-version = "0.4.4"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ec17858c2d465b2f734b798b920818a974faf0babb15d7fef81818a4b2d16f1"
+checksum = "7aaef0ac998e6527d6d0d5582f7e43953bb17221ac75bb8eb2fcc2db3396db1c"
 dependencies = [
  "arrayvec",
  "grid",
- "num-traits",
  "serde",
  "slotmap",
 ]
@@ -5353,6 +5372,7 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 [[package]]
 name = "util"
 version = "0.1.0"
+source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
 dependencies = [
  "anyhow",
  "async-fs",
