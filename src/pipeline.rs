@@ -1,17 +1,17 @@
 use core::fmt;
-use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use compositor::{Compositor, CompositorState};
 
+use crate::{processing::local_maxima::ThresholdType, tools::counter::CounterTool};
+use anyhow::anyhow;
 use contrast::{Contrast, ContrastState};
 use counter::{Counter, CounterState};
 use gaussian_blur::{GaussianBlur, GaussianBlurState};
-use image::RgbaImage;
+use image::{ImageReader, RgbaImage};
 use local_maxima::{LocalMaxima, LocalMaximaState};
 use manager::{ManagerState, ToolManager};
-
-use crate::{processing::local_maxima::ThresholdType, tools::counter::CounterTool};
 
 use futures::future::try_join_all;
 use threshold::{Threshold, ThresholdState};
@@ -76,6 +76,11 @@ pub enum CountMessage {
     SetActiveTool(CounterTool),
     ToggleFilter(u16, bool),
     FilterMessage(FilterMessage),
+    SaveCounts(PathBuf),
+    LoadCounts(PathBuf),
+    CopyToManual,
+    ReviewNavigatePrevious,
+    ReviewNavigateNext,
 }
 
 #[derive(Debug, Clone)]
@@ -91,9 +96,15 @@ pub enum PipelineObjectMessage {
 }
 
 #[derive(Debug, Clone)]
+pub enum CrossFrontendMessage {
+    MoveViewerToImagePoint(u64, u64),
+}
+
+#[derive(Debug, Clone)]
 pub enum FrontendMessage {
     ReturnState(ToolState),
     ReturnBackendTools(Vec<u16>, Vec<flume::Sender<PipelineCommand>>),
+    UserFeedback(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,7 +117,6 @@ pub enum BackendToolType {
     Manager,
     Threshold,
 }
-
 impl fmt::Display for BackendToolType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}", self)
@@ -119,7 +129,7 @@ pub enum PipelineCommand {
     /// Refresh the pipeline starting from the given tool index
     Refresh(usize),
     /// Load input images into the pipeline
-    Load(Vec<RgbaImage>),
+    Load(Vec<PathBuf>),
     /// Return output image from the pipeline
     Output(RgbaImage),
     /// Message to pipeline object
@@ -156,7 +166,7 @@ pub enum ToolState {
 pub trait ToolBackend: Send + Sync {
     /// Process input images and return modified images
     /// If the tool is disabled, it should return the input unchanged
-    async fn process(&mut self, input: Vec<RgbaImage>) -> anyhow::Result<Vec<RgbaImage>>;
+    async fn process(&mut self, output_images: &mut Vec<RgbaImage>) -> anyhow::Result<()>;
 
     /// Check if this tool is currently enabled
     fn is_enabled(&self) -> bool;
@@ -177,7 +187,7 @@ pub trait ToolBackend: Send + Sync {
     fn get_sender(&self) -> flume::Sender<PipelineCommand>;
 
     /// Set the sender for backend->frontend communication
-    fn set_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>);
+    fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>);
 
     /// Disconnect the frontend by clearing the frontend sender
     fn disconnect(&mut self);
@@ -262,31 +272,45 @@ impl Pipeline {
     pub async fn process_from(&mut self, start_index: usize) -> anyhow::Result<()> {
         let start_time = std::time::Instant::now();
         println!("Got process_from command!");
-        let mut images = self.input_images.clone(); //TODO: Performance
+        if self.input_images.len() == 0 {
+            return Err(anyhow!("No input images provided"));
+        }
 
         let mut earliest_processing_index = start_index;
+        let mut last_valid_cache_index = None;
+        let mut images = vec![];
 
+        let now = Instant::now();
+
+        // First pass: find the earliest index where we need to start processing
         for (i, tool) in self.tool_manager.tools.iter().enumerate() {
             if i >= start_index {
                 break;
             }
 
             if tool.is_enabled() && tool.supports_processing() {
-                if let Some(cached_output) = tool.get_cached_output() {
-                    if tool.has_valid_cache() {
-                        images = cached_output;
-                    } else {
-                        earliest_processing_index = i;
-                        images = self.input_images.clone();
-                        break;
-                    }
+                if tool.has_valid_cache() {
+                    last_valid_cache_index = Some(i);
                 } else {
                     earliest_processing_index = i;
-                    images = self.input_images.clone();
                     break;
                 }
             }
         }
+
+        // Get the cached output from the last valid cache
+        if let Some(cache_index) = last_valid_cache_index {
+            if let Some(cached_output) = self.tool_manager.tools[cache_index].get_cached_output() {
+                images = cached_output;
+            } else {
+                images = self.input_images.clone();
+            }
+        } else {
+            images = self.input_images.clone();
+        }
+
+        let elapsed = now.elapsed();
+        println!("Catching up on cache: {:.2?}", elapsed);
 
         for tool in self
             .tool_manager
@@ -304,7 +328,7 @@ impl Pipeline {
             .skip(earliest_processing_index)
         {
             if tool.is_enabled() && tool.supports_processing() {
-                images = tool.process(images).await?;
+                tool.process(&mut images).await?;
                 tool.set_cached_output(images.clone());
             }
         }
@@ -337,13 +361,22 @@ impl Pipeline {
                         eprintln!("Failed to process pipeline from index {}: {}", index, e);
                     }
                 }
-                PipelineCommand::Load(images) => {
+                PipelineCommand::Load(files) => {
                     println!("Got load command!");
-                    self.input_images = images.clone(); //TODO: Performance
-                    if images.len() > 1 {
-                        self.tool_manager.tools[0].set_enabled(true);
-                        //TODO: Push state to frontend
+                    let mut loaded_images = vec![];
+                    //TODO: Maybe we should do this in a separate thread?
+                    for file in files {
+                        if let Ok(reader) = ImageReader::open(&file) {
+                            if let Ok(decoded) = reader.decode() {
+                                let data = decoded.to_rgba8();
+                                loaded_images.push(data);
+                            }
+                        }
                     }
+                    if loaded_images.len() > 1 {
+                        self.tool_manager.tools[0].set_enabled(true);
+                    }
+                    self.input_images = loaded_images;
                     if let Err(e) = self.process_from(0).await {
                         eprintln!("Failed to process pipeline after loading images: {}", e);
                     }
@@ -354,7 +387,7 @@ impl Pipeline {
                     let mut i = 0;
 
                     if *backend_tool_type == BackendToolType::Manager {
-                        self.tool_manager.set_frontend_sender(sender.clone());
+                        self.tool_manager.add_frontend_sender(sender.clone());
                         let r = FrontendMessage::ReturnBackendTools(
                             vec![0],
                             vec![self.tool_manager.get_sender()],
@@ -369,7 +402,7 @@ impl Pipeline {
                         let iam = tool.iam();
                         if iam == *backend_tool_type {
                             discovered.push(i as u16);
-                            tool.set_frontend_sender(sender.clone());
+                            tool.add_frontend_sender(sender.clone());
                             channels.push(tool.get_sender());
                             i += 1;
                         }

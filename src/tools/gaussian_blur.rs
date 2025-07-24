@@ -126,19 +126,25 @@ impl GaussianBlurView {
         .detach();
     }
 
-    fn toggle_enabled(&mut self, current_value: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let current_tool_index = match self.current_tool_index.read() {
+    fn get_current_tool_index(&self) -> Option<u16> {
+        match self.current_tool_index.read() {
             Ok(guard) => match *guard {
-                Some(index) => index,
+                Some(index) => Some(index),
                 None => {
                     eprintln!("No current tool index available");
-                    return;
+                    None
                 }
             },
             Err(e) => {
                 eprintln!("Failed to read current tool index: {}", e);
-                return;
+                None
             }
+        }
+    }
+
+    fn toggle_enabled(&mut self, current_value: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
         };
 
         if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
@@ -153,18 +159,8 @@ impl GaussianBlurView {
     }
 
     fn update_radius_sigma(&mut self, radius: f32, sigma: f32) {
-        let current_tool_index = match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
-                return;
-            }
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
         };
 
         if let Some(sender) = self.send_channels.get(current_tool_index as usize) {

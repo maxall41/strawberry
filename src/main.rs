@@ -1,37 +1,39 @@
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
 use anyhow::Result;
 use gpui::{
-    actions, div, img, prelude::*, px, size, App, AppContext, Application, AssetSource, Bounds,
-    Context, FocusHandle, Focusable, ImageSource, Img, KeyBinding, KeyDownEvent, KeyUpEvent, Menu,
-    MenuItem, MouseDownEvent, Point, RenderImage, SharedString, TitlebarOptions, Window,
-    WindowBounds, WindowOptions,
+    actions, div, img, prelude::*, px, rgb, size, App, AppContext, Application, AssetSource,
+    Bounds, Context, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent,
+    Menu, MenuItem, MouseDownEvent, Pixels, Point, RenderImage, SharedString, TitlebarOptions,
+    Window, WindowBounds, WindowOptions,
 };
-use image::{Frame, ImageReader, RgbaImage};
+use image::{Frame, RgbaImage};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
-use pipeline::{Pipeline, PipelineCommand};
+use pipeline::counter::{CounterMode, CounterState};
+use pipeline::{FrontendMessage, Pipeline, PipelineCommand, ToolState};
 use rfd::FileDialog;
 use tools::compositor::CompositorView;
 use tools::contrast::ContrastView;
+use tools::counter::CounterTool;
 use tools::counter::CounterView;
 use tools::gaussian_blur::GaussianBlurView;
 use tools::local_maxima::LocalMaximaView;
 use tools::manager::ManagerView;
 use tools::threshold::ThresholdView;
 use tools::ToolFrontend;
+use utils::consts::CIRCLE_COLORS;
 
 struct Assets {
     base: PathBuf,
 }
 
-mod consts;
 mod gui;
 mod pipeline;
 mod processing;
 mod tools;
+mod utils;
 
 const MOVEMENT_SPEED: f32 = 25.0;
 
@@ -69,40 +71,45 @@ struct PrimaryViewer {
     command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
     command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     display_image: ImageSource,
+    img_coords: Arc<RwLock<Option<Bounds<Pixels>>>>,
+    count_data: Option<CounterState>,
+    review_snap_target: Option<(u64, u64)>,
 }
 
 impl PrimaryViewer {
     fn load_image_file(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(files) = FileDialog::new()
-            .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
-            .set_directory("/")
-            .pick_files()
-        {
-            let sender_p = self.command_sender.clone();
-            let mut recv_p = self.command_receiver.resubscribe();
+        let sender_p = self.command_sender.clone();
 
-            cx.spawn_in(_window, async move |this, cx| {
-                let mut loaded_images = vec![];
-                //TODO: Is file loading blocking main thread???
-                for file in files {
-                    if let Ok(reader) = ImageReader::open(&file) {
-                        if let Ok(decoded) = reader.decode() {
-                            let data = decoded.to_rgba8();
-                            loaded_images.push(data);
-                        }
-                    }
-                }
+        cx.spawn_in(_window, async move |_, _| {
+            let files = FileDialog::new()
+                .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
+                .set_directory("/")
+                .pick_files();
 
-                if let Err(e) = sender_p.send(PipelineCommand::Load(loaded_images)) {
+            if let Some(files) = files {
+                if let Err(e) = sender_p.send(PipelineCommand::Load(files)) {
                     eprintln!("Failed to send loaded images to pipeline: {}", e);
                 }
-            })
-            .detach();
-        }
+            }
+        })
+        .detach();
     }
 
     pub fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut receiver_ref = self.command_receiver.resubscribe();
+        let (counter_sender, counter_recv) = flume::unbounded();
+        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
+            pipeline::BackendToolType::Counter,
+            counter_sender,
+        )) {
+            eprintln!("Failed to get counter backend in primary viewer {}", e)
+        };
+
+        // secondary_receivers: Vec<flume::Receiver<PipelineCommand>>,
+        // secondary_senders: Vec<flume::Sender<PipelineCommand>>,
+
+        let secondary_receivers: Vec<flume::Receiver<PipelineCommand>> = vec![counter_recv];
+
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 if let Ok(command) = receiver_ref.try_recv() {
@@ -122,6 +129,52 @@ impl PrimaryViewer {
                             }
                         }
                         _ => {}
+                    }
+                }
+                for recv in &secondary_receivers {
+                    if let Ok(msg) = recv.try_recv() {
+                        match msg {
+                            PipelineCommand::FrontendMessage(msg) => match msg {
+                                FrontendMessage::ReturnBackendTools(_, _) => {}
+                                FrontendMessage::ReturnState(tool_state) => {
+                                    match tool_state {
+                                        ToolState::CounterState(counter_state) => {
+                                            // Check if we're in review mode and need to snap to a count
+                                            let should_snap = counter_state.is_enabled
+                                                && counter_state.active_tool == CounterTool::Review
+                                                && counter_state.active_count_type.is_some();
+
+                                            let snap_position = if should_snap {
+                                                counter_state
+                                                    .active_count_type
+                                                    .and_then(|count_type| {
+                                                        counter_state.manual_counts.get(&count_type)
+                                                    })
+                                                    .and_then(|counts| {
+                                                        counts
+                                                            .get(counter_state.review_current_index)
+                                                    })
+                                                    .map(|count| count.position)
+                                            } else {
+                                                None
+                                            };
+
+                                            // Store count data and review snap target
+                                            if let Err(e) = this.update(cx, |this, cx| {
+                                                this.count_data = Some(counter_state);
+                                                this.review_snap_target = snap_position;
+                                                cx.notify();
+                                            }) {
+                                                eprintln!("Failed to update display image: {}", e);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                _ => {}
+                            },
+                            _ => {}
+                        }
                     }
                 }
                 cx.background_executor()
@@ -220,6 +273,17 @@ impl Focusable for PrimaryViewer {
 
 impl Render for PrimaryViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Handle review snap if needed
+        if let Some((x, y)) = self.review_snap_target.take() {
+            let viewport = window.viewport_size();
+            let viewport_center_x = viewport.width.0 / 2.0;
+            let viewport_center_y = viewport.height.0 / 2.0;
+
+            // Calculate pan to center the count position
+            self.pan_x = viewport_center_x - (x as f32 * self.zoom_level);
+            self.pan_y = viewport_center_y - (y as f32 * self.zoom_level);
+        }
+
         // Ensure this element is always focused
         window.focus(&self.focus_handle(cx));
 
@@ -229,6 +293,7 @@ impl Render for PrimaryViewer {
             .h(px(self.original_height as f32 * self.zoom_level));
 
         let coords = _img.coords.clone();
+        self.img_coords = coords.clone();
 
         let image_size = (self.original_width.clone(), self.original_height.clone());
 
@@ -237,10 +302,10 @@ impl Render for PrimaryViewer {
         let mut _img = _img.on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener({
-                move |this: &mut PrimaryViewer,
+                move |_: &mut PrimaryViewer,
                       event: &MouseDownEvent,
                       _window: &mut Window,
-                      cx: &mut Context<PrimaryViewer>| {
+                      _: &mut Context<PrimaryViewer>| {
                     let mouse_x = event.position.x.0;
                     let mouse_y = event.position.y.0;
 
@@ -283,6 +348,85 @@ impl Render for PrimaryViewer {
                     .top(px(self.pan_y))
                     .child(_img),
             )
+            .children({
+                // Draw circles for count data
+                let mut circles = Vec::new();
+
+                if let Some(ref counter_state) = self.count_data {
+                    if counter_state.is_enabled {
+                        // Helper function to convert image coords to screen coords
+                        let img_to_screen = |img_x: u64, img_y: u64| -> (f32, f32) {
+                            (
+                                img_x as f32 * self.zoom_level + self.pan_x,
+                                img_y as f32 * self.zoom_level + self.pan_y,
+                            )
+                        };
+
+                        // Draw manual counts
+                        for (count_type_id, counts) in &counter_state.manual_counts {
+                            let color_index = (*count_type_id as usize) % CIRCLE_COLORS.len();
+                            let color = CIRCLE_COLORS[color_index];
+                            let gpui_color = rgb((color[0] as u32) << 16
+                                | (color[1] as u32) << 8
+                                | color[2] as u32);
+
+                            for (index, count) in counts.iter().enumerate() {
+                                let (screen_x, screen_y) =
+                                    img_to_screen(count.position.0, count.position.1);
+
+                                // Use hot pink for selected count in review mode
+                                let circle_color = if counter_state.active_tool
+                                    == CounterTool::Review
+                                    && counter_state.active_count_type == Some(*count_type_id)
+                                    && index == counter_state.review_current_index
+                                {
+                                    rgb(0xffd500) // Hot pink
+                                } else {
+                                    gpui_color
+                                };
+
+                                circles.push(
+                                    div()
+                                        .absolute()
+                                        .left(px(screen_x - 10.0)) // Center the 20px circle
+                                        .top(px(screen_y - 10.0))
+                                        .w(px(20.0))
+                                        .h(px(20.0))
+                                        .rounded_full()
+                                        .border_2()
+                                        .border_color(circle_color),
+                                );
+                            }
+                        }
+
+                        // Draw auto counts
+                        if counter_state.mode == CounterMode::Auto {
+                            let color = CIRCLE_COLORS[0]; // Use first color for auto counts
+                            let gpui_color = rgb((color[0] as u32) << 16
+                                | (color[1] as u32) << 8
+                                | color[2] as u32);
+
+                            for count in &counter_state.auto_counts {
+                                let (screen_x, screen_y) =
+                                    img_to_screen(count.position.0, count.position.1);
+                                circles.push(
+                                    div()
+                                        .absolute()
+                                        .left(px(screen_x - 10.0))
+                                        .top(px(screen_y - 10.0))
+                                        .w(px(20.0))
+                                        .h(px(20.0))
+                                        .rounded_full()
+                                        .border_2()
+                                        .border_color(gpui_color),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                circles
+            })
     }
 }
 
@@ -346,7 +490,7 @@ async fn main() -> Result<()> {
             let view_sender_clone2 = view_sender.clone();
             let view_recv_clone2 = view_recv.resubscribe();
 
-            cx.on_window_closed(move |cx| {});
+            let _window_closed_subscription = cx.on_window_closed(move |_| {});
 
             cx.on_action(move |_: &ContrastSettings, cx| {
                 let mut raw_contrast =
@@ -539,6 +683,9 @@ async fn main() -> Result<()> {
                     command_receiver: view_recv.resubscribe(),
                     command_sender: view_sender.clone(),
                     display_image: ImageSource::Render(img_data),
+                    img_coords: Arc::new(RwLock::new(None)),
+                    count_data: None,
+                    review_snap_target: None,
                 };
 
                 let viewer = cx.new(|cx| {
