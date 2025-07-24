@@ -7,6 +7,7 @@ pub mod contrast;
 pub mod gaussian_blur;
 pub mod local_maxima;
 pub mod threshold;
+pub mod watershed;
 
 pub struct GpuImageProcessor {
     device: wgpu::Device,

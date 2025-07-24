@@ -2,8 +2,8 @@ use anyhow::Result;
 use gpui::{
     actions, div, img, prelude::*, px, rgb, size, App, AppContext, Application, AssetSource,
     Bounds, Context, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent,
-    Menu, MenuItem, MouseDownEvent, Pixels, Point, RenderImage, SharedString, TitlebarOptions,
-    Window, WindowBounds, WindowOptions,
+    Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use image::{Frame, RgbaImage};
 use std::fs;
@@ -12,7 +12,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use pipeline::counter::{CounterMode, CounterState};
-use pipeline::{FrontendMessage, Pipeline, PipelineCommand, ToolState};
+use pipeline::{
+    CountMessage, FrontendMessage, Pipeline, PipelineCommand, PipelineObjectMessage, ToolState,
+};
 use rfd::FileDialog;
 use tools::compositor::CompositorView;
 use tools::contrast::ContrastView;
@@ -60,6 +62,21 @@ impl AssetSource for Assets {
     }
 }
 
+#[derive(Debug, Clone)]
+struct LassoState {
+    is_dragging: bool,
+    points: Vec<(u64, u64)>,
+}
+
+impl Default for LassoState {
+    fn default() -> Self {
+        Self {
+            is_dragging: false,
+            points: vec![],
+        }
+    }
+}
+
 struct PrimaryViewer {
     focus_handle: FocusHandle,
     zoom_level: f32,
@@ -74,6 +91,8 @@ struct PrimaryViewer {
     img_coords: Arc<RwLock<Option<Bounds<Pixels>>>>,
     count_data: Option<CounterState>,
     review_snap_target: Option<(u64, u64)>,
+    lasso_state: LassoState,
+    counter_sender: Option<flume::Sender<PipelineCommand>>,
 }
 
 impl PrimaryViewer {
@@ -135,7 +154,13 @@ impl PrimaryViewer {
                     if let Ok(msg) = recv.try_recv() {
                         match msg {
                             PipelineCommand::FrontendMessage(msg) => match msg {
-                                FrontendMessage::ReturnBackendTools(_, _) => {}
+                                FrontendMessage::ReturnBackendTools(_, return_sender) => {
+                                    this.update(cx, |this, cx| {
+                                        this.counter_sender = Some(return_sender[0].clone());
+                                        //TODO: Mmm danger
+                                    })
+                                    .unwrap();
+                                }
                                 FrontendMessage::ReturnState(tool_state) => {
                                     match tool_state {
                                         ToolState::CounterState(counter_state) => {
@@ -263,6 +288,57 @@ impl PrimaryViewer {
             self.pressed_keys.remove(key);
         }
     }
+
+    // Helper method to convert screen coordinates to image coordinates
+    fn screen_to_image_coords(&self, screen_x: f32, screen_y: f32) -> Option<(u64, u64)> {
+        if let Some(coords) = self.img_coords.read().unwrap().clone() {
+            let relative_x = (screen_x - coords.origin.x.0) / coords.size.width.0;
+            let relative_y = (screen_y - coords.origin.y.0) / coords.size.height.0;
+
+            if relative_x >= 0.0 && relative_x <= 1.0 && relative_y >= 0.0 && relative_y <= 1.0 {
+                let image_pixel_x = (relative_x * self.original_width as f32) as u64;
+                let image_pixel_y = (relative_y * self.original_height as f32) as u64;
+                Some((image_pixel_x, image_pixel_y))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    // Start lasso operation
+    fn start_lasso(&mut self, image_x: u64, image_y: u64) {
+        self.lasso_state.is_dragging = true;
+        self.lasso_state.points.clear();
+        self.lasso_state.points.push((image_x, image_y));
+    }
+
+    // Add point to lasso
+    fn add_lasso_point(&mut self, image_x: u64, image_y: u64) {
+        if self.lasso_state.is_dragging {
+            self.lasso_state.points.push((image_x, image_y));
+        }
+    }
+
+    // End lasso operation and send points to backend
+    fn end_lasso(&mut self) {
+        if self.lasso_state.is_dragging && !self.lasso_state.points.is_empty() {
+            self.lasso_state.is_dragging = false;
+
+            // Send the lasso points to the backend
+            let points = self.lasso_state.points.clone();
+            if let Some(counter_sender) = &self.counter_sender {
+                if let Err(e) = counter_sender.send(PipelineCommand::PipelineObject(
+                    PipelineObjectMessage::CountMessage(CountMessage::DeletionLasso(points)),
+                )) {
+                    eprintln!("Failed to send lasso deletion command: {}", e);
+                }
+            }
+            println!("Lasso points sent to backend");
+            self.lasso_state.points.clear();
+        }
+    }
 }
 
 impl Focusable for PrimaryViewer {
@@ -302,32 +378,69 @@ impl Render for PrimaryViewer {
         let mut _img = _img.on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener({
-                move |_: &mut PrimaryViewer,
+                move |this: &mut PrimaryViewer,
                       event: &MouseDownEvent,
                       _window: &mut Window,
                       _: &mut Context<PrimaryViewer>| {
                     let mouse_x = event.position.x.0;
                     let mouse_y = event.position.y.0;
 
-                    if let Some(coords) = coords.read().unwrap().clone() {
-                        let relative_x = (mouse_x - coords.origin.x.0) / coords.size.width.0;
-                        let relative_y = (mouse_y - coords.origin.y.0) / coords.size.height.0;
-
-                        let image_pixel_x = (relative_x * image_size.0 as f32) as u64;
-                        let image_pixel_y = (relative_y * image_size.1 as f32) as u64;
-
-                        if let Err(e) = mouse_down_sender
-                            .send(PipelineCommand::HandleClick(image_pixel_x, image_pixel_y))
-                        {
-                            eprintln!("Error sending click event: {}", e);
+                    if let Some((image_x, image_y)) = this.screen_to_image_coords(mouse_x, mouse_y)
+                    {
+                        let is_lasso_delete_active =
+                            if let Some(ref counter_state) = this.count_data {
+                                counter_state.is_enabled
+                                    && counter_state.active_tool == CounterTool::LassoDelete
+                            } else {
+                                false
+                            };
+                        if is_lasso_delete_active {
+                            this.start_lasso(image_x, image_y);
+                        } else {
+                            if let Err(e) = mouse_down_sender
+                                .send(PipelineCommand::HandleClick(image_x, image_y))
+                            {
+                                eprintln!("Error sending click event: {}", e);
+                            }
                         }
                     } else {
-                        eprintln!("Image layout ID is None");
+                        eprintln!("Could not convert screen coordinates to image coordinates");
                     }
-
-                    // println!("Rendered image size: {:?}", rendered_img_size);
                 }
             }),
+        );
+
+        _img = _img.on_mouse_move(cx.listener(
+            move |this: &mut PrimaryViewer,
+                  event: &MouseMoveEvent,
+                  _window: &mut Window,
+                  cx: &mut Context<PrimaryViewer>| {
+                if this.lasso_state.is_dragging {
+                    let mouse_x = event.position.x.0;
+                    let mouse_y = event.position.y.0;
+
+                    if let Some((image_x, image_y)) = this.screen_to_image_coords(mouse_x, mouse_y)
+                    {
+                        this.add_lasso_point(image_x, image_y);
+                        cx.notify();
+                    }
+                }
+            },
+        ));
+
+        let mut _img = _img.on_mouse_up(
+            gpui::MouseButton::Left,
+            cx.listener(
+                move |this: &mut PrimaryViewer,
+                      _event: &MouseUpEvent,
+                      _window: &mut Window,
+                      cx: &mut Context<PrimaryViewer>| {
+                    if this.lasso_state.is_dragging {
+                        this.end_lasso();
+                        cx.notify();
+                    }
+                },
+            ),
         );
 
         div()
@@ -422,6 +535,31 @@ impl Render for PrimaryViewer {
                                 );
                             }
                         }
+                    }
+                }
+
+                // Draw lasso lines if dragging
+                if self.lasso_state.is_dragging && self.lasso_state.points.len() > 1 {
+                    let img_to_screen = |img_x: u64, img_y: u64| -> (f32, f32) {
+                        (
+                            img_x as f32 * self.zoom_level + self.pan_x,
+                            img_y as f32 * self.zoom_level + self.pan_y,
+                        )
+                    };
+
+                    // Draw small dots for each lasso point
+                    for point in &self.lasso_state.points {
+                        let (screen_x, screen_y) = img_to_screen(point.0, point.1);
+                        circles.push(
+                            div()
+                                .absolute()
+                                .left(px(screen_x - 2.0))
+                                .top(px(screen_y - 2.0))
+                                .w(px(4.0))
+                                .h(px(4.0))
+                                .rounded_full()
+                                .bg(rgb(0xff0000)), // Red color for lasso
+                        );
                     }
                 }
 
@@ -674,6 +812,7 @@ async fn main() -> Result<()> {
             if let Err(e) = cx.open_window(window_options, |window, cx| {
                 let mut raw_primary_viewer = PrimaryViewer {
                     focus_handle: cx.focus_handle(),
+                    counter_sender: None,
                     zoom_level: 1.0,
                     original_width: 800,
                     original_height: 600,
@@ -686,6 +825,7 @@ async fn main() -> Result<()> {
                     img_coords: Arc::new(RwLock::new(None)),
                     count_data: None,
                     review_snap_target: None,
+                    lasso_state: LassoState::default(),
                 };
 
                 let viewer = cx.new(|cx| {

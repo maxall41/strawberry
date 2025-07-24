@@ -2,16 +2,17 @@
 - [ ] If compositing > 7 images then just batch into 7 image batches and run each and then composite them together (supports up to 49 images which should be enough for pretty much everything)
 - [ ] Abstract drop menu in tools/manager.rs into GUI component
 - [ ] Colors are inverted when loading a single image
-- [ ] Latency from clicking to count showing up is enormoues
-- [ ] Auto counter not getting new state for `Count {x}` text???
 - [X] Proper pipeline tool caching (cache output and then invalidate downstream caches in Refresh command handler)
 - [ ] Run Lutz on GPU
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
+- [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
+- [ ] If tokio backend panics handle it properly
 
 ## Features:
 - [ ] Support dragging and dropping images into viewer
 - [ ] Support Z-stacking
 - [ ] Support stitching
+- [ ] Themes
 - [X] Thresholding
 - [ ] Watershed segmentation
 - [X] Local maxima detection/segmentation
