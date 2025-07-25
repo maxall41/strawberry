@@ -12,6 +12,8 @@ use gaussian_blur::{GaussianBlur, GaussianBlurState};
 use image::{ImageReader, RgbaImage};
 use local_maxima::{LocalMaxima, LocalMaximaState};
 use manager::{ManagerState, ToolManager};
+use morphology::{Morphology, MorphologyState};
+use watershed::{Watershed, WatershedState};
 
 use futures::future::try_join_all;
 use threshold::{Threshold, ThresholdState};
@@ -25,7 +27,9 @@ pub mod counter;
 pub mod gaussian_blur;
 pub mod local_maxima;
 pub mod manager;
+pub mod morphology;
 pub mod threshold;
+pub mod watershed;
 
 #[derive(Debug, Clone)]
 pub enum CompositorMessage {
@@ -48,6 +52,12 @@ pub enum LocalMaximaMessage {
 }
 
 #[derive(Debug, Clone)]
+pub enum MorphologyMessage {
+    SetOperation(crate::processing::morphology::MorphologyOperation),
+    SetElementSize(u32),
+}
+
+#[derive(Debug, Clone)]
 pub enum ManagerMessage {
     ReorderTool(u16, u16),
 }
@@ -55,6 +65,11 @@ pub enum ManagerMessage {
 #[derive(Debug, Clone)]
 pub enum ThresholdMessage {
     SetThresholdValue(f32),
+}
+
+#[derive(Debug, Clone)]
+pub enum WatershedMessage {
+    SetParameters(f32, u32), // sigma, min_distance
 }
 
 #[derive(Debug, Clone)]
@@ -90,7 +105,9 @@ pub enum PipelineObjectMessage {
     ContrastMessage(ContrastMessage),
     GaussianBlurMessage(GaussianBlurMessage),
     LocalMaximaMessage(LocalMaximaMessage),
+    MorphologyMessage(MorphologyMessage),
     ThresholdMessage(ThresholdMessage),
+    WatershedMessage(WatershedMessage),
     ToggleActive(bool),
     ManagerMessage(ManagerMessage),
     CountMessage(CountMessage),
@@ -116,7 +133,9 @@ pub enum BackendToolType {
     GaussianBlur,
     LocalMaxima,
     Manager,
+    Morphology,
     Threshold,
+    Watershed,
 }
 impl fmt::Display for BackendToolType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -157,8 +176,10 @@ pub enum ToolState {
     GaussianBlurState(GaussianBlurState),
     LocalMaximaState(LocalMaximaState),
     ManagerState(ManagerState),
+    MorphologyState(morphology::MorphologyState),
     ThresholdState(ThresholdState),
     CounterState(CounterState),
+    WatershedState(watershed::WatershedState),
 }
 
 /// Trait for image processing tools
@@ -253,7 +274,9 @@ impl Pipeline {
                 Box::new(Contrast::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(GaussianBlur::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(LocalMaxima::new(command_tx.clone(), gpu_image_processor.clone()).await),
+                Box::new(Morphology::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(Threshold::new(command_tx.clone(), gpu_image_processor.clone()).await),
+                Box::new(Watershed::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(Counter::new(command_tx.clone()).await),
             ],
             command_tx.clone(),

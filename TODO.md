@@ -7,6 +7,11 @@
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
 - [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
 - [ ] If tokio backend panics handle it properly
+- [ ] GUI Error handling
+- [ ] by default when loading a single image use default image colors
+- [ ] Debounce pipeline events so if the user is changing the state rapdily like with a value counter it is all processed in a bundle
+- [ ] Add debouncing to frontend value counter
+- [ ] Compositor does not work with 5+ images
 
 ## Features:
 - [ ] Support dragging and dropping images into viewer
@@ -14,7 +19,7 @@
 - [ ] Support stitching
 - [ ] Themes
 - [X] Thresholding
-- [ ] Watershed segmentation
+- [X] Watershed segmentation
 - [X] Local maxima detection/segmentation
 - [ ] Weka segmentation with weka-rs
 - [X] Manual/Autocell counter
