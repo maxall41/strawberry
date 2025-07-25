@@ -399,6 +399,17 @@ impl Pipeline {
                     }
                     if loaded_images.len() > 1 {
                         self.tool_manager.tools[0].set_enabled(true);
+                    } else {
+                        if !loaded_images.is_empty() {
+                            let mut rgba_image = loaded_images[0].clone();
+                            // Convert RGBA to BGRA by swapping R and B channels
+                            for pixel in rgba_image.pixels_mut() {
+                                let temp = pixel[0]; // Store R
+                                pixel[0] = pixel[2]; // R = B
+                                pixel[2] = temp; // B = R
+                            }
+                            loaded_images[0] = rgba_image;
+                        }
                     }
                     self.input_images = loaded_images;
                     if let Err(e) = self.process_from(0).await {

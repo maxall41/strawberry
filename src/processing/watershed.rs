@@ -14,12 +14,6 @@ const WORKGROUP_SIZE: u32 = 8;
 const GRAYSCALE_THRESHOLD: f32 = 0.5;
 const IN_QUEUE_MARKER: u32 = u32::MAX;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct WatershedConfig {
-    pub sigma: f32,
-    pub min_distance: u32,
-}
-
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct WatershedUniforms {
@@ -29,15 +23,6 @@ struct WatershedUniforms {
     min_distance: u32,
 }
 
-impl Default for WatershedConfig {
-    fn default() -> Self {
-        Self {
-            sigma: 0.0,
-            min_distance: 3,
-        }
-    }
-}
-
 /// GPU-accelerated watershed segmentation processor.
 pub struct GpuWatershed {
     watershed_pipeline: wgpu::ComputePipeline,
@@ -45,11 +30,10 @@ pub struct GpuWatershed {
     distance_jump_pipeline: wgpu::ComputePipeline,
     distance_final_pipeline: wgpu::ComputePipeline,
     gpu: Arc<GpuImageProcessor>,
-    config: WatershedConfig,
 }
 
 impl GpuWatershed {
-    pub async fn new(config: WatershedConfig, gpu: Arc<GpuImageProcessor>) -> Self {
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         let watershed_pipeline = Self::create_watershed_pipeline(&gpu);
         let (distance_init_pipeline, distance_jump_pipeline, distance_final_pipeline) =
             Self::create_distance_pipelines(&gpu);
@@ -60,7 +44,6 @@ impl GpuWatershed {
             distance_jump_pipeline,
             distance_final_pipeline,
             gpu,
-            config,
         }
     }
 
@@ -176,23 +159,37 @@ impl GpuWatershed {
         )
     }
 
-    pub async fn apply_watershed(&self, image: &RgbaImage) -> Result<RgbaImage> {
+    pub async fn apply_watershed(
+        &self,
+        image: &RgbaImage,
+        sigma: f32,
+        min_distance: u32,
+    ) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
         let tile_config = TileConfig::from_limits(&self.gpu.device.limits());
 
         if TileGrid::needs_tiling(width, height, &tile_config) {
-            self.apply_watershed_tiled(image, &tile_config).await
+            self.apply_watershed_tiled(image, &tile_config, sigma, min_distance)
+                .await
         } else {
-            self.apply_watershed_single(image).await
+            self.apply_watershed_single(image, sigma, min_distance)
+                .await
         }
     }
 
-    async fn apply_watershed_single(&self, image: &RgbaImage) -> Result<RgbaImage> {
+    async fn apply_watershed_single(
+        &self,
+        image: &RgbaImage,
+        sigma: f32,
+        min_distance: u32,
+    ) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
 
         let binary = self.to_binary_mask(image);
         let distance_map = self.gpu_distance_transform(&binary, width, height).await?;
-        let markers = self.find_peaks_gpu(&distance_map, width, height).await?;
+        let markers = self
+            .find_peaks_gpu(&distance_map, width, height, sigma, min_distance)
+            .await?;
         let labels =
             self.watershed_transform(&distance_map, &markers, width as usize, height as usize);
 
@@ -222,6 +219,8 @@ impl GpuWatershed {
         &self,
         image: &RgbaImage,
         tile_config: &TileConfig,
+        sigma: f32,
+        min_distance: u32,
     ) -> Result<RgbaImage> {
         let (full_width, full_height) = image.dimensions();
         let tile_grid = TileGrid::new(full_width, full_height, tile_config.clone());
@@ -230,7 +229,9 @@ impl GpuWatershed {
 
         for tile_info in &tile_grid.tiles {
             let tile_image = extract_rgba_tile(image, tile_info);
-            let processed_tile = self.apply_watershed_single(&tile_image).await?;
+            let processed_tile = self
+                .apply_watershed_single(&tile_image, sigma, min_distance)
+                .await?;
             processed_tiles.push((tile_info.clone(), processed_tile));
         }
 
@@ -443,7 +444,14 @@ impl GpuWatershed {
         Ok(distances.to_vec())
     }
 
-    async fn find_peaks_gpu(&self, distance: &[f32], width: u32, height: u32) -> Result<Vec<u32>> {
+    async fn find_peaks_gpu(
+        &self,
+        distance: &[f32],
+        width: u32,
+        height: u32,
+        sigma: f32,
+        min_distance: u32,
+    ) -> Result<Vec<u32>> {
         let pixel_count = (width * height) as usize;
 
         let distance_buffer =
@@ -472,8 +480,8 @@ impl GpuWatershed {
         let uniforms = WatershedUniforms {
             width,
             height,
-            sigma: self.config.sigma,
-            min_distance: self.config.min_distance,
+            sigma: sigma,
+            min_distance: min_distance,
         };
 
         let uniform_buffer =

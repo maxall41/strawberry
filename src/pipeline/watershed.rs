@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use crate::processing::{
-    watershed::{GpuWatershed, WatershedConfig},
-    GpuImageProcessor,
-};
+use crate::processing::{watershed::GpuWatershed, GpuImageProcessor};
 
 use super::{
     BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolBackend,
@@ -52,7 +49,10 @@ impl ToolBackend for Watershed {
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
-            *image = self.watershed.apply_watershed(image).await?;
+            *image = self
+                .watershed
+                .apply_watershed(image, self.state.sigma, self.state.min_distance)
+                .await?;
         }
         Ok(())
     }
@@ -149,14 +149,7 @@ impl Watershed {
                 sigma: 1.0,
                 min_distance: 10,
             },
-            watershed: GpuWatershed::new(
-                WatershedConfig {
-                    sigma: 1.0,
-                    min_distance: 10,
-                },
-                gpu_image_processor,
-            )
-            .await,
+            watershed: GpuWatershed::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
             sender,
