@@ -2,9 +2,12 @@ use std::{borrow::Cow, sync::Arc};
 
 use anyhow::Result;
 use image::RgbaImage;
-use wgpu::{util::DeviceExt, PipelineCompilationOptions};
+use wgpu::PipelineCompilationOptions;
 
-use super::GpuImageProcessor;
+use super::{
+    tiling::{extract_rgba_tile, merge_rgba_tiles, TileConfig, TileGrid},
+    GpuImageProcessor,
+};
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -51,33 +54,31 @@ impl GpuThreshold {
 
     pub async fn apply_threshold(&self, image: &RgbaImage, threshold: f32) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
+        let tile_config = TileConfig::from_limits(&self.gpu.device.limits());
+
+        // Check if we need tile-based processing
+        if TileGrid::needs_tiling(width, height, &tile_config) {
+            println!(
+                "Image {}x{} requires tile-based processing for GPU limits",
+                width, height
+            );
+            self.apply_threshold_tiled(image, threshold, &tile_config)
+                .await
+        } else {
+            // Process as single tile for smaller images
+            self.apply_threshold_single(image, threshold).await
+        }
+    }
+
+    /// Apply threshold operation to a single image (no tiling needed)
+    async fn apply_threshold_single(&self, image: &RgbaImage, threshold: f32) -> Result<RgbaImage> {
+        let (width, height) = image.dimensions();
         let pixel_count = (width * height) as usize;
 
-        // Create input buffer
-        let input_buffer = self
-            .gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Input Image Buffer"),
-                contents: bytemuck::cast_slice(image.as_raw()),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-
-        // Create output buffer
-        let output_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Output Buffer"),
-            size: (pixel_count * 4) as u64, // 4 bytes per RGBA pixel
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        // Staging buffer to read results back to CPU
-        let staging_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Staging Buffer"),
-            size: (pixel_count * 4) as u64,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        // Create buffers using helper methods
+        let input_buffer = self.gpu.create_input_buffer(image);
+        let output_buffer = self.gpu.create_output_buffer(pixel_count);
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count);
 
         // Uniform buffer for dimensions and threshold value
         let uniforms = ThresholdUniforms {
@@ -86,15 +87,7 @@ impl GpuThreshold {
             threshold: threshold.clamp(0.0, 1.0), // Ensure threshold is in valid range
             _padding: 0.0,
         };
-
-        let uniform_buffer =
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Threshold Uniform Buffer"),
-                    contents: bytemuck::cast_slice(&[uniforms]),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
+        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
 
         // Create bind group
         let bind_group_layout = self.compute_pipeline.get_bind_group_layout(0);
@@ -128,58 +121,67 @@ impl GpuThreshold {
                 label: Some("Threshold Encoder"),
             });
 
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Threshold Pass"),
-                timestamp_writes: None,
-            });
-
-            compute_pass.set_pipeline(&self.compute_pipeline);
-            compute_pass.set_bind_group(0, &bind_group, &[]);
-
-            // Dispatch with 8x8 work groups (matching the shader workgroup size)
-            let workgroup_size = 8;
-            let dispatch_x = (width + workgroup_size - 1) / workgroup_size;
-            let dispatch_y = (height + workgroup_size - 1) / workgroup_size;
-            compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
-        }
-
-        // Copy result to staging buffer
-        encoder.copy_buffer_to_buffer(
-            &output_buffer,
-            0,
-            &staging_buffer,
-            0,
-            (pixel_count * 4) as u64,
+        self.gpu.dispatch_compute_with_encoder(
+            &mut encoder,
+            &self.compute_pipeline,
+            &bind_group,
+            width,
+            height,
+            "Threshold Pass",
         );
 
-        // Submit commands
+        // Submit commands and read results
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
-
-        // Read back results
-        let buffer_slice = staging_buffer.slice(..);
-        let (sender, receiver) = flume::unbounded();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            if let Err(e) = sender.send(result) {
-                eprintln!("Failed to send GPU buffer mapping result: {}", e);
-            }
-        });
-
-        self.gpu.device.poll(wgpu::MaintainBase::Wait);
-        let map_result = receiver
-            .recv_async()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {}", e))?;
-        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {:?}", e))?;
-
-        let data = buffer_slice.get_mapped_range();
-        let result_bytes: &[u8] = &data;
-
-        // Create result image from the GPU buffer data
-        let result_image = RgbaImage::from_raw(width, height, result_bytes.to_vec())
-            .ok_or_else(|| anyhow::anyhow!("Failed to create image from GPU buffer data"))?;
+        let result_image = self
+            .gpu
+            .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)
+            .await?;
 
         println!("Applied threshold with value: {}", threshold);
         Ok(result_image)
+    }
+
+    /// Apply threshold operation using tile-based approach for large images
+    async fn apply_threshold_tiled(
+        &self,
+        image: &RgbaImage,
+        threshold: f32,
+        tile_config: &TileConfig,
+    ) -> Result<RgbaImage> {
+        let (full_width, full_height) = image.dimensions();
+        let tile_grid = TileGrid::new(full_width, full_height, tile_config.clone());
+
+        println!(
+            "Processing {} tiles for {}x{} image with threshold {}",
+            tile_grid.tiles.len(),
+            full_width,
+            full_height,
+            threshold
+        );
+
+        let mut processed_tiles = Vec::new();
+
+        for (i, tile_info) in tile_grid.tiles.iter().enumerate() {
+            println!(
+                "Processing tile {}/{}: {}x{} at ({}, {})",
+                i + 1,
+                tile_grid.tiles.len(),
+                tile_info.width,
+                tile_info.height,
+                tile_info.x,
+                tile_info.y
+            );
+
+            // Extract tile from the full image
+            let tile_image = extract_rgba_tile(image, tile_info);
+
+            // Process the tile
+            let processed_tile = self.apply_threshold_single(&tile_image, threshold).await?;
+
+            processed_tiles.push((tile_info.clone(), processed_tile));
+        }
+
+        // Merge tiles back into full image
+        merge_rgba_tiles(&processed_tiles, full_width, full_height)
     }
 }

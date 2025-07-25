@@ -23,7 +23,9 @@ use tools::counter::CounterView;
 use tools::gaussian_blur::GaussianBlurView;
 use tools::local_maxima::LocalMaximaView;
 use tools::manager::ManagerView;
+use tools::morphology::MorphologyView;
 use tools::threshold::ThresholdView;
+use tools::watershed::WatershedView;
 use tools::ToolFrontend;
 use utils::consts::CIRCLE_COLORS;
 
@@ -146,6 +148,7 @@ impl PrimaryViewer {
                             }) {
                                 eprintln!("Failed to update display image: {}", e);
                             }
+                            println!("Image updated");
                         }
                         _ => {}
                     }
@@ -581,7 +584,9 @@ actions!(
         GaussianBlurSettings,
         LocalMaximaSettings,
         ManagerSettings,
-        ThresholdSettings
+        MorphologySettings,
+        ThresholdSettings,
+        WatershedSettings
     ]
 );
 
@@ -730,9 +735,46 @@ async fn main() -> Result<()> {
             let view_sender_clone6 = view_sender.clone();
             let view_recv_clone6 = view_recv.resubscribe();
 
+            cx.on_action(move |_: &MorphologySettings, cx| {
+                let mut raw_morphology =
+                    MorphologyView::new(view_recv_clone6.resubscribe(), view_sender_clone6.clone());
+
+                if let Err(e) = cx.open_window(raw_morphology.get_window_options(), |window, cx| {
+                    let morphology_view = cx.new(|cx| {
+                        raw_morphology.initialize(window, cx);
+                        raw_morphology
+                    });
+
+                    morphology_view
+                }) {
+                    eprintln!("Failed to open morphology window: {}", e);
+                }
+            });
+
+            let view_sender_clone7 = view_sender.clone();
+            let view_recv_clone7 = view_recv.resubscribe();
+
+            cx.on_action(move |_: &WatershedSettings, cx| {
+                let mut raw_watershed =
+                    WatershedView::new(view_recv_clone7.resubscribe(), view_sender_clone7.clone());
+
+                if let Err(e) = cx.open_window(raw_watershed.get_window_options(), |window, cx| {
+                    let watershed_view = cx.new(|cx| {
+                        raw_watershed.initialize(window, cx);
+                        raw_watershed
+                    });
+                    watershed_view
+                }) {
+                    eprintln!("Failed to open watershed window: {}", e);
+                }
+            });
+
+            let view_sender_clone8 = view_sender.clone();
+            let view_recv_clone8 = view_recv.resubscribe();
+
             cx.on_action(move |_: &ManagerSettings, cx| {
                 let mut raw_manager =
-                    ManagerView::new(view_recv_clone6.resubscribe(), view_sender_clone6.clone());
+                    ManagerView::new(view_recv_clone8.resubscribe(), view_sender_clone8.clone());
 
                 if let Err(e) = cx.open_window(raw_manager.get_window_options(), |window, cx| {
                     let manager_view = cx.new(|cx| {
@@ -772,7 +814,9 @@ async fn main() -> Result<()> {
                         MenuItem::action("Counter", CounterSettings),
                         MenuItem::action("Gaussian Blur", GaussianBlurSettings),
                         MenuItem::action("Local Maxima", LocalMaximaSettings),
+                        MenuItem::action("Morphology", MorphologySettings),
                         MenuItem::action("Threshold", ThresholdSettings),
+                        MenuItem::action("Watershed", WatershedSettings),
                     ],
                 },
             ]);

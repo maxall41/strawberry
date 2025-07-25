@@ -48,13 +48,11 @@ impl ToolBackend for GaussianBlur {
         self.frontend_senders.clear();
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
-        let mut output = Vec::new();
         for image in input {
-            let output_image = self
+            *image = self
                 .gaussian_blur
                 .apply_blur(&image, self.state.radius, self.state.sigma)
                 .await?;
-            output.push(output_image);
         }
         Ok(())
     }

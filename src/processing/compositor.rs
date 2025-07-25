@@ -2,7 +2,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use anyhow::Result;
 use image::RgbaImage;
-use wgpu::{util::DeviceExt, PipelineCompilationOptions};
+use wgpu::PipelineCompilationOptions;
 
 use super::GpuImageProcessor;
 
@@ -59,14 +59,7 @@ impl GpuCompositor {
         // Create separate buffers for each input image
         let mut image_buffers = Vec::new();
         for img in images {
-            let buffer = self
-                .gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Input Image Buffer"),
-                    contents: bytemuck::cast_slice(img.as_raw()),
-                    usage: wgpu::BufferUsages::STORAGE,
-                });
+            let buffer = self.gpu.create_input_buffer(img);
             image_buffers.push(buffer);
         }
 
@@ -78,21 +71,9 @@ impl GpuCompositor {
             ));
         }
 
-        // Output buffer
-        let output_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Output Buffer"),
-            size: (pixel_count * 4) as u64, // 4 bytes per RGBA pixel
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        // Staging buffer to read results back to CPU
-        let staging_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Staging Buffer"),
-            size: (pixel_count * 4) as u64,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        // Create buffers using helper methods
+        let output_buffer = self.gpu.create_output_buffer(pixel_count);
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count);
 
         // Uniform buffer for dimensions and layer count
         let uniforms = CompositeUniforms {
@@ -102,14 +83,7 @@ impl GpuCompositor {
             _padding: 0,
         };
 
-        let uniform_buffer =
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Uniform Buffer"),
-                    contents: bytemuck::cast_slice(&[uniforms]),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
+        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
 
         // Create bind group with separate buffers
         let mut entries = vec![
@@ -164,56 +138,21 @@ impl GpuCompositor {
                 label: Some("Composite Encoder"),
             });
 
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Composite Pass"),
-                timestamp_writes: None,
-            });
-
-            compute_pass.set_pipeline(&self.compute_pipeline);
-            compute_pass.set_bind_group(0, &bind_group, &[]);
-
-            // Dispatch with 8x8 work groups (adjust for optimal performance)
-            let workgroup_size = 8;
-            let dispatch_x = (width + workgroup_size - 1) / workgroup_size;
-            let dispatch_y = (height + workgroup_size - 1) / workgroup_size;
-            compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
-        }
-
-        // Copy result to staging buffer
-        encoder.copy_buffer_to_buffer(
-            &output_buffer,
-            0,
-            &staging_buffer,
-            0,
-            (pixel_count * 4) as u64,
+        self.gpu.dispatch_compute_with_encoder(
+            &mut encoder,
+            &self.compute_pipeline,
+            &bind_group,
+            width,
+            height,
+            "Composite Pass",
         );
 
-        // Submit commands
+        // Submit commands and read results
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
-
-        // Read back results
-        let buffer_slice = staging_buffer.slice(..);
-        let (sender, receiver) = flume::unbounded();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            if let Err(e) = sender.send(result) {
-                eprintln!("Failed to send GPU buffer mapping result: {}", e);
-            }
-        });
-
-        self.gpu.device.poll(wgpu::MaintainBase::Wait);
-        let map_result = receiver
-            .recv_async()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {}", e))?;
-        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {:?}", e))?;
-
-        let data = buffer_slice.get_mapped_range();
-        let result_bytes: &[u8] = &data;
-
-        // Create result image from the GPU buffer data
-        let result_image = RgbaImage::from_raw(width, height, result_bytes.to_vec())
-            .ok_or_else(|| anyhow::anyhow!("Failed to create image from GPU buffer data"))?;
+        let result_image = self
+            .gpu
+            .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)
+            .await?;
         println!("Returning composited image");
         Ok(result_image)
     }

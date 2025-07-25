@@ -6,7 +6,9 @@ pub mod counter;
 pub mod gaussian_blur;
 pub mod local_maxima;
 pub mod manager;
+pub mod morphology;
 pub mod threshold;
+pub mod watershed;
 
 /// RAII guard that automatically sends disconnect command when dropped
 pub struct CleanupGuard {
