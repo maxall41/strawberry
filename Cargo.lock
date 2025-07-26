@@ -76,27 +76,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
 
 [[package]]
-name = "app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytemuck",
- "env_logger",
- "flume",
- "futures",
- "gpui",
- "image",
- "lutz",
- "native-dialog",
- "quick-xml 0.38.0",
- "rfd",
- "serde",
- "tokio",
- "wgpu",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4656,6 +4635,27 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "strawberry"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytemuck",
+ "env_logger",
+ "flume",
+ "futures",
+ "gpui",
+ "image",
+ "lutz",
+ "native-dialog",
+ "quick-xml 0.38.0",
+ "rfd",
+ "serde",
+ "tokio",
+ "wgpu",
+]
 
 [[package]]
 name = "strict-num"

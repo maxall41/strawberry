@@ -3,8 +3,8 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use rfd::FileDialog;
 
@@ -1340,11 +1340,25 @@ impl ToolFrontend for CounterView {
             }),
 
             window_bounds: Some(WindowBounds::Windowed(Bounds {
-                size: size(px(300.), px(450.)),
-                origin: Point::new(px(500.), px(200.)),
+                size: size(px(400.), px(700.)),
+                origin: Point::new(px(720.), px(200.)),
             })),
 
             ..Default::default()
         }
+    }
+
+    fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (sender, receiver) = flume::unbounded();
+        self.receive_channel = Some(receiver.clone());
+        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
+            BackendToolType::Counter,
+            sender,
+        )) {
+            eprintln!("Failed to send backend discovery request: {}", e);
+            return;
+        }
+        println!("Sent discovery request to backend | Counter");
+        self.process_messages(window, cx);
     }
 }

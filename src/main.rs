@@ -10,6 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use tools::decomposer::DecomposerView;
 
 use pipeline::counter::{CounterMode, CounterState};
 use pipeline::{
@@ -586,9 +587,42 @@ actions!(
         ManagerSettings,
         MorphologySettings,
         ThresholdSettings,
-        WatershedSettings
+        WatershedSettings,
+        DecomposerSettings
     ]
 );
+
+// Generic tool window creation function
+fn create_tool_window<T, A>(
+    cx: &mut App,
+    view_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    view_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
+    constructor: impl Fn(
+            tokio::sync::broadcast::Receiver<PipelineCommand>,
+            tokio::sync::broadcast::Sender<PipelineCommand>,
+        ) -> T
+        + 'static,
+) where
+    T: ToolFrontend + gpui::Render + 'static,
+    A: gpui::Action + 'static,
+{
+    let view_sender_clone = view_sender.clone();
+    let view_recv_clone = view_receiver.resubscribe();
+
+    cx.on_action(move |_: &A, cx| {
+        let mut tool = constructor(view_recv_clone.resubscribe(), view_sender_clone.clone());
+
+        if let Err(e) = cx.open_window(tool.get_window_options(), |window, cx| {
+            let tool_view = cx.new(|cx| {
+                tool.initialize(window, cx);
+                tool
+            });
+            tool_view
+        }) {
+            eprintln!("Failed to open tool window: {}", e);
+        }
+    });
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -612,180 +646,69 @@ async fn main() -> Result<()> {
             base: manifest_dir.join("examples"),
         })
         .run(move |cx: &mut App| {
-            let view_sender_clone = view_sender.clone();
-            let view_recv_clone = view_recv.resubscribe();
-
-            cx.on_action(move |_: &CompositorSettings, cx| {
-                let mut raw_compositor =
-                    CompositorView::new(view_recv_clone.resubscribe(), view_sender_clone.clone());
-
-                if let Err(e) = cx.open_window(raw_compositor.get_window_options(), |window, cx| {
-                    let compositor_view = cx.new(|cx| {
-                        raw_compositor.initialize(window, cx);
-                        raw_compositor
-                    });
-                    compositor_view
-                }) {
-                    eprintln!("Failed to open compositor window: {}", e);
-                }
-            });
-
-            let view_sender_clone2 = view_sender.clone();
-            let view_recv_clone2 = view_recv.resubscribe();
+            // Register all tool windows using the generic function
+            create_tool_window::<CompositorView, CompositorSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                CompositorView::new,
+            );
+            create_tool_window::<ContrastView, ContrastSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                ContrastView::new,
+            );
+            create_tool_window::<CounterView, CounterSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                CounterView::new,
+            );
+            create_tool_window::<GaussianBlurView, GaussianBlurSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                GaussianBlurView::new,
+            );
+            create_tool_window::<ThresholdView, ThresholdSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                ThresholdView::new,
+            );
+            create_tool_window::<LocalMaximaView, LocalMaximaSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                LocalMaximaView::new,
+            );
+            create_tool_window::<MorphologyView, MorphologySettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                MorphologyView::new,
+            );
+            create_tool_window::<WatershedView, WatershedSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                WatershedView::new,
+            );
+            create_tool_window::<ManagerView, ManagerSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                ManagerView::new,
+            );
+            create_tool_window::<DecomposerView, DecomposerSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                DecomposerView::new,
+            );
 
             let _window_closed_subscription = cx.on_window_closed(move |_| {});
-
-            cx.on_action(move |_: &ContrastSettings, cx| {
-                let mut raw_contrast =
-                    ContrastView::new(view_recv_clone2.resubscribe(), view_sender_clone2.clone());
-
-                if let Err(e) = cx.open_window(raw_contrast.get_window_options(), |window, cx| {
-                    let contrast_view = cx.new(|cx| {
-                        raw_contrast.initialize(window, cx);
-                        raw_contrast
-                    });
-                    contrast_view
-                }) {
-                    eprintln!("Failed to open contrast window: {}", e);
-                }
-            });
-
-            let view_sender_clone_counter = view_sender.clone();
-            let view_recv_clone_counter = view_recv.resubscribe();
-
-            cx.on_action(move |_: &CounterSettings, cx| {
-                let mut raw_counter = CounterView::new(
-                    view_recv_clone_counter.resubscribe(),
-                    view_sender_clone_counter.clone(),
-                );
-
-                if let Err(e) = cx.open_window(raw_counter.get_window_options(), |window, cx| {
-                    let counter_view = cx.new(|cx| {
-                        raw_counter.initialize(window, cx);
-                        raw_counter
-                    });
-                    counter_view
-                }) {
-                    eprintln!("Failed to open counter window: {}", e);
-                }
-            });
-
-            let view_sender_clone3 = view_sender.clone();
-            let view_recv_clone3 = view_recv.resubscribe();
-
-            cx.on_action(move |_: &GaussianBlurSettings, cx| {
-                let mut raw_gaussian_blur = GaussianBlurView::new(
-                    view_recv_clone3.resubscribe(),
-                    view_sender_clone3.clone(),
-                );
-
-                if let Err(e) =
-                    cx.open_window(raw_gaussian_blur.get_window_options(), |window, cx| {
-                        let gaussian_blur_view = cx.new(|cx| {
-                            raw_gaussian_blur.initialize(window, cx);
-                            raw_gaussian_blur
-                        });
-                        gaussian_blur_view
-                    })
-                {
-                    eprintln!("Failed to open gaussian blur window: {}", e);
-                }
-            });
-
-            let view_sender_clone4 = view_sender.clone();
-            let view_recv_clone4 = view_recv.resubscribe();
-
-            cx.on_action(move |_: &ThresholdSettings, cx| {
-                let mut raw_threshold =
-                    ThresholdView::new(view_recv_clone4.resubscribe(), view_sender_clone4.clone());
-
-                if let Err(e) = cx.open_window(raw_threshold.get_window_options(), |window, cx| {
-                    let threshold_view = cx.new(|cx| {
-                        raw_threshold.initialize(window, cx);
-                        raw_threshold
-                    });
-                    threshold_view
-                }) {
-                    eprintln!("Failed to open threshold window: {}", e);
-                }
-            });
-
-            let view_sender_clone5 = view_sender.clone();
-            let view_recv_clone5 = view_recv.resubscribe();
-
-            cx.on_action(move |_: &LocalMaximaSettings, cx| {
-                let mut raw_local_maxima = LocalMaximaView::new(
-                    view_recv_clone5.resubscribe(),
-                    view_sender_clone5.clone(),
-                );
-
-                if let Err(e) =
-                    cx.open_window(raw_local_maxima.get_window_options(), |window, cx| {
-                        let local_maxima_view = cx.new(|cx| {
-                            raw_local_maxima.initialize(window, cx);
-                            raw_local_maxima
-                        });
-                        local_maxima_view
-                    })
-                {
-                    eprintln!("Failed to open local maxima window: {}", e);
-                }
-            });
-
-            let view_sender_clone6 = view_sender.clone();
-            let view_recv_clone6 = view_recv.resubscribe();
-
-            cx.on_action(move |_: &MorphologySettings, cx| {
-                let mut raw_morphology =
-                    MorphologyView::new(view_recv_clone6.resubscribe(), view_sender_clone6.clone());
-
-                if let Err(e) = cx.open_window(raw_morphology.get_window_options(), |window, cx| {
-                    let morphology_view = cx.new(|cx| {
-                        raw_morphology.initialize(window, cx);
-                        raw_morphology
-                    });
-
-                    morphology_view
-                }) {
-                    eprintln!("Failed to open morphology window: {}", e);
-                }
-            });
-
-            let view_sender_clone7 = view_sender.clone();
-            let view_recv_clone7 = view_recv.resubscribe();
-
-            cx.on_action(move |_: &WatershedSettings, cx| {
-                let mut raw_watershed =
-                    WatershedView::new(view_recv_clone7.resubscribe(), view_sender_clone7.clone());
-
-                if let Err(e) = cx.open_window(raw_watershed.get_window_options(), |window, cx| {
-                    let watershed_view = cx.new(|cx| {
-                        raw_watershed.initialize(window, cx);
-                        raw_watershed
-                    });
-                    watershed_view
-                }) {
-                    eprintln!("Failed to open watershed window: {}", e);
-                }
-            });
-
-            let view_sender_clone8 = view_sender.clone();
-            let view_recv_clone8 = view_recv.resubscribe();
-
-            cx.on_action(move |_: &ManagerSettings, cx| {
-                let mut raw_manager =
-                    ManagerView::new(view_recv_clone8.resubscribe(), view_sender_clone8.clone());
-
-                if let Err(e) = cx.open_window(raw_manager.get_window_options(), |window, cx| {
-                    let manager_view = cx.new(|cx| {
-                        raw_manager.initialize(window, cx);
-                        raw_manager
-                    });
-                    manager_view
-                }) {
-                    eprintln!("Failed to open manager window: {}", e);
-                }
-            });
 
             cx.on_action(|_: &Quit, cx| cx.quit());
 
@@ -817,6 +740,7 @@ async fn main() -> Result<()> {
                         MenuItem::action("Morphology", MorphologySettings),
                         MenuItem::action("Threshold", ThresholdSettings),
                         MenuItem::action("Watershed", WatershedSettings),
+                        MenuItem::action("Decomposer", DecomposerSettings),
                     ],
                 },
             ]);

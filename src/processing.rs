@@ -4,6 +4,7 @@ use wgpu::{util::DeviceExt, Trace};
 
 pub mod compositor;
 pub mod contrast;
+pub mod decomposer;
 pub mod gaussian_blur;
 pub mod local_maxima;
 pub mod morphology;

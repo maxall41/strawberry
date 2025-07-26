@@ -398,4 +398,18 @@ impl ToolFrontend for WatershedView {
             ..Default::default()
         }
     }
+
+    fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (sender, receiver) = flume::unbounded();
+        self.receive_channel = Some(receiver);
+        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
+            BackendToolType::Watershed,
+            sender,
+        )) {
+            eprintln!("Failed to send backend discovery request: {}", e);
+            return;
+        }
+        println!("Sent discovery request to backend | Watershed");
+        self.process_messages(window, cx);
+    }
 }
