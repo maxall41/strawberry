@@ -1,8 +1,9 @@
-use gpui::WindowOptions;
+use gpui::{Context, Window, WindowOptions};
 
 pub mod compositor;
 pub mod contrast;
 pub mod counter;
+pub mod decomposer;
 pub mod gaussian_blur;
 pub mod local_maxima;
 pub mod manager;
@@ -50,4 +51,7 @@ impl Drop for CleanupGuard {
 
 pub trait ToolFrontend {
     fn get_window_options(&self) -> WindowOptions;
+    fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>)
+    where
+        Self: Sized;
 }

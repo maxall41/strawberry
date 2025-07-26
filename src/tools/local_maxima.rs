@@ -571,4 +571,18 @@ impl ToolFrontend for LocalMaximaView {
             ..Default::default()
         }
     }
+
+    fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (sender, receiver) = flume::unbounded();
+        self.receive_channel = Some(receiver);
+        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
+            BackendToolType::LocalMaxima,
+            sender,
+        )) {
+            eprintln!("Failed to send backend discovery request: {}", e);
+            return;
+        }
+        println!("Sent discovery request to backend | Local Maxima");
+        self.process_messages(window, cx);
+    }
 }

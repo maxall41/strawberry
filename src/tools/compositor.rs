@@ -169,6 +169,27 @@ impl CompositorView {
         }
     }
 
+    fn toggle_enabled(
+        &mut self,
+        current_value: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::ToggleActive(!current_value),
+            )) {
+                eprintln!("Failed to send toggle enabled command: {}", e);
+            }
+        } else {
+            eprintln!("Invalid tool index: {}", current_tool_index);
+        }
+    }
+
     // Header component
     fn render_header(&self) -> impl IntoElement {
         div()
@@ -179,7 +200,7 @@ impl CompositorView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(&self, state: &CompositorState) -> impl IntoElement {
+    fn render_status(&self, state: &CompositorState, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .items_center()
@@ -196,7 +217,18 @@ impl CompositorView {
                     } else {
                         rgb(0xaa0000)
                     })
-                    .child(if state.is_enabled { "Yes" } else { "No" }),
+                    .child(if state.is_enabled { "Yes" } else { "No" })
+                    .on_mouse_down(gpui::MouseButton::Left, {
+                        let is_enabled = state.is_enabled;
+                        cx.listener(
+                            move |this: &mut CompositorView,
+                                  _event: &MouseDownEvent,
+                                  window: &mut Window,
+                                  cx: &mut Context<CompositorView>| {
+                                this.toggle_enabled(is_enabled, window, cx);
+                            },
+                        )
+                    }),
             )
     }
 
@@ -296,7 +328,7 @@ impl Render for CompositorView {
             .shadow_lg()
             .text_color(rgb(0xffffff))
             .child(self.render_header())
-            .child(self.render_status(&state))
+            .child(self.render_status(&state, cx))
             .child(self.render_layers_section(&state, cx))
     }
 }
@@ -317,5 +349,19 @@ impl ToolFrontend for CompositorView {
 
             ..Default::default()
         }
+    }
+
+    fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (sender, receiver) = flume::unbounded();
+        self.receive_channel = Some(receiver);
+        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
+            BackendToolType::Compositor,
+            sender,
+        )) {
+            eprintln!("Failed to send backend discovery request: {}", e);
+            return;
+        }
+        println!("Sent discovery request to backend | Compositor");
+        self.process_messages(window, cx);
     }
 }

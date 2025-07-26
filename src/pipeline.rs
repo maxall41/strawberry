@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use compositor::{Compositor, CompositorState};
+use decomposer::{Decomposer, DecomposerState};
 
 use crate::{processing::local_maxima::ThresholdType, tools::counter::CounterTool};
 use anyhow::anyhow;
@@ -24,6 +25,7 @@ use crate::processing::GpuImageProcessor;
 pub mod compositor;
 pub mod contrast;
 pub mod counter;
+pub mod decomposer;
 pub mod gaussian_blur;
 pub mod local_maxima;
 pub mod manager;
@@ -33,6 +35,11 @@ pub mod watershed;
 
 #[derive(Debug, Clone)]
 pub enum CompositorMessage {
+    ToggleVisibility(bool, u16),
+}
+
+#[derive(Debug, Clone)]
+pub enum DecomposerMessage {
     ToggleVisibility(bool, u16),
 }
 
@@ -101,6 +108,7 @@ pub enum CountMessage {
 
 #[derive(Debug, Clone)]
 pub enum PipelineObjectMessage {
+    DecomposerMessage(DecomposerMessage),
     CompositorMessage(CompositorMessage),
     ContrastMessage(ContrastMessage),
     GaussianBlurMessage(GaussianBlurMessage),
@@ -136,6 +144,7 @@ pub enum BackendToolType {
     Morphology,
     Threshold,
     Watershed,
+    Decomposer,
 }
 impl fmt::Display for BackendToolType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -179,6 +188,7 @@ pub enum ToolState {
     MorphologyState(morphology::MorphologyState),
     ThresholdState(ThresholdState),
     CounterState(CounterState),
+    DecomposerState(DecomposerState),
     WatershedState(watershed::WatershedState),
 }
 
@@ -277,7 +287,8 @@ impl Pipeline {
                 Box::new(Morphology::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(Threshold::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(Watershed::new(command_tx.clone(), gpu_image_processor.clone()).await),
-                Box::new(Counter::new(command_tx.clone()).await),
+                Box::new(Counter::new(command_tx.clone()).await?),
+                Box::new(Decomposer::new(command_tx.clone(), gpu_image_processor.clone()).await),
             ],
             command_tx.clone(),
         );
@@ -358,17 +369,18 @@ impl Pipeline {
         }
 
         if images.len() > 1 {
-            return Err(anyhow::anyhow!(
-                "Pipeline output should have only one image"
-            ));
+            if let Some(compositor_tool) = self.tool_manager.tools.get_mut(0) {
+                compositor_tool.process(&mut images).await?;
+            }
         }
 
-        if let Err(e) = self
-            .output_sender
-            .send(PipelineCommand::Output(images[0].clone()))
-        {
-            eprintln!("Failed to send output image: {}", e);
-        }
+        let output_image = images
+            .get(0)
+            .ok_or_else(|| anyhow::anyhow!("No output image available from pipeline"))?;
+
+        self.output_sender
+            .send(PipelineCommand::Output(output_image.clone()))
+            .map_err(|e| anyhow::anyhow!("Failed to send output image: {}", e))?;
 
         let duration = start_time.elapsed();
         println!("Pipeline processing took: {:?}", duration);

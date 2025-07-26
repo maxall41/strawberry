@@ -55,7 +55,7 @@ impl ToolBackend for Compositor {
             .into_iter()
             .enumerate()
             .filter_map(|(i, image)| {
-                if self.state.enabled_layers[i] {
+                if self.state.enabled_layers.get(i).copied().unwrap_or(false) {
                     Some(image)
                 } else {
                     None
@@ -78,7 +78,7 @@ impl ToolBackend for Compositor {
                 PipelineCommand::RequestState() => {
                     self.send_to_frontend(PipelineCommand::FrontendMessage(
                         FrontendMessage::ReturnState(self.get_state()),
-                    ));
+                    ))?;
                 }
                 PipelineCommand::PipelineObject(message) => match message {
                     PipelineObjectMessage::ToggleActive(value) => {
@@ -87,9 +87,25 @@ impl ToolBackend for Compositor {
                     PipelineObjectMessage::CompositorMessage(message) => match message {
                         CompositorMessage::ToggleVisibility(value, layer_index) => {
                             let mut mutated = self.state.enabled_layers.clone();
-                            mutated[layer_index as usize] = value;
+                            let index = layer_index as usize;
 
-                            if mutated[0..self.state.real_layers_len].iter().all(|&x| !x) {
+                            if index >= mutated.len() {
+                                return Err(anyhow::anyhow!(
+                                    "Layer index {} out of bounds (max: {})",
+                                    index,
+                                    mutated.len()
+                                ));
+                            }
+
+                            mutated[index] = value;
+
+                            let end_range =
+                                std::cmp::min(self.state.real_layers_len, mutated.len());
+                            if mutated
+                                .get(0..end_range)
+                                .map(|slice| slice.iter().all(|&x| !x))
+                                .unwrap_or(true)
+                            {
                                 return Ok(());
                             }
 
@@ -104,17 +120,14 @@ impl ToolBackend for Compositor {
                 // Invalidate cache when state changes
                 self.invalidate_cache();
 
-                if let Err(e) = self
-                    .command_sender
+                self.command_sender
                     .send(PipelineCommand::Refresh(self.index))
-                {
-                    eprintln!("Failed to send refresh command: {}", e);
-                }
+                    .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
 
                 // Push state update to frontend
                 self.send_to_frontend(PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
-                ));
+                ))?;
             }
         };
 
@@ -179,11 +192,12 @@ impl Compositor {
         }
     }
 
-    fn send_to_frontend(&self, message: PipelineCommand) {
+    fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {
         for sender in &self.frontend_senders {
-            if let Err(e) = sender.try_send(message.clone()) {
-                eprintln!("Failed to send message to frontend: {}", e);
-            }
+            sender
+                .try_send(message.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to send message to frontend: {}", e))?;
         }
+        Ok(())
     }
 }

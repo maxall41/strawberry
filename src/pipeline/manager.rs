@@ -104,7 +104,7 @@ impl ToolBackend for ToolManager {
                 PipelineCommand::RequestState() => {
                     self.send_to_frontend(PipelineCommand::FrontendMessage(
                         FrontendMessage::ReturnState(self.get_state()),
-                    ));
+                    ))?;
                 }
                 PipelineCommand::PipelineObject(message) => match message {
                     PipelineObjectMessage::ToggleActive(value) => {
@@ -112,21 +112,31 @@ impl ToolBackend for ToolManager {
                     }
                     PipelineObjectMessage::ManagerMessage(message) => match message {
                         ManagerMessage::ReorderTool(start_index, new_index) => {
-                            let tool = self.tools.remove(max(start_index as usize, 0));
-                            self.tools
-                                .insert(min(new_index as usize, self.tools.len()), tool);
+                            let start_idx = start_index as usize;
+                            let new_idx = new_index as usize;
+
+                            if start_idx >= self.tools.len() {
+                                return Err(anyhow::anyhow!(
+                                    "Start index {} out of bounds (max: {})",
+                                    start_idx,
+                                    self.tools.len()
+                                ));
+                            }
+
+                            let tool = self.tools.remove(start_idx);
+                            let insert_idx = std::cmp::min(new_idx, self.tools.len());
+                            self.tools.insert(insert_idx, tool);
 
                             // Reassign indices to all tools after reordering
                             for (index, tool) in self.tools.iter_mut().enumerate() {
                                 tool.set_index(index);
                             }
 
-                            if let Err(e) = self
-                                .command_sender
+                            self.command_sender
                                 .send(PipelineCommand::Refresh(self.index))
-                            {
-                                eprintln!("Failed to send refresh command: {}", e);
-                            }
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to send refresh command: {}", e)
+                                })?;
                         }
                     },
                     _ => {}
@@ -146,7 +156,7 @@ impl ToolBackend for ToolManager {
             // Push state update to frontend
             self.send_to_frontend(PipelineCommand::FrontendMessage(
                 FrontendMessage::ReturnState(self.get_state()),
-            ));
+            ))?;
         }
 
         Ok(())
@@ -192,11 +202,12 @@ impl ToolBackend for ToolManager {
 }
 
 impl ToolManager {
-    fn send_to_frontend(&self, message: PipelineCommand) {
+    fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {
         for sender in &self.frontend_senders {
-            if let Err(e) = sender.try_send(message.clone()) {
-                eprintln!("Failed to send message to frontend: {}", e);
-            }
+            sender
+                .try_send(message.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to send message to frontend: {}", e))?;
         }
+        Ok(())
     }
 }

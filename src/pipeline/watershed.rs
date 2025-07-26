@@ -65,7 +65,7 @@ impl ToolBackend for Watershed {
                 PipelineCommand::RequestState() => {
                     self.send_to_frontend(PipelineCommand::FrontendMessage(
                         FrontendMessage::ReturnState(self.get_state()),
-                    ));
+                    ))?;
                 }
                 PipelineCommand::PipelineObject(message) => match message {
                     PipelineObjectMessage::ToggleActive(value) => {
@@ -85,17 +85,14 @@ impl ToolBackend for Watershed {
                 // Invalidate cache when state changes
                 self.invalidate_cache();
 
-                if let Err(e) = self
-                    .command_sender
+                self.command_sender
                     .send(PipelineCommand::Refresh(self.index))
-                {
-                    eprintln!("Failed to send refresh command: {}", e);
-                }
+                    .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
 
                 // Push state update to frontend
                 self.send_to_frontend(PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
-                ));
+                ))?;
             }
         }
 
@@ -160,11 +157,12 @@ impl Watershed {
         }
     }
 
-    fn send_to_frontend(&self, message: PipelineCommand) {
+    fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {
         for sender in &self.frontend_senders {
-            if let Err(e) = sender.try_send(message.clone()) {
-                eprintln!("Failed to send message to frontend: {}", e);
-            }
+            sender
+                .try_send(message.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to send message to frontend: {}", e))?;
         }
+        Ok(())
     }
 }

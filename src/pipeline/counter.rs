@@ -294,10 +294,19 @@ impl ToolBackend for Counter {
                             self.state.manual_counts.insert(id, vec![]);
                         }
                         CountMessage::DeletionLasso(points) => {
-                            println!("Got lasso deletion command");
                             if let Some(active_count_type) = &self.state.active_count_type {
                                 let polygon = ramer_douglas_peucker_closed(points);
-                                let counts = self.state.manual_counts[active_count_type].clone();
+                                let counts = self
+                                    .state
+                                    .manual_counts
+                                    .get(active_count_type)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "Active count type {} not found",
+                                            active_count_type
+                                        )
+                                    })?
+                                    .clone();
                                 self.state.manual_counts.insert(
                                     *active_count_type,
                                     find_counts_within_polygon(polygon, counts),
@@ -322,24 +331,31 @@ impl ToolBackend for Counter {
                             }
                         }
                         CountMessage::ToggleFilter(filter_index, enabled) => {
-                            self.filters[filter_index as usize].set_enabled(enabled);
+                            let index = filter_index as usize;
+                            if index >= self.filters.len() {
+                                return Err(anyhow::anyhow!(
+                                    "Filter index {} out of bounds (max: {})",
+                                    index,
+                                    self.filters.len()
+                                ));
+                            }
+                            self.filters[index].set_enabled(enabled);
                         }
                         CountMessage::SaveCounts(file) => {
                             // Use the utils::io module to export to XML
                             if let Err(e) = export_counter_to_xml_file(&self.state, &file).await {
-                                eprintln!("Error saving counts to file: {}", e);
                                 self.send_to_frontend(PipelineCommand::FrontendMessage(
                                     FrontendMessage::UserFeedback(
                                         "Error saving counts: XML export failed".to_string(),
                                     ),
-                                ));
-                                return Ok(());
+                                ))?;
+                                return Err(anyhow::anyhow!("Error saving counts to file: {}", e));
                             }
                             self.send_to_frontend(PipelineCommand::FrontendMessage(
                                 FrontendMessage::UserFeedback(
                                     "Counts saved successfully!".to_string(),
                                 ),
-                            ));
+                            ))?;
                         }
                         CountMessage::LoadCounts(file) => {
                             match crate::utils::io::import_counter_from_xml_file(&file).await {
@@ -353,14 +369,17 @@ impl ToolBackend for Counter {
                                         FrontendMessage::UserFeedback(
                                             "Counts loaded successfully!".to_string(),
                                         ),
-                                    ));
+                                    ))?;
                                 }
                                 Err(e) => {
-                                    eprintln!("Error loading counts from file: {}", e);
                                     self.send_to_frontend(PipelineCommand::FrontendMessage(
                                         FrontendMessage::UserFeedback(
                                             "Error loading counts: XML import failed".to_string(),
                                         ),
+                                    ))?;
+                                    return Err(anyhow::anyhow!(
+                                        "Error loading counts from file: {}",
+                                        e
                                     ));
                                 }
                             }
@@ -425,14 +444,11 @@ impl ToolBackend for Counter {
                 let message = PipelineCommand::FrontendMessage(FrontendMessage::ReturnState(
                     self.get_state(),
                 ));
-                self.send_to_frontend(message);
+                self.send_to_frontend(message)?;
                 // Refresh pipeline
-                if let Err(e) = self
-                    .command_sender
+                self.command_sender
                     .send(PipelineCommand::Refresh(self.index))
-                {
-                    eprintln!("Failed to send refresh command: {}", e);
-                }
+                    .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
             }
         }
 
@@ -475,17 +491,18 @@ impl ToolBackend for Counter {
 }
 
 impl Counter {
-    pub async fn new(command_sender: tokio::sync::broadcast::Sender<PipelineCommand>) -> Self {
+    pub async fn new(
+        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    ) -> anyhow::Result<Self> {
         let (sender, receiver) = flume::unbounded();
-        if let Err(e) = command_sender.send(PipelineCommand::RegisterClickReceiver(sender.clone()))
-        {
-            eprintln!("Failed to register click receiver: {}", e);
-        }
+        command_sender
+            .send(PipelineCommand::RegisterClickReceiver(sender.clone()))
+            .map_err(|e| anyhow::anyhow!("Failed to register click receiver: {}", e))?;
 
         let filters: Vec<Box<dyn Filter>> = vec![Box::new(SizeFilter::new(10))];
         let filter_proxys = update_filter_proxys(&filters);
 
-        Self {
+        Ok(Self {
             state: CounterState {
                 is_enabled: false,
                 manual_counts: HashMap::new(),
@@ -504,14 +521,14 @@ impl Counter {
             receiver,
             cached_output: None,
             cached_state: None,
-        }
+        })
     }
-    fn send_to_frontend(&self, message: PipelineCommand) {
-        let l = self.frontend_senders.len();
+    fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {
         for (i, sender) in self.frontend_senders.iter().enumerate() {
-            if let Err(e) = sender.send(message.clone()) {
-                eprintln!("Failed to send message to sender {} of {} {}", i, l, e)
-            };
+            sender
+                .send(message.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to send message to sender {}: {}", i, e))?;
         }
+        Ok(())
     }
 }

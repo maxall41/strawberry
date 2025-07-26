@@ -501,4 +501,18 @@ impl ToolFrontend for MorphologyView {
             ..Default::default()
         }
     }
+
+    fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (sender, receiver) = flume::unbounded();
+        self.receive_channel = Some(receiver);
+        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
+            BackendToolType::Morphology,
+            sender,
+        )) {
+            eprintln!("Failed to send backend discovery request: {}", e);
+            return;
+        }
+        println!("Sent discovery request to backend | Morphology");
+        self.process_messages(window, cx);
+    }
 }
