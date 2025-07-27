@@ -19,4 +19,3 @@ lutz = "1.4.1"
 serde = "1.0.219"
 quick-xml = { version = "0.38.0", features = ["serialize"] }
 native-dialog = "0.9.0"
-unicode-segmentation = "1.12.0"
