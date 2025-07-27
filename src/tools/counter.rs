@@ -10,6 +10,7 @@ use rfd::FileDialog;
 
 use crate::{
     gui::value_control::{ValueControl, ValueControlEvent},
+    gui::ToggleButton,
     pipeline::{
         counter::{CounterMode, CounterState},
         BackendToolType, CountMessage, FilterMessage, FrontendMessage, PipelineCommand,
@@ -498,35 +499,18 @@ impl CounterView {
 
     // Status component showing enabled/disabled state
     fn render_status(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .mb_3()
-            .child("Enabled:")
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(if state.is_enabled {
-                        rgb(0x00aa00)
-                    } else {
-                        rgb(0xaa0000)
-                    })
-                    .child(if state.is_enabled { "Yes" } else { "No" })
-                    .on_mouse_down(gpui::MouseButton::Left, {
-                        let is_enabled = state.is_enabled;
-                        cx.listener(
-                            move |this: &mut CounterView,
-                                  _event: &MouseDownEvent,
-                                  window: &mut Window,
-                                  cx: &mut Context<CounterView>| {
-                                this.toggle_enabled(is_enabled, window, cx);
-                            },
-                        )
-                    }),
-            )
+        let is_enabled = state.is_enabled;
+        ToggleButton::new(
+            "Enabled".to_string(),
+            is_enabled,
+            move |this: &mut CounterView,
+                  _event: &MouseDownEvent,
+                  window: &mut Window,
+                  cx: &mut Context<CounterView>| {
+                this.toggle_enabled(is_enabled, window, cx);
+            },
+        )
+        .render(cx)
     }
 
     // Mode toggle component
