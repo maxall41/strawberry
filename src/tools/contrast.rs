@@ -7,11 +7,11 @@ use std::{
 
 use flume;
 use gpui::{
-    div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
-use crate::gui::value_control::{render_button_value_control, ButtonControlConfig};
+use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::pipeline::{
     contrast::ContrastState, BackendToolType, ContrastMessage, FrontendMessage, PipelineCommand,
     PipelineObjectMessage, ToolState,
@@ -27,7 +27,16 @@ pub struct ContrastView {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
+    pub min_control: Option<Entity<ValueControl>>,
+    pub max_control: Option<Entity<ValueControl>>,
     _cleanup_guard: crate::tools::CleanupGuard,
+    focus_handle: Option<FocusHandle>,
+}
+
+impl Focusable for ContrastView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone().unwrap()
+    }
 }
 
 impl ContrastView {
@@ -43,10 +52,13 @@ impl ContrastView {
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
+            min_control: None,
+            max_control: None,
             _cleanup_guard: crate::tools::CleanupGuard::new(
                 command_sender,
                 crate::pipeline::BackendToolType::Contrast,
             ),
+            focus_handle: None,
         }
     }
 
@@ -61,6 +73,57 @@ impl ContrastView {
             return;
         }
         println!("Sent discovery request to backend | Contrast");
+
+        // Create and initialize ValueControl components
+        let state = self.state.read().unwrap().clone();
+        let min_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.3}", state.min),
+                state.min,
+                "Min".to_string(),
+                0.01,
+                "min".to_string(),
+                0.0,
+                1.0,
+            )
+        });
+
+        let max_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.3}", state.max),
+                state.max,
+                "Max".to_string(),
+                0.01,
+                "max".to_string(),
+                0.0,
+                1.0,
+            )
+        });
+
+        // Handle ValueControl events
+        cx.subscribe(
+            &min_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "min" {
+                    this.adjust_min_value(event.value);
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &max_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "max" {
+                    this.adjust_max_value(event.value);
+                }
+            },
+        )
+        .detach();
+
+        self.min_control = Some(min_control);
+        self.max_control = Some(max_control);
+
         self.process_messages(window, cx);
     }
 
@@ -80,8 +143,26 @@ impl ContrastView {
                             ToolState::ContrastState(new_state) => {
                                 if let Ok(mut locked_state) = state.write() {
                                     if *locked_state != new_state {
+                                        let min_ref = new_state.min;
+                                        let max_ref = new_state.max;
                                         *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
+                                        if let Err(e) = this.update(cx, |this, cx| {
+                                            this.min_control.as_ref().unwrap().update(
+                                                cx,
+                                                |control, cx| {
+                                                    control.value = min_ref;
+                                                    cx.notify();
+                                                },
+                                            );
+                                            this.max_control.as_ref().unwrap().update(
+                                                cx,
+                                                |control, cx| {
+                                                    control.value = max_ref;
+                                                    cx.notify();
+                                                },
+                                            );
+                                            cx.notify();
+                                        }) {
                                             eprintln!(
                                                 "Failed to update UI after state change: {}",
                                                 e
@@ -187,6 +268,50 @@ impl ContrastView {
         }
     }
 
+    fn adjust_min_value(&mut self, new_min: f32) {
+        let current_state = self.state.read().unwrap();
+        let max_val = current_state.max;
+        drop(current_state);
+
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(
+                    new_min, max_val,
+                )),
+            )) {
+                eprintln!("Failed to send min/max update command: {}", e);
+            }
+        } else {
+            eprintln!("Invalid tool index: {}", current_tool_index);
+        }
+    }
+
+    fn adjust_max_value(&mut self, new_max: f32) {
+        let current_state = self.state.read().unwrap();
+        let min_val = current_state.min;
+        drop(current_state);
+
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(
+                    min_val, new_max,
+                )),
+            )) {
+                eprintln!("Failed to send min/max update command: {}", e);
+            }
+        } else {
+            eprintln!("Invalid tool index: {}", current_tool_index);
+        }
+    }
+
     fn adjust_min(&mut self, delta: f32, _window: &mut Window, _cx: &mut Context<Self>) {
         let (min, max) = match self.state.read() {
             Ok(state) => (state.min, state.max),
@@ -256,27 +381,15 @@ impl ContrastView {
     // Value control component (reusable for min/max)
 
     // Min value control component
-    fn render_min_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
-        render_button_value_control(
-            "Min".to_string(),
-            state.min,
-            ButtonControlConfig::default(),
-            Self::adjust_min,
-            cx,
-        )
+    fn render_min_control(&self, cx: &mut Context<Self>, _window: &mut Window) -> impl IntoElement {
+        let mc = self.min_control.clone().unwrap();
+        mc
     }
 
     // Max value control component
-    fn render_max_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
-        render_button_value_control(
-            "Max".to_string(),
-            state.max,
-            ButtonControlConfig::default(),
-            Self::adjust_max,
-            cx,
-        )
+    fn render_max_control(&self, cx: &mut Context<Self>, _window: &mut Window) -> impl IntoElement {
+        let mc = self.max_control.clone().unwrap();
+        mc
     }
 
     // Preset button component
@@ -335,13 +448,17 @@ impl ContrastView {
     }
 
     // Controls section component
-    fn render_controls_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_controls_section(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_min_control(cx))
-            .child(self.render_max_control(cx))
+            .child(self.render_min_control(cx, _window))
+            .child(self.render_max_control(cx, _window))
     }
 }
 
@@ -373,9 +490,19 @@ impl Render for ContrastView {
             .p_4()
             .shadow_lg()
             .text_color(rgb(0xffffff))
+            .on_mouse_down(gpui::MouseButton::Left, {
+                cx.listener(
+                    move |this: &mut ContrastView,
+                          _event: &MouseDownEvent,
+                          window: &mut Window,
+                          cx: &mut Context<ContrastView>| {
+                        this.focus_handle(cx).focus(window);
+                    },
+                )
+            })
             .child(self.render_header())
             .child(self.render_status(&state, cx))
-            .child(self.render_controls_section(cx))
+            .child(self.render_controls_section(cx, _window))
             .child(self.render_presets_section(cx))
     }
 }
@@ -401,6 +528,7 @@ impl ToolFrontend for ContrastView {
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver);
+        self.focus_handle = Some(cx.focus_handle());
         if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
             BackendToolType::Contrast,
             sender,
@@ -409,6 +537,57 @@ impl ToolFrontend for ContrastView {
             return;
         }
         println!("Sent discovery request to backend | Contrast");
+
+        // Create and initialize ValueControl components
+        let state = self.state.read().unwrap().clone();
+        let min_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.3}", state.min),
+                state.min,
+                "Min".to_string(),
+                0.01,
+                "min".to_string(),
+                0.0,
+                1.0,
+            )
+        });
+
+        let max_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.3}", state.max),
+                state.max,
+                "Max".to_string(),
+                0.01,
+                "max".to_string(),
+                0.0,
+                1.0,
+            )
+        });
+
+        // Handle ValueControl events
+        cx.subscribe(
+            &min_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "min" {
+                    this.adjust_min_value(event.value);
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &max_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "max" {
+                    this.adjust_max_value(event.value);
+                }
+            },
+        )
+        .detach();
+
+        self.min_control = Some(min_control);
+        self.max_control = Some(max_control);
+
         self.process_messages(window, cx);
     }
 }

@@ -3,11 +3,11 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
-use crate::gui::value_control::{render_button_value_control, ButtonControlConfig};
+use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::pipeline::{
     watershed::WatershedState, BackendToolType, FrontendMessage, PipelineCommand,
     PipelineObjectMessage, ToolState, WatershedMessage,
@@ -23,7 +23,16 @@ pub struct WatershedView {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
+    pub sigma_control: Option<Entity<ValueControl>>,
+    pub min_distance_control: Option<Entity<ValueControl>>,
     _cleanup_guard: crate::tools::CleanupGuard,
+    focus_handle: Option<FocusHandle>,
+}
+
+impl Focusable for WatershedView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone().unwrap()
+    }
 }
 
 impl WatershedView {
@@ -39,10 +48,13 @@ impl WatershedView {
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
+            sigma_control: None,
+            min_distance_control: None,
             _cleanup_guard: crate::tools::CleanupGuard::new(
                 command_sender,
                 crate::pipeline::BackendToolType::Watershed,
             ),
+            focus_handle: None,
         }
     }
 
@@ -57,6 +69,63 @@ impl WatershedView {
             return;
         }
         println!("Sent discovery request to backend | Watershed");
+
+        // Create and initialize ValueControl components
+        let state = self.state.read().unwrap().clone();
+        let sigma_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.2}", state.sigma),
+                state.sigma,
+                "Sigma".to_string(),
+                0.1,
+                "sigma".to_string(),
+                0.1,
+                10.0,
+            )
+        });
+
+        let min_distance_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.0}", state.min_distance),
+                state.min_distance as f32,
+                "Min Distance".to_string(),
+                1.0,
+                "min_distance".to_string(),
+                1.0,
+                100.0,
+            )
+        });
+
+        // Handle ValueControl events
+        cx.subscribe(
+            &sigma_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "sigma" {
+                    let current_state = this.state.read().unwrap();
+                    let min_dist = current_state.min_distance;
+                    drop(current_state);
+                    this.adjust_sigma(event.value, min_dist);
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &min_distance_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "min_distance" {
+                    let current_state = this.state.read().unwrap();
+                    let sigma = current_state.sigma;
+                    drop(current_state);
+                    this.adjust_min_distance(sigma, event.value as u32);
+                }
+            },
+        )
+        .detach();
+
+        self.sigma_control = Some(sigma_control);
+        self.min_distance_control = Some(min_distance_control);
+
         self.process_messages(window, cx);
     }
 
@@ -76,8 +145,26 @@ impl WatershedView {
                             ToolState::WatershedState(new_state) => {
                                 if let Ok(mut locked_state) = state.write() {
                                     if *locked_state != new_state {
+                                        let sigma_ref = new_state.sigma;
+                                        let min_distance_ref = new_state.min_distance;
                                         *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
+                                        if let Err(e) = this.update(cx, |this, cx| {
+                                            this.sigma_control.as_ref().unwrap().update(
+                                                cx,
+                                                |control, cx| {
+                                                    control.value = sigma_ref;
+                                                    cx.notify();
+                                                },
+                                            );
+                                            this.min_distance_control.as_ref().unwrap().update(
+                                                cx,
+                                                |control, cx| {
+                                                    control.value = min_distance_ref as f32;
+                                                    cx.notify();
+                                                },
+                                            );
+                                            cx.notify();
+                                        }) {
                                             eprintln!(
                                                 "Failed to update UI after state change: {}",
                                                 e
@@ -215,57 +302,23 @@ impl WatershedView {
     }
 
     // Sigma control component
-    fn render_sigma_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
-        let config = ButtonControlConfig {
-            step: 0.1,
-            decimal_places: 2,
-        };
-
-        render_button_value_control(
-            "Sigma".to_string(),
-            state.sigma,
-            config,
-            |this: &mut WatershedView,
-             delta: f32,
-             _window: &mut Window,
-             _cx: &mut Context<WatershedView>| {
-                let (current_sigma, current_min_distance) = {
-                    let current_state = this.state.read().unwrap();
-                    (current_state.sigma, current_state.min_distance)
-                };
-                let new_sigma = (current_sigma + delta).max(0.0);
-                this.adjust_sigma(new_sigma, current_min_distance);
-            },
-            cx,
-        )
+    fn render_sigma_control(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
+        let sc = self.sigma_control.clone().unwrap();
+        sc
     }
 
     // Min Distance control component
-    fn render_min_distance_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
-        let config = ButtonControlConfig {
-            step: 1.0,
-            decimal_places: 0,
-        };
-
-        render_button_value_control(
-            "Min Distance".to_string(),
-            state.min_distance as f32,
-            config,
-            |this: &mut WatershedView,
-             delta: f32,
-             _window: &mut Window,
-             _cx: &mut Context<WatershedView>| {
-                let (current_sigma, current_min_distance) = {
-                    let current_state = this.state.read().unwrap();
-                    (current_state.sigma, current_state.min_distance)
-                };
-                let new_min_distance = ((current_min_distance as f32) + delta).max(1.0) as u32;
-                this.adjust_min_distance(current_sigma, new_min_distance);
-            },
-            cx,
-        )
+    fn render_min_distance_control(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
+        let mdc = self.min_distance_control.clone().unwrap();
+        mdc
     }
 
     // Preset button component
@@ -317,13 +370,17 @@ impl WatershedView {
     }
 
     // Controls section component
-    fn render_controls_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_controls_section(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_sigma_control(cx))
-            .child(self.render_min_distance_control(cx))
+            .child(self.render_sigma_control(cx, _window))
+            .child(self.render_min_distance_control(cx, _window))
     }
 }
 
@@ -357,6 +414,16 @@ impl Render for WatershedView {
             .p_4()
             .shadow_lg()
             .text_color(rgb(0xffffff))
+            .on_mouse_down(gpui::MouseButton::Left, {
+                cx.listener(
+                    move |this: &mut WatershedView,
+                          _event: &MouseDownEvent,
+                          window: &mut Window,
+                          cx: &mut Context<WatershedView>| {
+                        this.focus_handle(cx).focus(window);
+                    },
+                )
+            })
             .child(self.render_header())
             .child(
                 div()
@@ -376,7 +443,7 @@ impl Render for WatershedView {
                         ),
                     ),
             )
-            .child(self.render_controls_section(cx))
+            .child(self.render_controls_section(cx, _window))
             .child(self.render_presets_section(cx))
     }
 }
@@ -402,6 +469,7 @@ impl ToolFrontend for WatershedView {
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver);
+        self.focus_handle = Some(cx.focus_handle());
         if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
             BackendToolType::Watershed,
             sender,
@@ -410,6 +478,63 @@ impl ToolFrontend for WatershedView {
             return;
         }
         println!("Sent discovery request to backend | Watershed");
+
+        // Create and initialize ValueControl components
+        let state = self.state.read().unwrap().clone();
+        let sigma_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.2}", state.sigma),
+                state.sigma,
+                "Sigma".to_string(),
+                0.1,
+                "sigma".to_string(),
+                0.1,
+                10.0,
+            )
+        });
+
+        let min_distance_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.0}", state.min_distance),
+                state.min_distance as f32,
+                "Min Distance".to_string(),
+                1.0,
+                "min_distance".to_string(),
+                1.0,
+                100.0,
+            )
+        });
+
+        // Handle ValueControl events
+        cx.subscribe(
+            &sigma_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "sigma" {
+                    let current_state = this.state.read().unwrap();
+                    let min_dist = current_state.min_distance;
+                    drop(current_state);
+                    this.adjust_sigma(event.value, min_dist);
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &min_distance_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "min_distance" {
+                    let current_state = this.state.read().unwrap();
+                    let sigma = current_state.sigma;
+                    drop(current_state);
+                    this.adjust_min_distance(sigma, event.value as u32);
+                }
+            },
+        )
+        .detach();
+
+        self.sigma_control = Some(sigma_control);
+        self.min_distance_control = Some(min_distance_control);
+
         self.process_messages(window, cx);
     }
 }
