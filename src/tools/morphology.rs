@@ -3,11 +3,11 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
-use crate::gui::value_control::{render_button_value_control, ButtonControlConfig};
+use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::pipeline::{
     morphology::MorphologyState, BackendToolType, FrontendMessage, MorphologyMessage,
     PipelineCommand, PipelineObjectMessage, ToolState,
@@ -24,7 +24,15 @@ pub struct MorphologyView {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
+    pub element_size_control: Option<Entity<ValueControl>>,
     _cleanup_guard: crate::tools::CleanupGuard,
+    focus_handle: Option<FocusHandle>,
+}
+
+impl Focusable for MorphologyView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone().unwrap()
+    }
 }
 
 impl MorphologyView {
@@ -40,10 +48,12 @@ impl MorphologyView {
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
+            element_size_control: None,
             _cleanup_guard: crate::tools::CleanupGuard::new(
                 command_sender,
                 crate::pipeline::BackendToolType::Morphology,
             ),
+            focus_handle: None,
         }
     }
 
@@ -58,6 +68,34 @@ impl MorphologyView {
             return;
         }
         println!("Sent discovery request to backend | Morphology");
+
+        // Create and initialize ValueControl component
+        let state = self.state.read().unwrap().clone();
+        let element_size_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.0}", state.element_size),
+                state.element_size as f32,
+                "Element Size".to_string(),
+                1.0,
+                "element_size".to_string(),
+                1.0,
+                50.0,
+            )
+        });
+
+        // Handle ValueControl events
+        cx.subscribe(
+            &element_size_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "element_size" {
+                    this.adjust_element_size_value(event.value as u32);
+                }
+            },
+        )
+        .detach();
+
+        self.element_size_control = Some(element_size_control);
+
         self.process_messages(window, cx);
     }
 
@@ -77,8 +115,18 @@ impl MorphologyView {
                             ToolState::MorphologyState(new_state) => {
                                 if let Ok(mut locked_state) = state.write() {
                                     if *locked_state != new_state {
+                                        let element_size_ref = new_state.element_size;
                                         *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
+                                        if let Err(e) = this.update(cx, |this, cx| {
+                                            this.element_size_control.as_ref().unwrap().update(
+                                                cx,
+                                                |control, cx| {
+                                                    control.value = element_size_ref as f32;
+                                                    cx.notify();
+                                                },
+                                            );
+                                            cx.notify();
+                                        }) {
                                             eprintln!(
                                                 "Failed to update UI after state change: {}",
                                                 e
@@ -209,6 +257,36 @@ impl MorphologyView {
         self.update_operation_and_size(operation, element_size, _window, _cx);
     }
 
+    fn adjust_element_size_value(&mut self, new_size: u32) {
+        let current_state = self.state.read().unwrap();
+        let operation = current_state.operation;
+        drop(current_state);
+
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::MorphologyMessage(MorphologyMessage::SetOperation(
+                    operation,
+                )),
+            )) {
+                eprintln!("Failed to send operation update command: {}", e);
+            }
+
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::MorphologyMessage(MorphologyMessage::SetElementSize(
+                    new_size,
+                )),
+            )) {
+                eprintln!("Failed to send element size update command: {}", e);
+            }
+        } else {
+            eprintln!("Invalid tool index: {}", current_tool_index);
+        }
+    }
+
     fn adjust_element_size(&mut self, delta: i32, _window: &mut Window, _cx: &mut Context<Self>) {
         let (operation, element_size) = match self.state.read() {
             Ok(state) => (state.operation, state.element_size),
@@ -264,11 +342,8 @@ impl MorphologyView {
     }
 
     // Operation selection component
-    fn render_operation_control(
-        &self,
-        state: &MorphologyState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_operation_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.state.read().unwrap();
         div()
             .flex()
             .flex_col()
@@ -343,18 +418,13 @@ impl MorphologyView {
     }
 
     // Element size control component
-    fn render_element_size_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
-        render_button_value_control(
-            "Element Size".to_string(),
-            state.element_size as f32,
-            ButtonControlConfig {
-                step: 1.0,
-                decimal_places: 0,
-            },
-            Self::adjust_element_size_wrapper,
-            cx,
-        )
+    fn render_element_size_control(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
+        let esc = self.element_size_control.clone().unwrap();
+        esc
     }
 
     fn adjust_element_size_wrapper(
@@ -437,15 +507,15 @@ impl MorphologyView {
     // Controls section component
     fn render_controls_section(
         &self,
-        state: &MorphologyState,
         cx: &mut Context<Self>,
+        _window: &mut Window,
     ) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_operation_control(state, cx))
-            .child(self.render_element_size_control(cx))
+            .child(self.render_operation_control(cx))
+            .child(self.render_element_size_control(cx, _window))
     }
 }
 
@@ -477,9 +547,19 @@ impl Render for MorphologyView {
             .p_4()
             .shadow_lg()
             .text_color(rgb(0xffffff))
+            .on_mouse_down(gpui::MouseButton::Left, {
+                cx.listener(
+                    move |this: &mut MorphologyView,
+                          _event: &MouseDownEvent,
+                          window: &mut Window,
+                          cx: &mut Context<MorphologyView>| {
+                        this.focus_handle(cx).focus(window);
+                    },
+                )
+            })
             .child(self.render_header())
             .child(self.render_status(&state, cx))
-            .child(self.render_controls_section(&state, cx))
+            .child(self.render_controls_section(cx, _window))
             .child(self.render_presets_section(cx))
     }
 }
@@ -505,6 +585,7 @@ impl ToolFrontend for MorphologyView {
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver);
+        self.focus_handle = Some(cx.focus_handle());
         if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
             BackendToolType::Morphology,
             sender,
@@ -513,6 +594,34 @@ impl ToolFrontend for MorphologyView {
             return;
         }
         println!("Sent discovery request to backend | Morphology");
+
+        // Create and initialize ValueControl component
+        let state = self.state.read().unwrap().clone();
+        let element_size_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.0}", state.element_size),
+                state.element_size as f32,
+                "Element Size".to_string(),
+                1.0,
+                "element_size".to_string(),
+                1.0,
+                50.0,
+            )
+        });
+
+        // Handle ValueControl events
+        cx.subscribe(
+            &element_size_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "element_size" {
+                    this.adjust_element_size_value(event.value as u32);
+                }
+            },
+        )
+        .detach();
+
+        self.element_size_control = Some(element_size_control);
+
         self.process_messages(window, cx);
     }
 }

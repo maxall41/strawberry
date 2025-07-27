@@ -3,11 +3,11 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
-use crate::gui::value_control::{render_button_value_control, ButtonControlConfig};
+use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::pipeline::{
     local_maxima::LocalMaximaState, BackendToolType, FrontendMessage, LocalMaximaMessage,
     PipelineCommand, PipelineObjectMessage, ToolState,
@@ -24,9 +24,18 @@ pub struct LocalMaximaView {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
+    pub min_distance_control: Option<Entity<ValueControl>>,
+    pub threshold_control: Option<Entity<ValueControl>>,
     _cleanup_guard: crate::tools::CleanupGuard,
     last_absolute_value: f32,
     last_relative_value: f32,
+    focus_handle: Option<FocusHandle>,
+}
+
+impl Focusable for LocalMaximaView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone().unwrap()
+    }
 }
 
 impl LocalMaximaView {
@@ -42,12 +51,15 @@ impl LocalMaximaView {
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
+            min_distance_control: None,
+            threshold_control: None,
             _cleanup_guard: crate::tools::CleanupGuard::new(
                 command_sender,
                 crate::pipeline::BackendToolType::LocalMaxima,
             ),
             last_absolute_value: 0.1,
             last_relative_value: 0.01,
+            focus_handle: None,
         }
     }
 
@@ -62,6 +74,63 @@ impl LocalMaximaView {
             return;
         }
         println!("Sent discovery request to backend | LocalMaxima");
+
+        // Create and initialize ValueControl components
+        let state = self.state.read().unwrap().clone();
+        let min_distance_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.0}", state.min_distance),
+                state.min_distance as f32,
+                "Min Distance".to_string(),
+                1.0,
+                "min_distance".to_string(),
+                1.0,
+                100.0,
+            )
+        });
+
+        let threshold_value = match &state.threshold {
+            ThresholdType::Absolute(val) => *val,
+            ThresholdType::Relative(val) => *val,
+            ThresholdType::None => 0.0,
+        };
+
+        let threshold_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.3}", threshold_value),
+                threshold_value,
+                "Threshold".to_string(),
+                0.01,
+                "threshold".to_string(),
+                0.0,
+                1.0,
+            )
+        });
+
+        // Handle ValueControl events
+        cx.subscribe(
+            &min_distance_control,
+            |this, _control, event: &ValueControlEvent, cx| {
+                if event.id == "min_distance" {
+                    this.adjust_min_distance_value(event.value as u32);
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &threshold_control,
+            |this, _control, event: &ValueControlEvent, cx| {
+                if event.id == "threshold" {
+                    this.adjust_threshold_value_direct(event.value);
+                }
+            },
+        )
+        .detach();
+
+        self.min_distance_control = Some(min_distance_control);
+        self.threshold_control = Some(threshold_control);
+
         self.process_messages(window, cx);
     }
 
@@ -81,8 +150,30 @@ impl LocalMaximaView {
                             ToolState::LocalMaximaState(new_state) => {
                                 if let Ok(mut locked_state) = state.write() {
                                     if *locked_state != new_state {
+                                        let min_distance_ref = new_state.min_distance;
+                                        let threshold_value_ref = match &new_state.threshold {
+                                            ThresholdType::Absolute(val) => *val,
+                                            ThresholdType::Relative(val) => *val,
+                                            ThresholdType::None => 0.0,
+                                        };
                                         *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
+                                        if let Err(e) = this.update(cx, |this, cx| {
+                                            this.min_distance_control.as_ref().unwrap().update(
+                                                cx,
+                                                |control, cx| {
+                                                    control.value = min_distance_ref as f32;
+                                                    cx.notify();
+                                                },
+                                            );
+                                            this.threshold_control.as_ref().unwrap().update(
+                                                cx,
+                                                |control, cx| {
+                                                    control.value = threshold_value_ref;
+                                                    cx.notify();
+                                                },
+                                            );
+                                            cx.notify();
+                                        }) {
                                             eprintln!(
                                                 "Failed to update UI after state change: {}",
                                                 e
@@ -185,6 +276,14 @@ impl LocalMaximaView {
         }
     }
 
+    fn adjust_min_distance_value(&mut self, new_value: u32) {
+        let current_state = self.state.read().unwrap();
+        let threshold = current_state.threshold.clone();
+        let exclude_border = current_state.exclude_border;
+        drop(current_state);
+        self.update_parameters(new_value, threshold, exclude_border);
+    }
+
     fn adjust_min_distance(&mut self, delta: f32, _window: &mut Window, _cx: &mut Context<Self>) {
         let current_state = match self.state.read() {
             Ok(state) => state.clone(),
@@ -199,6 +298,19 @@ impl LocalMaximaView {
             current_state.threshold.clone(),
             current_state.exclude_border,
         );
+    }
+
+    fn adjust_threshold_value_direct(&mut self, new_value: f32) {
+        let current_state = self.state.read().unwrap();
+        let new_threshold = match current_state.threshold {
+            ThresholdType::Absolute(_) => ThresholdType::Absolute(new_value),
+            ThresholdType::Relative(_) => ThresholdType::Relative(new_value),
+            ThresholdType::None => ThresholdType::Absolute(new_value),
+        };
+        let min_distance = current_state.min_distance;
+        let exclude_border = current_state.exclude_border;
+        drop(current_state);
+        self.update_parameters(min_distance, new_threshold, exclude_border);
     }
 
     fn adjust_threshold_value(
@@ -307,29 +419,26 @@ impl LocalMaximaView {
     }
 
     // Min distance control component
-    fn render_min_distance_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
-        let config = ButtonControlConfig {
-            step: 1.0,
-            decimal_places: 0,
-        };
-
-        render_button_value_control(
-            "Min Distance".to_string(),
-            state.min_distance as f32,
-            config,
-            Self::adjust_min_distance,
-            cx,
-        )
+    fn render_min_distance_control(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
+        let mdc = self.min_distance_control.clone().unwrap();
+        mdc
     }
 
     // Threshold control component with mode toggle
-    fn render_threshold_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_threshold_control(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
         let state = self.state.read().unwrap();
-        let (mode_label, value, is_enabled) = match &state.threshold {
-            ThresholdType::Absolute(val) => ("Absolute", *val, true),
-            ThresholdType::Relative(val) => ("Relative", *val, true),
-            ThresholdType::None => ("None", 0.0, false),
+        let (mode_label, is_enabled) = match &state.threshold {
+            ThresholdType::Absolute(_) => ("Absolute", true),
+            ThresholdType::Relative(_) => ("Relative", true),
+            ThresholdType::None => ("None", false),
         };
 
         div()
@@ -363,22 +472,14 @@ impl LocalMaximaView {
                     )
             )
             .when(is_enabled, |div| {
-                div.child(render_button_value_control(
-                    "Value".to_string(),
-                    value,
-                    ButtonControlConfig::default(),
-                    Self::adjust_threshold_value,
-                    cx,
-                ))
+                let tc = self.threshold_control.clone().unwrap();
+                div.child(tc)
             })
     }
 
     // Exclude border toggle component
-    fn render_exclude_border_control(
-        &self,
-        state: &LocalMaximaState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_exclude_border_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.state.read().unwrap();
         div()
             .flex()
             .items_center()
@@ -488,15 +589,18 @@ impl LocalMaximaView {
     }
 
     // Controls section component
-    fn render_controls_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
+    fn render_controls_section(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_min_distance_control(cx))
-            .child(self.render_threshold_control(cx))
-            .child(self.render_exclude_border_control(&state, cx))
+            .child(self.render_min_distance_control(cx, _window))
+            .child(self.render_threshold_control(cx, _window))
+            .child(self.render_exclude_border_control(cx))
     }
 }
 
@@ -530,6 +634,16 @@ impl Render for LocalMaximaView {
             .p_4()
             .shadow_lg()
             .text_color(rgb(0xffffff))
+            .on_mouse_down(gpui::MouseButton::Left, {
+                cx.listener(
+                    move |this: &mut LocalMaximaView,
+                          _event: &MouseDownEvent,
+                          window: &mut Window,
+                          cx: &mut Context<LocalMaximaView>| {
+                        this.focus_handle(cx).focus(window);
+                    },
+                )
+            })
             .child(self.render_header())
             .child(
                 div()
@@ -549,7 +663,7 @@ impl Render for LocalMaximaView {
                         ),
                     ),
             )
-            .child(self.render_controls_section(cx))
+            .child(self.render_controls_section(cx, _window))
             .child(self.render_presets_section(cx))
     }
 }
@@ -575,6 +689,7 @@ impl ToolFrontend for LocalMaximaView {
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver);
+        self.focus_handle = Some(cx.focus_handle());
         if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
             BackendToolType::LocalMaxima,
             sender,
@@ -582,7 +697,64 @@ impl ToolFrontend for LocalMaximaView {
             eprintln!("Failed to send backend discovery request: {}", e);
             return;
         }
-        println!("Sent discovery request to backend | Local Maxima");
+        println!("Sent discovery request to backend | LocalMaxima");
+
+        // Create and initialize ValueControl components
+        let state = self.state.read().unwrap().clone();
+        let min_distance_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.0}", state.min_distance),
+                state.min_distance as f32,
+                "Min Distance".to_string(),
+                1.0,
+                "min_distance".to_string(),
+                1.0,
+                100.0,
+            )
+        });
+
+        let threshold_value = match &state.threshold {
+            ThresholdType::Absolute(val) => *val,
+            ThresholdType::Relative(val) => *val,
+            ThresholdType::None => 0.0,
+        };
+
+        let threshold_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.3}", threshold_value),
+                threshold_value,
+                "Threshold".to_string(),
+                0.01,
+                "threshold".to_string(),
+                0.0,
+                1.0,
+            )
+        });
+
+        // Handle ValueControl events
+        cx.subscribe(
+            &min_distance_control,
+            |this, _control, event: &ValueControlEvent, cx| {
+                if event.id == "min_distance" {
+                    this.adjust_min_distance_value(event.value as u32);
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &threshold_control,
+            |this, _control, event: &ValueControlEvent, cx| {
+                if event.id == "threshold" {
+                    this.adjust_threshold_value_direct(event.value);
+                }
+            },
+        )
+        .detach();
+
+        self.min_distance_control = Some(min_distance_control);
+        self.threshold_control = Some(threshold_control);
+
         self.process_messages(window, cx);
     }
 }

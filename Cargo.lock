@@ -4654,6 +4654,7 @@ dependencies = [
  "rfd",
  "serde",
  "tokio",
+ "unicode-segmentation",
  "wgpu",
 ]
 

@@ -3,11 +3,11 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
-use crate::gui::value_control::{render_button_value_control, ButtonControlConfig};
+use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::pipeline::{
     threshold::ThresholdState, BackendToolType, FrontendMessage, PipelineCommand,
     PipelineObjectMessage, ThresholdMessage, ToolState,
@@ -23,7 +23,15 @@ pub struct ThresholdView {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
+    pub threshold_control: Option<Entity<ValueControl>>,
     _cleanup_guard: crate::tools::CleanupGuard,
+    focus_handle: Option<FocusHandle>,
+}
+
+impl Focusable for ThresholdView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone().unwrap()
+    }
 }
 
 impl ThresholdView {
@@ -39,10 +47,12 @@ impl ThresholdView {
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
+            threshold_control: None,
             _cleanup_guard: crate::tools::CleanupGuard::new(
                 command_sender,
                 crate::pipeline::BackendToolType::Threshold,
             ),
+            focus_handle: None,
         }
     }
 
@@ -57,6 +67,34 @@ impl ThresholdView {
             return;
         }
         println!("Sent discovery request to backend | Threshold");
+
+        // Create and initialize ValueControl component
+        let state = self.state.read().unwrap().clone();
+        let threshold_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.3}", state.threshold_value),
+                state.threshold_value,
+                "Threshold".to_string(),
+                0.01,
+                "threshold".to_string(),
+                0.0,
+                1.0,
+            )
+        });
+
+        // Handle ValueControl events
+        cx.subscribe(
+            &threshold_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "threshold" {
+                    this.adjust_threshold(event.value);
+                }
+            },
+        )
+        .detach();
+
+        self.threshold_control = Some(threshold_control);
+
         self.process_messages(window, cx);
     }
 
@@ -76,8 +114,18 @@ impl ThresholdView {
                             ToolState::ThresholdState(new_state) => {
                                 if let Ok(mut locked_state) = state.write() {
                                     if *locked_state != new_state {
+                                        let threshold_value_ref = new_state.threshold_value;
                                         *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
+                                        if let Err(e) = this.update(cx, |this, cx| {
+                                            this.threshold_control.as_ref().unwrap().update(
+                                                cx,
+                                                |control, cx| {
+                                                    control.value = threshold_value_ref;
+                                                    cx.notify();
+                                                },
+                                            );
+                                            cx.notify();
+                                        }) {
                                             eprintln!(
                                                 "Failed to update UI after state change: {}",
                                                 e
@@ -211,30 +259,13 @@ impl ThresholdView {
     }
 
     // Threshold value control component
-    fn render_threshold_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
-        let config = ButtonControlConfig {
-            step: 0.01,
-            decimal_places: 3,
-        };
-
-        render_button_value_control(
-            "Threshold".to_string(),
-            state.threshold_value,
-            config,
-            |this: &mut ThresholdView,
-             delta: f32,
-             _window: &mut Window,
-             _cx: &mut Context<ThresholdView>| {
-                let current_threshold = {
-                    let current_state = this.state.read().unwrap();
-                    current_state.threshold_value
-                };
-                let new_threshold = (current_threshold + delta).clamp(0.0, 1.0);
-                this.adjust_threshold(new_threshold);
-            },
-            cx,
-        )
+    fn render_threshold_control(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
+        let tc = self.threshold_control.clone().unwrap();
+        tc
     }
 
     // Preset button component
@@ -285,12 +316,16 @@ impl ThresholdView {
     }
 
     // Controls section component
-    fn render_controls_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_controls_section(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_threshold_control(cx))
+            .child(self.render_threshold_control(cx, _window))
     }
 }
 
@@ -324,6 +359,16 @@ impl Render for ThresholdView {
             .p_4()
             .shadow_lg()
             .text_color(rgb(0xffffff))
+            .on_mouse_down(gpui::MouseButton::Left, {
+                cx.listener(
+                    move |this: &mut ThresholdView,
+                          _event: &MouseDownEvent,
+                          window: &mut Window,
+                          cx: &mut Context<ThresholdView>| {
+                        this.focus_handle(cx).focus(window);
+                    },
+                )
+            })
             .child(self.render_header())
             .child(
                 div()
@@ -343,7 +388,7 @@ impl Render for ThresholdView {
                         ),
                     ),
             )
-            .child(self.render_controls_section(cx))
+            .child(self.render_controls_section(cx, _window))
             .child(self.render_presets_section(cx))
     }
 }
@@ -369,6 +414,7 @@ impl ToolFrontend for ThresholdView {
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver);
+        self.focus_handle = Some(cx.focus_handle());
         if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
             BackendToolType::Threshold,
             sender,
@@ -377,6 +423,34 @@ impl ToolFrontend for ThresholdView {
             return;
         }
         println!("Sent discovery request to backend | Threshold");
+
+        // Create and initialize ValueControl component
+        let state = self.state.read().unwrap().clone();
+        let threshold_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.3}", state.threshold_value),
+                state.threshold_value,
+                "Threshold".to_string(),
+                0.01,
+                "threshold".to_string(),
+                0.0,
+                1.0,
+            )
+        });
+
+        // Handle ValueControl events
+        cx.subscribe(
+            &threshold_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "threshold" {
+                    this.adjust_threshold(event.value);
+                }
+            },
+        )
+        .detach();
+
+        self.threshold_control = Some(threshold_control);
+
         self.process_messages(window, cx);
     }
 }

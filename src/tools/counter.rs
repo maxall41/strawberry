@@ -3,17 +3,17 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    div, prelude::*, px, rgb, size, App, Bounds, Context, FocusHandle, Focusable, MouseDownEvent,
     Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use rfd::FileDialog;
 
 use crate::{
-    gui::value_control::{render_button_value_control, ButtonControlConfig},
+    gui::value_control::{ValueControl, ValueControlEvent},
     pipeline::{
-        counter::{CountData, CounterMode, CounterState},
-        BackendToolType, CountMessage, CrossFrontendMessage, FilterMessage, FrontendMessage,
-        PipelineCommand, PipelineObjectMessage, ToolState,
+        counter::{CounterMode, CounterState},
+        BackendToolType, CountMessage, FilterMessage, FrontendMessage, PipelineCommand,
+        PipelineObjectMessage, ToolState,
     },
     utils::consts::{image_rgba_to_gpui_rgba, CIRCLE_COLORS},
 };
@@ -39,6 +39,13 @@ pub struct CounterView {
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     pub next_count_type_id: Arc<RwLock<u16>>,
     _cleanup_guard: crate::tools::CleanupGuard,
+    focus_handle: Option<FocusHandle>,
+}
+
+impl Focusable for CounterView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone().unwrap()
+    }
 }
 
 impl CounterView {
@@ -59,21 +66,8 @@ impl CounterView {
                 command_sender,
                 crate::pipeline::BackendToolType::Counter,
             ),
+            focus_handle: None,
         }
-    }
-
-    pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver.clone());
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::Counter,
-            sender.clone(),
-        )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
-            return;
-        }
-        println!("Sent discovery request to backend | Counter");
-        self.process_messages(window, cx);
     }
 
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1009,10 +1003,18 @@ impl CounterView {
                     .map(|v| *v as f32)
                     .unwrap_or(10.0);
 
-                let config = ButtonControlConfig {
-                    step: 1.0,
-                    decimal_places: 0,
-                };
+                // Create a ValueControl for this filter
+                let control = cx.new(|cx| {
+                    ValueControl::new(
+                        format!("{:.0}", current_value),
+                        current_value,
+                        "Minimum Object Size".to_string(),
+                        1.0,
+                        format!("size_filter_{}", filter_index),
+                        1.0,
+                        10000.0,
+                    )
+                });
 
                 el.child(
                     div()
@@ -1022,18 +1024,7 @@ impl CounterView {
                         .pt_2()
                         .border_t_1()
                         .border_color(rgb(0x555555))
-                        .child(render_button_value_control(
-                            "Minimum Object Size".to_string(),
-                            current_value,
-                            config,
-                            |this: &mut CounterView,
-                             delta: f32,
-                             _window: &mut Window,
-                             _cx: &mut Context<CounterView>| {
-                                this.adjust_size_filter(delta as i16);
-                            },
-                            cx,
-                        )),
+                        .child(control),
                 )
             })
     }
@@ -1292,6 +1283,16 @@ impl Render for CounterView {
             .p_4()
             .shadow_lg()
             .text_color(rgb(0xffffff))
+            .on_mouse_down(gpui::MouseButton::Left, {
+                cx.listener(
+                    move |this: &mut CounterView,
+                          _event: &MouseDownEvent,
+                          window: &mut Window,
+                          cx: &mut Context<CounterView>| {
+                        this.focus_handle(cx).focus(window);
+                    },
+                )
+            })
             .child(self.render_header())
             .child(self.render_status(&state, cx))
             .child(self.render_mode_toggle(&state, cx))
@@ -1351,9 +1352,10 @@ impl ToolFrontend for CounterView {
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver.clone());
+        self.focus_handle = Some(cx.focus_handle());
         if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
             BackendToolType::Counter,
-            sender,
+            sender.clone(),
         )) {
             eprintln!("Failed to send backend discovery request: {}", e);
             return;

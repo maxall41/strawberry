@@ -3,11 +3,11 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
-use crate::gui::value_control::{render_button_value_control, ButtonControlConfig};
+use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::pipeline::{
     gaussian_blur::GaussianBlurState, BackendToolType, FrontendMessage, GaussianBlurMessage,
     PipelineCommand, PipelineObjectMessage, ToolState,
@@ -23,7 +23,16 @@ pub struct GaussianBlurView {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
+    pub radius_control: Option<Entity<ValueControl>>,
+    pub sigma_control: Option<Entity<ValueControl>>,
     _cleanup_guard: crate::tools::CleanupGuard,
+    focus_handle: Option<FocusHandle>,
+}
+
+impl Focusable for GaussianBlurView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone().unwrap()
+    }
 }
 
 impl GaussianBlurView {
@@ -39,25 +48,14 @@ impl GaussianBlurView {
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
+            radius_control: None,
+            sigma_control: None,
             _cleanup_guard: crate::tools::CleanupGuard::new(
                 command_sender,
                 crate::pipeline::BackendToolType::GaussianBlur,
             ),
+            focus_handle: None,
         }
-    }
-
-    pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver);
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::GaussianBlur,
-            sender,
-        )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
-            return;
-        }
-        println!("Sent discovery request to backend | GaussianBlur");
-        self.process_messages(window, cx);
     }
 
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -76,8 +74,26 @@ impl GaussianBlurView {
                             ToolState::GaussianBlurState(new_state) => {
                                 if let Ok(mut locked_state) = state.write() {
                                     if *locked_state != new_state {
+                                        let sigma_ref = new_state.sigma.clone();
+                                        let radius_ref = new_state.radius.clone();
                                         *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
+                                        if let Err(e) = this.update(cx, |this, cx| {
+                                            this.sigma_control.as_ref().unwrap().update(
+                                                cx,
+                                                |this, cx| {
+                                                    this.value = sigma_ref;
+                                                    cx.notify();
+                                                },
+                                            );
+                                            this.radius_control.as_ref().unwrap().update(
+                                                cx,
+                                                |this, cx| {
+                                                    this.value = radius_ref;
+                                                    cx.notify();
+                                                },
+                                            );
+                                            cx.notify();
+                                        }) {
                                             eprintln!(
                                                 "Failed to update UI after state change: {}",
                                                 e
@@ -176,14 +192,6 @@ impl GaussianBlurView {
         }
     }
 
-    fn adjust_radius(&mut self, new_radius: f32, current_sigma: f32) {
-        self.update_radius_sigma(new_radius, current_sigma);
-    }
-
-    fn adjust_sigma(&mut self, current_radius: f32, new_sigma: f32) {
-        self.update_radius_sigma(current_radius, new_sigma);
-    }
-
     // Header component
     fn render_header(&self) -> impl IntoElement {
         div()
@@ -218,57 +226,21 @@ impl GaussianBlurView {
     // Value control component for radius and sigma
 
     // Radius control component
-    fn render_radius_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
-        let config = ButtonControlConfig {
-            step: 0.1,
-            decimal_places: 2,
-        };
-
-        render_button_value_control(
-            "Radius".to_string(),
-            state.radius,
-            config,
-            |this: &mut GaussianBlurView,
-             delta: f32,
-             _window: &mut Window,
-             _cx: &mut Context<GaussianBlurView>| {
-                let (current_radius, current_sigma) = {
-                    let current_state = this.state.read().unwrap();
-                    (current_state.radius, current_state.sigma)
-                };
-                let new_radius = (current_radius + delta).max(0.1);
-                this.adjust_radius(new_radius, current_sigma);
-            },
-            cx,
-        )
+    fn render_radius_control(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
+        self.radius_control.clone().unwrap()
     }
 
     // Sigma control component
-    fn render_sigma_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
-        let config = ButtonControlConfig {
-            step: 0.1,
-            decimal_places: 2,
-        };
-
-        render_button_value_control(
-            "Sigma".to_string(),
-            state.sigma,
-            config,
-            |this: &mut GaussianBlurView,
-             delta: f32,
-             _window: &mut Window,
-             _cx: &mut Context<GaussianBlurView>| {
-                let (current_radius, current_sigma) = {
-                    let current_state = this.state.read().unwrap();
-                    (current_state.radius, current_state.sigma)
-                };
-                let new_sigma = (current_sigma + delta).max(0.1);
-                this.adjust_sigma(current_radius, new_sigma);
-            },
-            cx,
-        )
+    fn render_sigma_control(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
+        self.sigma_control.clone().unwrap()
     }
 
     // Preset button component
@@ -320,13 +292,17 @@ impl GaussianBlurView {
     }
 
     // Controls section component
-    fn render_controls_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_controls_section(
+        &self,
+        cx: &mut Context<Self>,
+        _window: &mut Window,
+    ) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_radius_control(cx))
-            .child(self.render_sigma_control(cx))
+            .child(self.render_radius_control(cx, _window))
+            .child(self.render_sigma_control(cx, _window))
     }
 }
 
@@ -351,6 +327,13 @@ impl Render for GaussianBlurView {
 
         let is_enabled = state.is_enabled;
 
+        if self.sigma_control.is_none() {
+            return div()
+                .bg(rgb(0x505050))
+                .text_color(rgb(0xffffff))
+                .child("Initialising...");
+        }
+
         div()
             .flex()
             .flex_col()
@@ -360,6 +343,16 @@ impl Render for GaussianBlurView {
             .p_4()
             .shadow_lg()
             .text_color(rgb(0xffffff))
+            .on_mouse_down(gpui::MouseButton::Left, {
+                cx.listener(
+                    move |this: &mut GaussianBlurView,
+                          _event: &MouseDownEvent,
+                          window: &mut Window,
+                          cx: &mut Context<GaussianBlurView>| {
+                        this.focus_handle(cx).focus(window);
+                    },
+                )
+            })
             .child(self.render_header())
             .child(
                 div()
@@ -379,7 +372,7 @@ impl Render for GaussianBlurView {
                         ),
                     ),
             )
-            .child(self.render_controls_section(cx))
+            .child(self.render_controls_section(cx, _window))
             .child(self.render_presets_section(cx))
     }
 }
@@ -405,6 +398,7 @@ impl ToolFrontend for GaussianBlurView {
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver);
+        self.focus_handle = Some(cx.focus_handle());
         if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
             BackendToolType::GaussianBlur,
             sender,
@@ -412,7 +406,69 @@ impl ToolFrontend for GaussianBlurView {
             eprintln!("Failed to send backend discovery request: {}", e);
             return;
         }
-        println!("Sent discovery request to backend | Gaussian Blur");
+        println!("Sent discovery request to backend | GaussianBlur");
+
+        // Create and initialize ValueControl components
+        let state = self.state.read().unwrap().clone();
+
+        let radius_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.2}", state.radius),
+                state.radius,
+                "Radius".to_string(),
+                0.1,
+                "radius".to_string(),
+                0.1,
+                10.0,
+            )
+        });
+
+        let sigma_control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{:.2}", state.sigma),
+                state.sigma,
+                "Sigma".to_string(),
+                0.1,
+                "sigma".to_string(),
+                0.1,
+                10.0,
+            )
+        });
+
+        // Handle ValueControl events
+        cx.subscribe(
+            &radius_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "radius" {
+                    let current_state = this.state.read().unwrap();
+                    let s = current_state.sigma.clone();
+                    drop(current_state);
+                    this.update_radius_sigma(event.value, s);
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &sigma_control,
+            |this, _control, event: &ValueControlEvent, _cx| {
+                if event.id == "sigma" {
+                    let current_state = this.state.read().unwrap();
+                    let r = current_state.radius.clone();
+                    drop(current_state);
+                    this.update_radius_sigma(r, event.value);
+                }
+            },
+        )
+        .detach();
+
+        self.radius_control = Some(radius_control);
+        self.sigma_control = Some(sigma_control);
+
+        cx.notify();
+
+        println!("Initialized");
+
         self.process_messages(window, cx);
     }
 }
