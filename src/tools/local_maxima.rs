@@ -8,6 +8,7 @@ use gpui::{
 };
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
+use crate::gui::ToggleButton;
 use crate::pipeline::{
     local_maxima::LocalMaximaState, BackendToolType, FrontendMessage, LocalMaximaMessage,
     PipelineCommand, PipelineObjectMessage, ToolState,
@@ -397,25 +398,19 @@ impl LocalMaximaView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(&self, state: &LocalMaximaState) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .mb_3()
-            .child("Enabled:")
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(if state.is_enabled {
-                        rgb(0x00aa00)
-                    } else {
-                        rgb(0xaa0000)
-                    })
-                    .child(if state.is_enabled { "Yes" } else { "No" }),
-            )
+    fn render_status(&self, state: &LocalMaximaState, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_enabled = state.is_enabled;
+        ToggleButton::new(
+            "Enabled".to_string(),
+            is_enabled,
+            move |this: &mut LocalMaximaView,
+                  _event: &MouseDownEvent,
+                  window: &mut Window,
+                  cx: &mut Context<LocalMaximaView>| {
+                this.toggle_enabled(is_enabled, window, cx);
+            },
+        )
+        .render(cx)
     }
 
     // Min distance control component
@@ -645,24 +640,7 @@ impl Render for LocalMaximaView {
                 )
             })
             .child(self.render_header())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(self.render_status(&state))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(
-                            move |this: &mut LocalMaximaView,
-                                  _event: &MouseDownEvent,
-                                  window: &mut Window,
-                                  cx: &mut Context<LocalMaximaView>| {
-                                this.toggle_enabled(is_enabled, window, cx);
-                            },
-                        ),
-                    ),
-            )
+            .child(self.render_status(&state, cx))
             .child(self.render_controls_section(cx, _window))
             .child(self.render_presets_section(cx))
     }
