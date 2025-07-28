@@ -14,11 +14,10 @@
 - [ ] Auto updater
 - [ ] Documentation
 
-- [ ] If tokio backend panics handle it properly
+- [X] If tokio backend panics handle it properly
 - [ ] Refuses to load weka probability map file (the one that is 100+MB) with error: Failed to process pipeline after loading images: No input images provided
 - [X] Make it so compositor is just a normal tool that can be disabled and enabled just like any other tool.
 - [ ] Debounce pipeline events so if the user is changing the state rapdily like with a value counter it is all processed in a bundle
-- [ ] Add debouncing to frontend value counter
 - [X] Don't allow user to enable compositor if there is only one image to prevent RGBA-BRGA mixups
 - [ ] Fix Clippy Warnings
 

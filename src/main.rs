@@ -1,11 +1,10 @@
 use anyhow::Result;
 use clap::Parser;
 use gpui::{
-    actions, div, img, prelude::*, px, rgb, size, App, AppContext, Application,
-    AssetSource, Bounds, Context, Entity, ExternalPaths, FocusHandle, Focusable,
-    ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent, Menu, MenuItem, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, SharedString, TitlebarOptions,
-    Window, WindowBounds, WindowOptions,
+    actions, div, img, prelude::*, px, rgb, size, App, AppContext, Application, AssetSource,
+    Bounds, Context, Entity, ExternalPaths, FocusHandle, Focusable, ImageSource, KeyBinding,
+    KeyDownEvent, KeyUpEvent, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, RenderImage, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use gui::feedback::FeedbackModal;
 use image::{Frame, RgbaImage};
@@ -72,13 +71,11 @@ impl AssetSource for Assets {
     }
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 struct LassoState {
     is_dragging: bool,
     points: Vec<(u64, u64)>,
 }
-
 
 struct PrimaryViewer {
     focus_handle: FocusHandle,
@@ -152,70 +149,73 @@ impl PrimaryViewer {
                             }
                             println!("Image updated");
                         }
-                        PipelineCommand::FrontendMessage(msg) => if let FrontendMessage::UserFeedback(text) = msg {
-                            let raw_modal = FeedbackModal::new(text);
-                            let modal = cx.new(|cx| {
-                                raw_modal.enable_auto_close(cx);
-                                raw_modal
-                            });
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                this.toasts.push(
-                                    modal.expect("Modal entity should be created successfully"),
-                                );
-                                println!("Toast added");
-                                cx.notify();
-                            }) {
-                                eprintln!("Failed to add toast: {e}");
+                        PipelineCommand::FrontendMessage(msg) => {
+                            if let FrontendMessage::UserFeedback(text) = msg {
+                                let raw_modal = FeedbackModal::new(text);
+                                let modal = cx.new(|cx| {
+                                    raw_modal.enable_auto_close(cx);
+                                    raw_modal
+                                });
+                                if let Err(e) = this.update(cx, |this, cx| {
+                                    this.toasts.push(
+                                        modal.expect("Modal entity should be created successfully"),
+                                    );
+                                    println!("Toast added");
+                                    cx.notify();
+                                }) {
+                                    eprintln!("Failed to add toast: {e}");
+                                }
                             }
-                        },
+                        }
                         _ => {}
                     }
                 }
                 for recv in &secondary_receivers {
                     if let Ok(msg) = recv.try_recv() {
-                        if let PipelineCommand::FrontendMessage(msg) = msg { match msg {
-                            FrontendMessage::ReturnBackendTools(_, return_sender) => {
-                                if let Err(e) = this.update(cx, |this, cx| {
-                                    this.counter_sender = Some(return_sender[0].clone());
-                                    //TODO: Mmm danger
-                                }) {
-                                    eprintln!("Failed to update counter sender: {e}");
-                                }
-                            }
-                            FrontendMessage::ReturnState(tool_state) => {
-                                if let ToolState::CounterState(counter_state) = tool_state {
-                                    // Check if we're in review mode and need to snap to a count
-                                    let should_snap = counter_state.is_enabled
-                                        && counter_state.active_tool == CounterTool::Review
-                                        && counter_state.active_count_type.is_some();
-
-                                    let snap_position = if should_snap {
-                                        counter_state
-                                            .active_count_type
-                                            .and_then(|count_type| {
-                                                counter_state.manual_counts.get(&count_type)
-                                            })
-                                            .and_then(|counts| {
-                                                counts
-                                                    .get(counter_state.review_current_index)
-                                            })
-                                            .map(|count| count.position)
-                                    } else {
-                                        None
-                                    };
-
-                                    // Store count data and review snap target
+                        if let PipelineCommand::FrontendMessage(msg) = msg {
+                            match msg {
+                                FrontendMessage::ReturnBackendTools(_, return_sender) => {
                                     if let Err(e) = this.update(cx, |this, cx| {
-                                        this.count_data = Some(counter_state);
-                                        this.review_snap_target = snap_position;
-                                        cx.notify();
+                                        this.counter_sender = Some(return_sender[0].clone());
+                                        //TODO: Mmm danger
                                     }) {
-                                        eprintln!("Failed to update display image: {e}");
+                                        eprintln!("Failed to update counter sender: {e}");
                                     }
                                 }
+                                FrontendMessage::ReturnState(tool_state) => {
+                                    if let ToolState::CounterState(counter_state) = tool_state {
+                                        // Check if we're in review mode and need to snap to a count
+                                        let should_snap = counter_state.is_enabled
+                                            && counter_state.active_tool == CounterTool::Review
+                                            && counter_state.active_count_type.is_some();
+
+                                        let snap_position = if should_snap {
+                                            counter_state
+                                                .active_count_type
+                                                .and_then(|count_type| {
+                                                    counter_state.manual_counts.get(&count_type)
+                                                })
+                                                .and_then(|counts| {
+                                                    counts.get(counter_state.review_current_index)
+                                                })
+                                                .map(|count| count.position)
+                                        } else {
+                                            None
+                                        };
+
+                                        // Store count data and review snap target
+                                        if let Err(e) = this.update(cx, |this, cx| {
+                                            this.count_data = Some(counter_state);
+                                            this.review_snap_target = snap_position;
+                                            cx.notify();
+                                        }) {
+                                            eprintln!("Failed to update display image: {e}");
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
-                            _ => {}
-                        } }
+                        }
                     }
                 }
                 cx.background_executor()
@@ -414,8 +414,8 @@ impl Render for PrimaryViewer {
                             };
                         if is_lasso_delete_active {
                             this.start_lasso(image_x, image_y);
-                        } else if let Err(e) = mouse_down_sender
-                            .send(PipelineCommand::HandleClick(image_x, image_y))
+                        } else if let Err(e) =
+                            mouse_down_sender.send(PipelineCommand::HandleClick(image_x, image_y))
                         {
                             eprintln!("Error sending click event: {e}");
                         }
@@ -639,7 +639,6 @@ fn create_tool_window<T, A>(
         let mut tool = constructor(view_recv_clone.resubscribe(), view_sender_clone.clone());
 
         if let Err(e) = cx.open_window(tool.get_window_options(), |window, cx| {
-            
             cx.new(|cx| {
                 tool.initialize(window, cx);
                 tool
@@ -663,12 +662,23 @@ async fn main() -> Result<()> {
 
     let (mut pipeline, view_sender, view_recv) = Pipeline::new().await?;
 
-    tokio::spawn(async move {
+    let pipeline_handle = tokio::spawn(async move {
         loop {
             if let Err(e) = pipeline.process_commands().await {
                 eprintln!("Error processing pipeline commands: {e}");
+                panic!("Pipeline processing failed: {e}");
             }
             tokio::time::sleep(Duration::from_millis(33)).await; // Lock at 30FPS
+        }
+    });
+
+    // Spawn a task to monitor the pipeline and propagate panics
+    tokio::spawn(async move {
+        if let Err(e) = pipeline_handle.await {
+            if e.is_panic() {
+                eprintln!("Pipeline task panicked, shutting down application");
+                std::process::exit(1);
+            }
         }
     });
 
