@@ -4,15 +4,16 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 use async_trait::async_trait;
 use compositor::{Compositor, CompositorState};
 use decomposer::{Decomposer, DecomposerState};
+use serde::{Deserialize, Serialize};
 
-use crate::{processing::local_maxima::ThresholdType, tools::counter::CounterTool};
+use crate::processing::local_maxima::ThresholdType;
 use anyhow::anyhow;
 use contrast::{Contrast, ContrastState};
-use counter::{Counter, CounterState};
+use counter::{Counter, CounterState, CounterTool};
 use gaussian_blur::{GaussianBlur, GaussianBlurState};
 use image::{ImageReader, RgbaImage};
 use local_maxima::{LocalMaxima, LocalMaximaState};
-use manager::{ManagerState, ToolManager};
+use manager::{ManagerState, PipelineConfig, ToolManager};
 use morphology::{Morphology, MorphologyState};
 use watershed::{Watershed, WatershedState};
 
@@ -67,6 +68,8 @@ pub enum MorphologyMessage {
 #[derive(Debug, Clone)]
 pub enum ManagerMessage {
     ReorderTool(u16, u16),
+    SavePipeline(PathBuf),
+    LoadPipeline(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -122,11 +125,6 @@ pub enum PipelineObjectMessage {
 }
 
 #[derive(Debug, Clone)]
-pub enum CrossFrontendMessage {
-    MoveViewerToImagePoint(u64, u64),
-}
-
-#[derive(Debug, Clone)]
 pub enum FrontendMessage {
     ReturnState(ToolState),
     ReturnBackendTools(Vec<u16>, Vec<flume::Sender<PipelineCommand>>),
@@ -158,7 +156,7 @@ pub enum PipelineCommand {
     /// Refresh the pipeline starting from the given tool index
     Refresh(usize),
     /// Load input images into the pipeline
-    Load(Vec<PathBuf>),
+    Load(Vec<PathBuf>, bool),
     /// Return output image from the pipeline
     Output(RgbaImage),
     /// Message to pipeline object
@@ -175,10 +173,12 @@ pub enum PipelineCommand {
     HandleClick(u64, u64),
     /// Register click receiver
     RegisterClickReceiver(flume::Sender<PipelineCommand>),
+    /// Command used by CLI to avoid discovery negoitation
+    CLILoadPipeline(PathBuf),
 }
 
 /// Result of pipeline processing
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolState {
     CompositorState(CompositorState),
     ContrastState(ContrastState),
@@ -228,6 +228,9 @@ pub trait ToolBackend: Send + Sync {
     fn supports_processing(&self) -> bool {
         true
     }
+
+    /// Apply state to the tool. Used during pipeline load.
+    fn apply_state(&mut self, state: ToolState);
 
     /// Get the tool's index in the pipeline
     fn get_index(&self) -> usize;
@@ -397,7 +400,7 @@ impl Pipeline {
                         eprintln!("Failed to process pipeline from index {}: {}", index, e);
                     }
                 }
-                PipelineCommand::Load(files) => {
+                PipelineCommand::Load(files, skip_processing) => {
                     println!("Got load command!");
                     let mut loaded_images = vec![];
                     //TODO: Maybe we should do this in a separate thread?
@@ -424,8 +427,11 @@ impl Pipeline {
                         }
                     }
                     self.input_images = loaded_images;
-                    if let Err(e) = self.process_from(0).await {
-                        eprintln!("Failed to process pipeline after loading images: {}", e);
+
+                    if !skip_processing {
+                        if let Err(e) = self.process_from(0).await {
+                            eprintln!("Failed to process pipeline after loading images: {}", e);
+                        }
                     }
                 }
                 PipelineCommand::DiscoverBackend(backend_tool_type, sender) => {
@@ -472,6 +478,23 @@ impl Pipeline {
                         if tool.iam() == *backend_tool_type {
                             tool.disconnect();
                         }
+                    }
+                }
+                PipelineCommand::CLILoadPipeline(path) => {
+                    let toml_content = std::fs::read_to_string(&path)
+                        .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+                    let pipeline_config: PipelineConfig = toml::from_str(&toml_content)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse TOML: {}", e))?;
+
+                    // Apply the loaded configurations to the tools
+                    for tool in self.tool_manager.tools.iter_mut() {
+                        let tool_name = format!("{:?}", tool.iam());
+                        if let Some(config) = pipeline_config.tools.get(&tool_name) {
+                            tool.apply_state(config.clone());
+                        }
+                    }
+                    if let Err(e) = self.process_from(0).await {
+                        eprintln!("Failed to process pipeline after loading images: {}", e);
                     }
                 }
                 PipelineCommand::RegisterClickReceiver(click_sender) => {

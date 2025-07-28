@@ -8,7 +8,9 @@ use super::{
 };
 use async_trait::async_trait;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct WatershedState {
     pub sigma: f32,
     pub min_distance: u32,
@@ -31,6 +33,11 @@ pub struct Watershed {
 impl ToolBackend for Watershed {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
+    }
+    fn apply_state(&mut self, state: ToolState) {
+        if let ToolState::WatershedState(new_state) = state {
+            self.state = new_state;
+        }
     }
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()

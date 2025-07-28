@@ -1,8 +1,8 @@
 ## Alpha 0.1:
 - [X] Decomposer tool that takes in one image and splits out each color channel as it's own image
 - [X] Allow user to type values directly into value control + psuedo-slider
-- [ ] CLI (Indiviudal, and directory processing supports regex for file filtering)
-- [ ] Saving and loading pipelines
+- [X] Saving and loading pipelines
+- [X] CLI (Indiviudal, and directory processing supports regex for file filtering)
 - [ ] Support dragging and dropping images into viewer
 - [ ] Background subtraction with rolling ball
 - [ ] GUI Error handling
@@ -12,6 +12,7 @@
 - [ ] If compositing > 7 images then just batch into 7 image batches and run each and then composite them together (supports up to 49 images which should be enough for pretty much everything)
 - [X] Safe indexing
 - [ ] Auto updater
+- [ ] Documentation
 
 - [ ] If tokio backend panics handle it properly
 - [ ] Refuses to load weka probability map file (the one that is 100+MB) with error: Failed to process pipeline after loading images: No input images provided

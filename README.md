@@ -1,1 +1,1 @@
-# strawberry
+# 🍓 Strawberry

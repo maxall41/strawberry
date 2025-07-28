@@ -8,7 +8,9 @@ use super::{
 };
 use async_trait::async_trait;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CompositorState {
     pub is_enabled: bool,
     pub enabled_layers: Vec<bool>,
@@ -37,6 +39,11 @@ impl ToolBackend for Compositor {
     }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
+    }
+    fn apply_state(&mut self, state: ToolState) {
+        if let ToolState::CompositorState(new_state) = state {
+            self.state = new_state;
+        }
     }
     fn get_state(&self) -> ToolState {
         ToolState::CompositorState(self.state.clone())

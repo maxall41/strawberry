@@ -5,13 +5,15 @@ use crate::processing::{
     GpuImageProcessor,
 };
 
+use serde::{Deserialize, Serialize};
+
 use super::{
     BackendToolType, FrontendMessage, MorphologyMessage, PipelineCommand, PipelineObjectMessage,
     ToolBackend, ToolState,
 };
 use async_trait::async_trait;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MorphologyState {
     pub operation: MorphologyOperation,
     pub element_size: u32,
@@ -43,6 +45,11 @@ impl ToolBackend for Morphology {
     }
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
+    }
+    fn apply_state(&mut self, state: ToolState) {
+        if let ToolState::MorphologyState(new_state) = state {
+            self.state = new_state;
+        }
     }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;

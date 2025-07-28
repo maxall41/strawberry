@@ -9,7 +9,9 @@ use super::{
 use crate::processing::decomposer::GpuDecomposer;
 use async_trait::async_trait;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DecomposerState {
     pub is_enabled: bool,
     pub enabled_layers: Vec<bool>,
@@ -38,6 +40,11 @@ impl ToolBackend for Decomposer {
     }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
+    }
+    fn apply_state(&mut self, state: ToolState) {
+        if let ToolState::DecomposerState(new_state) = state {
+            self.state = new_state;
+        }
     }
     fn get_state(&self) -> ToolState {
         ToolState::DecomposerState(self.state.clone())

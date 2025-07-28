@@ -1,4 +1,5 @@
 use std::cmp::{max, min};
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 
@@ -6,14 +7,20 @@ use super::{
     BackendToolType, CompositorMessage, FrontendMessage, ManagerMessage, PipelineCommand,
     PipelineObjectMessage, ToolBackend, ToolState,
 };
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineConfig {
+    pub tools: HashMap<String, ToolState>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolProxy {
     pub name: String,
     pub position: u16,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ManagerState {
     pub proxy_tools: Vec<ToolProxy>,
     pub is_enabled: bool,
@@ -80,6 +87,7 @@ impl ToolBackend for ToolManager {
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
     }
+    fn apply_state(&mut self, state: ToolState) {}
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
     }
@@ -111,6 +119,41 @@ impl ToolBackend for ToolManager {
                         self.state.is_enabled = value;
                     }
                     PipelineObjectMessage::ManagerMessage(message) => match message {
+                        ManagerMessage::SavePipeline(path) => {
+                            let mut configs: HashMap<String, ToolState> = HashMap::new();
+                            for tool in &self.tools {
+                                if !tool.is_enabled() {
+                                    continue;
+                                }
+                                let tool_name = format!("{:?}", tool.iam());
+                                configs.insert(tool_name, tool.get_state());
+                            }
+                            let pipeline_config = PipelineConfig { tools: configs };
+                            let toml_string = toml::to_string(&pipeline_config)
+                                .map_err(|e| anyhow::anyhow!(e))?;
+                            std::fs::write(&path, toml_string)
+                                .map_err(|e| anyhow::anyhow!("Failed to write to file: {}", e))?;
+                        }
+                        ManagerMessage::LoadPipeline(path) => {
+                            let toml_content = std::fs::read_to_string(&path)
+                                .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+                            let pipeline_config: PipelineConfig = toml::from_str(&toml_content)
+                                .map_err(|e| anyhow::anyhow!("Failed to parse TOML: {}", e))?;
+
+                            // Apply the loaded configurations to the tools
+                            for tool in self.tools.iter_mut() {
+                                let tool_name = format!("{:?}", tool.iam());
+                                if let Some(config) = pipeline_config.tools.get(&tool_name) {
+                                    tool.apply_state(config.clone());
+                                }
+                            }
+
+                            self.command_sender
+                                .send(PipelineCommand::Refresh(self.index))
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to send refresh command: {}", e)
+                                })?;
+                        }
                         ManagerMessage::ReorderTool(start_index, new_index) => {
                             let start_idx = start_index as usize;
                             let new_idx = new_index as usize;

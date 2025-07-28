@@ -1,4 +1,5 @@
 use anyhow::Result;
+use clap::Parser;
 use gpui::{
     actions, div, img, prelude::*, px, rgb, size, App, AppContext, Application, AssetSource,
     Bounds, Context, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent,
@@ -12,14 +13,14 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tools::decomposer::DecomposerView;
 
-use pipeline::counter::{CounterMode, CounterState};
+use cli::{run_cli, Args};
+use pipeline::counter::{CounterMode, CounterState, CounterTool};
 use pipeline::{
     CountMessage, FrontendMessage, Pipeline, PipelineCommand, PipelineObjectMessage, ToolState,
 };
 use rfd::FileDialog;
 use tools::compositor::CompositorView;
 use tools::contrast::ContrastView;
-use tools::counter::CounterTool;
 use tools::counter::CounterView;
 use tools::gaussian_blur::GaussianBlurView;
 use tools::local_maxima::LocalMaximaView;
@@ -34,6 +35,7 @@ struct Assets {
     base: PathBuf,
 }
 
+mod cli;
 mod gui;
 mod pipeline;
 mod processing;
@@ -109,7 +111,7 @@ impl PrimaryViewer {
                 .pick_files();
 
             if let Some(files) = files {
-                if let Err(e) = sender_p.send(PipelineCommand::Load(files)) {
+                if let Err(e) = sender_p.send(PipelineCommand::Load(files, false)) {
                     eprintln!("Failed to send loaded images to pipeline: {}", e);
                 }
             }
@@ -627,10 +629,15 @@ fn create_tool_window<T, A>(
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
+    let args = Args::parse();
+
+    if args.cli {
+        return run_cli(args).await;
+    }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    let (mut pipeline, view_sender, view_recv) = Pipeline::new().await?;
+    let (mut pipeline, view_sender, mut view_recv) = Pipeline::new().await?;
 
     tokio::spawn(async move {
         loop {

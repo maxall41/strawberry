@@ -6,10 +6,7 @@ use quick_xml::se::to_string;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::{
-    pipeline::counter::{CountData, CounterMode, CounterState},
-    tools::counter::CounterTool,
-};
+use crate::pipeline::counter::{CountData, CounterMode, CounterState, CounterTool};
 
 // XML serialization structures
 #[derive(Debug, Serialize, Deserialize)]
