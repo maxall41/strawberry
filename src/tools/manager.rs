@@ -321,11 +321,13 @@ impl ManagerView {
                 "=== REORDER TOOL ===\nOriginal index: {}\nDrop index: {}\nPipeline position: #{} -> moving to position near index {}",
                 original_index, drop_index, drag_state.original_position, drop_index
             );
-            self.send_channels[current_tool_index as usize]
-                .send(PipelineCommand::PipelineObject(
-                    PipelineObjectMessage::ManagerMessage(manager_message),
-                ))
-                .unwrap();
+            if let Err(e) = self.send_channels[current_tool_index as usize].send(
+                PipelineCommand::PipelineObject(PipelineObjectMessage::ManagerMessage(
+                    manager_message,
+                )),
+            ) {
+                eprintln!("Failed to send manager message: {}", e);
+            }
         }
     }
 

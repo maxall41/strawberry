@@ -29,7 +29,9 @@ pub struct RollingBallView {
 
 impl Focusable for RollingBallView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone().unwrap()
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
     }
 }
 
@@ -67,7 +69,11 @@ impl RollingBallView {
         }
         println!("Sent discovery request to backend | RollingBall");
 
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let ball_radius_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{}", state.ball_radius),
@@ -113,13 +119,13 @@ impl RollingBallView {
                                         let ball_radius_ref = new_state.ball_radius;
                                         *locked_state = new_state;
                                         if let Err(e) = this.update(cx, |this, cx| {
-                                            this.ball_radius_control.as_ref().unwrap().update(
-                                                cx,
-                                                |control, cx| {
+                                            this.ball_radius_control
+                                                .as_ref()
+                                                .expect("ball_radius_control should be initialized before use")
+                                                .update(cx, |control, cx| {
                                                     control.value = ball_radius_ref as f32;
                                                     cx.notify();
-                                                },
-                                            );
+                                                });
                                             cx.notify();
                                         }) {
                                             eprintln!(
@@ -250,7 +256,10 @@ impl RollingBallView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        let brc = self.ball_radius_control.clone().unwrap();
+        let brc = self
+            .ball_radius_control
+            .clone()
+            .expect("ball_radius_control should be initialized before use");
         brc
     }
 
@@ -390,7 +399,11 @@ impl ToolFrontend for RollingBallView {
         }
         println!("Sent discovery request to backend | RollingBall");
 
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let ball_radius_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{}", state.ball_radius),

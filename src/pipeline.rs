@@ -304,7 +304,7 @@ impl Pipeline {
         let (command_tx, command_rx) = broadcast::channel(1000);
         let (output_tx, output_rx) = broadcast::channel(1000);
 
-        let gpu_image_processor = Arc::new(GpuImageProcessor::new().await);
+        let gpu_image_processor = Arc::new(GpuImageProcessor::new().await?);
 
         let tool_manager = ToolManager::new(
             vec![

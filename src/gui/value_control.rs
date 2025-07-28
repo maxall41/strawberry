@@ -94,7 +94,12 @@ impl ValueControl {
             let now = Instant::now();
             this.last_key_time = now;
 
-            if !this.focus_handle.as_ref().unwrap().is_focused(_window) {
+            if !this
+                .focus_handle
+                .as_ref()
+                .expect("focus_handle should be initialized before use")
+                .is_focused(_window)
+            {
                 return;
             }
 
@@ -159,7 +164,9 @@ impl ValueControl {
 
 impl Focusable for ValueControl {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone().unwrap()
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
     }
 }
 

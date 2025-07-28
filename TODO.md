@@ -5,7 +5,7 @@
 - [X] CLI (Indiviudal, and directory processing supports regex for file filtering)
 - [X] Support dragging and dropping images into viewer
 - [X] Background subtraction with rolling ball
-- [ ] GUI Error handling with toasts
+- [X] GUI Error handling with toasts
 - [X] Sobel filter
 - [X] Grayscale
 - [ ] Fallback to CPU for all image processors
@@ -19,7 +19,7 @@
 - [X] Make it so compositor is just a normal tool that can be disabled and enabled just like any other tool.
 - [ ] Debounce pipeline events so if the user is changing the state rapdily like with a value counter it is all processed in a bundle
 - [ ] Add debouncing to frontend value counter
-- [ ] Don't allow user to enable compositor if there is only one image to prevent RGBA-BRGA mixups
+- [X] Don't allow user to enable compositor if there is only one image to prevent RGBA-BRGA mixups
 - [ ] Fix Clippy Warnings
 
 ## Misc

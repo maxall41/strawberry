@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use wgpu::{util::DeviceExt, Trace};
 
@@ -21,7 +21,7 @@ pub struct GpuImageProcessor {
 }
 
 impl GpuImageProcessor {
-    pub async fn new() -> Self {
+    pub async fn new() -> Result<Self> {
         // Initialize wgpu
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -35,7 +35,7 @@ impl GpuImageProcessor {
                 force_fallback_adapter: false,
             })
             .await
-            .unwrap();
+            .map_err(|e| anyhow!("Failed to find suitable GPU adapter: {}", e))?;
 
         let required_limits = wgpu::Limits {
             max_storage_buffer_binding_size: adapter.limits().max_storage_buffer_binding_size,
@@ -51,13 +51,13 @@ impl GpuImageProcessor {
                 trace: Trace::Off,
             })
             .await
-            .unwrap();
+            .map_err(|e| anyhow!("Failed to create GPU device: {}", e))?;
         println!(
             "GPU Device created max_storage_buffer_binding_size: {:?}",
             device.limits().max_storage_buffer_binding_size
         );
 
-        Self { device, queue }
+        Ok(Self { device, queue })
     }
 
     // Helper methods for common GPU operations

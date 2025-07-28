@@ -26,7 +26,9 @@ pub struct GrayscaleView {
 
 impl Focusable for GrayscaleView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone().unwrap()
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
     }
 }
 

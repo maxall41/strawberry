@@ -35,7 +35,9 @@ pub struct LocalMaximaView {
 
 impl Focusable for LocalMaximaView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone().unwrap()
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
     }
 }
 
@@ -77,7 +79,11 @@ impl LocalMaximaView {
         println!("Sent discovery request to backend | LocalMaxima");
 
         // Create and initialize ValueControl components
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let min_distance_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.0}", state.min_distance),
@@ -159,16 +165,17 @@ impl LocalMaximaView {
                                         };
                                         *locked_state = new_state;
                                         if let Err(e) = this.update(cx, |this, cx| {
-                                            this.min_distance_control.as_ref().unwrap().update(
-                                                cx,
-                                                |control, cx| {
+                                            this.min_distance_control
+                                                .as_ref()
+                                                .expect("min_distance_control should be initialized before use")
+                                                .update(cx, |control, cx| {
                                                     control.value = min_distance_ref as f32;
                                                     cx.notify();
-                                                },
-                                            );
-                                            this.threshold_control.as_ref().unwrap().update(
-                                                cx,
-                                                |control, cx| {
+                                                });
+                                            this.threshold_control
+                                                .as_ref()
+                                                .expect("threshold_control should be initialized before use")
+                                                .update(cx, |control, cx| {
                                                     control.value = threshold_value_ref;
                                                     cx.notify();
                                                 },
@@ -278,7 +285,10 @@ impl LocalMaximaView {
     }
 
     fn adjust_min_distance_value(&mut self, new_value: u32) {
-        let current_state = self.state.read().unwrap();
+        let current_state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned");
         let threshold = current_state.threshold.clone();
         let exclude_border = current_state.exclude_border;
         drop(current_state);
@@ -286,7 +296,10 @@ impl LocalMaximaView {
     }
 
     fn adjust_threshold_value(&mut self, new_value: f32) {
-        let current_state = self.state.read().unwrap();
+        let current_state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned");
         let new_threshold = match current_state.threshold {
             ThresholdType::Absolute(_) => ThresholdType::Absolute(new_value),
             ThresholdType::Relative(_) => ThresholdType::Relative(new_value),
@@ -376,7 +389,10 @@ impl LocalMaximaView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        let mdc = self.min_distance_control.clone().unwrap();
+        let mdc = self
+            .min_distance_control
+            .clone()
+            .expect("min_distance_control should be initialized before use");
         mdc
     }
 
@@ -386,7 +402,10 @@ impl LocalMaximaView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        let state = self.state.read().unwrap();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned");
         let (mode_label, is_enabled) = match &state.threshold {
             ThresholdType::Absolute(_) => ("Absolute", true),
             ThresholdType::Relative(_) => ("Relative", true),
@@ -424,14 +443,20 @@ impl LocalMaximaView {
                     )
             )
             .when(is_enabled, |div| {
-                let tc = self.threshold_control.clone().unwrap();
+                let tc = self
+                    .threshold_control
+                    .clone()
+                    .expect("threshold_control should be initialized before use");
                 div.child(tc)
             })
     }
 
     // Exclude border toggle component
     fn render_exclude_border_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned");
         div()
             .flex()
             .items_center()
@@ -635,7 +660,11 @@ impl ToolFrontend for LocalMaximaView {
         println!("Sent discovery request to backend | LocalMaxima");
 
         // Create and initialize ValueControl components
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let min_distance_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.0}", state.min_distance),

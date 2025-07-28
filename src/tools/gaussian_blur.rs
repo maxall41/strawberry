@@ -32,7 +32,9 @@ pub struct GaussianBlurView {
 
 impl Focusable for GaussianBlurView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone().unwrap()
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
     }
 }
 
@@ -79,16 +81,17 @@ impl GaussianBlurView {
                                         let radius_ref = new_state.radius.clone();
                                         *locked_state = new_state;
                                         if let Err(e) = this.update(cx, |this, cx| {
-                                            this.sigma_control.as_ref().unwrap().update(
-                                                cx,
-                                                |this, cx| {
+                                            this.sigma_control
+                                                .as_ref()
+                                                .expect("sigma_control should be initialized before use")
+                                                .update(cx, |this, cx| {
                                                     this.value = sigma_ref;
                                                     cx.notify();
-                                                },
-                                            );
-                                            this.radius_control.as_ref().unwrap().update(
-                                                cx,
-                                                |this, cx| {
+                                                });
+                                            this.radius_control
+                                                .as_ref()
+                                                .expect("radius_control should be initialized before use")
+                                                .update(cx, |this, cx| {
                                                     this.value = radius_ref;
                                                     cx.notify();
                                                 },
@@ -226,7 +229,9 @@ impl GaussianBlurView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        self.radius_control.clone().unwrap()
+        self.radius_control
+            .clone()
+            .expect("radius_control should be initialized before use")
     }
 
     // Sigma control component
@@ -235,7 +240,9 @@ impl GaussianBlurView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        self.sigma_control.clone().unwrap()
+        self.sigma_control
+            .clone()
+            .expect("sigma_control should be initialized before use")
     }
 
     // Preset button component
@@ -387,7 +394,11 @@ impl ToolFrontend for GaussianBlurView {
         println!("Sent discovery request to backend | GaussianBlur");
 
         // Create and initialize ValueControl components
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
 
         let radius_control = cx.new(|cx| {
             ValueControl::new(
@@ -418,7 +429,10 @@ impl ToolFrontend for GaussianBlurView {
             &radius_control,
             |this, _control, event: &ValueControlEvent, _cx| {
                 if event.id == "radius" {
-                    let current_state = this.state.read().unwrap();
+                    let current_state = this
+                        .state
+                        .read()
+                        .expect("State lock should not be poisoned");
                     let s = current_state.sigma.clone();
                     drop(current_state);
                     this.update_radius_sigma(event.value, s);
@@ -431,7 +445,10 @@ impl ToolFrontend for GaussianBlurView {
             &sigma_control,
             |this, _control, event: &ValueControlEvent, _cx| {
                 if event.id == "sigma" {
-                    let current_state = this.state.read().unwrap();
+                    let current_state = this
+                        .state
+                        .read()
+                        .expect("State lock should not be poisoned");
                     let r = current_state.radius.clone();
                     drop(current_state);
                     this.update_radius_sigma(r, event.value);

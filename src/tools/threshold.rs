@@ -31,7 +31,9 @@ pub struct ThresholdView {
 
 impl Focusable for ThresholdView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone().unwrap()
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
     }
 }
 
@@ -70,7 +72,11 @@ impl ThresholdView {
         println!("Sent discovery request to backend | Threshold");
 
         // Create and initialize ValueControl component
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let threshold_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.3}", state.threshold_value),
@@ -118,13 +124,13 @@ impl ThresholdView {
                                         let threshold_value_ref = new_state.threshold_value;
                                         *locked_state = new_state;
                                         if let Err(e) = this.update(cx, |this, cx| {
-                                            this.threshold_control.as_ref().unwrap().update(
-                                                cx,
-                                                |control, cx| {
+                                            this.threshold_control
+                                                .as_ref()
+                                                .expect("threshold_control should be initialized before use")
+                                                .update(cx, |control, cx| {
                                                     control.value = threshold_value_ref;
                                                     cx.notify();
-                                                },
-                                            );
+                                                });
                                             cx.notify();
                                         }) {
                                             eprintln!(
@@ -259,7 +265,10 @@ impl ThresholdView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        let tc = self.threshold_control.clone().unwrap();
+        let tc = self
+            .threshold_control
+            .clone()
+            .expect("threshold_control should be initialized before use");
         tc
     }
 
@@ -403,7 +412,11 @@ impl ToolFrontend for ThresholdView {
         println!("Sent discovery request to backend | Threshold");
 
         // Create and initialize ValueControl component
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let threshold_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.3}", state.threshold_value),
