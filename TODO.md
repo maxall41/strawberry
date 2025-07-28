@@ -3,11 +3,11 @@
 - [X] Allow user to type values directly into value control + psuedo-slider
 - [X] Saving and loading pipelines
 - [X] CLI (Indiviudal, and directory processing supports regex for file filtering)
-- [ ] Support dragging and dropping images into viewer
-- [ ] Background subtraction with rolling ball
+- [X] Support dragging and dropping images into viewer
+- [X] Background subtraction with rolling ball
 - [ ] GUI Error handling
-- [ ] Sobel filter
-- [ ] Grayscale
+- [X] Sobel filter
+- [X] Grayscale
 - [ ] Fallback to CPU for all image processors
 - [ ] If compositing > 7 images then just batch into 7 image batches and run each and then composite them together (supports up to 49 images which should be enough for pretty much everything)
 - [X] Safe indexing
@@ -32,7 +32,6 @@
 
 ## Other Features
 
-- [ ] Grayscale tool
 - [ ] Command pallete
 - [ ] Support Z-stacking
 - [ ] Try replacing Flume with Kanal and see if it improves performance

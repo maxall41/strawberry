@@ -5,12 +5,14 @@ pub mod contrast;
 pub mod counter;
 pub mod decomposer;
 pub mod gaussian_blur;
+pub mod grayscale;
 pub mod local_maxima;
 pub mod manager;
 pub mod morphology;
+pub mod rolling_ball;
+pub mod sobel;
 pub mod threshold;
 pub mod watershed;
-
 /// RAII guard that automatically sends disconnect command when dropped
 pub struct CleanupGuard {
     command_sender: tokio::sync::broadcast::Sender<crate::pipeline::PipelineCommand>,

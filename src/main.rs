@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tools::decomposer::DecomposerView;
+use tools::sobel::SobelView;
 
 use cli::{run_cli, Args};
 use pipeline::counter::{CounterMode, CounterState, CounterTool};
@@ -24,9 +25,11 @@ use tools::compositor::CompositorView;
 use tools::contrast::ContrastView;
 use tools::counter::CounterView;
 use tools::gaussian_blur::GaussianBlurView;
+use tools::grayscale::GrayscaleView;
 use tools::local_maxima::LocalMaximaView;
 use tools::manager::ManagerView;
 use tools::morphology::MorphologyView;
+use tools::rolling_ball::RollingBallView;
 use tools::threshold::ThresholdView;
 use tools::watershed::WatershedView;
 use tools::ToolFrontend;
@@ -586,25 +589,25 @@ impl Render for PrimaryViewer {
     }
 }
 
-actions!(
-    image,
-    [
-        Quit,
-        ZoomIn,
-        ZoomOut,
-        OpenFile,
-        CompositorSettings,
-        ContrastSettings,
-        CounterSettings,
-        GaussianBlurSettings,
-        LocalMaximaSettings,
-        ManagerSettings,
-        MorphologySettings,
-        ThresholdSettings,
-        WatershedSettings,
-        DecomposerSettings
-    ]
-);
+actions!([
+    Quit,
+    ZoomIn,
+    ZoomOut,
+    OpenFile,
+    CompositorSettings,
+    SobelSettings,
+    ContrastSettings,
+    CounterSettings,
+    GaussianBlurSettings,
+    GrayscaleSettings,
+    LocalMaximaSettings,
+    ManagerSettings,
+    MorphologySettings,
+    RollingBallSettings,
+    ThresholdSettings,
+    WatershedSettings,
+    DecomposerSettings
+]);
 
 // Generic tool window creation function
 fn create_tool_window<T, A>(
@@ -690,6 +693,12 @@ async fn main() -> Result<()> {
                 view_recv.resubscribe(),
                 GaussianBlurView::new,
             );
+            create_tool_window::<GrayscaleView, GrayscaleSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                GrayscaleView::new,
+            );
             create_tool_window::<ThresholdView, ThresholdSettings>(
                 cx,
                 view_sender.clone(),
@@ -708,6 +717,12 @@ async fn main() -> Result<()> {
                 view_recv.resubscribe(),
                 MorphologyView::new,
             );
+            create_tool_window::<RollingBallView, RollingBallSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                RollingBallView::new,
+            );
             create_tool_window::<WatershedView, WatershedSettings>(
                 cx,
                 view_sender.clone(),
@@ -725,6 +740,12 @@ async fn main() -> Result<()> {
                 view_sender.clone(),
                 view_recv.resubscribe(),
                 DecomposerView::new,
+            );
+            create_tool_window::<SobelView, SobelSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                SobelView::new,
             );
 
             let _window_closed_subscription = cx.on_window_closed(move |_| {});
@@ -755,11 +776,14 @@ async fn main() -> Result<()> {
                         MenuItem::action("Contrast", ContrastSettings),
                         MenuItem::action("Counter", CounterSettings),
                         MenuItem::action("Gaussian Blur", GaussianBlurSettings),
+                        MenuItem::action("Grayscale", GrayscaleSettings),
                         MenuItem::action("Local Maxima", LocalMaximaSettings),
                         MenuItem::action("Morphology", MorphologySettings),
+                        MenuItem::action("Rolling Ball", RollingBallSettings),
                         MenuItem::action("Threshold", ThresholdSettings),
                         MenuItem::action("Watershed", WatershedSettings),
                         MenuItem::action("Decomposer", DecomposerSettings),
+                        MenuItem::action("Sobel", SobelSettings),
                     ],
                 },
             ]);

@@ -11,10 +11,13 @@ use anyhow::anyhow;
 use contrast::{Contrast, ContrastState};
 use counter::{Counter, CounterState, CounterTool};
 use gaussian_blur::{GaussianBlur, GaussianBlurState};
+use grayscale::{Grayscale, GrayscaleState};
 use image::{ImageReader, RgbaImage};
 use local_maxima::{LocalMaxima, LocalMaximaState};
 use manager::{ManagerState, PipelineConfig, ToolManager};
 use morphology::{Morphology, MorphologyState};
+use rolling_ball::{RollingBall, RollingBallState};
+use sobel::{Sobel, SobelState};
 use watershed::{Watershed, WatershedState};
 
 use futures::future::try_join_all;
@@ -28,9 +31,12 @@ pub mod contrast;
 pub mod counter;
 pub mod decomposer;
 pub mod gaussian_blur;
+pub mod grayscale;
 pub mod local_maxima;
 pub mod manager;
 pub mod morphology;
+pub mod rolling_ball;
+pub mod sobel;
 pub mod threshold;
 pub mod watershed;
 
@@ -73,6 +79,11 @@ pub enum ManagerMessage {
 }
 
 #[derive(Debug, Clone)]
+pub enum RollingBallMessage {
+    SetBallRadius(u32),
+}
+
+#[derive(Debug, Clone)]
 pub enum ThresholdMessage {
     SetThresholdValue(f32),
 }
@@ -80,6 +91,12 @@ pub enum ThresholdMessage {
 #[derive(Debug, Clone)]
 pub enum WatershedMessage {
     SetParameters(f32, u32), // sigma, min_distance
+}
+
+#[derive(Debug, Clone)]
+pub enum SobelMessage {
+    SetThreshold(f32),
+    ToggleThreshold(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +134,8 @@ pub enum PipelineObjectMessage {
     GaussianBlurMessage(GaussianBlurMessage),
     LocalMaximaMessage(LocalMaximaMessage),
     MorphologyMessage(MorphologyMessage),
+    RollingBallMessage(RollingBallMessage),
+    SobelMessage(SobelMessage),
     ThresholdMessage(ThresholdMessage),
     WatershedMessage(WatershedMessage),
     ToggleActive(bool),
@@ -131,15 +150,18 @@ pub enum FrontendMessage {
     UserFeedback(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BackendToolType {
     Compositor,
     Counter,
     Contrast,
     GaussianBlur,
+    Grayscale,
     LocalMaxima,
     Manager,
     Morphology,
+    RollingBall,
+    Sobel,
     Threshold,
     Watershed,
     Decomposer,
@@ -183,13 +205,16 @@ pub enum ToolState {
     CompositorState(CompositorState),
     ContrastState(ContrastState),
     GaussianBlurState(GaussianBlurState),
+    GrayscaleState(GrayscaleState),
     LocalMaximaState(LocalMaximaState),
     ManagerState(ManagerState),
-    MorphologyState(morphology::MorphologyState),
+    MorphologyState(MorphologyState),
+    RollingBallState(RollingBallState),
+    SobelState(SobelState),
     ThresholdState(ThresholdState),
     CounterState(CounterState),
     DecomposerState(DecomposerState),
-    WatershedState(watershed::WatershedState),
+    WatershedState(WatershedState),
 }
 
 /// Trait for image processing tools
@@ -288,10 +313,13 @@ impl Pipeline {
                 Box::new(GaussianBlur::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(LocalMaxima::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(Morphology::new(command_tx.clone(), gpu_image_processor.clone()).await),
+                Box::new(RollingBall::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(Threshold::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(Watershed::new(command_tx.clone(), gpu_image_processor.clone()).await),
                 Box::new(Counter::new(command_tx.clone()).await?),
                 Box::new(Decomposer::new(command_tx.clone(), gpu_image_processor.clone()).await),
+                Box::new(Sobel::new(command_tx.clone(), gpu_image_processor.clone()).await),
+                Box::new(Grayscale::new(command_tx.clone(), gpu_image_processor.clone()).await),
             ],
             command_tx.clone(),
         );
