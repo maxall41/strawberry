@@ -1,10 +1,11 @@
 use anyhow::Result;
 use clap::Parser;
 use gpui::{
-    actions, div, img, prelude::*, px, rgb, size, App, AppContext, Application, AssetSource,
-    Bounds, Context, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent,
-    Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, img, prelude::*, px, rgb, size, AnyDrag, App, AppContext, Application,
+    AssetSource, Bounds, Context, ExternalPaths, FileDropEvent, FocusHandle, Focusable,
+    ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent, Menu, MenuItem, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, SharedString, TitlebarOptions,
+    Window, WindowBounds, WindowOptions,
 };
 use image::{Frame, RgbaImage};
 use std::fs;
@@ -377,8 +378,6 @@ impl Render for PrimaryViewer {
         let coords = _img.coords.clone();
         self.img_coords = coords.clone();
 
-        let image_size = (self.original_width.clone(), self.original_height.clone());
-
         let mouse_down_sender = self.command_sender.clone();
 
         let mut _img = _img.on_mouse_down(
@@ -460,6 +459,19 @@ impl Render for PrimaryViewer {
             .on_action(cx.listener(Self::handle_open_file))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
+            .on_drop(cx.listener(
+                |this: &mut PrimaryViewer,
+                 paths: &ExternalPaths,
+                 _window: &mut Window,
+                 _cx: &mut Context<PrimaryViewer>| {
+                    if let Err(e) = this
+                        .command_sender
+                        .send(PipelineCommand::Load(paths.paths().to_vec(), false))
+                    {
+                        eprintln!("Failed to send loaded images to pipeline: {}", e);
+                    }
+                },
+            ))
             .child(
                 div()
                     .absolute()
