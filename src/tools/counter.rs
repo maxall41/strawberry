@@ -38,7 +38,9 @@ pub struct CounterView {
 
 impl Focusable for CounterView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone().unwrap()
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
     }
 }
 
@@ -1052,7 +1054,10 @@ impl CounterView {
 
         if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
             let current_value = {
-                let state = self.state.read().unwrap();
+                let state = self
+                    .state
+                    .read()
+                    .expect("State lock should not be poisoned");
                 state
                     .filter_proxys
                     .iter()
@@ -1080,7 +1085,10 @@ impl CounterView {
         let current_index = state.review_current_index;
 
         let review_counts = if let Some(active_count_type) = state.active_count_type {
-            state.manual_counts.get(&active_count_type).unwrap() //TODO: Handle error
+            state
+                .manual_counts
+                .get(&active_count_type)
+                .expect("active_count_type should exist in manual_counts")
         } else {
             &vec![]
         };

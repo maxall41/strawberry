@@ -36,7 +36,9 @@ pub struct ContrastView {
 
 impl Focusable for ContrastView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone().unwrap()
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
     }
 }
 
@@ -76,7 +78,11 @@ impl ContrastView {
         println!("Sent discovery request to backend | Contrast");
 
         // Create and initialize ValueControl components
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let min_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.3}", state.min),
@@ -148,20 +154,24 @@ impl ContrastView {
                                         let max_ref = new_state.max;
                                         *locked_state = new_state;
                                         if let Err(e) = this.update(cx, |this, cx| {
-                                            this.min_control.as_ref().unwrap().update(
-                                                cx,
-                                                |control, cx| {
+                                            this.min_control
+                                                .as_ref()
+                                                .expect(
+                                                    "min_control should be initialized before use",
+                                                )
+                                                .update(cx, |control, cx| {
                                                     control.value = min_ref;
                                                     cx.notify();
-                                                },
-                                            );
-                                            this.max_control.as_ref().unwrap().update(
-                                                cx,
-                                                |control, cx| {
+                                                });
+                                            this.max_control
+                                                .as_ref()
+                                                .expect(
+                                                    "max_control should be initialized before use",
+                                                )
+                                                .update(cx, |control, cx| {
                                                     control.value = max_ref;
                                                     cx.notify();
-                                                },
-                                            );
+                                                });
                                             cx.notify();
                                         }) {
                                             eprintln!(
@@ -270,7 +280,10 @@ impl ContrastView {
     }
 
     fn adjust_min_value(&mut self, new_min: f32) {
-        let current_state = self.state.read().unwrap();
+        let current_state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned");
         let max_val = current_state.max;
         drop(current_state);
 
@@ -292,7 +305,10 @@ impl ContrastView {
     }
 
     fn adjust_max_value(&mut self, new_max: f32) {
-        let current_state = self.state.read().unwrap();
+        let current_state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned");
         let min_val = current_state.min;
         drop(current_state);
 
@@ -366,13 +382,19 @@ impl ContrastView {
 
     // Min value control component
     fn render_min_control(&self, cx: &mut Context<Self>, _window: &mut Window) -> impl IntoElement {
-        let mc = self.min_control.clone().unwrap();
+        let mc = self
+            .min_control
+            .clone()
+            .expect("min_control should be initialized before use");
         mc
     }
 
     // Max value control component
     fn render_max_control(&self, cx: &mut Context<Self>, _window: &mut Window) -> impl IntoElement {
-        let mc = self.max_control.clone().unwrap();
+        let mc = self
+            .max_control
+            .clone()
+            .expect("max_control should be initialized before use");
         mc
     }
 
@@ -523,7 +545,11 @@ impl ToolFrontend for ContrastView {
         println!("Sent discovery request to backend | Contrast");
 
         // Create and initialize ValueControl components
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let min_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.3}", state.min),

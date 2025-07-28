@@ -368,7 +368,10 @@ impl CliProcessor {
             }
             GroupingMode::Regex => {
                 // Group by regex pattern match
-                let group_regex = self.group_regex.as_ref().unwrap();
+                let group_regex = self
+                    .group_regex
+                    .as_ref()
+                    .expect("group_regex is guaranteed to be Some when in Regex grouping mode");
                 for file in image_files {
                     let filename = file
                         .file_name()
@@ -634,7 +637,11 @@ impl CliProcessor {
         input_file: &Path,
         output_base: &Path,
     ) -> Result<PathBuf> {
-        let input_base = self.args.input.as_ref().unwrap();
+        let input_base = self
+            .args
+            .input
+            .as_ref()
+            .expect("input path is guaranteed to be Some in CLI mode");
 
         // Calculate the relative path from input base to the input file
         let relative_path = if input_base.is_dir() {
@@ -722,15 +729,21 @@ mod tests {
     #[test]
     fn test_output_format_parsing() {
         assert!(matches!(
-            "png".parse::<OutputFormat>().unwrap(),
+            "png"
+                .parse::<OutputFormat>()
+                .expect("png should parse to OutputFormat::Png"),
             OutputFormat::Png
         ));
         assert!(matches!(
-            "tiff".parse::<OutputFormat>().unwrap(),
+            "tiff"
+                .parse::<OutputFormat>()
+                .expect("tiff should parse to OutputFormat::Tiff"),
             OutputFormat::Tiff
         ));
         assert!(matches!(
-            "preserve".parse::<OutputFormat>().unwrap(),
+            "preserve"
+                .parse::<OutputFormat>()
+                .expect("preserve should parse to OutputFormat::Preserve"),
             OutputFormat::Preserve
         ));
         assert!("invalid".parse::<OutputFormat>().is_err());
@@ -739,15 +752,21 @@ mod tests {
     #[test]
     fn test_grouping_mode_parsing() {
         assert!(matches!(
-            "none".parse::<GroupingMode>().unwrap(),
+            "none"
+                .parse::<GroupingMode>()
+                .expect("none should parse to GroupingMode::None"),
             GroupingMode::None
         ));
         assert!(matches!(
-            "subdirectory".parse::<GroupingMode>().unwrap(),
+            "subdirectory"
+                .parse::<GroupingMode>()
+                .expect("subdirectory should parse to GroupingMode::Subdirectory"),
             GroupingMode::Subdirectory
         ));
         assert!(matches!(
-            "regex".parse::<GroupingMode>().unwrap(),
+            "regex"
+                .parse::<GroupingMode>()
+                .expect("regex should parse to GroupingMode::Regex"),
             GroupingMode::Regex
         ));
         assert!("invalid".parse::<GroupingMode>().is_err());
@@ -759,7 +778,8 @@ mod tests {
             filter: r".*\.tiff?$".to_string(),
             ..Default::default()
         };
-        let processor = CliProcessor::new(args).unwrap();
+        let processor =
+            CliProcessor::new(args).expect("CliProcessor should be created successfully in test");
 
         assert!(processor.is_image_file(Path::new("test.tif")));
         assert!(processor.is_image_file(Path::new("test.tiff")));

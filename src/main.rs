@@ -167,7 +167,9 @@ impl PrimaryViewer {
                                     raw_modal
                                 });
                                 if let Err(e) = this.update(cx, |this, cx| {
-                                    this.toasts.push(modal.unwrap());
+                                    this.toasts.push(
+                                        modal.expect("Modal entity should be created successfully"),
+                                    );
                                     println!("Toast added");
                                     cx.notify();
                                 }) {
@@ -184,11 +186,12 @@ impl PrimaryViewer {
                         match msg {
                             PipelineCommand::FrontendMessage(msg) => match msg {
                                 FrontendMessage::ReturnBackendTools(_, return_sender) => {
-                                    this.update(cx, |this, cx| {
+                                    if let Err(e) = this.update(cx, |this, cx| {
                                         this.counter_sender = Some(return_sender[0].clone());
                                         //TODO: Mmm danger
-                                    })
-                                    .unwrap();
+                                    }) {
+                                        eprintln!("Failed to update counter sender: {}", e);
+                                    }
                                 }
                                 FrontendMessage::ReturnState(tool_state) => {
                                     match tool_state {
@@ -320,7 +323,12 @@ impl PrimaryViewer {
 
     // Helper method to convert screen coordinates to image coordinates
     fn screen_to_image_coords(&self, screen_x: f32, screen_y: f32) -> Option<(u64, u64)> {
-        if let Some(coords) = self.img_coords.read().unwrap().clone() {
+        if let Some(coords) = self
+            .img_coords
+            .read()
+            .expect("Image coordinates lock should not be poisoned")
+            .clone()
+        {
             let relative_x = (screen_x - coords.origin.x.0) / coords.size.width.0;
             let relative_y = (screen_y - coords.origin.y.0) / coords.size.height.0;
 

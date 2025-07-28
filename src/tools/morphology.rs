@@ -32,7 +32,9 @@ pub struct MorphologyView {
 
 impl Focusable for MorphologyView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone().unwrap()
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
     }
 }
 
@@ -71,7 +73,11 @@ impl MorphologyView {
         println!("Sent discovery request to backend | Morphology");
 
         // Create and initialize ValueControl component
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let element_size_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.0}", state.element_size),
@@ -119,13 +125,13 @@ impl MorphologyView {
                                         let element_size_ref = new_state.element_size;
                                         *locked_state = new_state;
                                         if let Err(e) = this.update(cx, |this, cx| {
-                                            this.element_size_control.as_ref().unwrap().update(
-                                                cx,
-                                                |control, cx| {
+                                            this.element_size_control
+                                                .as_ref()
+                                                .expect("element_size_control should be initialized before use")
+                                                .update(cx, |control, cx| {
                                                     control.value = element_size_ref as f32;
                                                     cx.notify();
-                                                },
-                                            );
+                                                });
                                             cx.notify();
                                         }) {
                                             eprintln!(
@@ -259,7 +265,10 @@ impl MorphologyView {
     }
 
     fn adjust_element_size_value(&mut self, new_size: u32) {
-        let current_state = self.state.read().unwrap();
+        let current_state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned");
         let operation = current_state.operation;
         drop(current_state);
 
@@ -327,7 +336,10 @@ impl MorphologyView {
 
     // Operation selection component
     fn render_operation_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read().unwrap();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned");
         div()
             .flex()
             .flex_col()
@@ -407,7 +419,10 @@ impl MorphologyView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        let esc = self.element_size_control.clone().unwrap();
+        let esc = self
+            .element_size_control
+            .clone()
+            .expect("element_size_control should be initialized before use");
         esc
     }
 
@@ -580,7 +595,11 @@ impl ToolFrontend for MorphologyView {
         println!("Sent discovery request to backend | Morphology");
 
         // Create and initialize ValueControl component
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let element_size_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.0}", state.element_size),

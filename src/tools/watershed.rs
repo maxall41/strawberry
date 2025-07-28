@@ -32,7 +32,9 @@ pub struct WatershedView {
 
 impl Focusable for WatershedView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone().unwrap()
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
     }
 }
 
@@ -72,7 +74,11 @@ impl WatershedView {
         println!("Sent discovery request to backend | Watershed");
 
         // Create and initialize ValueControl components
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let sigma_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.2}", state.sigma),
@@ -102,7 +108,10 @@ impl WatershedView {
             &sigma_control,
             |this, _control, event: &ValueControlEvent, _cx| {
                 if event.id == "sigma" {
-                    let current_state = this.state.read().unwrap();
+                    let current_state = this
+                        .state
+                        .read()
+                        .expect("State lock should not be poisoned");
                     let min_dist = current_state.min_distance;
                     drop(current_state);
                     this.adjust_sigma(event.value, min_dist);
@@ -115,7 +124,10 @@ impl WatershedView {
             &min_distance_control,
             |this, _control, event: &ValueControlEvent, _cx| {
                 if event.id == "min_distance" {
-                    let current_state = this.state.read().unwrap();
+                    let current_state = this
+                        .state
+                        .read()
+                        .expect("State lock should not be poisoned");
                     let sigma = current_state.sigma;
                     drop(current_state);
                     this.adjust_min_distance(sigma, event.value as u32);
@@ -150,16 +162,17 @@ impl WatershedView {
                                         let min_distance_ref = new_state.min_distance;
                                         *locked_state = new_state;
                                         if let Err(e) = this.update(cx, |this, cx| {
-                                            this.sigma_control.as_ref().unwrap().update(
-                                                cx,
-                                                |control, cx| {
+                                            this.sigma_control
+                                                .as_ref()
+                                                .expect("sigma_control should be initialized before use")
+                                                .update(cx, |control, cx| {
                                                     control.value = sigma_ref;
                                                     cx.notify();
-                                                },
-                                            );
-                                            this.min_distance_control.as_ref().unwrap().update(
-                                                cx,
-                                                |control, cx| {
+                                                });
+                                            this.min_distance_control
+                                                .as_ref()
+                                                .expect("min_distance_control should be initialized before use")
+                                                .update(cx, |control, cx| {
                                                     control.value = min_distance_ref as f32;
                                                     cx.notify();
                                                 },
@@ -302,7 +315,10 @@ impl WatershedView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        let sc = self.sigma_control.clone().unwrap();
+        let sc = self
+            .sigma_control
+            .clone()
+            .expect("sigma_control should be initialized before use");
         sc
     }
 
@@ -312,7 +328,10 @@ impl WatershedView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        let mdc = self.min_distance_control.clone().unwrap();
+        let mdc = self
+            .min_distance_control
+            .clone()
+            .expect("min_distance_control should be initialized before use");
         mdc
     }
 
@@ -458,7 +477,11 @@ impl ToolFrontend for WatershedView {
         println!("Sent discovery request to backend | Watershed");
 
         // Create and initialize ValueControl components
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let sigma_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.2}", state.sigma),
@@ -488,7 +511,10 @@ impl ToolFrontend for WatershedView {
             &sigma_control,
             |this, _control, event: &ValueControlEvent, _cx| {
                 if event.id == "sigma" {
-                    let current_state = this.state.read().unwrap();
+                    let current_state = this
+                        .state
+                        .read()
+                        .expect("State lock should not be poisoned");
                     let min_dist = current_state.min_distance;
                     drop(current_state);
                     this.adjust_sigma(event.value, min_dist);
@@ -501,7 +527,10 @@ impl ToolFrontend for WatershedView {
             &min_distance_control,
             |this, _control, event: &ValueControlEvent, _cx| {
                 if event.id == "min_distance" {
-                    let current_state = this.state.read().unwrap();
+                    let current_state = this
+                        .state
+                        .read()
+                        .expect("State lock should not be poisoned");
                     let sigma = current_state.sigma;
                     drop(current_state);
                     this.adjust_min_distance(sigma, event.value as u32);

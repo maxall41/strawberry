@@ -29,7 +29,9 @@ pub struct SobelView {
 
 impl Focusable for SobelView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone().unwrap()
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
     }
 }
 
@@ -67,7 +69,11 @@ impl SobelView {
         }
         println!("Sent discovery request to backend | Sobel");
 
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let threshold_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.3}", state.threshold_value),
@@ -113,13 +119,13 @@ impl SobelView {
                                         let threshold_value = new_state.threshold_value;
                                         *locked_state = new_state;
                                         if let Err(e) = this.update(cx, |this, cx| {
-                                            this.threshold_control.as_ref().unwrap().update(
-                                                cx,
-                                                |control, cx| {
+                                            this.threshold_control
+                                                .as_ref()
+                                                .expect("threshold_control should be initialized before use")
+                                                .update(cx, |control, cx| {
                                                     control.value = threshold_value;
                                                     cx.notify();
-                                                },
-                                            );
+                                                });
                                             cx.notify();
                                         }) {
                                             eprintln!(
@@ -285,7 +291,11 @@ impl SobelView {
         _window: &mut Window,
     ) -> impl IntoElement {
         if state.use_threshold {
-            div().child(self.threshold_control.clone().unwrap())
+            div().child(
+                self.threshold_control
+                    .clone()
+                    .expect("threshold_control should be initialized before use"),
+            )
         } else {
             div()
         }
@@ -435,7 +445,11 @@ impl ToolFrontend for SobelView {
         }
         println!("Sent discovery request to backend | Sobel");
 
-        let state = self.state.read().unwrap().clone();
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .clone();
         let threshold_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.3}", state.threshold_value),
