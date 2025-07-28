@@ -29,6 +29,7 @@ impl Default for MorphologyOperation {
 pub struct Morphology {
     pub state: MorphologyState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub morphology: GpuMorphology,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
@@ -65,10 +66,19 @@ impl ToolBackend for Morphology {
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
-            *image = self
+            *image = match self
                 .morphology
                 .apply_morphology(image, self.state.operation, self.state.element_size)
-                .await?;
+                .await
+            {
+                Ok(img) => img,
+                Err(e) => {
+                    self.global_sender.send(PipelineCommand::FrontendMessage(
+                        FrontendMessage::UserFeedback(format!("Morphology error: {}", e)),
+                    ))?;
+                    return Err(e);
+                }
+            };
         }
         Ok(())
     }
@@ -155,6 +165,7 @@ impl ToolBackend for Morphology {
 impl Morphology {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
@@ -167,6 +178,7 @@ impl Morphology {
             morphology: GpuMorphology::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
+            global_sender,
             sender,
             receiver,
             index: 0,

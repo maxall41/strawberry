@@ -20,6 +20,7 @@ pub struct DecomposerState {
 pub struct Decomposer {
     pub state: DecomposerState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub compositer: GpuCompositor,
     pub gpu_decomposer: GpuDecomposer,
     pub sender: flume::Sender<PipelineCommand>,
@@ -57,16 +58,34 @@ impl ToolBackend for Decomposer {
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         if input.len() > 1 {
-            return Err(anyhow::anyhow!(
+            let error_msg = format!(
                 "Decomposer can only process one image, received {}",
                 input.len()
-            ));
+            );
+            self.global_sender.send(PipelineCommand::FrontendMessage(
+                FrontendMessage::UserFeedback(error_msg.clone()),
+            ))?;
+            return Err(anyhow::anyhow!(error_msg));
         }
 
-        let first_image = input
-            .get(0)
-            .ok_or_else(|| anyhow::anyhow!("No input image provided to decomposer"))?;
-        let decomposed = self.gpu_decomposer.apply_decomposition(first_image).await?;
+        let first_image = input.get(0).ok_or_else(|| {
+            let error_msg = "No input image provided to decomposer".to_string();
+            let _ = self.global_sender.send(PipelineCommand::FrontendMessage(
+                FrontendMessage::UserFeedback(error_msg.clone()),
+            ));
+            anyhow::anyhow!(error_msg)
+        })?;
+
+        let decomposed = match self.gpu_decomposer.apply_decomposition(first_image).await {
+            Ok(result) => result,
+            Err(e) => {
+                self.global_sender.send(PipelineCommand::FrontendMessage(
+                    FrontendMessage::UserFeedback(format!("Decomposer error: {}", e)),
+                ))?;
+                return Err(e);
+            }
+        };
+
         let images: Vec<image::RgbaImage> = decomposed
             .clone()
             .into_iter()
@@ -80,7 +99,15 @@ impl ToolBackend for Decomposer {
             })
             .collect();
 
-        let composited = self.compositer.composite_images(&images).await?;
+        let composited = match self.compositer.composite_images(&images).await {
+            Ok(image) => image,
+            Err(e) => {
+                self.global_sender.send(PipelineCommand::FrontendMessage(
+                    FrontendMessage::UserFeedback(format!("Decomposer compositor error: {}", e)),
+                ))?;
+                return Err(e);
+            }
+        };
 
         *input = vec![composited];
 
@@ -107,11 +134,15 @@ impl ToolBackend for Decomposer {
                             let index = layer_index as usize;
 
                             if index >= mutated.len() {
-                                return Err(anyhow::anyhow!(
-                                    "Layer index {} out of bounds (max: {})",
+                                let error_msg = format!(
+                                    "Decomposer: Layer index {} out of bounds (max: {})",
                                     index,
                                     mutated.len()
-                                ));
+                                );
+                                self.global_sender.send(PipelineCommand::FrontendMessage(
+                                    FrontendMessage::UserFeedback(error_msg.clone()),
+                                ))?;
+                                return Err(anyhow::anyhow!(error_msg));
                             }
 
                             mutated[index] = value;
@@ -178,6 +209,7 @@ impl ToolBackend for Decomposer {
 impl Decomposer {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
@@ -190,6 +222,7 @@ impl Decomposer {
             gpu_decomposer: GpuDecomposer::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
+            global_sender,
             sender,
             receiver,
             index: 0,

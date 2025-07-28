@@ -2,11 +2,12 @@ use anyhow::Result;
 use clap::Parser;
 use gpui::{
     actions, div, img, prelude::*, px, rgb, size, AnyDrag, App, AppContext, Application,
-    AssetSource, Bounds, Context, ExternalPaths, FileDropEvent, FocusHandle, Focusable,
+    AssetSource, Bounds, Context, Entity, ExternalPaths, FileDropEvent, FocusHandle, Focusable,
     ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent, Menu, MenuItem, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, SharedString, TitlebarOptions,
     Window, WindowBounds, WindowOptions,
 };
+use gui::feedback::FeedbackModal;
 use image::{Frame, RgbaImage};
 use std::fs;
 use std::path::PathBuf;
@@ -102,6 +103,7 @@ struct PrimaryViewer {
     review_snap_target: Option<(u64, u64)>,
     lasso_state: LassoState,
     counter_sender: Option<flume::Sender<PipelineCommand>>,
+    toasts: Vec<Entity<FeedbackModal>>,
 }
 
 impl PrimaryViewer {
@@ -157,6 +159,23 @@ impl PrimaryViewer {
                             }
                             println!("Image updated");
                         }
+                        PipelineCommand::FrontendMessage(msg) => match msg {
+                            FrontendMessage::UserFeedback(text) => {
+                                let raw_modal = FeedbackModal::new(text);
+                                let modal = cx.new(|cx| {
+                                    raw_modal.enable_auto_close(cx);
+                                    raw_modal
+                                });
+                                if let Err(e) = this.update(cx, |this, cx| {
+                                    this.toasts.push(modal.unwrap());
+                                    println!("Toast added");
+                                    cx.notify();
+                                }) {
+                                    eprintln!("Failed to add toast: {}", e);
+                                }
+                            }
+                            _ => {}
+                        },
                         _ => {}
                     }
                 }
@@ -482,6 +501,7 @@ impl Render for PrimaryViewer {
                     .top(px(self.pan_y))
                     .child(_img),
             )
+            .children(self.toasts.clone())
             .children({
                 // Draw circles for count data
                 let mut circles = Vec::new();
@@ -652,7 +672,7 @@ async fn main() -> Result<()> {
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    let (mut pipeline, view_sender, mut view_recv) = Pipeline::new().await?;
+    let (mut pipeline, view_sender, view_recv) = Pipeline::new().await?;
 
     tokio::spawn(async move {
         loop {
@@ -837,6 +857,7 @@ async fn main() -> Result<()> {
                     count_data: None,
                     review_snap_target: None,
                     lasso_state: LassoState::default(),
+                    toasts: vec![],
                 };
 
                 let viewer = cx.new(|cx| {

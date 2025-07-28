@@ -20,6 +20,7 @@ pub struct SobelState {
 pub struct Sobel {
     pub state: SobelState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub sobel: GpuSobel,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
@@ -62,7 +63,15 @@ impl ToolBackend for Sobel {
         };
 
         for image in input {
-            *image = self.sobel.apply_sobel(image, threshold).await?;
+            *image = match self.sobel.apply_sobel(image, threshold).await {
+                Ok(img) => img,
+                Err(e) => {
+                    self.global_sender.send(PipelineCommand::FrontendMessage(
+                        FrontendMessage::UserFeedback(format!("Sobel error: {}", e)),
+                    ))?;
+                    return Err(e);
+                }
+            };
         }
         Ok(())
     }
@@ -147,6 +156,7 @@ impl ToolBackend for Sobel {
 impl Sobel {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
@@ -159,6 +169,7 @@ impl Sobel {
             sobel: GpuSobel::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
+            global_sender,
             sender,
             receiver,
             index: 0,

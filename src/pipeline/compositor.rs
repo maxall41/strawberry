@@ -20,6 +20,7 @@ pub struct CompositorState {
 pub struct Compositor {
     pub state: CompositorState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub compositer: GpuCompositor,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
@@ -57,6 +58,17 @@ impl ToolBackend for Compositor {
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         self.state.real_layers_len = input.len();
 
+        if input.len() == 1 {
+            self.global_sender.send(PipelineCommand::FrontendMessage(
+                FrontendMessage::UserFeedback("Compositor needs >1 image to composite".to_string()),
+            ))?;
+            self.set_enabled(false);
+            self.send_to_frontend(PipelineCommand::FrontendMessage(
+                FrontendMessage::ReturnState(self.get_state()),
+            ))?;
+            return Ok(());
+        }
+
         let images: Vec<image::RgbaImage> = input
             .clone()
             .into_iter()
@@ -70,7 +82,15 @@ impl ToolBackend for Compositor {
             })
             .collect();
 
-        let composited = self.compositer.composite_images(&images).await?;
+        let composited = match self.compositer.composite_images(&images).await {
+            Ok(image) => image,
+            Err(e) => {
+                self.global_sender.send(PipelineCommand::FrontendMessage(
+                    FrontendMessage::UserFeedback(format!("Compositor error: {}", e)),
+                ))?;
+                return Err(e);
+            }
+        };
 
         *input = vec![composited];
 
@@ -97,11 +117,15 @@ impl ToolBackend for Compositor {
                             let index = layer_index as usize;
 
                             if index >= mutated.len() {
-                                return Err(anyhow::anyhow!(
-                                    "Layer index {} out of bounds (max: {})",
+                                let error_msg = format!(
+                                    "Compositor: Layer index {} out of bounds (max: {})",
                                     index,
                                     mutated.len()
-                                ));
+                                );
+                                self.global_sender.send(PipelineCommand::FrontendMessage(
+                                    FrontendMessage::UserFeedback(error_msg.clone()),
+                                ))?;
+                                return Err(anyhow::anyhow!(error_msg));
                             }
 
                             mutated[index] = value;
@@ -179,6 +203,7 @@ impl ToolBackend for Compositor {
 impl Compositor {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
@@ -191,6 +216,7 @@ impl Compositor {
             compositer: GpuCompositor::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
+            global_sender,
             sender,
             receiver,
             index: 0,

@@ -20,6 +20,7 @@ pub struct WatershedState {
 pub struct Watershed {
     pub state: WatershedState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub watershed: GpuWatershed,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
@@ -56,10 +57,19 @@ impl ToolBackend for Watershed {
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
-            *image = self
+            *image = match self
                 .watershed
                 .apply_watershed(image, self.state.sigma, self.state.min_distance)
-                .await?;
+                .await
+            {
+                Ok(img) => img,
+                Err(e) => {
+                    self.global_sender.send(PipelineCommand::FrontendMessage(
+                        FrontendMessage::UserFeedback(format!("Watershed error: {}", e)),
+                    ))?;
+                    return Err(e);
+                }
+            };
         }
         Ok(())
     }
@@ -144,6 +154,7 @@ impl ToolBackend for Watershed {
 impl Watershed {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
@@ -156,6 +167,7 @@ impl Watershed {
             watershed: GpuWatershed::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
+            global_sender,
             sender,
             receiver,
             index: 0,

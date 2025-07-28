@@ -30,6 +30,7 @@ pub struct ToolManager {
     pub tools: Vec<Box<dyn ToolBackend>>,
     pub state: ManagerState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
@@ -54,6 +55,7 @@ impl ToolManager {
     pub fn new(
         mut input: Vec<Box<dyn ToolBackend>>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
 
@@ -70,6 +72,7 @@ impl ToolManager {
             tools: input,
             frontend_senders: Vec::new(),
             command_sender,
+            global_sender,
             sender,
             receiver,
             index: 0,
@@ -129,16 +132,61 @@ impl ToolBackend for ToolManager {
                                 configs.insert(tool_name, tool.get_state());
                             }
                             let pipeline_config = PipelineConfig { tools: configs };
-                            let toml_string = toml::to_string(&pipeline_config)
-                                .map_err(|e| anyhow::anyhow!(e))?;
-                            std::fs::write(&path, toml_string)
-                                .map_err(|e| anyhow::anyhow!("Failed to write to file: {}", e))?;
+                            let toml_string = match toml::to_string(&pipeline_config) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    self.global_sender.send(PipelineCommand::FrontendMessage(
+                                        FrontendMessage::UserFeedback(format!(
+                                            "Failed to serialize pipeline: {}",
+                                            e
+                                        )),
+                                    ))?;
+                                    return Err(anyhow::anyhow!(e));
+                                }
+                            };
+                            if let Err(e) = std::fs::write(&path, toml_string) {
+                                self.global_sender.send(PipelineCommand::FrontendMessage(
+                                    FrontendMessage::UserFeedback(format!(
+                                        "Failed to save pipeline to file: {}",
+                                        e
+                                    )),
+                                ))?;
+                                return Err(anyhow::anyhow!("Failed to write to file: {}", e));
+                            }
+                            self.global_sender.send(PipelineCommand::FrontendMessage(
+                                FrontendMessage::UserFeedback(
+                                    "Pipeline saved successfully!".to_string(),
+                                ),
+                            ))?;
                         }
                         ManagerMessage::LoadPipeline(path) => {
-                            let toml_content = std::fs::read_to_string(&path)
-                                .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
-                            let pipeline_config: PipelineConfig = toml::from_str(&toml_content)
-                                .map_err(|e| anyhow::anyhow!("Failed to parse TOML: {}", e))?;
+                            let toml_content = match std::fs::read_to_string(&path) {
+                                Ok(content) => content,
+                                Err(e) => {
+                                    self.global_sender.send(PipelineCommand::FrontendMessage(
+                                        FrontendMessage::UserFeedback(format!(
+                                            "Failed to read pipeline file: {}",
+                                            e
+                                        )),
+                                    ))?;
+                                    return Err(anyhow::anyhow!("Failed to read file: {}", e));
+                                }
+                            };
+                            let pipeline_config: PipelineConfig =
+                                match toml::from_str(&toml_content) {
+                                    Ok(config) => config,
+                                    Err(e) => {
+                                        self.global_sender.send(
+                                            PipelineCommand::FrontendMessage(
+                                                FrontendMessage::UserFeedback(format!(
+                                                    "Failed to parse pipeline file: {}",
+                                                    e
+                                                )),
+                                            ),
+                                        )?;
+                                        return Err(anyhow::anyhow!("Failed to parse TOML: {}", e));
+                                    }
+                                };
 
                             // Apply the loaded configurations to the tools
                             for tool in self.tools.iter_mut() {
@@ -153,17 +201,27 @@ impl ToolBackend for ToolManager {
                                 .map_err(|e| {
                                     anyhow::anyhow!("Failed to send refresh command: {}", e)
                                 })?;
+
+                            self.global_sender.send(PipelineCommand::FrontendMessage(
+                                FrontendMessage::UserFeedback(
+                                    "Pipeline loaded successfully!".to_string(),
+                                ),
+                            ))?;
                         }
                         ManagerMessage::ReorderTool(start_index, new_index) => {
                             let start_idx = start_index as usize;
                             let new_idx = new_index as usize;
 
                             if start_idx >= self.tools.len() {
-                                return Err(anyhow::anyhow!(
-                                    "Start index {} out of bounds (max: {})",
+                                let error_msg = format!(
+                                    "Manager: Start index {} out of bounds (max: {})",
                                     start_idx,
                                     self.tools.len()
-                                ));
+                                );
+                                self.global_sender.send(PipelineCommand::FrontendMessage(
+                                    FrontendMessage::UserFeedback(error_msg.clone()),
+                                ))?;
+                                return Err(anyhow::anyhow!(error_msg));
                             }
 
                             let tool = self.tools.remove(start_idx);

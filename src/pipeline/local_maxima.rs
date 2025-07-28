@@ -35,6 +35,7 @@ impl Default for LocalMaximaState {
 pub struct LocalMaxima {
     pub state: LocalMaximaState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub local_maxima: GpuLocalMaxima,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
@@ -71,7 +72,7 @@ impl ToolBackend for LocalMaxima {
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
-            *image = self
+            *image = match self
                 .local_maxima
                 .apply_local_maxima(
                     &image,
@@ -79,7 +80,16 @@ impl ToolBackend for LocalMaxima {
                     self.state.threshold.clone(),
                     self.state.exclude_border,
                 )
-                .await?;
+                .await
+            {
+                Ok(img) => img,
+                Err(e) => {
+                    self.global_sender.send(PipelineCommand::FrontendMessage(
+                        FrontendMessage::UserFeedback(format!("Local Maxima error: {}", e)),
+                    ))?;
+                    return Err(e);
+                }
+            };
         }
         Ok(())
     }
@@ -169,6 +179,7 @@ impl ToolBackend for LocalMaxima {
 impl LocalMaxima {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
@@ -177,6 +188,7 @@ impl LocalMaxima {
             local_maxima: GpuLocalMaxima::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
+            global_sender,
             sender,
             receiver,
             index: 0,

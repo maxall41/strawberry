@@ -153,7 +153,7 @@ impl GpuImageProcessor {
         let (sender, receiver) = flume::unbounded();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             if let Err(e) = sender.send(result) {
-                eprintln!("Failed to send GPU buffer mapping result: {}", e);
+                // GPU buffer mapping errors are handled at higher levels
             }
         });
 
