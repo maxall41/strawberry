@@ -1,12 +1,11 @@
 use std::{collections::HashMap, time::Instant};
 
-use crate::{
-    tools::counter::CounterTool,
-    utils::{
-        consts::CIRCLE_COLORS,
-        fitting::{find_counts_within_polygon, ramer_douglas_peucker_closed},
-    },
+use crate::utils::{
+    consts::CIRCLE_COLORS,
+    fitting::{find_counts_within_polygon, ramer_douglas_peucker_closed},
 };
+
+use serde::{Deserialize, Serialize};
 
 use super::{
     BackendToolType, CountMessage, FilterMessage, FrontendMessage, PipelineCommand,
@@ -15,24 +14,11 @@ use super::{
 use crate::utils::io::export_counter_to_xml_file;
 use async_trait::async_trait;
 use lutz::{lutz, Image as LutzImage, Pixel};
-use serde::Serialize;
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CountData {
     pub position: (u64, u64), // X, Y
     pub size: u16,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct CountDataContainer {
-    pub counts: Vec<CountData>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub enum CounterMode {
-    #[default]
-    Manual,
-    Auto,
 }
 
 pub struct SizeFilter {
@@ -96,14 +82,35 @@ fn update_filter_proxys(input: &Vec<Box<dyn Filter>>) -> Vec<FilterProxy> {
         .collect()
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CountDataContainer {
+    pub counts: Vec<CountData>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub enum CounterMode {
+    #[default]
+    Manual,
+    Auto,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FilterProxy {
     pub name: String,
     pub is_enabled: bool,
     pub values: Vec<f64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum CounterTool {
+    #[default]
+    Place,
+    Delete,
+    LassoDelete,
+    Review,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CounterState {
     pub is_enabled: bool,
     pub manual_counts: HashMap<u16, Vec<CountData>>,
@@ -165,6 +172,7 @@ impl ToolBackend for Counter {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
+    fn apply_state(&mut self, state: ToolState) {}
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
     }

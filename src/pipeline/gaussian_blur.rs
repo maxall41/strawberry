@@ -8,7 +8,9 @@ use super::{
 };
 use async_trait::async_trait;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GaussianBlurState {
     pub radius: f32,
     pub sigma: f32,
@@ -34,6 +36,11 @@ impl ToolBackend for GaussianBlur {
     }
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
+    }
+    fn apply_state(&mut self, state: ToolState) {
+        if let ToolState::GaussianBlurState(new_state) = state {
+            self.state = new_state;
+        }
     }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;

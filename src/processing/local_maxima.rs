@@ -2,6 +2,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use anyhow::Result;
 use image::RgbaImage;
+use serde::{Deserialize, Serialize};
 use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
 use super::{
@@ -9,7 +10,7 @@ use super::{
     GpuImageProcessor,
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ThresholdType {
     Absolute(f32),
     Relative(f32),

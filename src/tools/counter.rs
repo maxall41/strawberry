@@ -9,10 +9,12 @@ use gpui::{
 use rfd::FileDialog;
 
 use crate::{
-    gui::value_control::{ValueControl, ValueControlEvent},
-    gui::ToggleButton,
+    gui::{
+        value_control::{ValueControl, ValueControlEvent},
+        ToggleButton,
+    },
     pipeline::{
-        counter::{CounterMode, CounterState},
+        counter::{CounterMode, CounterState, CounterTool},
         BackendToolType, CountMessage, FilterMessage, FrontendMessage, PipelineCommand,
         PipelineObjectMessage, ToolState,
     },
@@ -20,15 +22,6 @@ use crate::{
 };
 
 use super::ToolFrontend;
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum CounterTool {
-    #[default]
-    Place,
-    Delete,
-    LassoDelete,
-    Review,
-}
 
 pub struct CounterView {
     pub command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,

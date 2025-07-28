@@ -6,6 +6,7 @@ use gpui::{
     div, prelude::*, px, rgb, size, Bounds, Context, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
+use rfd::FileDialog;
 
 use crate::pipeline::{
     manager::{ManagerState, ToolProxy},
@@ -56,20 +57,6 @@ impl ManagerView {
                 crate::pipeline::BackendToolType::Compositor,
             ),
         }
-    }
-
-    pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver);
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::Manager,
-            sender,
-        )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
-            return;
-        }
-        println!("Sent discovery request to backend | Compositor");
-        self.process_messages(window, cx);
     }
 
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -341,6 +328,124 @@ impl ManagerView {
                 .unwrap();
         }
     }
+
+    fn save_pipeline(&self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
+        };
+
+        cx.spawn_in(_window, async move |this, cx| {
+            let file = FileDialog::new()
+                .add_filter("toml", &["toml"])
+                .set_directory("/")
+                .save_file();
+
+            if let Some(file) = file {
+                if let Err(e) = this.update(cx, |this, cx| {
+                    if let Some(sender) = this.send_channels.get(current_tool_index as usize) {
+                        if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                            PipelineObjectMessage::ManagerMessage(ManagerMessage::SavePipeline(
+                                file,
+                            )),
+                        )) {
+                            eprintln!("Failed to send save pipeline command: {}", e);
+                            return;
+                        }
+                    } else {
+                        eprintln!("Invalid tool index: {}", current_tool_index);
+                        return;
+                    }
+                }) {
+                    eprintln!("Failed to save pipeline: {}", e);
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn load_pipeline(&self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(current_tool_index) = self.get_current_tool_index() else {
+            return;
+        };
+
+        cx.spawn_in(_window, async move |this, cx| {
+            let file = FileDialog::new()
+                .add_filter("toml", &["toml"])
+                .set_directory("/")
+                .pick_file();
+
+            if let Some(file) = file {
+                if let Err(e) = this.update(cx, |this, cx| {
+                    if let Some(sender) = this.send_channels.get(current_tool_index as usize) {
+                        if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                            PipelineObjectMessage::ManagerMessage(ManagerMessage::LoadPipeline(
+                                file,
+                            )),
+                        )) {
+                            eprintln!("Failed to send load pipeline command: {}", e);
+                            return;
+                        }
+                    } else {
+                        eprintln!("Invalid tool index: {}", current_tool_index);
+                        return;
+                    }
+                }) {
+                    eprintln!("Failed to load pipeline: {}", e);
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn render_storage_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .gap_2()
+            .child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .bg(rgb(0x006600))
+                    .hover(|style| style.bg(rgb(0x007700)))
+                    .rounded_md()
+                    .text_sm()
+                    .child("Save")
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(
+                            |_this: &mut ManagerView,
+                             _event: &MouseDownEvent,
+                             _window: &mut Window,
+                             _cx: &mut Context<ManagerView>| {
+                                _this.save_pipeline(_window, _cx);
+                            },
+                        ),
+                    ),
+            )
+            .child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .bg(rgb(0x0066cc))
+                    .hover(|style| style.bg(rgb(0x0077dd)))
+                    .rounded_md()
+                    .text_sm()
+                    .child("Load")
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(
+                            |_this: &mut ManagerView,
+                             _event: &MouseDownEvent,
+                             _window: &mut Window,
+                             _cx: &mut Context<ManagerView>| {
+                                _this.load_pipeline(_window, _cx);
+                            },
+                        ),
+                    ),
+            )
+    }
 }
 
 impl Render for ManagerView {
@@ -377,6 +482,13 @@ impl Render for ManagerView {
                 drop(state); // Explicitly drop the guard
                 self.render_tools(&mut tools_clone, cx)
             })
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .mt_auto()
+                    .child(self.render_storage_buttons(cx)),
+            )
             .on_mouse_move(cx.listener(
                 |this: &mut ManagerView,
                  event: &MouseMoveEvent,

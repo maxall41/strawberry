@@ -8,7 +8,9 @@ use super::{
 };
 use async_trait::async_trait;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ThresholdState {
     pub threshold_value: f32,
     pub is_enabled: bool,
@@ -33,6 +35,11 @@ impl ToolBackend for Threshold {
     }
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
+    }
+    fn apply_state(&mut self, state: ToolState) {
+        if let ToolState::ThresholdState(new_state) = state {
+            self.state = new_state;
+        }
     }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;

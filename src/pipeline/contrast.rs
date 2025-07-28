@@ -8,7 +8,9 @@ use super::{
 };
 use async_trait::async_trait;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ContrastState {
     pub min: f32,
     pub max: f32,
@@ -34,6 +36,11 @@ impl ToolBackend for Contrast {
     }
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
+    }
+    fn apply_state(&mut self, state: ToolState) {
+        if let ToolState::ContrastState(new_state) = state {
+            self.state = new_state;
+        }
     }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
