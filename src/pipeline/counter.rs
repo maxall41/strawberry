@@ -165,6 +165,7 @@ pub struct Counter {
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
     pub cached_state: Option<CounterState>,
+    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
 }
 
 #[async_trait]
@@ -221,7 +222,7 @@ impl ToolBackend for Counter {
         // Push state update to frontend
         self.send_to_frontend(PipelineCommand::FrontendMessage(
             FrontendMessage::ReturnState(self.get_state()),
-        ));
+        ))?;
 
         let elapsed = now.elapsed();
         println!("Elapsed: {:.2?}", elapsed);
@@ -237,7 +238,7 @@ impl ToolBackend for Counter {
                 PipelineCommand::RequestState() => {
                     self.send_to_frontend(PipelineCommand::FrontendMessage(
                         FrontendMessage::ReturnState(self.get_state()),
-                    ));
+                    ))?;
                 }
                 PipelineCommand::HandleClick(x, y) => {
                     if !self.state.is_enabled {
@@ -352,14 +353,14 @@ impl ToolBackend for Counter {
                         CountMessage::SaveCounts(file) => {
                             // Use the utils::io module to export to XML
                             if let Err(e) = export_counter_to_xml_file(&self.state, &file).await {
-                                self.send_to_frontend(PipelineCommand::FrontendMessage(
+                                self.global_sender.send(PipelineCommand::FrontendMessage(
                                     FrontendMessage::UserFeedback(
                                         "Error saving counts: XML export failed".to_string(),
                                     ),
                                 ))?;
                                 return Err(anyhow::anyhow!("Error saving counts to file: {}", e));
                             }
-                            self.send_to_frontend(PipelineCommand::FrontendMessage(
+                            self.global_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::UserFeedback(
                                     "Counts saved successfully!".to_string(),
                                 ),
@@ -373,14 +374,15 @@ impl ToolBackend for Counter {
                                     self.state.mode = loaded_state.mode;
                                     self.state.active_count_type = loaded_state.active_count_type;
 
-                                    self.send_to_frontend(PipelineCommand::FrontendMessage(
+                                    self.global_sender.send(PipelineCommand::FrontendMessage(
                                         FrontendMessage::UserFeedback(
                                             "Counts loaded successfully!".to_string(),
                                         ),
                                     ))?;
+                                    println!("Sent count loaded user feedback over command_sender broadcast channel");
                                 }
                                 Err(e) => {
-                                    self.send_to_frontend(PipelineCommand::FrontendMessage(
+                                    self.global_sender.send(PipelineCommand::FrontendMessage(
                                         FrontendMessage::UserFeedback(
                                             "Error loading counts: XML import failed".to_string(),
                                         ),
@@ -501,6 +503,7 @@ impl ToolBackend for Counter {
 impl Counter {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> anyhow::Result<Self> {
         let (sender, receiver) = flume::unbounded();
         command_sender
@@ -527,6 +530,7 @@ impl Counter {
             command_sender,
             sender,
             receiver,
+            global_sender,
             cached_output: None,
             cached_state: None,
         })

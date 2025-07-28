@@ -308,20 +308,98 @@ impl Pipeline {
 
         let tool_manager = ToolManager::new(
             vec![
-                Box::new(Compositor::new(command_tx.clone(), gpu_image_processor.clone()).await),
-                Box::new(Contrast::new(command_tx.clone(), gpu_image_processor.clone()).await),
-                Box::new(GaussianBlur::new(command_tx.clone(), gpu_image_processor.clone()).await),
-                Box::new(LocalMaxima::new(command_tx.clone(), gpu_image_processor.clone()).await),
-                Box::new(Morphology::new(command_tx.clone(), gpu_image_processor.clone()).await),
-                Box::new(RollingBall::new(command_tx.clone(), gpu_image_processor.clone()).await),
-                Box::new(Threshold::new(command_tx.clone(), gpu_image_processor.clone()).await),
-                Box::new(Watershed::new(command_tx.clone(), gpu_image_processor.clone()).await),
-                Box::new(Counter::new(command_tx.clone()).await?),
-                Box::new(Decomposer::new(command_tx.clone(), gpu_image_processor.clone()).await),
-                Box::new(Sobel::new(command_tx.clone(), gpu_image_processor.clone()).await),
-                Box::new(Grayscale::new(command_tx.clone(), gpu_image_processor.clone()).await),
+                Box::new(
+                    Compositor::new(
+                        command_tx.clone(),
+                        output_tx.clone(),
+                        gpu_image_processor.clone(),
+                    )
+                    .await,
+                ),
+                Box::new(
+                    Contrast::new(
+                        command_tx.clone(),
+                        output_tx.clone(),
+                        gpu_image_processor.clone(),
+                    )
+                    .await,
+                ),
+                Box::new(
+                    GaussianBlur::new(
+                        command_tx.clone(),
+                        output_tx.clone(),
+                        gpu_image_processor.clone(),
+                    )
+                    .await,
+                ),
+                Box::new(
+                    LocalMaxima::new(
+                        command_tx.clone(),
+                        output_tx.clone(),
+                        gpu_image_processor.clone(),
+                    )
+                    .await,
+                ),
+                Box::new(
+                    Morphology::new(
+                        command_tx.clone(),
+                        output_tx.clone(),
+                        gpu_image_processor.clone(),
+                    )
+                    .await,
+                ),
+                Box::new(
+                    RollingBall::new(
+                        command_tx.clone(),
+                        output_tx.clone(),
+                        gpu_image_processor.clone(),
+                    )
+                    .await,
+                ),
+                Box::new(
+                    Threshold::new(
+                        command_tx.clone(),
+                        output_tx.clone(),
+                        gpu_image_processor.clone(),
+                    )
+                    .await,
+                ),
+                Box::new(
+                    Watershed::new(
+                        command_tx.clone(),
+                        output_tx.clone(),
+                        gpu_image_processor.clone(),
+                    )
+                    .await,
+                ),
+                Box::new(Counter::new(command_tx.clone(), output_tx.clone()).await?),
+                Box::new(
+                    Decomposer::new(
+                        command_tx.clone(),
+                        output_tx.clone(),
+                        gpu_image_processor.clone(),
+                    )
+                    .await,
+                ),
+                Box::new(
+                    Sobel::new(
+                        command_tx.clone(),
+                        output_tx.clone(),
+                        gpu_image_processor.clone(),
+                    )
+                    .await,
+                ),
+                Box::new(
+                    Grayscale::new(
+                        command_tx.clone(),
+                        output_tx.clone(),
+                        gpu_image_processor.clone(),
+                    )
+                    .await,
+                ),
             ],
             command_tx.clone(),
+            output_tx.clone(),
         );
         let pipeline = Self {
             tool_manager,
@@ -425,7 +503,12 @@ impl Pipeline {
             match &cmd {
                 PipelineCommand::Refresh(index) => {
                     if let Err(e) = self.process_from(*index).await {
-                        eprintln!("Failed to process pipeline from index {}: {}", index, e);
+                        let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                            FrontendMessage::UserFeedback(format!(
+                                "Pipeline processing failed at stage {}: {}",
+                                index, e
+                            )),
+                        ));
                     }
                 }
                 PipelineCommand::Load(files, skip_processing) => {
@@ -458,7 +541,12 @@ impl Pipeline {
 
                     if !skip_processing {
                         if let Err(e) = self.process_from(0).await {
-                            eprintln!("Failed to process pipeline after loading images: {}", e);
+                            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                                FrontendMessage::UserFeedback(format!(
+                                    "Failed to process images: {}",
+                                    e
+                                )),
+                            ));
                         }
                     }
                 }
@@ -474,7 +562,12 @@ impl Pipeline {
                             vec![self.tool_manager.get_sender()],
                         );
                         if let Err(e) = sender.send(PipelineCommand::FrontendMessage(r)) {
-                            eprintln!("Failed to send backend discovery response: {}", e);
+                            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                                FrontendMessage::UserFeedback(format!(
+                                    "Communication error with frontend: {}",
+                                    e
+                                )),
+                            ));
                         }
                         return Ok(());
                     }
@@ -494,7 +587,12 @@ impl Pipeline {
                     println!("Returning discovery request {:?}", r);
 
                     if let Err(e) = sender.send(PipelineCommand::FrontendMessage(r)) {
-                        eprintln!("Failed to send backend discovery response: {}", e);
+                        let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                            FrontendMessage::UserFeedback(format!(
+                                "Communication error with frontend: {}",
+                                e
+                            )),
+                        ));
                     }
                 }
                 PipelineCommand::DisconnectFrontend(backend_tool_type) => {
@@ -522,7 +620,12 @@ impl Pipeline {
                         }
                     }
                     if let Err(e) = self.process_from(0).await {
-                        eprintln!("Failed to process pipeline after loading images: {}", e);
+                        let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                            FrontendMessage::UserFeedback(format!(
+                                "Failed to process loaded pipeline: {}",
+                                e
+                            )),
+                        ));
                     }
                 }
                 PipelineCommand::RegisterClickReceiver(click_sender) => {
@@ -533,7 +636,12 @@ impl Pipeline {
                         if let Err(e) =
                             recv.send(PipelineCommand::HandleClick(*image_pixel_x, *image_pixel_y))
                         {
-                            eprintln!("Failed to send handle click event to downstream click receiver {:?}: {}", recv, e);
+                            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                                FrontendMessage::UserFeedback(format!(
+                                    "Failed to process click event: {}",
+                                    e
+                                )),
+                            ));
                         }
                     }
                 }
@@ -546,11 +654,15 @@ impl Pipeline {
             .iter_mut()
             .map(|tool| tool.receive_messages());
         if let Err(e) = try_join_all(futures).await {
-            eprintln!("Failed to process tool messages: {}", e);
+            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                FrontendMessage::UserFeedback(format!("Error processing tool messages: {}", e)),
+            ));
         }
 
         if let Err(e) = self.tool_manager.receive_messages().await {
-            eprintln!("Failed to receive message from tool_manager: {}", e);
+            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                FrontendMessage::UserFeedback(format!("Tool manager communication error: {}", e)),
+            ));
         }
 
         Ok(())

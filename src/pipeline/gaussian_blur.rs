@@ -20,6 +20,7 @@ pub struct GaussianBlurState {
 pub struct GaussianBlur {
     pub state: GaussianBlurState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub gaussian_blur: GpuGaussianBlur,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
@@ -56,10 +57,19 @@ impl ToolBackend for GaussianBlur {
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
-            *image = self
+            *image = match self
                 .gaussian_blur
                 .apply_blur(&image, self.state.radius, self.state.sigma)
-                .await?;
+                .await
+            {
+                Ok(img) => img,
+                Err(e) => {
+                    self.global_sender.send(PipelineCommand::FrontendMessage(
+                        FrontendMessage::UserFeedback(format!("Gaussian Blur error: {}", e)),
+                    ))?;
+                    return Err(e);
+                }
+            };
         }
         Ok(())
     }
@@ -144,6 +154,7 @@ impl ToolBackend for GaussianBlur {
 impl GaussianBlur {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
@@ -156,6 +167,7 @@ impl GaussianBlur {
             gaussian_blur: GpuGaussianBlur::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
+            global_sender,
             sender,
             receiver,
             index: 0,

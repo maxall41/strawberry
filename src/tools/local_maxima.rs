@@ -123,7 +123,7 @@ impl LocalMaximaView {
             &threshold_control,
             |this, _control, event: &ValueControlEvent, cx| {
                 if event.id == "threshold" {
-                    this.adjust_threshold_value_direct(event.value);
+                    this.adjust_threshold_value(event.value);
                 }
             },
         )
@@ -285,23 +285,7 @@ impl LocalMaximaView {
         self.update_parameters(new_value, threshold, exclude_border);
     }
 
-    fn adjust_min_distance(&mut self, delta: f32, _window: &mut Window, _cx: &mut Context<Self>) {
-        let current_state = match self.state.read() {
-            Ok(state) => state.clone(),
-            Err(e) => {
-                eprintln!("Failed to read state for min distance adjustment: {}", e);
-                return;
-            }
-        };
-        let new_distance = ((current_state.min_distance as f32 + delta).max(1.0) as u32);
-        self.update_parameters(
-            new_distance,
-            current_state.threshold.clone(),
-            current_state.exclude_border,
-        );
-    }
-
-    fn adjust_threshold_value_direct(&mut self, new_value: f32) {
+    fn adjust_threshold_value(&mut self, new_value: f32) {
         let current_state = self.state.read().unwrap();
         let new_threshold = match current_state.threshold {
             ThresholdType::Absolute(_) => ThresholdType::Absolute(new_value),
@@ -312,33 +296,6 @@ impl LocalMaximaView {
         let exclude_border = current_state.exclude_border;
         drop(current_state);
         self.update_parameters(min_distance, new_threshold, exclude_border);
-    }
-
-    fn adjust_threshold_value(
-        &mut self,
-        delta: f32,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        let current_state = match self.state.read() {
-            Ok(state) => state.clone(),
-            Err(e) => {
-                eprintln!("Failed to read state for threshold adjustment: {}", e);
-                return;
-            }
-        };
-        let new_threshold = match current_state.threshold {
-            ThresholdType::Absolute(value) => ThresholdType::Absolute((value + delta).max(0.0)),
-            ThresholdType::Relative(value) => {
-                ThresholdType::Relative((value + delta).max(0.0).min(1.0))
-            }
-            ThresholdType::None => current_state.threshold.clone(),
-        };
-        self.update_parameters(
-            current_state.min_distance,
-            new_threshold,
-            current_state.exclude_border,
-        );
     }
 
     fn toggle_exclude_border(
@@ -724,7 +681,7 @@ impl ToolFrontend for LocalMaximaView {
             &threshold_control,
             |this, _control, event: &ValueControlEvent, cx| {
                 if event.id == "threshold" {
-                    this.adjust_threshold_value_direct(event.value);
+                    this.adjust_threshold_value(event.value);
                 }
             },
         )

@@ -28,6 +28,7 @@ impl Default for RollingBallState {
 pub struct RollingBall {
     pub state: RollingBallState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub rolling_ball: GpuRollingBall,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
@@ -71,10 +72,19 @@ impl ToolBackend for RollingBall {
 
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
-            *image = self
+            *image = match self
                 .rolling_ball
                 .apply_rolling_ball(image, self.state.ball_radius)
-                .await?;
+                .await
+            {
+                Ok(img) => img,
+                Err(e) => {
+                    self.global_sender.send(PipelineCommand::FrontendMessage(
+                        FrontendMessage::UserFeedback(format!("Rolling Ball error: {}", e)),
+                    ))?;
+                    return Err(e);
+                }
+            };
         }
         Ok(())
     }
@@ -158,6 +168,7 @@ impl ToolBackend for RollingBall {
 impl RollingBall {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
@@ -166,6 +177,7 @@ impl RollingBall {
             rolling_ball: GpuRollingBall::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
+            global_sender,
             sender,
             receiver,
             index: 0,

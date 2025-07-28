@@ -407,6 +407,8 @@ impl CliProcessor {
         let pipeline_handle = tokio::spawn(async move {
             loop {
                 if let Err(e) = pipeline.process_commands().await {
+                    // In CLI mode, pipeline errors are handled internally with user feedback
+                    // We still log to stderr for debugging purposes
                     eprintln!(
                         "{}",
                         format!("Error processing pipeline commands: {}", e).red()
