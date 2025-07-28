@@ -65,7 +65,7 @@ impl ToolBackend for Contrast {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Contrast error: {}", e)),
+                        FrontendMessage::UserFeedback(format!("Contrast error: {e}")),
                     ))?;
                     return Err(e);
                 }

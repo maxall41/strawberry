@@ -75,8 +75,7 @@ impl GpuRollingBall {
 
         if TileGrid::needs_tiling(width, height, &tile_config) {
             println!(
-                "Image {}x{} requires tile-based processing for GPU limits",
-                width, height
+                "Image {width}x{height} requires tile-based processing for GPU limits"
             );
             self.apply_rolling_ball_tiled(image, ball_radius, &tile_config)
                 .await
@@ -152,8 +151,7 @@ impl GpuRollingBall {
             .await?;
 
         println!(
-            "Applied rolling ball background subtraction with ball radius: {}",
-            ball_radius
+            "Applied rolling ball background subtraction with ball radius: {ball_radius}"
         );
         Ok(result_image)
     }

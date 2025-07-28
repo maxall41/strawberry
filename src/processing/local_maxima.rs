@@ -3,7 +3,7 @@ use std::{borrow::Cow, sync::Arc};
 use anyhow::Result;
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
-use wgpu::{util::DeviceExt, PipelineCompilationOptions};
+use wgpu::PipelineCompilationOptions;
 
 use super::{
     tiling::{extract_rgba_tile, merge_rgba_tiles, TileConfig, TileGrid},
@@ -77,8 +77,7 @@ impl GpuLocalMaxima {
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
             println!(
-                "Image {}x{} requires tile-based processing for GPU limits",
-                width, height
+                "Image {width}x{height} requires tile-based processing for GPU limits"
             );
             self.apply_local_maxima_tiled(
                 image,
@@ -192,8 +191,7 @@ impl GpuLocalMaxima {
             .await?;
 
         println!(
-            "Applied local maxima detection with min_distance: {}, threshold: {:?}, exclude_border: {}",
-            min_distance, threshold, exclude_border
+            "Applied local maxima detection with min_distance: {min_distance}, threshold: {threshold:?}, exclude_border: {exclude_border}"
         );
         Ok(result_image)
     }

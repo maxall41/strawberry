@@ -73,7 +73,7 @@ impl LocalMaximaView {
             BackendToolType::LocalMaxima,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | LocalMaxima");
@@ -104,7 +104,7 @@ impl LocalMaximaView {
 
         let threshold_control = cx.new(|cx| {
             ValueControl::new(
-                format!("{:.3}", threshold_value),
+                format!("{threshold_value:.3}"),
                 threshold_value,
                 "Threshold".to_string(),
                 0.01,
@@ -151,76 +151,69 @@ impl LocalMaximaView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                match command {
-                    PipelineCommand::FrontendMessage(message) => match message {
-                        FrontendMessage::ReturnState(tool_state) => match tool_state {
-                            ToolState::LocalMaximaState(new_state) => {
-                                if let Ok(mut locked_state) = state.write() {
-                                    if *locked_state != new_state {
-                                        let min_distance_ref = new_state.min_distance;
-                                        let threshold_value_ref = match &new_state.threshold {
-                                            ThresholdType::Absolute(val) => *val,
-                                            ThresholdType::Relative(val) => *val,
-                                            ThresholdType::None => 0.0,
-                                        };
-                                        *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| {
-                                            this.min_distance_control
-                                                .as_ref()
-                                                .expect("min_distance_control should be initialized before use")
-                                                .update(cx, |control, cx| {
-                                                    control.value = min_distance_ref as f32;
-                                                    cx.notify();
-                                                });
-                                            this.threshold_control
-                                                .as_ref()
-                                                .expect("threshold_control should be initialized before use")
-                                                .update(cx, |control, cx| {
-                                                    control.value = threshold_value_ref;
-                                                    cx.notify();
-                                                },
-                                            );
+                if let PipelineCommand::FrontendMessage(message) = command { match message {
+                    FrontendMessage::ReturnState(tool_state) => if let ToolState::LocalMaximaState(new_state) = tool_state {
+                        if let Ok(mut locked_state) = state.write() {
+                            if *locked_state != new_state {
+                                let min_distance_ref = new_state.min_distance;
+                                let threshold_value_ref = match &new_state.threshold {
+                                    ThresholdType::Absolute(val) => *val,
+                                    ThresholdType::Relative(val) => *val,
+                                    ThresholdType::None => 0.0,
+                                };
+                                *locked_state = new_state;
+                                if let Err(e) = this.update(cx, |this, cx| {
+                                    this.min_distance_control
+                                        .as_ref()
+                                        .expect("min_distance_control should be initialized before use")
+                                        .update(cx, |control, cx| {
+                                            control.value = min_distance_ref as f32;
                                             cx.notify();
-                                        }) {
-                                            eprintln!(
-                                                "Failed to update UI after state change: {}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    eprintln!("Failed to acquire write lock on local maxima state");
+                                        });
+                                    this.threshold_control
+                                        .as_ref()
+                                        .expect("threshold_control should be initialized before use")
+                                        .update(cx, |control, cx| {
+                                            control.value = threshold_value_ref;
+                                            cx.notify();
+                                        },
+                                    );
+                                    cx.notify();
+                                }) {
+                                    eprintln!(
+                                        "Failed to update UI after state change: {e}"
+                                    );
                                 }
                             }
-                            _ => {}
-                        },
-                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                            println!("Received backend tools | Frontend LocalMaxima");
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                                {
-                                    *current_tool_index = backend_ids.get(0).copied();
-                                } else {
-                                    eprintln!("Failed to acquire write lock on current tool index");
-                                    return;
-                                }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
-
-                                // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.get(0) {
-                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                        eprintln!("Failed to request initial state: {}", e);
-                                    }
-                                }
-                            }) {
-                                eprintln!("Failed to update backend tools: {}", e);
-                            }
+                        } else {
+                            eprintln!("Failed to acquire write lock on local maxima state");
                         }
-                        _ => {}
                     },
+                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                        println!("Received backend tools | Frontend LocalMaxima");
+                        if let Err(e) = this.update(cx, |this, cx| {
+                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                            {
+                                *current_tool_index = backend_ids.first().copied();
+                            } else {
+                                eprintln!("Failed to acquire write lock on current tool index");
+                                return;
+                            }
+                            this.backend_tool_indicies = backend_ids;
+                            this.send_channels = senders;
+
+                            // Request initial state when backend is discovered
+                            if let Some(sender) = this.send_channels.first() {
+                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                    eprintln!("Failed to request initial state: {e}");
+                                }
+                            }
+                        }) {
+                            eprintln!("Failed to update backend tools: {e}");
+                        }
+                    }
                     _ => {}
-                }
+                } }
             } else {
                 break;
             }
@@ -238,7 +231,7 @@ impl LocalMaximaView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 None
             }
         }
@@ -253,10 +246,10 @@ impl LocalMaximaView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ToggleActive(!current_value),
             )) {
-                eprintln!("Failed to send toggle enabled command: {}", e);
+                eprintln!("Failed to send toggle enabled command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -277,10 +270,10 @@ impl LocalMaximaView {
                     exclude_border,
                 )),
             )) {
-                eprintln!("Failed to send parameter update: {}", e);
+                eprintln!("Failed to send parameter update: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -320,7 +313,7 @@ impl LocalMaximaView {
         let current_state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
-                eprintln!("Failed to read state for exclude border toggle: {}", e);
+                eprintln!("Failed to read state for exclude border toggle: {e}");
                 return;
             }
         };
@@ -335,7 +328,7 @@ impl LocalMaximaView {
         let current_state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
-                eprintln!("Failed to read state for threshold mode toggle: {}", e);
+                eprintln!("Failed to read state for threshold mode toggle: {e}");
                 return;
             }
         };
@@ -389,11 +382,11 @@ impl LocalMaximaView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        let mdc = self
+        
+        self
             .min_distance_control
             .clone()
-            .expect("min_distance_control should be initialized before use");
-        mdc
+            .expect("min_distance_control should be initialized before use")
     }
 
     // Threshold control component with mode toggle
@@ -586,7 +579,7 @@ impl Render for LocalMaximaView {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
-                eprintln!("Failed to read state for rendering: {}", e);
+                eprintln!("Failed to read state for rendering: {e}");
                 return div()
                     .flex()
                     .flex_col()
@@ -654,7 +647,7 @@ impl ToolFrontend for LocalMaximaView {
             BackendToolType::LocalMaxima,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | LocalMaxima");
@@ -685,7 +678,7 @@ impl ToolFrontend for LocalMaximaView {
 
         let threshold_control = cx.new(|cx| {
             ValueControl::new(
-                format!("{:.3}", threshold_value),
+                format!("{threshold_value:.3}"),
                 threshold_value,
                 "Threshold".to_string(),
                 0.01,

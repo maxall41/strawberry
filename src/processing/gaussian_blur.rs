@@ -64,8 +64,7 @@ impl GpuGaussianBlur {
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
             println!(
-                "Image {}x{} requires tile-based processing for GPU limits",
-                width, height
+                "Image {width}x{height} requires tile-based processing for GPU limits"
             );
             self.apply_blur_tiled(image, radius, sigma, &tile_config)
                 .await
@@ -149,8 +148,7 @@ impl GpuGaussianBlur {
             .await?;
 
         println!(
-            "Applied gaussian blur with radius: {}, sigma: {}",
-            radius, sigma
+            "Applied gaussian blur with radius: {radius}, sigma: {sigma}"
         );
         Ok(result_image)
     }

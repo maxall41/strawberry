@@ -64,7 +64,7 @@ impl SobelView {
             BackendToolType::Sobel,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | Sobel");
@@ -110,62 +110,55 @@ impl SobelView {
 
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                match command {
-                    PipelineCommand::FrontendMessage(message) => match message {
-                        FrontendMessage::ReturnState(tool_state) => match tool_state {
-                            ToolState::SobelState(new_state) => {
-                                if let Ok(mut locked_state) = state.write() {
-                                    if *locked_state != new_state {
-                                        let threshold_value = new_state.threshold_value;
-                                        *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| {
-                                            this.threshold_control
-                                                .as_ref()
-                                                .expect("threshold_control should be initialized before use")
-                                                .update(cx, |control, cx| {
-                                                    control.value = threshold_value;
-                                                    cx.notify();
-                                                });
+                if let PipelineCommand::FrontendMessage(message) = command { match message {
+                    FrontendMessage::ReturnState(tool_state) => if let ToolState::SobelState(new_state) = tool_state {
+                        if let Ok(mut locked_state) = state.write() {
+                            if *locked_state != new_state {
+                                let threshold_value = new_state.threshold_value;
+                                *locked_state = new_state;
+                                if let Err(e) = this.update(cx, |this, cx| {
+                                    this.threshold_control
+                                        .as_ref()
+                                        .expect("threshold_control should be initialized before use")
+                                        .update(cx, |control, cx| {
+                                            control.value = threshold_value;
                                             cx.notify();
-                                        }) {
-                                            eprintln!(
-                                                "Failed to update UI after state change: {}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    eprintln!("Failed to acquire write lock on sobel state");
+                                        });
+                                    cx.notify();
+                                }) {
+                                    eprintln!(
+                                        "Failed to update UI after state change: {e}"
+                                    );
                                 }
                             }
-                            _ => {}
-                        },
-                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                            println!("Received backend tools | Frontend Sobel");
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                                {
-                                    *current_tool_index = backend_ids.get(0).copied();
-                                } else {
-                                    eprintln!("Failed to acquire write lock on current tool index");
-                                    return;
-                                }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
-
-                                if let Some(sender) = this.send_channels.get(0) {
-                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                        eprintln!("Failed to request initial state: {}", e);
-                                    }
-                                }
-                            }) {
-                                eprintln!("Failed to update backend tools: {}", e);
-                            }
+                        } else {
+                            eprintln!("Failed to acquire write lock on sobel state");
                         }
-                        _ => {}
                     },
+                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                        println!("Received backend tools | Frontend Sobel");
+                        if let Err(e) = this.update(cx, |this, cx| {
+                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                            {
+                                *current_tool_index = backend_ids.first().copied();
+                            } else {
+                                eprintln!("Failed to acquire write lock on current tool index");
+                                return;
+                            }
+                            this.backend_tool_indicies = backend_ids;
+                            this.send_channels = senders;
+
+                            if let Some(sender) = this.send_channels.first() {
+                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                    eprintln!("Failed to request initial state: {e}");
+                                }
+                            }
+                        }) {
+                            eprintln!("Failed to update backend tools: {e}");
+                        }
+                    }
                     _ => {}
-                }
+                } }
             } else {
                 break;
             }
@@ -183,7 +176,7 @@ impl SobelView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 None
             }
         }
@@ -198,10 +191,10 @@ impl SobelView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ToggleActive(!current_value),
             )) {
-                eprintln!("Failed to send toggle enabled command: {}", e);
+                eprintln!("Failed to send toggle enabled command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -214,10 +207,10 @@ impl SobelView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::SobelMessage(SobelMessage::ToggleThreshold(!current_value)),
             )) {
-                eprintln!("Failed to send toggle threshold command: {}", e);
+                eprintln!("Failed to send toggle threshold command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -230,10 +223,10 @@ impl SobelView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::SobelMessage(SobelMessage::SetThreshold(threshold_value)),
             )) {
-                eprintln!("Failed to send threshold value update: {}", e);
+                eprintln!("Failed to send threshold value update: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -374,7 +367,7 @@ impl Render for SobelView {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
-                eprintln!("Failed to read state for rendering: {}", e);
+                eprintln!("Failed to read state for rendering: {e}");
                 return div()
                     .flex()
                     .flex_col()
@@ -440,7 +433,7 @@ impl ToolFrontend for SobelView {
             BackendToolType::Sobel,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | Sobel");

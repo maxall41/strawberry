@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, rgb, AsyncApp, Context, InteractiveElement, IntoElement, MouseDownEvent, ParentElement,
-    Render, Styled, WeakEntity, Window,
+    div, rgb, Context, InteractiveElement, IntoElement, MouseDownEvent, ParentElement,
+    Render, Styled, Window,
 };
 
 #[derive(Clone, Debug)]
@@ -50,7 +50,7 @@ impl FeedbackModal {
     }
 
     pub fn enable_auto_close(&self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, mut cx| {
+        cx.spawn(async move |this, cx| {
             let total_duration = Duration::from_millis(3000);
             let update_interval = Duration::from_millis(16);
             let total_steps = total_duration.as_millis() / update_interval.as_millis();

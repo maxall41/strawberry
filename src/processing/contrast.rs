@@ -64,8 +64,7 @@ impl GpuContrast {
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
             println!(
-                "Image {}x{} requires tile-based processing for GPU limits",
-                width, height
+                "Image {width}x{height} requires tile-based processing for GPU limits"
             );
             self.apply_contrast_tiled(image, min_value, max_value, &tile_config)
                 .await
@@ -150,8 +149,7 @@ impl GpuContrast {
             .await?;
 
         println!(
-            "Applied contrast remapping with min: {}, max: {}",
-            min_value, max_value
+            "Applied contrast remapping with min: {min_value}, max: {max_value}"
         );
         Ok(result_image)
     }

@@ -116,8 +116,8 @@ impl GpuImageProcessor {
 
         // Dispatch with 8x8 work groups (matching the shader workgroup size)
         let workgroup_size = 8;
-        let dispatch_x = (width + workgroup_size - 1) / workgroup_size;
-        let dispatch_y = (height + workgroup_size - 1) / workgroup_size;
+        let dispatch_x = width.div_ceil(workgroup_size);
+        let dispatch_y = height.div_ceil(workgroup_size);
         compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
     }
 

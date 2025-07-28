@@ -1,9 +1,6 @@
 // Implements UI for contrast tool
 
-use std::{
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::sync::{Arc, RwLock};
 
 use flume;
 use gpui::{
@@ -72,7 +69,7 @@ impl ContrastView {
             BackendToolType::Contrast,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | Contrast");
@@ -144,75 +141,68 @@ impl ContrastView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                match command {
-                    PipelineCommand::FrontendMessage(message) => match message {
-                        FrontendMessage::ReturnState(tool_state) => match tool_state {
-                            ToolState::ContrastState(new_state) => {
-                                if let Ok(mut locked_state) = state.write() {
-                                    if *locked_state != new_state {
-                                        let min_ref = new_state.min;
-                                        let max_ref = new_state.max;
-                                        *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| {
-                                            this.min_control
-                                                .as_ref()
-                                                .expect(
-                                                    "min_control should be initialized before use",
-                                                )
-                                                .update(cx, |control, cx| {
-                                                    control.value = min_ref;
-                                                    cx.notify();
-                                                });
-                                            this.max_control
-                                                .as_ref()
-                                                .expect(
-                                                    "max_control should be initialized before use",
-                                                )
-                                                .update(cx, |control, cx| {
-                                                    control.value = max_ref;
-                                                    cx.notify();
-                                                });
+                if let PipelineCommand::FrontendMessage(message) = command { match message {
+                    FrontendMessage::ReturnState(tool_state) => if let ToolState::ContrastState(new_state) = tool_state {
+                        if let Ok(mut locked_state) = state.write() {
+                            if *locked_state != new_state {
+                                let min_ref = new_state.min;
+                                let max_ref = new_state.max;
+                                *locked_state = new_state;
+                                if let Err(e) = this.update(cx, |this, cx| {
+                                    this.min_control
+                                        .as_ref()
+                                        .expect(
+                                            "min_control should be initialized before use",
+                                        )
+                                        .update(cx, |control, cx| {
+                                            control.value = min_ref;
                                             cx.notify();
-                                        }) {
-                                            eprintln!(
-                                                "Failed to update UI after state change: {}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    eprintln!("Failed to acquire write lock on contrast state");
+                                        });
+                                    this.max_control
+                                        .as_ref()
+                                        .expect(
+                                            "max_control should be initialized before use",
+                                        )
+                                        .update(cx, |control, cx| {
+                                            control.value = max_ref;
+                                            cx.notify();
+                                        });
+                                    cx.notify();
+                                }) {
+                                    eprintln!(
+                                        "Failed to update UI after state change: {e}"
+                                    );
                                 }
                             }
-                            _ => {}
-                        },
-                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                            println!("Received backend tools | Frontend Contrast");
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                                {
-                                    *current_tool_index = backend_ids.get(0).copied();
-                                } else {
-                                    eprintln!("Failed to acquire write lock on current tool index");
-                                    return;
-                                }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
-
-                                // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.get(0) {
-                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                        eprintln!("Failed to request initial state: {}", e);
-                                    }
-                                }
-                            }) {
-                                eprintln!("Failed to update backend tools: {}", e);
-                            }
+                        } else {
+                            eprintln!("Failed to acquire write lock on contrast state");
                         }
-                        _ => {}
                     },
+                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                        println!("Received backend tools | Frontend Contrast");
+                        if let Err(e) = this.update(cx, |this, cx| {
+                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                            {
+                                *current_tool_index = backend_ids.first().copied();
+                            } else {
+                                eprintln!("Failed to acquire write lock on current tool index");
+                                return;
+                            }
+                            this.backend_tool_indicies = backend_ids;
+                            this.send_channels = senders;
+
+                            // Request initial state when backend is discovered
+                            if let Some(sender) = this.send_channels.first() {
+                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                    eprintln!("Failed to request initial state: {e}");
+                                }
+                            }
+                        }) {
+                            eprintln!("Failed to update backend tools: {e}");
+                        }
+                    }
                     _ => {}
-                }
+                } }
             } else {
                 break;
             }
@@ -230,7 +220,7 @@ impl ContrastView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 None
             }
         }
@@ -250,10 +240,10 @@ impl ContrastView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ToggleActive(!current_value),
             )) {
-                eprintln!("Failed to send toggle enabled command: {}", e);
+                eprintln!("Failed to send toggle enabled command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -272,10 +262,10 @@ impl ContrastView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(min, max)),
             )) {
-                eprintln!("Failed to send min/max update command: {}", e);
+                eprintln!("Failed to send min/max update command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -297,10 +287,10 @@ impl ContrastView {
                     new_min, max_val,
                 )),
             )) {
-                eprintln!("Failed to send min/max update command: {}", e);
+                eprintln!("Failed to send min/max update command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -322,10 +312,10 @@ impl ContrastView {
                     min_val, new_max,
                 )),
             )) {
-                eprintln!("Failed to send min/max update command: {}", e);
+                eprintln!("Failed to send min/max update command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -333,7 +323,7 @@ impl ContrastView {
         let (min, max) = match self.state.read() {
             Ok(state) => (state.min, state.max),
             Err(e) => {
-                eprintln!("Failed to read state for min adjustment: {}", e);
+                eprintln!("Failed to read state for min adjustment: {e}");
                 return;
             }
         };
@@ -345,7 +335,7 @@ impl ContrastView {
         let (min, max) = match self.state.read() {
             Ok(state) => (state.min, state.max),
             Err(e) => {
-                eprintln!("Failed to read state for max adjustment: {}", e);
+                eprintln!("Failed to read state for max adjustment: {e}");
                 return;
             }
         };
@@ -382,20 +372,20 @@ impl ContrastView {
 
     // Min value control component
     fn render_min_control(&self, cx: &mut Context<Self>, _window: &mut Window) -> impl IntoElement {
-        let mc = self
+        
+        self
             .min_control
             .clone()
-            .expect("min_control should be initialized before use");
-        mc
+            .expect("min_control should be initialized before use")
     }
 
     // Max value control component
     fn render_max_control(&self, cx: &mut Context<Self>, _window: &mut Window) -> impl IntoElement {
-        let mc = self
+        
+        self
             .max_control
             .clone()
-            .expect("max_control should be initialized before use");
-        mc
+            .expect("max_control should be initialized before use")
     }
 
     // Preset button component
@@ -473,7 +463,7 @@ impl Render for ContrastView {
         let state = match self.state.read() {
             Ok(state) => state,
             Err(e) => {
-                eprintln!("Failed to read state for rendering: {}", e);
+                eprintln!("Failed to read state for rendering: {e}");
                 return div()
                     .flex()
                     .flex_col()
@@ -539,7 +529,7 @@ impl ToolFrontend for ContrastView {
             BackendToolType::Contrast,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | Contrast");

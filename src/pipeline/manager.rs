@@ -1,10 +1,9 @@
-use std::cmp::{max, min};
 use std::collections::HashMap;
 
 use async_trait::async_trait;
 
 use super::{
-    BackendToolType, CompositorMessage, FrontendMessage, ManagerMessage, PipelineCommand,
+    BackendToolType, FrontendMessage, ManagerMessage, PipelineCommand,
     PipelineObjectMessage, ToolBackend, ToolState,
 };
 use serde::{Deserialize, Serialize};
@@ -137,8 +136,7 @@ impl ToolBackend for ToolManager {
                                 Err(e) => {
                                     self.global_sender.send(PipelineCommand::FrontendMessage(
                                         FrontendMessage::UserFeedback(format!(
-                                            "Failed to serialize pipeline: {}",
-                                            e
+                                            "Failed to serialize pipeline: {e}"
                                         )),
                                     ))?;
                                     return Err(anyhow::anyhow!(e));
@@ -147,8 +145,7 @@ impl ToolBackend for ToolManager {
                             if let Err(e) = std::fs::write(&path, toml_string) {
                                 self.global_sender.send(PipelineCommand::FrontendMessage(
                                     FrontendMessage::UserFeedback(format!(
-                                        "Failed to save pipeline to file: {}",
-                                        e
+                                        "Failed to save pipeline to file: {e}"
                                     )),
                                 ))?;
                                 return Err(anyhow::anyhow!("Failed to write to file: {}", e));
@@ -165,8 +162,7 @@ impl ToolBackend for ToolManager {
                                 Err(e) => {
                                     self.global_sender.send(PipelineCommand::FrontendMessage(
                                         FrontendMessage::UserFeedback(format!(
-                                            "Failed to read pipeline file: {}",
-                                            e
+                                            "Failed to read pipeline file: {e}"
                                         )),
                                     ))?;
                                     return Err(anyhow::anyhow!("Failed to read file: {}", e));
@@ -179,8 +175,7 @@ impl ToolBackend for ToolManager {
                                         self.global_sender.send(
                                             PipelineCommand::FrontendMessage(
                                                 FrontendMessage::UserFeedback(format!(
-                                                    "Failed to parse pipeline file: {}",
-                                                    e
+                                                    "Failed to parse pipeline file: {e}"
                                                 )),
                                             ),
                                         )?;

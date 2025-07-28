@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use crate::processing::{contrast::GpuContrast, threshold::GpuThreshold, GpuImageProcessor};
+use crate::processing::{threshold::GpuThreshold, GpuImageProcessor};
 
 use super::{
-    BackendToolType, ContrastMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,
+    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage,
     ThresholdMessage, ToolBackend, ToolState,
 };
 use async_trait::async_trait;
@@ -64,7 +64,7 @@ impl ToolBackend for Threshold {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Threshold error: {}", e)),
+                        FrontendMessage::UserFeedback(format!("Threshold error: {e}")),
                     ))?;
                     return Err(e);
                 }

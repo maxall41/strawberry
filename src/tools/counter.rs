@@ -10,7 +10,7 @@ use rfd::FileDialog;
 
 use crate::{
     gui::{
-        value_control::{ValueControl, ValueControlEvent},
+        value_control::ValueControl,
         ToggleButton,
     },
     pipeline::{
@@ -77,63 +77,56 @@ impl CounterView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                match command {
-                    PipelineCommand::FrontendMessage(message) => match message {
-                        FrontendMessage::ReturnState(tool_state) => match tool_state {
-                            ToolState::CounterState(new_state) => {
-                                if let Ok(mut locked_state) = state.write() {
-                                    if *locked_state != new_state {
-                                        // Update next_count_type_id based on existing count types
-                                        if let Ok(mut next_id) = next_count_type_id.write() {
-                                            *next_id = new_state
-                                                .manual_counts
-                                                .keys()
-                                                .max()
-                                                .map(|&k| k + 1)
-                                                .unwrap_or(0);
-                                        }
+                if let PipelineCommand::FrontendMessage(message) = command { match message {
+                    FrontendMessage::ReturnState(tool_state) => if let ToolState::CounterState(new_state) = tool_state {
+                        if let Ok(mut locked_state) = state.write() {
+                            if *locked_state != new_state {
+                                // Update next_count_type_id based on existing count types
+                                if let Ok(mut next_id) = next_count_type_id.write() {
+                                    *next_id = new_state
+                                        .manual_counts
+                                        .keys()
+                                        .max()
+                                        .map(|&k| k + 1)
+                                        .unwrap_or(0);
+                                }
 
-                                        *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |_this, cx| cx.notify()) {
-                                            eprintln!(
-                                                "Failed to update UI after state change: {}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    eprintln!("Failed to acquire write lock on counter state");
+                                *locked_state = new_state;
+                                if let Err(e) = this.update(cx, |_this, cx| cx.notify()) {
+                                    eprintln!(
+                                        "Failed to update UI after state change: {e}"
+                                    );
                                 }
                             }
-                            _ => {}
-                        },
-                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                            println!("Received backend tools | Frontend Counter");
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                                {
-                                    *current_tool_index = backend_ids.get(0).copied();
-                                } else {
-                                    eprintln!("Failed to acquire write lock on current tool index");
-                                    return;
-                                }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
-
-                                // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.get(0) {
-                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                        eprintln!("Failed to request initial state: {}", e);
-                                    }
-                                }
-                            }) {
-                                eprintln!("Failed to update backend tools: {}", e);
-                            }
+                        } else {
+                            eprintln!("Failed to acquire write lock on counter state");
                         }
-                        _ => {}
                     },
+                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                        println!("Received backend tools | Frontend Counter");
+                        if let Err(e) = this.update(cx, |this, cx| {
+                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                            {
+                                *current_tool_index = backend_ids.first().copied();
+                            } else {
+                                eprintln!("Failed to acquire write lock on current tool index");
+                                return;
+                            }
+                            this.backend_tool_indicies = backend_ids;
+                            this.send_channels = senders;
+
+                            // Request initial state when backend is discovered
+                            if let Some(sender) = this.send_channels.first() {
+                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                    eprintln!("Failed to request initial state: {e}");
+                                }
+                            }
+                        }) {
+                            eprintln!("Failed to update backend tools: {e}");
+                        }
+                    }
                     _ => {}
-                }
+                } }
             } else {
                 break;
             }
@@ -151,7 +144,7 @@ impl CounterView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 None
             }
         }
@@ -174,16 +167,13 @@ impl CounterView {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::CountMessage(CountMessage::SaveCounts(file)),
                         )) {
-                            eprintln!("Failed to send save counts command: {}", e);
-                            return;
+                            eprintln!("Failed to send save counts command: {e}");
                         }
                     } else {
-                        eprintln!("Invalid tool index: {}", current_tool_index);
-                        return;
+                        eprintln!("Invalid tool index: {current_tool_index}");
                     }
                 }) {
-                    eprintln!("Failed to update count types: {}", e);
-                    return;
+                    eprintln!("Failed to update count types: {e}");
                 }
             }
         })
@@ -207,16 +197,13 @@ impl CounterView {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::CountMessage(CountMessage::LoadCounts(file)),
                         )) {
-                            eprintln!("Failed to send load counts command: {}", e);
-                            return;
+                            eprintln!("Failed to send load counts command: {e}");
                         }
                     } else {
-                        eprintln!("Invalid tool index: {}", current_tool_index);
-                        return;
+                        eprintln!("Invalid tool index: {current_tool_index}");
                     }
                 }) {
-                    eprintln!("Failed to update count types: {}", e);
-                    return;
+                    eprintln!("Failed to update count types: {e}");
                 }
             }
         })
@@ -227,7 +214,7 @@ impl CounterView {
         let new_id = match self.next_count_type_id.read() {
             Ok(guard) => *guard,
             Err(e) => {
-                eprintln!("Failed to read next count type ID: {}", e);
+                eprintln!("Failed to read next count type ID: {e}");
                 return;
             }
         };
@@ -241,7 +228,7 @@ impl CounterView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
@@ -250,11 +237,11 @@ impl CounterView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::NewCountType(new_id)),
             )) {
-                eprintln!("Failed to send new count type command: {}", e);
+                eprintln!("Failed to send new count type command: {e}");
                 return;
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
             return;
         }
 
@@ -268,11 +255,11 @@ impl CounterView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::SetActiveCountType(new_id)),
             )) {
-                eprintln!("Failed to send set active count type command: {}", e);
+                eprintln!("Failed to send set active count type command: {e}");
             }
         }
 
-        println!("Added count type {}", new_id);
+        println!("Added count type {new_id}");
     }
 
     fn delete_count_type(&mut self, count_type_id: u16) {
@@ -285,7 +272,7 @@ impl CounterView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
@@ -294,10 +281,10 @@ impl CounterView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::DeleteCountType(count_type_id)),
             )) {
-                eprintln!("Failed to send delete count type command: {}", e);
+                eprintln!("Failed to send delete count type command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
 
         // Clear selection if this was the selected type
@@ -319,7 +306,7 @@ impl CounterView {
                                 new_active_id,
                             )),
                         )) {
-                            eprintln!("Failed to send set active count type command: {}", e);
+                            eprintln!("Failed to send set active count type command: {e}");
                         }
                     }
                 }
@@ -342,7 +329,7 @@ impl CounterView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
@@ -353,10 +340,10 @@ impl CounterView {
                     count_type_id,
                 )),
             )) {
-                eprintln!("Failed to send set active count type command: {}", e);
+                eprintln!("Failed to send set active count type command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -373,7 +360,7 @@ impl CounterView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::CopyToManual),
             )) {
-                eprintln!("Failed to send copy to manual command: {}", e);
+                eprintln!("Failed to send copy to manual command: {e}");
             }
         } else {
             eprintln!("No sender available for copy to manual command");
@@ -390,7 +377,7 @@ impl CounterView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
@@ -399,10 +386,10 @@ impl CounterView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::SetActiveTool(tool)),
             )) {
-                eprintln!("Failed to send set active tool command: {}", e);
+                eprintln!("Failed to send set active tool command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -421,7 +408,7 @@ impl CounterView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
@@ -430,10 +417,10 @@ impl CounterView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ToggleActive(!current_value),
             )) {
-                eprintln!("Failed to send toggle enabled command: {}", e);
+                eprintln!("Failed to send toggle enabled command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -447,7 +434,7 @@ impl CounterView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
@@ -458,7 +445,7 @@ impl CounterView {
                 CounterMode::Auto => CounterMode::Manual,
             },
             Err(e) => {
-                eprintln!("Failed to read state for mode toggle: {}", e);
+                eprintln!("Failed to read state for mode toggle: {e}");
                 return;
             }
         };
@@ -467,10 +454,10 @@ impl CounterView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::SetMode(new_mode)),
             )) {
-                eprintln!("Failed to send set mode command: {}", e);
+                eprintln!("Failed to send set mode command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -548,7 +535,7 @@ impl CounterView {
         is_selected: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let ii = (count_type_id as usize % CIRCLE_COLORS.len()) as usize;
+        let ii = count_type_id as usize % CIRCLE_COLORS.len();
         let color = image_rgba_to_gpui_rgba(CIRCLE_COLORS[ii]);
         div()
             .flex()
@@ -977,19 +964,18 @@ impl CounterView {
             )
             .when(is_size_filter, |el| {
                 let current_value = filter_proxy
-                    .values
-                    .get(0)
+                    .values.first()
                     .map(|v| *v as f32)
                     .unwrap_or(10.0);
 
                 // Create a ValueControl for this filter
                 let control = cx.new(|cx| {
                     ValueControl::new(
-                        format!("{:.0}", current_value),
+                        format!("{current_value:.0}"),
                         current_value,
                         "Minimum Object Size".to_string(),
                         1.0,
-                        format!("size_filter_{}", filter_index),
+                        format!("size_filter_{filter_index}"),
                         1.0,
                         10000.0,
                     )
@@ -1018,7 +1004,7 @@ impl CounterView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
@@ -1030,10 +1016,10 @@ impl CounterView {
                     enabled,
                 )),
             )) {
-                eprintln!("Failed to send toggle filter command: {}", e);
+                eprintln!("Failed to send toggle filter command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -1047,7 +1033,7 @@ impl CounterView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
@@ -1062,7 +1048,7 @@ impl CounterView {
                     .filter_proxys
                     .iter()
                     .find(|f| f.name == "Filter by Size")
-                    .and_then(|f| f.values.get(0))
+                    .and_then(|f| f.values.first())
                     .copied()
                     .unwrap_or(10.0)
             };
@@ -1074,10 +1060,10 @@ impl CounterView {
                     FilterMessage::ConfigureSizeFilter(new_min_size),
                 )),
             )) {
-                eprintln!("Failed to send size filter configuration: {}", e);
+                eprintln!("Failed to send size filter configuration: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -1198,7 +1184,7 @@ impl CounterView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
@@ -1207,10 +1193,10 @@ impl CounterView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::ReviewNavigatePrevious),
             )) {
-                eprintln!("Failed to send review navigate previous command: {}", e);
+                eprintln!("Failed to send review navigate previous command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -1224,7 +1210,7 @@ impl CounterView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
@@ -1233,10 +1219,10 @@ impl CounterView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::ReviewNavigateNext),
             )) {
-                eprintln!("Failed to send review navigate next command: {}", e);
+                eprintln!("Failed to send review navigate next command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 }
@@ -1246,7 +1232,7 @@ impl Render for CounterView {
         let state = match self.state.read() {
             Ok(state) => state,
             Err(e) => {
-                eprintln!("Failed to read state for rendering: {}", e);
+                eprintln!("Failed to read state for rendering: {e}");
                 return div()
                     .flex()
                     .flex_col()
@@ -1342,7 +1328,7 @@ impl ToolFrontend for CounterView {
             BackendToolType::Counter,
             sender.clone(),
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | Counter");

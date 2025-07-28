@@ -59,8 +59,7 @@ impl GpuDecomposer {
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
             println!(
-                "Image {}x{} requires tile-based processing for GPU limits",
-                width, height
+                "Image {width}x{height} requires tile-based processing for GPU limits"
             );
             self.apply_decomposition_tiled(image, &tile_config).await
         } else {
@@ -186,8 +185,7 @@ impl GpuDecomposer {
         let result_images = vec![red_image, green_image, blue_image];
 
         println!(
-            "Applied GPU decomposition to {}x{} image in single dispatch",
-            width, height
+            "Applied GPU decomposition to {width}x{height} image in single dispatch"
         );
 
         // Verify we have exactly 3 channel images

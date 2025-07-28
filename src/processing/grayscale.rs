@@ -56,8 +56,7 @@ impl GpuGrayscale {
 
         if TileGrid::needs_tiling(width, height, &tile_config) {
             println!(
-                "Image {}x{} requires tile-based processing for GPU limits",
-                width, height
+                "Image {width}x{height} requires tile-based processing for GPU limits"
             );
             self.apply_grayscale_tiled(image, &tile_config).await
         } else {

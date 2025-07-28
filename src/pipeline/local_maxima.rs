@@ -75,7 +75,7 @@ impl ToolBackend for LocalMaxima {
             *image = match self
                 .local_maxima
                 .apply_local_maxima(
-                    &image,
+                    image,
                     self.state.min_distance,
                     self.state.threshold.clone(),
                     self.state.exclude_border,
@@ -85,7 +85,7 @@ impl ToolBackend for LocalMaxima {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Local Maxima error: {}", e)),
+                        FrontendMessage::UserFeedback(format!("Local Maxima error: {e}")),
                     ))?;
                     return Err(e);
                 }

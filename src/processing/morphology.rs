@@ -3,7 +3,7 @@ use std::{borrow::Cow, sync::Arc};
 use anyhow::Result;
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
-use wgpu::{util::DeviceExt, PipelineCompilationOptions};
+use wgpu::PipelineCompilationOptions;
 
 use super::{
     tiling::{extract_rgba_tile, merge_rgba_tiles, TileConfig, TileGrid},
@@ -104,8 +104,7 @@ impl GpuMorphology {
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
             println!(
-                "Image {}x{} requires tile-based processing for GPU limits",
-                width, height
+                "Image {width}x{height} requires tile-based processing for GPU limits"
             );
             self.apply_morphology_tiled(image, operation, element_size, &tile_config)
                 .await
@@ -253,8 +252,7 @@ impl GpuMorphology {
             .await?;
 
         println!(
-            "Applied morphological {:?} with element size: {}",
-            operation, element_size
+            "Applied morphological {operation:?} with element size: {element_size}"
         );
         Ok(result_image)
     }

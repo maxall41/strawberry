@@ -59,8 +59,7 @@ impl GpuSobel {
 
         if TileGrid::needs_tiling(width, height, &tile_config) {
             println!(
-                "Image {}x{} requires tile-based processing for GPU limits",
-                width, height
+                "Image {width}x{height} requires tile-based processing for GPU limits"
             );
             self.apply_sobel_tiled(image, threshold, &tile_config).await
         } else {
@@ -134,7 +133,7 @@ impl GpuSobel {
             .await?;
 
         match threshold {
-            Some(t) => println!("Applied Sobel edge detection with threshold: {}", t),
+            Some(t) => println!("Applied Sobel edge detection with threshold: {t}"),
             None => println!("Applied Sobel edge detection without threshold"),
         }
         Ok(result_image)

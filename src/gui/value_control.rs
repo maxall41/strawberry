@@ -1,10 +1,10 @@
 // Reusable value control components for tool UIs
 
-use std::{borrow::BorrowMut, time::Duration};
+use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, rgb, App, Context, CursorStyle, DragMoveEvent, ElementId, EntityId,
-    EventEmitter, FocusHandle, Focusable, Keystroke, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    div, prelude::*, rgb, App, Context, CursorStyle, DragMoveEvent, ElementId,
+    EventEmitter, FocusHandle, Focusable, Keystroke, MouseDownEvent,
     Pixels, Point, SharedString, Window,
 };
 use tokio::time::Instant;
@@ -278,7 +278,7 @@ impl Render for ValueControl {
                                                 let delta_value = delta_x * scaling_factor;
                                                 let new_value = (this.drag_start_value + delta_value).clamp(this.config.min, this.config.max);
                                                 this.value = new_value;
-                                                this.text = format!("{:.2}", new_value);
+                                                this.text = format!("{new_value:.2}");
                                             }
                                     },
                                 )

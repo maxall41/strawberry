@@ -44,7 +44,7 @@ impl<V: 'static> ToggleButton<V> {
             .items_center()
             .gap_2()
             .mb_3()
-            .child(format!("{}:", label))
+            .child(format!("{label}:"))
             .child(
                 div()
                     .px_2()
