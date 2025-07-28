@@ -483,7 +483,8 @@ impl Pipeline {
             }
         }
 
-        let output_image = images.first()
+        let output_image = images
+            .first()
             .ok_or_else(|| anyhow::anyhow!("No output image available from pipeline"))?;
 
         self.output_sender

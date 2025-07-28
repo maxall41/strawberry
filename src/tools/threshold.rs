@@ -258,9 +258,7 @@ impl ThresholdView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        
-        self
-            .threshold_control
+        self.threshold_control
             .clone()
             .expect("threshold_control should be initialized before use")
     }
