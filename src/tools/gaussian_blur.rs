@@ -71,74 +71,67 @@ impl GaussianBlurView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                match command {
-                    PipelineCommand::FrontendMessage(message) => match message {
-                        FrontendMessage::ReturnState(tool_state) => match tool_state {
-                            ToolState::GaussianBlurState(new_state) => {
-                                if let Ok(mut locked_state) = state.write() {
-                                    if *locked_state != new_state {
-                                        let sigma_ref = new_state.sigma.clone();
-                                        let radius_ref = new_state.radius.clone();
-                                        *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| {
-                                            this.sigma_control
-                                                .as_ref()
-                                                .expect("sigma_control should be initialized before use")
-                                                .update(cx, |this, cx| {
-                                                    this.value = sigma_ref;
-                                                    cx.notify();
-                                                });
-                                            this.radius_control
-                                                .as_ref()
-                                                .expect("radius_control should be initialized before use")
-                                                .update(cx, |this, cx| {
-                                                    this.value = radius_ref;
-                                                    cx.notify();
-                                                },
-                                            );
+                if let PipelineCommand::FrontendMessage(message) = command { match message {
+                    FrontendMessage::ReturnState(tool_state) => if let ToolState::GaussianBlurState(new_state) = tool_state {
+                        if let Ok(mut locked_state) = state.write() {
+                            if *locked_state != new_state {
+                                let sigma_ref = new_state.sigma;
+                                let radius_ref = new_state.radius;
+                                *locked_state = new_state;
+                                if let Err(e) = this.update(cx, |this, cx| {
+                                    this.sigma_control
+                                        .as_ref()
+                                        .expect("sigma_control should be initialized before use")
+                                        .update(cx, |this, cx| {
+                                            this.value = sigma_ref;
                                             cx.notify();
-                                        }) {
-                                            eprintln!(
-                                                "Failed to update UI after state change: {}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                } else {
+                                        });
+                                    this.radius_control
+                                        .as_ref()
+                                        .expect("radius_control should be initialized before use")
+                                        .update(cx, |this, cx| {
+                                            this.value = radius_ref;
+                                            cx.notify();
+                                        },
+                                    );
+                                    cx.notify();
+                                }) {
                                     eprintln!(
-                                        "Failed to acquire write lock on gaussian blur state"
+                                        "Failed to update UI after state change: {e}"
                                     );
                                 }
                             }
-                            _ => {}
-                        },
-                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                            println!("Received backend tools | Frontend GaussianBlur");
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                                {
-                                    *current_tool_index = backend_ids.get(0).copied();
-                                } else {
-                                    eprintln!("Failed to acquire write lock on current tool index");
-                                    return;
-                                }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
-
-                                // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.get(0) {
-                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                        eprintln!("Failed to request initial state: {}", e);
-                                    }
-                                }
-                            }) {
-                                eprintln!("Failed to update backend tools: {}", e);
-                            }
+                        } else {
+                            eprintln!(
+                                "Failed to acquire write lock on gaussian blur state"
+                            );
                         }
-                        _ => {}
                     },
+                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                        println!("Received backend tools | Frontend GaussianBlur");
+                        if let Err(e) = this.update(cx, |this, cx| {
+                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                            {
+                                *current_tool_index = backend_ids.first().copied();
+                            } else {
+                                eprintln!("Failed to acquire write lock on current tool index");
+                                return;
+                            }
+                            this.backend_tool_indicies = backend_ids;
+                            this.send_channels = senders;
+
+                            // Request initial state when backend is discovered
+                            if let Some(sender) = this.send_channels.first() {
+                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                    eprintln!("Failed to request initial state: {e}");
+                                }
+                            }
+                        }) {
+                            eprintln!("Failed to update backend tools: {e}");
+                        }
+                    }
                     _ => {}
-                }
+                } }
             } else {
                 break;
             }
@@ -156,7 +149,7 @@ impl GaussianBlurView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 None
             }
         }
@@ -171,10 +164,10 @@ impl GaussianBlurView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ToggleActive(!current_value),
             )) {
-                eprintln!("Failed to send toggle enabled command: {}", e);
+                eprintln!("Failed to send toggle enabled command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -189,10 +182,10 @@ impl GaussianBlurView {
                     radius, sigma,
                 )),
             )) {
-                eprintln!("Failed to send radius/sigma update: {}", e);
+                eprintln!("Failed to send radius/sigma update: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -313,7 +306,7 @@ impl Render for GaussianBlurView {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
-                eprintln!("Failed to read state for rendering: {}", e);
+                eprintln!("Failed to read state for rendering: {e}");
                 return div()
                     .flex()
                     .flex_col()
@@ -388,7 +381,7 @@ impl ToolFrontend for GaussianBlurView {
             BackendToolType::GaussianBlur,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | GaussianBlur");
@@ -433,7 +426,7 @@ impl ToolFrontend for GaussianBlurView {
                         .state
                         .read()
                         .expect("State lock should not be poisoned");
-                    let s = current_state.sigma.clone();
+                    let s = current_state.sigma;
                     drop(current_state);
                     this.update_radius_sigma(event.value, s);
                 }
@@ -449,7 +442,7 @@ impl ToolFrontend for GaussianBlurView {
                         .state
                         .read()
                         .expect("State lock should not be poisoned");
-                    let r = current_state.radius.clone();
+                    let r = current_state.radius;
                     drop(current_state);
                     this.update_radius_sigma(r, event.value);
                 }

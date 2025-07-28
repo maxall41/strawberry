@@ -87,7 +87,7 @@ impl std::str::FromStr for GroupingMode {
             "none" => Ok(GroupingMode::None),
             "subdirectory" | "subdir" => Ok(GroupingMode::Subdirectory),
             "regex" => Ok(GroupingMode::Regex),
-            _ => Err(format!("Invalid grouping mode: {}", s)),
+            _ => Err(format!("Invalid grouping mode: {s}")),
         }
     }
 }
@@ -109,7 +109,7 @@ impl std::str::FromStr for OutputFormat {
             "png" => Ok(OutputFormat::Png),
             "tiff" | "tif" => Ok(OutputFormat::Tiff),
             "jpeg" | "jpg" => Ok(OutputFormat::Jpeg),
-            _ => Err(format!("Invalid output format: {}", s)),
+            _ => Err(format!("Invalid output format: {s}")),
         }
     }
 }
@@ -139,7 +139,7 @@ impl CliProcessor {
         let group_regex = if let Some(pattern) = &args.group_regex {
             Some(
                 regex::Regex::new(pattern)
-                    .with_context(|| format!("Invalid group regex pattern: {}", pattern))?,
+                    .with_context(|| format!("Invalid group regex pattern: {pattern}"))?,
             )
         } else {
             None
@@ -414,7 +414,7 @@ impl CliProcessor {
                     // We still log to stderr for debugging purposes
                     eprintln!(
                         "{}",
-                        format!("Error processing pipeline commands: {}", e).red()
+                        format!("Error processing pipeline commands: {e}").red()
                     );
                 }
                 tokio::time::sleep(Duration::from_millis(33)).await;
@@ -470,7 +470,7 @@ impl CliProcessor {
                 &mut view_recv,
             )
             .await
-            .with_context(|| format!("Failed to process group: {}", group_name))?;
+            .with_context(|| format!("Failed to process group: {group_name}"))?;
         }
 
         pipeline_handle.abort();
@@ -479,8 +479,7 @@ impl CliProcessor {
             println!(
                 "{}",
                 format!(
-                    "Successfully processed {} group(s) with {} total image(s).",
-                    total_groups, total_images
+                    "Successfully processed {total_groups} group(s) with {total_images} total image(s)."
                 )
                 .green()
             );

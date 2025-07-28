@@ -59,13 +59,13 @@ impl ToolBackend for GaussianBlur {
         for image in input {
             *image = match self
                 .gaussian_blur
-                .apply_blur(&image, self.state.radius, self.state.sigma)
+                .apply_blur(image, self.state.radius, self.state.sigma)
                 .await
             {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Gaussian Blur error: {}", e)),
+                        FrontendMessage::UserFeedback(format!("Gaussian Blur error: {e}")),
                     ))?;
                     return Err(e);
                 }

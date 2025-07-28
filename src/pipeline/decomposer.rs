@@ -68,7 +68,7 @@ impl ToolBackend for Decomposer {
             return Err(anyhow::anyhow!(error_msg));
         }
 
-        let first_image = input.get(0).ok_or_else(|| {
+        let first_image = input.first().ok_or_else(|| {
             let error_msg = "No input image provided to decomposer".to_string();
             let _ = self.global_sender.send(PipelineCommand::FrontendMessage(
                 FrontendMessage::UserFeedback(error_msg.clone()),
@@ -80,7 +80,7 @@ impl ToolBackend for Decomposer {
             Ok(result) => result,
             Err(e) => {
                 self.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::UserFeedback(format!("Decomposer error: {}", e)),
+                    FrontendMessage::UserFeedback(format!("Decomposer error: {e}")),
                 ))?;
                 return Err(e);
             }
@@ -103,7 +103,7 @@ impl ToolBackend for Decomposer {
             Ok(image) => image,
             Err(e) => {
                 self.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::UserFeedback(format!("Decomposer compositor error: {}", e)),
+                    FrontendMessage::UserFeedback(format!("Decomposer compositor error: {e}")),
                 ))?;
                 return Err(e);
             }

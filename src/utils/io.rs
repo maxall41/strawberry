@@ -108,7 +108,7 @@ impl CellCounterMarkerFile {
                     let markers: Vec<Marker> = counts.iter().map(|count| count.into()).collect();
                     marker_types.push(MarkerType {
                         type_id,
-                        name: format!("Type {}", type_id),
+                        name: format!("Type {type_id}"),
                         markers,
                     });
                 }
@@ -141,7 +141,7 @@ impl CellCounterMarkerFile {
     /// Convert to XML string with proper XML declaration
     pub fn to_xml_string(&self) -> Result<String, Box<dyn std::error::Error>> {
         let xml_body = to_string(self)?;
-        let xml = format!("<?xml version='1.0' encoding='utf-8'?>\n{}", xml_body);
+        let xml = format!("<?xml version='1.0' encoding='utf-8'?>\n{xml_body}");
         Ok(xml)
     }
 

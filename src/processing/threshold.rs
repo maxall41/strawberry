@@ -59,8 +59,7 @@ impl GpuThreshold {
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
             println!(
-                "Image {}x{} requires tile-based processing for GPU limits",
-                width, height
+                "Image {width}x{height} requires tile-based processing for GPU limits"
             );
             self.apply_threshold_tiled(image, threshold, &tile_config)
                 .await
@@ -137,7 +136,7 @@ impl GpuThreshold {
             .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)
             .await?;
 
-        println!("Applied threshold with value: {}", threshold);
+        println!("Applied threshold with value: {threshold}");
         Ok(result_image)
     }
 

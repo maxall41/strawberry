@@ -1,9 +1,6 @@
 use std::{collections::HashMap, time::Instant};
 
-use crate::utils::{
-    consts::CIRCLE_COLORS,
-    fitting::{find_counts_within_polygon, ramer_douglas_peucker_closed},
-};
+use crate::utils::fitting::{find_counts_within_polygon, ramer_douglas_peucker_closed};
 
 use serde::{Deserialize, Serialize};
 

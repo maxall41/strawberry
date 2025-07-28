@@ -393,8 +393,8 @@ impl GpuWatershed {
             compute_pass.set_pipeline(pipeline);
             compute_pass.set_bind_group(0, &bind_group, &[]);
 
-            let dispatch_x = (width + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
-            let dispatch_y = (height + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+            let dispatch_x = width.div_ceil(WORKGROUP_SIZE);
+            let dispatch_y = height.div_ceil(WORKGROUP_SIZE);
             compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
         }
 
@@ -480,8 +480,8 @@ impl GpuWatershed {
         let uniforms = WatershedUniforms {
             width,
             height,
-            sigma: sigma,
-            min_distance: min_distance,
+            sigma,
+            min_distance,
         };
 
         let uniform_buffer =
@@ -532,8 +532,8 @@ impl GpuWatershed {
             compute_pass.set_pipeline(&self.watershed_pipeline);
             compute_pass.set_bind_group(0, &bind_group, &[]);
 
-            let dispatch_x = (width + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
-            let dispatch_y = (height + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+            let dispatch_x = width.div_ceil(WORKGROUP_SIZE);
+            let dispatch_y = height.div_ceil(WORKGROUP_SIZE);
             compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
         }
 

@@ -68,7 +68,7 @@ impl WatershedView {
             BackendToolType::Watershed,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | Watershed");
@@ -152,72 +152,65 @@ impl WatershedView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                match command {
-                    PipelineCommand::FrontendMessage(message) => match message {
-                        FrontendMessage::ReturnState(tool_state) => match tool_state {
-                            ToolState::WatershedState(new_state) => {
-                                if let Ok(mut locked_state) = state.write() {
-                                    if *locked_state != new_state {
-                                        let sigma_ref = new_state.sigma;
-                                        let min_distance_ref = new_state.min_distance;
-                                        *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| {
-                                            this.sigma_control
-                                                .as_ref()
-                                                .expect("sigma_control should be initialized before use")
-                                                .update(cx, |control, cx| {
-                                                    control.value = sigma_ref;
-                                                    cx.notify();
-                                                });
-                                            this.min_distance_control
-                                                .as_ref()
-                                                .expect("min_distance_control should be initialized before use")
-                                                .update(cx, |control, cx| {
-                                                    control.value = min_distance_ref as f32;
-                                                    cx.notify();
-                                                },
-                                            );
+                if let PipelineCommand::FrontendMessage(message) = command { match message {
+                    FrontendMessage::ReturnState(tool_state) => if let ToolState::WatershedState(new_state) = tool_state {
+                        if let Ok(mut locked_state) = state.write() {
+                            if *locked_state != new_state {
+                                let sigma_ref = new_state.sigma;
+                                let min_distance_ref = new_state.min_distance;
+                                *locked_state = new_state;
+                                if let Err(e) = this.update(cx, |this, cx| {
+                                    this.sigma_control
+                                        .as_ref()
+                                        .expect("sigma_control should be initialized before use")
+                                        .update(cx, |control, cx| {
+                                            control.value = sigma_ref;
                                             cx.notify();
-                                        }) {
-                                            eprintln!(
-                                                "Failed to update UI after state change: {}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    eprintln!("Failed to acquire write lock on watershed state");
+                                        });
+                                    this.min_distance_control
+                                        .as_ref()
+                                        .expect("min_distance_control should be initialized before use")
+                                        .update(cx, |control, cx| {
+                                            control.value = min_distance_ref as f32;
+                                            cx.notify();
+                                        },
+                                    );
+                                    cx.notify();
+                                }) {
+                                    eprintln!(
+                                        "Failed to update UI after state change: {e}"
+                                    );
                                 }
                             }
-                            _ => {}
-                        },
-                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                            println!("Received backend tools | Frontend Watershed");
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                                {
-                                    *current_tool_index = backend_ids.get(0).copied();
-                                } else {
-                                    eprintln!("Failed to acquire write lock on current tool index");
-                                    return;
-                                }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
-
-                                // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.get(0) {
-                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                        eprintln!("Failed to request initial state: {}", e);
-                                    }
-                                }
-                            }) {
-                                eprintln!("Failed to update backend tools: {}", e);
-                            }
+                        } else {
+                            eprintln!("Failed to acquire write lock on watershed state");
                         }
-                        _ => {}
                     },
+                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                        println!("Received backend tools | Frontend Watershed");
+                        if let Err(e) = this.update(cx, |this, cx| {
+                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                            {
+                                *current_tool_index = backend_ids.first().copied();
+                            } else {
+                                eprintln!("Failed to acquire write lock on current tool index");
+                                return;
+                            }
+                            this.backend_tool_indicies = backend_ids;
+                            this.send_channels = senders;
+
+                            // Request initial state when backend is discovered
+                            if let Some(sender) = this.send_channels.first() {
+                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                    eprintln!("Failed to request initial state: {e}");
+                                }
+                            }
+                        }) {
+                            eprintln!("Failed to update backend tools: {e}");
+                        }
+                    }
                     _ => {}
-                }
+                } }
             } else {
                 break;
             }
@@ -235,7 +228,7 @@ impl WatershedView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 None
             }
         }
@@ -250,10 +243,10 @@ impl WatershedView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ToggleActive(!current_value),
             )) {
-                eprintln!("Failed to send toggle enabled command: {}", e);
+                eprintln!("Failed to send toggle enabled command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -269,10 +262,10 @@ impl WatershedView {
                     min_distance,
                 )),
             )) {
-                eprintln!("Failed to send watershed parameters update: {}", e);
+                eprintln!("Failed to send watershed parameters update: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -315,11 +308,11 @@ impl WatershedView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        let sc = self
+        
+        self
             .sigma_control
             .clone()
-            .expect("sigma_control should be initialized before use");
-        sc
+            .expect("sigma_control should be initialized before use")
     }
 
     // Min Distance control component
@@ -328,11 +321,11 @@ impl WatershedView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        let mdc = self
+        
+        self
             .min_distance_control
             .clone()
-            .expect("min_distance_control should be initialized before use");
-        mdc
+            .expect("min_distance_control should be initialized before use")
     }
 
     // Preset button component
@@ -403,7 +396,7 @@ impl Render for WatershedView {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
-                eprintln!("Failed to read state for rendering: {}", e);
+                eprintln!("Failed to read state for rendering: {e}");
                 return div()
                     .flex()
                     .flex_col()
@@ -471,7 +464,7 @@ impl ToolFrontend for WatershedView {
             BackendToolType::Watershed,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | Watershed");

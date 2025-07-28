@@ -28,7 +28,7 @@ fn rdp_recursive(points: &[(u64, u64)], start: usize, end: usize) -> Vec<(u64, u
 
     if max_dist > EPSILON {
         let mut left_result = rdp_recursive(points, start, max_index);
-        let mut right_result = rdp_recursive(points, max_index, end);
+        let right_result = rdp_recursive(points, max_index, end);
 
         left_result.pop();
         left_result.extend(right_result);
@@ -70,9 +70,9 @@ pub fn ramer_douglas_peucker_closed(mut points: Vec<(u64, u64)>) -> Vec<(u64, u6
         points.push(first_point);
     }
 
-    let simplified = ramer_douglas_peucker(points);
+    
 
-    simplified
+    ramer_douglas_peucker(points)
 }
 
 pub fn find_counts_within_polygon(
@@ -92,8 +92,7 @@ pub fn find_counts_within_polygon(
     );
 
     println!(
-        "Bounding Box: ({}, {}) to ({}, {})",
-        min_x, min_y, max_x, max_y
+        "Bounding Box: ({min_x}, {min_y}) to ({max_x}, {max_y})"
     );
 
     // Phase 2: Filter and test

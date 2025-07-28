@@ -67,7 +67,7 @@ impl MorphologyView {
             BackendToolType::Morphology,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | Morphology");
@@ -116,63 +116,56 @@ impl MorphologyView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                match command {
-                    PipelineCommand::FrontendMessage(message) => match message {
-                        FrontendMessage::ReturnState(tool_state) => match tool_state {
-                            ToolState::MorphologyState(new_state) => {
-                                if let Ok(mut locked_state) = state.write() {
-                                    if *locked_state != new_state {
-                                        let element_size_ref = new_state.element_size;
-                                        *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| {
-                                            this.element_size_control
-                                                .as_ref()
-                                                .expect("element_size_control should be initialized before use")
-                                                .update(cx, |control, cx| {
-                                                    control.value = element_size_ref as f32;
-                                                    cx.notify();
-                                                });
+                if let PipelineCommand::FrontendMessage(message) = command { match message {
+                    FrontendMessage::ReturnState(tool_state) => if let ToolState::MorphologyState(new_state) = tool_state {
+                        if let Ok(mut locked_state) = state.write() {
+                            if *locked_state != new_state {
+                                let element_size_ref = new_state.element_size;
+                                *locked_state = new_state;
+                                if let Err(e) = this.update(cx, |this, cx| {
+                                    this.element_size_control
+                                        .as_ref()
+                                        .expect("element_size_control should be initialized before use")
+                                        .update(cx, |control, cx| {
+                                            control.value = element_size_ref as f32;
                                             cx.notify();
-                                        }) {
-                                            eprintln!(
-                                                "Failed to update UI after state change: {}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    eprintln!("Failed to acquire write lock on morphology state");
+                                        });
+                                    cx.notify();
+                                }) {
+                                    eprintln!(
+                                        "Failed to update UI after state change: {e}"
+                                    );
                                 }
                             }
-                            _ => {}
-                        },
-                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                            println!("Received backend tools | Frontend Morphology");
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                                {
-                                    *current_tool_index = backend_ids.get(0).copied();
-                                } else {
-                                    eprintln!("Failed to acquire write lock on current tool index");
-                                    return;
-                                }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
-
-                                // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.get(0) {
-                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                        eprintln!("Failed to request initial state: {}", e);
-                                    }
-                                }
-                            }) {
-                                eprintln!("Failed to update backend tools: {}", e);
-                            }
+                        } else {
+                            eprintln!("Failed to acquire write lock on morphology state");
                         }
-                        _ => {}
                     },
+                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                        println!("Received backend tools | Frontend Morphology");
+                        if let Err(e) = this.update(cx, |this, cx| {
+                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                            {
+                                *current_tool_index = backend_ids.first().copied();
+                            } else {
+                                eprintln!("Failed to acquire write lock on current tool index");
+                                return;
+                            }
+                            this.backend_tool_indicies = backend_ids;
+                            this.send_channels = senders;
+
+                            // Request initial state when backend is discovered
+                            if let Some(sender) = this.send_channels.first() {
+                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                    eprintln!("Failed to request initial state: {e}");
+                                }
+                            }
+                        }) {
+                            eprintln!("Failed to update backend tools: {e}");
+                        }
+                    }
                     _ => {}
-                }
+                } }
             } else {
                 break;
             }
@@ -190,7 +183,7 @@ impl MorphologyView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 None
             }
         }
@@ -210,10 +203,10 @@ impl MorphologyView {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ToggleActive(!current_value),
             )) {
-                eprintln!("Failed to send toggle enabled command: {}", e);
+                eprintln!("Failed to send toggle enabled command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -234,17 +227,17 @@ impl MorphologyView {
                     operation,
                 )),
             )) {
-                eprintln!("Failed to send operation update command: {}", e);
+                eprintln!("Failed to send operation update command: {e}");
             }
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::MorphologyMessage(MorphologyMessage::SetElementSize(
                     element_size,
                 )),
             )) {
-                eprintln!("Failed to send element size update command: {}", e);
+                eprintln!("Failed to send element size update command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -257,7 +250,7 @@ impl MorphologyView {
         let element_size = match self.state.read() {
             Ok(state) => state.element_size,
             Err(e) => {
-                eprintln!("Failed to read state for operation change: {}", e);
+                eprintln!("Failed to read state for operation change: {e}");
                 return;
             }
         };
@@ -282,7 +275,7 @@ impl MorphologyView {
                     operation,
                 )),
             )) {
-                eprintln!("Failed to send operation update command: {}", e);
+                eprintln!("Failed to send operation update command: {e}");
             }
 
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
@@ -290,10 +283,10 @@ impl MorphologyView {
                     new_size,
                 )),
             )) {
-                eprintln!("Failed to send element size update command: {}", e);
+                eprintln!("Failed to send element size update command: {e}");
             }
         } else {
-            eprintln!("Invalid tool index: {}", current_tool_index);
+            eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
 
@@ -301,7 +294,7 @@ impl MorphologyView {
         let (operation, element_size) = match self.state.read() {
             Ok(state) => (state.operation, state.element_size),
             Err(e) => {
-                eprintln!("Failed to read state for element size adjustment: {}", e);
+                eprintln!("Failed to read state for element size adjustment: {e}");
                 return;
             }
         };
@@ -419,11 +412,11 @@ impl MorphologyView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        let esc = self
+        
+        self
             .element_size_control
             .clone()
-            .expect("element_size_control should be initialized before use");
-        esc
+            .expect("element_size_control should be initialized before use")
     }
 
     fn adjust_element_size_wrapper(
@@ -523,7 +516,7 @@ impl Render for MorphologyView {
         let state = match self.state.read() {
             Ok(state) => state,
             Err(e) => {
-                eprintln!("Failed to read state for rendering: {}", e);
+                eprintln!("Failed to read state for rendering: {e}");
                 return div()
                     .flex()
                     .flex_col()
@@ -589,7 +582,7 @@ impl ToolFrontend for MorphologyView {
             BackendToolType::Morphology,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | Morphology");

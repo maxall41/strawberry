@@ -86,7 +86,7 @@ impl ToolBackend for Compositor {
             Ok(image) => image,
             Err(e) => {
                 self.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::UserFeedback(format!("Compositor error: {}", e)),
+                    FrontendMessage::UserFeedback(format!("Compositor error: {e}")),
                 ))?;
                 return Err(e);
             }

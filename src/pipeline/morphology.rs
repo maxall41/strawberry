@@ -74,7 +74,7 @@ impl ToolBackend for Morphology {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Morphology error: {}", e)),
+                        FrontendMessage::UserFeedback(format!("Morphology error: {e}")),
                     ))?;
                     return Err(e);
                 }

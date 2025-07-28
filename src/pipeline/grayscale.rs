@@ -59,7 +59,7 @@ impl ToolBackend for Grayscale {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Grayscale error: {}", e)),
+                        FrontendMessage::UserFeedback(format!("Grayscale error: {e}")),
                     ))?;
                     return Err(e);
                 }
@@ -78,11 +78,8 @@ impl ToolBackend for Grayscale {
                         FrontendMessage::ReturnState(self.get_state()),
                     ))?;
                 }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
-                    }
-                    _ => {}
+                PipelineCommand::PipelineObject(message) => if let PipelineObjectMessage::ToggleActive(value) = message {
+                    self.state.is_enabled = value;
                 },
                 _ => {}
             }

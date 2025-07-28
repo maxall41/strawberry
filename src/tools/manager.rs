@@ -69,53 +69,46 @@ impl ManagerView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                match command {
-                    PipelineCommand::FrontendMessage(message) => match message {
-                        FrontendMessage::ReturnState(tool_state) => match tool_state {
-                            ToolState::ManagerState(new_state) => {
-                                if let Ok(mut locked_state) = state.write() {
-                                    if *locked_state != new_state {
-                                        *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
-                                            eprintln!(
-                                                "Failed to update UI after state change: {}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    eprintln!("Failed to acquire write lock on compositor state");
+                if let PipelineCommand::FrontendMessage(message) = command { match message {
+                    FrontendMessage::ReturnState(tool_state) => if let ToolState::ManagerState(new_state) = tool_state {
+                        if let Ok(mut locked_state) = state.write() {
+                            if *locked_state != new_state {
+                                *locked_state = new_state;
+                                if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
+                                    eprintln!(
+                                        "Failed to update UI after state change: {e}"
+                                    );
                                 }
                             }
-                            _ => {}
-                        },
-                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                            println!("Received backend tools | Frontend Compositor");
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                                {
-                                    *current_tool_index = backend_ids.get(0).copied();
-                                } else {
-                                    eprintln!("Failed to acquire write lock on current tool index");
-                                    return;
-                                }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
-
-                                // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.get(0) {
-                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                        eprintln!("Failed to request initial state: {}", e);
-                                    }
-                                }
-                            }) {
-                                eprintln!("Failed to update backend tools: {}", e);
-                            }
+                        } else {
+                            eprintln!("Failed to acquire write lock on compositor state");
                         }
-                        _ => {}
                     },
+                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                        println!("Received backend tools | Frontend Compositor");
+                        if let Err(e) = this.update(cx, |this, cx| {
+                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                            {
+                                *current_tool_index = backend_ids.first().copied();
+                            } else {
+                                eprintln!("Failed to acquire write lock on current tool index");
+                                return;
+                            }
+                            this.backend_tool_indicies = backend_ids;
+                            this.send_channels = senders;
+
+                            // Request initial state when backend is discovered
+                            if let Some(sender) = this.send_channels.first() {
+                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                    eprintln!("Failed to request initial state: {e}");
+                                }
+                            }
+                        }) {
+                            eprintln!("Failed to update backend tools: {e}");
+                        }
+                    }
                     _ => {}
-                }
+                } }
             } else {
                 break;
             }
@@ -195,7 +188,7 @@ impl ManagerView {
                 div()
                     .text_xs()
                     .text_color(rgb(0xCCCCCC))
-                    .child(format!("#{}", index)),
+                    .child(format!("#{index}")),
             )
     }
 
@@ -242,7 +235,7 @@ impl ManagerView {
             current_position: position,
             original_position: tool_position,
         });
-        println!("Started dragging tool from position {}", tool_position);
+        println!("Started dragging tool from position {tool_position}");
     }
 
     fn update_drag(&mut self, position: Point<f32>) {
@@ -261,7 +254,7 @@ impl ManagerView {
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read current tool index: {}", e);
+                eprintln!("Failed to read current tool index: {e}");
                 None
             }
         }
@@ -316,7 +309,7 @@ impl ManagerView {
             };
 
             let manager_message =
-                ManagerMessage::ReorderTool(original_index as u16, drop_index as u16);
+                ManagerMessage::ReorderTool(original_index, drop_index);
             println!(
                 "=== REORDER TOOL ===\nOriginal index: {}\nDrop index: {}\nPipeline position: #{} -> moving to position near index {}",
                 original_index, drop_index, drag_state.original_position, drop_index
@@ -326,7 +319,7 @@ impl ManagerView {
                     manager_message,
                 )),
             ) {
-                eprintln!("Failed to send manager message: {}", e);
+                eprintln!("Failed to send manager message: {e}");
             }
         }
     }
@@ -350,16 +343,13 @@ impl ManagerView {
                                 file,
                             )),
                         )) {
-                            eprintln!("Failed to send save pipeline command: {}", e);
-                            return;
+                            eprintln!("Failed to send save pipeline command: {e}");
                         }
                     } else {
-                        eprintln!("Invalid tool index: {}", current_tool_index);
-                        return;
+                        eprintln!("Invalid tool index: {current_tool_index}");
                     }
                 }) {
-                    eprintln!("Failed to save pipeline: {}", e);
-                    return;
+                    eprintln!("Failed to save pipeline: {e}");
                 }
             }
         })
@@ -385,16 +375,13 @@ impl ManagerView {
                                 file,
                             )),
                         )) {
-                            eprintln!("Failed to send load pipeline command: {}", e);
-                            return;
+                            eprintln!("Failed to send load pipeline command: {e}");
                         }
                     } else {
-                        eprintln!("Invalid tool index: {}", current_tool_index);
-                        return;
+                        eprintln!("Invalid tool index: {current_tool_index}");
                     }
                 }) {
-                    eprintln!("Failed to load pipeline: {}", e);
-                    return;
+                    eprintln!("Failed to load pipeline: {e}");
                 }
             }
         })
@@ -455,7 +442,7 @@ impl Render for ManagerView {
         let state = match self.state.read() {
             Ok(state) => state,
             Err(e) => {
-                eprintln!("Failed to read state for rendering: {}", e);
+                eprintln!("Failed to read state for rendering: {e}");
                 return div()
                     .flex()
                     .flex_col()
@@ -550,7 +537,7 @@ impl ToolFrontend for ManagerView {
             BackendToolType::Manager,
             sender,
         )) {
-            eprintln!("Failed to send backend discovery request: {}", e);
+            eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
         println!("Sent discovery request to backend | Manager");
