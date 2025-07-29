@@ -3,9 +3,8 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, AppContext,
-    Bounds, Context, MouseDownEvent, Point, SharedString, TitlebarOptions, Window,
-    WindowBounds, WindowOptions,
+    div, prelude::*, px, rgb, size, AppContext, Bounds, Context, MouseDownEvent, Point,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
 use crate::gui::ToggleButton;
@@ -47,20 +46,6 @@ impl CompositorView {
         }
     }
 
-    pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver);
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::Compositor,
-            sender,
-        )) {
-            eprintln!("Failed to send backend discovery request: {e}");
-            return;
-        }
-        println!("Sent discovery request to backend | Compositor");
-        self.process_messages(window, cx);
-    }
-
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.clone();
         let channel_receiver_ref = self
@@ -71,46 +56,50 @@ impl CompositorView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command { match message {
-                    FrontendMessage::ReturnState(tool_state) => if let ToolState::CompositorState(new_state) = tool_state {
-                        if let Ok(mut locked_state) = state.write() {
-                            if *locked_state != new_state {
-                                *locked_state = new_state;
-                                if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
-                                    eprintln!(
-                                        "Failed to update UI after state change: {e}"
-                                    );
+                if let PipelineCommand::FrontendMessage(message) = command {
+                    match message {
+                        FrontendMessage::ReturnState(tool_state) => {
+                            if let ToolState::CompositorState(new_state) = tool_state {
+                                if let Ok(mut locked_state) = state.write() {
+                                    if *locked_state != new_state {
+                                        *locked_state = new_state;
+                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
+                                            eprintln!(
+                                                "Failed to update UI after state change: {e}"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    eprintln!("Failed to acquire write lock on compositor state");
                                 }
                             }
-                        } else {
-                            eprintln!("Failed to acquire write lock on compositor state");
                         }
-                    },
-                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                        println!("Received backend tools | Frontend Compositor");
-                        if let Err(e) = this.update(cx, |this, cx| {
-                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                            {
-                                *current_tool_index = backend_ids.first().copied();
-                            } else {
-                                eprintln!("Failed to acquire write lock on current tool index");
-                                return;
-                            }
-                            this.backend_tool_indicies = backend_ids;
-                            this.send_channels = senders;
+                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                            println!("Received backend tools | Frontend Compositor");
+                            if let Err(e) = this.update(cx, |this, cx| {
+                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                {
+                                    *current_tool_index = backend_ids.first().copied();
+                                } else {
+                                    eprintln!("Failed to acquire write lock on current tool index");
+                                    return;
+                                }
+                                this.backend_tool_indicies = backend_ids;
+                                this.send_channels = senders;
 
-                            // Request initial state when backend is discovered
-                            if let Some(sender) = this.send_channels.first() {
-                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                    eprintln!("Failed to request initial state: {e}");
+                                // Request initial state when backend is discovered
+                                if let Some(sender) = this.send_channels.first() {
+                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                        eprintln!("Failed to request initial state: {e}");
+                                    }
                                 }
+                            }) {
+                                eprintln!("Failed to update backend tools: {e}");
                             }
-                        }) {
-                            eprintln!("Failed to update backend tools: {e}");
                         }
+                        _ => {}
                     }
-                    _ => {}
-                } }
+                }
             } else {
                 break;
             }

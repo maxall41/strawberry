@@ -163,6 +163,7 @@ pub struct Counter {
     pub cached_output: Option<Vec<image::RgbaImage>>,
     pub cached_state: Option<CounterState>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub frontend_latest_state: Option<CounterState>,
 }
 
 #[async_trait]
@@ -228,8 +229,6 @@ impl ToolBackend for Counter {
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let old_state = self.state.clone();
-
         if let Ok(message) = self.receiver.try_recv() {
             match message {
                 PipelineCommand::RequestState() => {
@@ -443,20 +442,17 @@ impl ToolBackend for Counter {
             if new_filter_proxys != self.state.filter_proxys {
                 self.state.filter_proxys = new_filter_proxys;
             }
-            if old_state != self.state {
-                // Invalidate cache when state changes
-                self.invalidate_cache();
+        }
 
-                // Push state update to frontend
-                let message = PipelineCommand::FrontendMessage(FrontendMessage::ReturnState(
-                    self.get_state(),
-                ));
-                self.send_to_frontend(message)?;
-                // Refresh pipeline
-                self.command_sender
-                    .send(PipelineCommand::Refresh(self.index))
-                    .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
-            }
+        if self.frontend_latest_state.is_none() {
+            self.update_state()?;
+        } else if self
+            .frontend_latest_state
+            .as_ref()
+            .expect("Just checked that frontend_latest_state is some")
+            != &self.state
+        {
+            self.update_state()?;
         }
 
         Ok(())
@@ -530,8 +526,21 @@ impl Counter {
             global_sender,
             cached_output: None,
             cached_state: None,
+            frontend_latest_state: None,
         })
     }
+    fn update_state(&mut self) -> anyhow::Result<()> {
+        self.invalidate_cache();
+        let message =
+            PipelineCommand::FrontendMessage(FrontendMessage::ReturnState(self.get_state()));
+        self.send_to_frontend(message)?;
+        self.frontend_latest_state = Some(self.state.clone());
+        self.command_sender
+            .send(PipelineCommand::Refresh(self.index))
+            .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
+        Ok(())
+    }
+
     fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {
         for (i, sender) in self.frontend_senders.iter().enumerate() {
             sender

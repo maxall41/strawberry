@@ -498,7 +498,7 @@ impl CliProcessor {
     ) -> Result<()> {
         // Load all images in the group
         view_sender
-            .send(PipelineCommand::Load(group_files.to_vec(), false))
+            .send(PipelineCommand::Load(group_files.to_vec()))
             .map_err(|e| {
                 anyhow!(
                     "Failed to send load command for group {}: {}",
