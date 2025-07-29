@@ -28,6 +28,7 @@ pub struct Compositor {
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
     pub cached_state: Option<CompositorState>,
+    pub frontend_latest_state: Option<CompositorState>,
 }
 
 #[async_trait]
@@ -56,6 +57,7 @@ impl ToolBackend for Compositor {
         self.frontend_senders.clear();
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
+        println!("Processing images for Compositor");
         self.state.real_layers_len = input.len();
 
         if input.len() == 1 {
@@ -94,12 +96,27 @@ impl ToolBackend for Compositor {
 
         *input = vec![composited];
 
+        if self.frontend_latest_state.is_some() {
+            println!(
+                "State Status {}",
+                self.frontend_latest_state
+                    .as_ref()
+                    .expect("Just checked that frontend_latest_state is some")
+                    == &self.state
+            );
+            println!(
+                "Real Layers Length Comparison | Frontend: {} Backend: {}",
+                self.frontend_latest_state.as_ref().unwrap().real_layers_len,
+                self.state.real_layers_len
+            )
+        } else {
+            println!("Frontend state is empty")
+        }
+
         Ok(())
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let old_state = self.state.clone();
-
         if let Ok(message) = self.receiver.try_recv() {
             match message {
                 PipelineCommand::RequestState() => {
@@ -147,20 +164,18 @@ impl ToolBackend for Compositor {
                 },
                 _ => {}
             }
-            if old_state != self.state {
-                // Invalidate cache when state changes
-                self.invalidate_cache();
-
-                self.command_sender
-                    .send(PipelineCommand::Refresh(self.index))
-                    .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
-
-                // Push state update to frontend
-                self.send_to_frontend(PipelineCommand::FrontendMessage(
-                    FrontendMessage::ReturnState(self.get_state()),
-                ))?;
-            }
         };
+
+        if self.frontend_latest_state.is_none() {
+            self.update_state()?;
+        } else if self
+            .frontend_latest_state
+            .as_ref()
+            .expect("Just checked that frontend_latest_state is some")
+            != &self.state
+        {
+            self.update_state()?;
+        }
 
         Ok(())
     }
@@ -222,7 +237,20 @@ impl Compositor {
             index: 0,
             cached_output: None,
             cached_state: None,
+            frontend_latest_state: None,
         }
+    }
+
+    fn update_state(&mut self) -> anyhow::Result<()> {
+        self.invalidate_cache();
+        self.send_to_frontend(PipelineCommand::FrontendMessage(
+            FrontendMessage::ReturnState(self.get_state()),
+        ))?;
+        self.command_sender
+            .send(PipelineCommand::Refresh(self.index))
+            .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
+        self.frontend_latest_state = Some(self.state.clone());
+        Ok(())
     }
 
     fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {

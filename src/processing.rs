@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use image::RgbaImage;
 use wgpu::{util::DeviceExt, Trace};
 
+pub mod colorspace;
 pub mod compositor;
 pub mod contrast;
 pub mod decomposer;

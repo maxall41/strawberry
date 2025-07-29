@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 
 use super::{
-    BackendToolType, FrontendMessage, ManagerMessage, PipelineCommand,
-    PipelineObjectMessage, ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, ManagerMessage, PipelineCommand, PipelineObjectMessage,
+    ToolBackend, ToolState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +36,7 @@ pub struct ToolManager {
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
     pub cached_state: Option<ManagerState>,
+    pub frontend_latest_state: Option<ManagerState>,
 }
 
 fn update_proxy_tools(input: &Vec<Box<dyn ToolBackend>>) -> Vec<ToolProxy> {
@@ -77,6 +78,7 @@ impl ToolManager {
             index: 0,
             cached_output: None,
             cached_state: None,
+            frontend_latest_state: None,
         }
     }
 }
@@ -107,8 +109,6 @@ impl ToolBackend for ToolManager {
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let old_state = self.state.clone();
-
         if let Ok(message) = self.receiver.try_recv() {
             match message {
                 PipelineCommand::RequestState() => {
@@ -245,14 +245,16 @@ impl ToolBackend for ToolManager {
         if new_proxy_tools != self.state.proxy_tools {
             self.state.proxy_tools = new_proxy_tools;
         }
-        if old_state != self.state {
-            // Invalidate cache when state changes
-            self.invalidate_cache();
 
-            // Push state update to frontend
-            self.send_to_frontend(PipelineCommand::FrontendMessage(
-                FrontendMessage::ReturnState(self.get_state()),
-            ))?;
+        if self.frontend_latest_state.is_none() {
+            self.update_state()?;
+        } else if self
+            .frontend_latest_state
+            .as_ref()
+            .expect("Just checked that frontend_latest_state is some")
+            != &self.state
+        {
+            self.update_state()?;
         }
 
         Ok(())
@@ -298,6 +300,15 @@ impl ToolBackend for ToolManager {
 }
 
 impl ToolManager {
+    fn update_state(&mut self) -> anyhow::Result<()> {
+        self.invalidate_cache();
+        self.send_to_frontend(PipelineCommand::FrontendMessage(
+            FrontendMessage::ReturnState(self.get_state()),
+        ))?;
+        self.frontend_latest_state = Some(self.state.clone());
+        Ok(())
+    }
+
     fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {
         for sender in &self.frontend_senders {
             sender

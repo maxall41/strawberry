@@ -1,18 +1,19 @@
 use core::fmt;
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{path::PathBuf, sync::Arc, time::Instant, vec};
 
 use async_trait::async_trait;
 use compositor::{Compositor, CompositorState};
 use decomposer::{Decomposer, DecomposerState};
+use gpui::Rgba;
 use serde::{Deserialize, Serialize};
 
-use crate::processing::local_maxima::ThresholdType;
+use crate::processing::{colorspace::GpuColorspaceConverter, local_maxima::ThresholdType};
 use anyhow::anyhow;
 use contrast::{Contrast, ContrastState};
 use counter::{Counter, CounterState, CounterTool};
 use gaussian_blur::{GaussianBlur, GaussianBlurState};
 use grayscale::{Grayscale, GrayscaleState};
-use image::{ImageReader, RgbaImage};
+use image::{ImageBuffer, ImageReader, RgbaImage};
 use local_maxima::{LocalMaxima, LocalMaximaState};
 use manager::{ManagerState, PipelineConfig, ToolManager};
 use morphology::{Morphology, MorphologyState};
@@ -178,7 +179,7 @@ pub enum PipelineCommand {
     /// Refresh the pipeline starting from the given tool index
     Refresh(usize),
     /// Load input images into the pipeline
-    Load(Vec<PathBuf>, bool),
+    Load(Vec<PathBuf>),
     /// Return output image from the pipeline
     Output(RgbaImage),
     /// Message to pipeline object
@@ -197,6 +198,8 @@ pub enum PipelineCommand {
     RegisterClickReceiver(flume::Sender<PipelineCommand>),
     /// Command used by CLI to avoid discovery negoitation
     CLILoadPipeline(PathBuf),
+    /// Save output image to file
+    SaveOutput(PathBuf),
 }
 
 /// Result of pipeline processing
@@ -292,6 +295,10 @@ pub struct Pipeline {
     input_images: Vec<RgbaImage>,
     /// Click receivers
     click_receivers: Vec<flume::Sender<PipelineCommand>>,
+    /// Last output images
+    last_output: Option<RgbaImage>,
+    /// Colorspace conversions
+    colorspace_converter: GpuColorspaceConverter,
 }
 
 impl Pipeline {
@@ -407,6 +414,8 @@ impl Pipeline {
             output_sender: output_tx,
             input_images: vec![],
             click_receivers: vec![],
+            last_output: None,
+            colorspace_converter: GpuColorspaceConverter::new(gpu_image_processor.clone()).await,
         };
 
         Ok((pipeline, command_tx, output_rx))
@@ -478,6 +487,7 @@ impl Pipeline {
         }
 
         if images.len() > 1 {
+            println!("OUTPUT CONTAINS >1 IMAGE");
             if let Some(compositor_tool) = self.tool_manager.tools.get_mut(0) {
                 compositor_tool.process(&mut images).await?;
             }
@@ -491,37 +501,118 @@ impl Pipeline {
             .send(PipelineCommand::Output(output_image.clone()))
             .map_err(|e| anyhow::anyhow!("Failed to send output image: {}", e))?;
 
+        self.last_output = Some(output_image.clone());
+
         let duration = start_time.elapsed();
         println!("Pipeline processing took: {duration:?}");
 
         Ok(())
     }
 
-    /// Process all pending commands
     pub async fn process_commands(&mut self) -> anyhow::Result<()> {
-        if let Ok(cmd) = self.command_receiver.try_recv() {
+        // Collect all available messages and deduplicate Refresh commands
+        let commands: Vec<_> =
+            std::iter::from_fn(|| self.command_receiver.try_recv().ok()).collect();
+
+        let commands = if commands.len() > 1 {
+            if let Some(last_refresh) = commands
+                .iter()
+                .rev()
+                .find(|cmd| matches!(cmd, PipelineCommand::Refresh(_)))
+                .cloned()
+            {
+                let mut filtered: Vec<_> = commands
+                    .into_iter()
+                    .filter(|cmd| !matches!(cmd, PipelineCommand::Refresh(_)))
+                    .collect();
+                filtered.push(last_refresh);
+                filtered
+            } else {
+                commands
+            }
+        } else {
+            commands
+        };
+
+        // Process all commands
+        for cmd in commands {
             match &cmd {
                 PipelineCommand::Refresh(index) => {
+                    println!("Refreshing!");
+                    if self.input_images.is_empty() {
+                        return Ok(());
+                    }
                     if let Err(e) = self.process_from(*index).await {
-                        let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                        self.output_sender.send(PipelineCommand::FrontendMessage(
                             FrontendMessage::UserFeedback(format!(
                                 "Pipeline processing failed at stage {index}: {e}"
                             )),
-                        ));
+                        ))?;
                     }
                 }
-                PipelineCommand::Load(files, skip_processing) => {
-                    println!("Got load command!");
+                PipelineCommand::SaveOutput(file) => {
+                    if let Some(last_output) = self.last_output.clone() {
+                        let out_img = self
+                            .colorspace_converter
+                            .convert_bgra_to_rgba(&last_output)
+                            .await?;
+                        out_img.save(file)?;
+                        self.output_sender.send(PipelineCommand::FrontendMessage(
+                            FrontendMessage::UserFeedback(format!("Image saved successfully!")),
+                        ))?;
+                    } else {
+                        self.output_sender.send(PipelineCommand::FrontendMessage(
+                            FrontendMessage::UserFeedback(format!(
+                                "No image in output buffer to save!"
+                            )),
+                        ))?;
+                    }
+                }
+                PipelineCommand::Load(files) => {
                     let mut loaded_images = vec![];
+                    let mut sizes = vec![];
                     //TODO: Maybe we should do this in a separate thread?
+                    println!("Loading images: {:?}", files);
                     for file in files {
-                        if let Ok(reader) = ImageReader::open(file) {
-                            if let Ok(decoded) = reader.decode() {
-                                let data = decoded.to_rgba8();
-                                loaded_images.push(data);
+                        match ImageReader::open(file) {
+                            Ok(reader) => match reader.decode() {
+                                Ok(decoded) => {
+                                    let data = decoded.to_rgba8();
+                                    sizes.push(data.dimensions());
+                                    loaded_images.push(data);
+                                }
+                                Err(e) => {
+                                    eprintln!("Error decoding image: {}", e);
+                                    self.output_sender.send(PipelineCommand::FrontendMessage(
+                                        FrontendMessage::UserFeedback(format!(
+                                            "Failed to decode image!"
+                                        )),
+                                    ))?;
+                                    return Ok(());
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!("Error loading image: {}", e);
+                                self.output_sender.send(PipelineCommand::FrontendMessage(
+                                    FrontendMessage::UserFeedback(format!("Failed to load image!")),
+                                ))?;
+                                return Ok(());
                             }
                         }
                     }
+                    // Check that all image dimensions match
+                    if !sizes.is_empty() {
+                        let first_size = sizes[0];
+                        if !sizes.iter().all(|&size| size == first_size) {
+                            self.output_sender.send(PipelineCommand::FrontendMessage(
+                                FrontendMessage::UserFeedback(format!(
+                                    "Error: All images must have the same dimensions",
+                                )),
+                            ))?;
+                            return Ok(());
+                        }
+                    }
+                    //
                     if loaded_images.len() > 1 {
                         self.tool_manager.tools[0].set_enabled(true);
                     } else if !loaded_images.is_empty() {
@@ -536,14 +627,12 @@ impl Pipeline {
                     }
                     self.input_images = loaded_images;
 
-                    if !skip_processing {
-                        if let Err(e) = self.process_from(0).await {
-                            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::UserFeedback(format!(
-                                    "Failed to process images: {e}"
-                                )),
-                            ));
-                        }
+                    println!("Images loaded");
+
+                    if let Err(e) = self.process_from(0).await {
+                        let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                            FrontendMessage::UserFeedback(format!("Failed to process images: {e}")),
+                        ));
                     }
                 }
                 PipelineCommand::DiscoverBackend(backend_tool_type, sender) => {
@@ -613,6 +702,7 @@ impl Pipeline {
                             tool.apply_state(config.clone());
                         }
                     }
+                    println!("CLI Pipeline load");
                     if let Err(e) = self.process_from(0).await {
                         let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
                             FrontendMessage::UserFeedback(format!(
@@ -640,6 +730,7 @@ impl Pipeline {
                 _ => {}
             };
         }
+
         let futures = self
             .tool_manager
             .tools

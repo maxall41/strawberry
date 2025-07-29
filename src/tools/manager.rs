@@ -69,46 +69,50 @@ impl ManagerView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command { match message {
-                    FrontendMessage::ReturnState(tool_state) => if let ToolState::ManagerState(new_state) = tool_state {
-                        if let Ok(mut locked_state) = state.write() {
-                            if *locked_state != new_state {
-                                *locked_state = new_state;
-                                if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
-                                    eprintln!(
-                                        "Failed to update UI after state change: {e}"
-                                    );
+                if let PipelineCommand::FrontendMessage(message) = command {
+                    match message {
+                        FrontendMessage::ReturnState(tool_state) => {
+                            if let ToolState::ManagerState(new_state) = tool_state {
+                                if let Ok(mut locked_state) = state.write() {
+                                    if *locked_state != new_state {
+                                        *locked_state = new_state;
+                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
+                                            eprintln!(
+                                                "Failed to update UI after state change: {e}"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    eprintln!("Failed to acquire write lock on compositor state");
                                 }
                             }
-                        } else {
-                            eprintln!("Failed to acquire write lock on compositor state");
                         }
-                    },
-                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                        println!("Received backend tools | Frontend Compositor");
-                        if let Err(e) = this.update(cx, |this, cx| {
-                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                            {
-                                *current_tool_index = backend_ids.first().copied();
-                            } else {
-                                eprintln!("Failed to acquire write lock on current tool index");
-                                return;
-                            }
-                            this.backend_tool_indicies = backend_ids;
-                            this.send_channels = senders;
+                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                            println!("Received backend tools | Frontend Compositor");
+                            if let Err(e) = this.update(cx, |this, cx| {
+                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                {
+                                    *current_tool_index = backend_ids.first().copied();
+                                } else {
+                                    eprintln!("Failed to acquire write lock on current tool index");
+                                    return;
+                                }
+                                this.backend_tool_indicies = backend_ids;
+                                this.send_channels = senders;
 
-                            // Request initial state when backend is discovered
-                            if let Some(sender) = this.send_channels.first() {
-                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                    eprintln!("Failed to request initial state: {e}");
+                                // Request initial state when backend is discovered
+                                if let Some(sender) = this.send_channels.first() {
+                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                        eprintln!("Failed to request initial state: {e}");
+                                    }
                                 }
+                            }) {
+                                eprintln!("Failed to update backend tools: {e}");
                             }
-                        }) {
-                            eprintln!("Failed to update backend tools: {e}");
                         }
+                        _ => {}
                     }
-                    _ => {}
-                } }
+                }
             } else {
                 break;
             }
@@ -308,8 +312,7 @@ impl ManagerView {
                 (0, 0)
             };
 
-            let manager_message =
-                ManagerMessage::ReorderTool(original_index, drop_index);
+            let manager_message = ManagerMessage::ReorderTool(original_index, drop_index);
             println!(
                 "=== REORDER TOOL ===\nOriginal index: {}\nDrop index: {}\nPipeline position: #{} -> moving to position near index {}",
                 original_index, drop_index, drag_state.original_position, drop_index
@@ -332,7 +335,7 @@ impl ManagerView {
         cx.spawn_in(_window, async move |this, cx| {
             let file = FileDialog::new()
                 .add_filter("toml", &["toml"])
-                .set_directory("/")
+                .set_directory("~/")
                 .save_file();
 
             if let Some(file) = file {
@@ -364,7 +367,7 @@ impl ManagerView {
         cx.spawn_in(_window, async move |this, cx| {
             let file = FileDialog::new()
                 .add_filter("toml", &["toml"])
-                .set_directory("/")
+                .set_directory("~/")
                 .pick_file();
 
             if let Some(file) = file {

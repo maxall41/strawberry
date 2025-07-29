@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::processing::{threshold::GpuThreshold, GpuImageProcessor};
 
 use super::{
-    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage,
-    ThresholdMessage, ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ThresholdMessage,
+    ToolBackend, ToolState,
 };
 use async_trait::async_trait;
 
@@ -27,6 +27,7 @@ pub struct Threshold {
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
     pub cached_state: Option<ThresholdState>,
+    pub frontend_latest_state: Option<ThresholdState>,
 }
 
 #[async_trait]
@@ -74,8 +75,6 @@ impl ToolBackend for Threshold {
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let old_state = self.state.clone();
-
         if let Ok(message) = self.receiver.try_recv() {
             match message {
                 PipelineCommand::RequestState() => {
@@ -96,19 +95,17 @@ impl ToolBackend for Threshold {
                 },
                 _ => {}
             }
-            if old_state != self.state {
-                // Invalidate cache when state changes
-                self.invalidate_cache();
+        }
 
-                self.command_sender
-                    .send(PipelineCommand::Refresh(self.index))
-                    .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
-
-                // Push state update to frontend
-                self.send_to_frontend(PipelineCommand::FrontendMessage(
-                    FrontendMessage::ReturnState(self.get_state()),
-                ))?;
-            }
+        if self.frontend_latest_state.is_none() {
+            self.update_state()?;
+        } else if self
+            .frontend_latest_state
+            .as_ref()
+            .expect("Just checked that frontend_latest_state is some")
+            != &self.state
+        {
+            self.update_state()?;
         }
 
         Ok(())
@@ -170,7 +167,20 @@ impl Threshold {
             index: 0,
             cached_output: None,
             cached_state: None,
+            frontend_latest_state: None,
         }
+    }
+
+    fn update_state(&mut self) -> anyhow::Result<()> {
+        self.invalidate_cache();
+        self.send_to_frontend(PipelineCommand::FrontendMessage(
+            FrontendMessage::ReturnState(self.get_state()),
+        ))?;
+        self.command_sender
+            .send(PipelineCommand::Refresh(self.index))
+            .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
+        self.frontend_latest_state = Some(self.state.clone());
+        Ok(())
     }
 
     fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {

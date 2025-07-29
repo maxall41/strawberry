@@ -934,7 +934,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
+source = "git+https://github.com/maxall41/gpui-m?rev=a9c8b62f7aa91fe6567d16cf380cd26f99c7758e#a9c8b62f7aa91fe6567d16cf380cd26f99c7758e"
 dependencies = [
  "indexmap",
  "rustc-hash 2.1.1",
@@ -1264,6 +1264,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da692b8d1080ea3045efaab14434d40468c3d8657e42abddfffca87b428f4c1b"
 
 [[package]]
+name = "deranged"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c9e6a11ca8224451684bc0d7d5a7adbf8f2fd6887261a1cfc3c0432f9d4068e"
+dependencies = [
+ "powerfmt",
+]
+
+[[package]]
 name = "derive_more"
 version = "0.99.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1279,7 +1288,7 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
+source = "git+https://github.com/maxall41/gpui-m?rev=a9c8b62f7aa91fe6567d16cf380cd26f99c7758e#a9c8b62f7aa91fe6567d16cf380cd26f99c7758e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2169,7 +2178,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.1.0"
-source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
+source = "git+https://github.com/maxall41/gpui-m?rev=a9c8b62f7aa91fe6567d16cf380cd26f99c7758e#a9c8b62f7aa91fe6567d16cf380cd26f99c7758e"
 dependencies = [
  "anyhow",
  "as-raw-xcb-connection",
@@ -2262,7 +2271,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
+source = "git+https://github.com/maxall41/gpui-m?rev=a9c8b62f7aa91fe6567d16cf380cd26f99c7758e#a9c8b62f7aa91fe6567d16cf380cd26f99c7758e"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2386,7 +2395,7 @@ dependencies = [
 [[package]]
 name = "http_client"
 version = "0.1.0"
-source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
+source = "git+https://github.com/maxall41/gpui-m?rev=a9c8b62f7aa91fe6567d16cf380cd26f99c7758e#a9c8b62f7aa91fe6567d16cf380cd26f99c7758e"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2399,6 +2408,22 @@ dependencies = [
  "serde_json",
  "url",
  "workspace-hack",
+]
+
+[[package]]
+name = "human-panic"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac63a746b187e95d51fe16850eb04d1cfef203f6af98e6c405a6f262ad3df00a"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "backtrace",
+ "os_info",
+ "serde",
+ "serde_derive",
+ "toml 0.9.2",
+ "uuid",
 ]
 
 [[package]]
@@ -2517,8 +2542,7 @@ dependencies = [
 [[package]]
 name = "image"
 version = "0.25.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db35664ce6b9810857a38a906215e75a9c879f0696556a39f59c62829710251a"
+source = "git+https://github.com/maxall41/image.git?branch=single-channel-support#d4d1acafa58120b4387ac4f1f6415aca4d3c03d1"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
@@ -2716,12 +2740,6 @@ dependencies = [
  "getrandom 0.3.3",
  "libc",
 ]
-
-[[package]]
-name = "jpeg-decoder"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
 
 [[package]]
 name = "js-sys"
@@ -2985,7 +3003,7 @@ dependencies = [
 [[package]]
 name = "media"
 version = "0.1.0"
-source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
+source = "git+https://github.com/maxall41/gpui-m?rev=a9c8b62f7aa91fe6567d16cf380cd26f99c7758e#a9c8b62f7aa91fe6567d16cf380cd26f99c7758e"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -3267,6 +3285,12 @@ checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
 dependencies = [
  "num-traits",
 ]
+
+[[package]]
+name = "num-conv"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51d515d32fb182ee37cda2ccdcb92950d6a3c2893aa280e540671c2cd0f3b1d9"
 
 [[package]]
 name = "num-derive"
@@ -3619,6 +3643,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "os_info"
+version = "3.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0e1ac5fde8d43c34139135df8ea9ee9465394b2d8d20f032d38998f64afffc3"
+dependencies = [
+ "log",
+ "plist",
+ "serde",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3750,6 +3786,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
+name = "plist"
+version = "1.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3af6b589e163c5a788fab00ce0c0366f6efbb9959c2f9874b224936af7fce7e1"
+dependencies = [
+ "base64",
+ "indexmap",
+ "quick-xml 0.38.0",
+ "serde",
+ "time",
+]
+
+[[package]]
 name = "png"
 version = "0.17.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3820,6 +3869,12 @@ checksum = "e5a7c30837279ca13e7c867e9e40053bc68740f988cb07f7ca6df43cc734b585"
 dependencies = [
  "zerovec",
 ]
+
+[[package]]
+name = "powerfmt"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppv-lite86"
@@ -4164,7 +4219,7 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
+source = "git+https://github.com/maxall41/gpui-m?rev=a9c8b62f7aa91fe6567d16cf380cd26f99c7758e#a9c8b62f7aa91fe6567d16cf380cd26f99c7758e"
 dependencies = [
  "derive_refineable",
  "workspace-hack",
@@ -4499,7 +4554,7 @@ checksum = "0f7d95a54511e0c7be3f51e8867aa8cf35148d7b9445d44de2f943e2b206e749"
 [[package]]
 name = "semantic_version"
 version = "0.1.0"
-source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
+source = "git+https://github.com/maxall41/gpui-m?rev=a9c8b62f7aa91fe6567d16cf380cd26f99c7758e#a9c8b62f7aa91fe6567d16cf380cd26f99c7758e"
 dependencies = [
  "anyhow",
  "serde",
@@ -4776,6 +4831,7 @@ dependencies = [
  "flume",
  "futures",
  "gpui",
+ "human-panic",
  "image",
  "lutz",
  "native-dialog",
@@ -4856,7 +4912,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
+source = "git+https://github.com/maxall41/gpui-m?rev=a9c8b62f7aa91fe6567d16cf380cd26f99c7758e#a9c8b62f7aa91fe6567d16cf380cd26f99c7758e"
 dependencies = [
  "arrayvec",
  "log",
@@ -5149,13 +5205,46 @@ dependencies = [
 
 [[package]]
 name = "tiff"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba1310fcea54c6a9a4fd1aad794ecc02c31682f6bfbecdf460bf19533eed1e3e"
+checksum = "bd35f8bd40ae1e2b51e86f7a665f81160dc82b785f5de1f193a52f1298a76586"
 dependencies = [
  "flate2",
- "jpeg-decoder",
+ "half",
+ "quick-error",
  "weezl",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "time"
+version = "0.3.41"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7619e19bc266e0f9c5e6686659d394bc57973859340060a69221e57dbc0c40"
+dependencies = [
+ "deranged",
+ "itoa",
+ "num-conv",
+ "powerfmt",
+ "serde",
+ "time-core",
+ "time-macros",
+]
+
+[[package]]
+name = "time-core"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9e9a38711f559d9e3ce1cdb06dd7c5b8ea546bc90052da6d06bb76da74bb07c"
+
+[[package]]
+name = "time-macros"
+version = "0.2.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3526739392ec93fd8b359c8e98514cb3e8e021beb4e5f597b00a0221f8ed8a49"
+dependencies = [
+ "num-conv",
+ "time-core",
 ]
 
 [[package]]
@@ -5554,7 +5643,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "util"
 version = "0.1.0"
-source = "git+https://github.com/maxall41/gpui-m#dbaea3f32fdfcb5bd26cec8f7bd27a6d9c3644e0"
+source = "git+https://github.com/maxall41/gpui-m?rev=a9c8b62f7aa91fe6567d16cf380cd26f99c7758e#a9c8b62f7aa91fe6567d16cf380cd26f99c7758e"
 dependencies = [
  "anyhow",
  "async-fs",

@@ -9,10 +9,7 @@ use gpui::{
 use rfd::FileDialog;
 
 use crate::{
-    gui::{
-        value_control::ValueControl,
-        ToggleButton,
-    },
+    gui::{value_control::ValueControl, ToggleButton},
     pipeline::{
         counter::{CounterMode, CounterState, CounterTool},
         BackendToolType, CountMessage, FilterMessage, FrontendMessage, PipelineCommand,
@@ -77,56 +74,60 @@ impl CounterView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command { match message {
-                    FrontendMessage::ReturnState(tool_state) => if let ToolState::CounterState(new_state) = tool_state {
-                        if let Ok(mut locked_state) = state.write() {
-                            if *locked_state != new_state {
-                                // Update next_count_type_id based on existing count types
-                                if let Ok(mut next_id) = next_count_type_id.write() {
-                                    *next_id = new_state
-                                        .manual_counts
-                                        .keys()
-                                        .max()
-                                        .map(|&k| k + 1)
-                                        .unwrap_or(0);
-                                }
+                if let PipelineCommand::FrontendMessage(message) = command {
+                    match message {
+                        FrontendMessage::ReturnState(tool_state) => {
+                            if let ToolState::CounterState(new_state) = tool_state {
+                                if let Ok(mut locked_state) = state.write() {
+                                    if *locked_state != new_state {
+                                        // Update next_count_type_id based on existing count types
+                                        if let Ok(mut next_id) = next_count_type_id.write() {
+                                            *next_id = new_state
+                                                .manual_counts
+                                                .keys()
+                                                .max()
+                                                .map(|&k| k + 1)
+                                                .unwrap_or(0);
+                                        }
 
-                                *locked_state = new_state;
-                                if let Err(e) = this.update(cx, |_this, cx| cx.notify()) {
-                                    eprintln!(
-                                        "Failed to update UI after state change: {e}"
-                                    );
+                                        *locked_state = new_state;
+                                        if let Err(e) = this.update(cx, |_this, cx| cx.notify()) {
+                                            eprintln!(
+                                                "Failed to update UI after state change: {e}"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    eprintln!("Failed to acquire write lock on counter state");
                                 }
                             }
-                        } else {
-                            eprintln!("Failed to acquire write lock on counter state");
                         }
-                    },
-                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                        println!("Received backend tools | Frontend Counter");
-                        if let Err(e) = this.update(cx, |this, cx| {
-                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                            {
-                                *current_tool_index = backend_ids.first().copied();
-                            } else {
-                                eprintln!("Failed to acquire write lock on current tool index");
-                                return;
-                            }
-                            this.backend_tool_indicies = backend_ids;
-                            this.send_channels = senders;
+                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                            println!("Received backend tools | Frontend Counter");
+                            if let Err(e) = this.update(cx, |this, cx| {
+                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                {
+                                    *current_tool_index = backend_ids.first().copied();
+                                } else {
+                                    eprintln!("Failed to acquire write lock on current tool index");
+                                    return;
+                                }
+                                this.backend_tool_indicies = backend_ids;
+                                this.send_channels = senders;
 
-                            // Request initial state when backend is discovered
-                            if let Some(sender) = this.send_channels.first() {
-                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                    eprintln!("Failed to request initial state: {e}");
+                                // Request initial state when backend is discovered
+                                if let Some(sender) = this.send_channels.first() {
+                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                        eprintln!("Failed to request initial state: {e}");
+                                    }
                                 }
+                            }) {
+                                eprintln!("Failed to update backend tools: {e}");
                             }
-                        }) {
-                            eprintln!("Failed to update backend tools: {e}");
                         }
+                        _ => {}
                     }
-                    _ => {}
-                } }
+                }
             } else {
                 break;
             }
@@ -158,7 +159,7 @@ impl CounterView {
         cx.spawn_in(_window, async move |this, cx| {
             let file = FileDialog::new()
                 .add_filter("xml", &["xml"])
-                .set_directory("/")
+                .set_directory("~/")
                 .save_file();
 
             if let Some(file) = file {
@@ -188,7 +189,7 @@ impl CounterView {
         cx.spawn_in(_window, async move |this, cx| {
             let file = FileDialog::new()
                 .add_filter("xml", &["xml"])
-                .set_directory("/")
+                .set_directory("~/")
                 .pick_file();
 
             if let Some(file) = file {
@@ -964,7 +965,8 @@ impl CounterView {
             )
             .when(is_size_filter, |el| {
                 let current_value = filter_proxy
-                    .values.first()
+                    .values
+                    .first()
                     .map(|v| *v as f32)
                     .unwrap_or(10.0);
 

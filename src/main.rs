@@ -7,11 +7,12 @@ use gpui::{
     Point, RenderImage, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use gui::feedback::FeedbackModal;
+use human_panic::setup_panic;
 use image::{Frame, RgbaImage};
-use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use std::{fs, panic};
 use tools::decomposer::DecomposerView;
 use tools::sobel::SobelView;
 
@@ -97,24 +98,6 @@ struct PrimaryViewer {
 }
 
 impl PrimaryViewer {
-    fn load_image_file(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let sender_p = self.command_sender.clone();
-
-        cx.spawn_in(_window, async move |_, _| {
-            let files = FileDialog::new()
-                .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
-                .set_directory("/")
-                .pick_files();
-
-            if let Some(files) = files {
-                if let Err(e) = sender_p.send(PipelineCommand::Load(files, false)) {
-                    eprintln!("Failed to send loaded images to pipeline: {e}");
-                }
-            }
-        })
-        .detach();
-    }
-
     pub fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut receiver_ref = self.command_receiver.resubscribe();
         let (counter_sender, counter_recv) = flume::unbounded();
@@ -227,7 +210,39 @@ impl PrimaryViewer {
     }
 
     fn handle_open_file(&mut self, _: &OpenFile, _window: &mut Window, cx: &mut Context<Self>) {
-        self.load_image_file(_window, cx);
+        let sender_p = self.command_sender.clone();
+
+        cx.spawn_in(_window, async move |_, _| {
+            let files = FileDialog::new()
+                .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
+                .set_directory("~/")
+                .pick_files();
+
+            if let Some(files) = files {
+                if let Err(e) = sender_p.send(PipelineCommand::Load(files)) {
+                    eprintln!("Failed to send loaded images to pipeline: {e}");
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn handle_save_image(&mut self, _: &SaveImage, _window: &mut Window, cx: &mut Context<Self>) {
+        let sender_p = self.command_sender.clone();
+
+        cx.spawn_in(_window, async move |_, _| {
+            let output_file = FileDialog::new()
+                .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
+                .set_directory("~/")
+                .save_file();
+
+            if let Some(file) = output_file {
+                if let Err(e) = sender_p.send(PipelineCommand::SaveOutput(file)) {
+                    eprintln!("Failed to send save output command to pipeline: {e}");
+                }
+            }
+        })
+        .detach();
     }
 
     fn zoom_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -468,6 +483,7 @@ impl Render for PrimaryViewer {
             .on_action(cx.listener(Self::handle_zoom_in))
             .on_action(cx.listener(Self::handle_zoom_out))
             .on_action(cx.listener(Self::handle_open_file))
+            .on_action(cx.listener(Self::handle_save_image))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
             .on_drop(cx.listener(
@@ -477,7 +493,7 @@ impl Render for PrimaryViewer {
                  _cx: &mut Context<PrimaryViewer>| {
                     if let Err(e) = this
                         .command_sender
-                        .send(PipelineCommand::Load(paths.paths().to_vec(), false))
+                        .send(PipelineCommand::Load(paths.paths().to_vec()))
                     {
                         eprintln!("Failed to send loaded images to pipeline: {e}");
                     }
@@ -490,7 +506,19 @@ impl Render for PrimaryViewer {
                     .top(px(self.pan_y))
                     .child(_img),
             )
-            .children(self.toasts.clone())
+            .children(
+                self.toasts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, toast)| {
+                        div()
+                            .absolute()
+                            .bottom(px(20.0 + (index as f32 * 90.0)))
+                            .right(px(20.0))
+                            .child(toast.clone())
+                    })
+                    .collect::<Vec<_>>(),
+            )
             .children({
                 // Draw circles for count data
                 let mut circles = Vec::new();
@@ -603,6 +631,7 @@ actions!([
     ZoomIn,
     ZoomOut,
     OpenFile,
+    SaveImage,
     CompositorSettings,
     SobelSettings,
     ContrastSettings,
@@ -651,6 +680,7 @@ fn create_tool_window<T, A>(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    setup_panic!();
     env_logger::init();
     let args = Args::parse();
 
@@ -677,7 +707,7 @@ async fn main() -> Result<()> {
         if let Err(e) = pipeline_handle.await {
             if e.is_panic() {
                 eprintln!("Pipeline task panicked, shutting down application");
-                std::process::exit(1);
+                panic::resume_unwind(e.into_panic());
             }
         }
     });
@@ -773,7 +803,8 @@ async fn main() -> Result<()> {
 
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),
-                KeyBinding::new("cmd-o", OpenFile, None),
+                KeyBinding::new("cmd-l", OpenFile, None),
+                KeyBinding::new("cmd-s", SaveImage, None),
                 KeyBinding::new("+", ZoomIn, None),
                 KeyBinding::new("-", ZoomOut, None),
             ]);
@@ -785,7 +816,10 @@ async fn main() -> Result<()> {
                 },
                 Menu {
                     name: "File".into(),
-                    items: vec![MenuItem::action("Open Images...", OpenFile)],
+                    items: vec![
+                        MenuItem::action("Load Images...", OpenFile),
+                        MenuItem::action("Save Image", SaveImage),
+                    ],
                 },
                 Menu {
                     name: "Tools".into(),

@@ -26,6 +26,7 @@ pub struct Grayscale {
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
     pub cached_state: Option<GrayscaleState>,
+    pub frontend_latest_state: Option<GrayscaleState>,
 }
 
 #[async_trait]
@@ -69,8 +70,6 @@ impl ToolBackend for Grayscale {
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let old_state = self.state.clone();
-
         if let Ok(message) = self.receiver.try_recv() {
             match message {
                 PipelineCommand::RequestState() => {
@@ -78,22 +77,24 @@ impl ToolBackend for Grayscale {
                         FrontendMessage::ReturnState(self.get_state()),
                     ))?;
                 }
-                PipelineCommand::PipelineObject(message) => if let PipelineObjectMessage::ToggleActive(value) = message {
-                    self.state.is_enabled = value;
-                },
+                PipelineCommand::PipelineObject(message) => {
+                    if let PipelineObjectMessage::ToggleActive(value) = message {
+                        self.state.is_enabled = value;
+                    }
+                }
                 _ => {}
             }
-            if old_state != self.state {
-                self.invalidate_cache();
+        }
 
-                self.command_sender
-                    .send(PipelineCommand::Refresh(self.index))
-                    .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
-
-                self.send_to_frontend(PipelineCommand::FrontendMessage(
-                    FrontendMessage::ReturnState(self.get_state()),
-                ))?;
-            }
+        if self.frontend_latest_state.is_none() {
+            self.update_state()?;
+        } else if self
+            .frontend_latest_state
+            .as_ref()
+            .expect("Just checked that frontend_latest_state is some")
+            != &self.state
+        {
+            self.update_state()?;
         }
 
         Ok(())
@@ -152,7 +153,20 @@ impl Grayscale {
             index: 0,
             cached_output: None,
             cached_state: None,
+            frontend_latest_state: None,
         }
+    }
+
+    fn update_state(&mut self) -> anyhow::Result<()> {
+        self.invalidate_cache();
+        self.send_to_frontend(PipelineCommand::FrontendMessage(
+            FrontendMessage::ReturnState(self.get_state()),
+        ))?;
+        self.frontend_latest_state = Some(self.state.clone());
+        self.command_sender
+            .send(PipelineCommand::Refresh(self.index))
+            .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
+        Ok(())
     }
 
     fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {
