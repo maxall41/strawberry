@@ -6,7 +6,7 @@ use quick_xml::se::to_string;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::pipeline::counter::{CountData, CounterMode, CounterState, CounterTool};
+use crate::pipeline::counter::{CountData, CounterMode, CounterState};
 
 // XML serialization structures
 #[derive(Debug, Serialize, Deserialize)]
@@ -182,7 +182,7 @@ impl CellCounterMarkerFile {
             manual_counts,
             auto_counts: vec![],
             mode: CounterMode::Manual,
-            active_tool: CounterTool::Place,
+            active_tool: None,
             active_count_type: Some(self.marker_data.current_type),
             filter_proxys: Vec::new(),
             review_current_index: 0,

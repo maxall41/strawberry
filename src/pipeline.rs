@@ -116,7 +116,7 @@ pub enum CountMessage {
     DeleteCountType(u16),
     SetMode(counter::CounterMode),
     SetActiveCountType(u16),
-    SetActiveTool(CounterTool),
+    SetActiveTool(Option<CounterTool>),
     ToggleFilter(u16, bool),
     FilterMessage(FilterMessage),
     SaveCounts(PathBuf),
