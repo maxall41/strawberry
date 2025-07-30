@@ -169,7 +169,8 @@ impl PrimaryViewer {
                                     if let ToolState::CounterState(counter_state) = tool_state {
                                         // Check if we're in review mode and need to snap to a count
                                         let should_snap = counter_state.is_enabled
-                                            && counter_state.active_tool == CounterTool::Review
+                                            && counter_state.active_tool
+                                                == Some(CounterTool::Review)
                                             && counter_state.active_count_type.is_some();
 
                                         let snap_position = if should_snap {
@@ -423,7 +424,7 @@ impl Render for PrimaryViewer {
                         let is_lasso_delete_active =
                             if let Some(ref counter_state) = this.count_data {
                                 counter_state.is_enabled
-                                    && counter_state.active_tool == CounterTool::LassoDelete
+                                    && counter_state.active_tool == Some(CounterTool::LassoDelete)
                             } else {
                                 false
                             };
@@ -547,7 +548,7 @@ impl Render for PrimaryViewer {
 
                                 // Use hot pink for selected count in review mode
                                 let circle_color = if counter_state.active_tool
-                                    == CounterTool::Review
+                                    == Some(CounterTool::Review)
                                     && counter_state.active_count_type == Some(*count_type_id)
                                     && index == counter_state.review_current_index
                                 {

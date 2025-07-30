@@ -368,7 +368,12 @@ impl CounterView {
         }
     }
 
-    fn set_tool(&mut self, tool: CounterTool, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn set_tool(
+        &mut self,
+        tool: Option<CounterTool>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
         let current_tool_index = match self.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
@@ -681,7 +686,11 @@ impl CounterView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<CounterView>| {
-                        this.set_tool(tool.clone(), window, cx);
+                        if is_active {
+                            this.set_tool(None, window, cx);
+                        } else {
+                            this.set_tool(Some(tool.clone()), window, cx);
+                        }
                     },
                 ),
             )
@@ -715,25 +724,25 @@ impl CounterView {
             .child(self.render_tool_button(
                 CounterTool::Place,
                 "Place".to_string(),
-                *current_tool == CounterTool::Place,
+                *current_tool == Some(CounterTool::Place),
                 cx,
             ))
             .child(self.render_tool_button(
                 CounterTool::Delete,
                 "Delete".to_string(),
-                *current_tool == CounterTool::Delete,
+                *current_tool == Some(CounterTool::Delete),
                 cx,
             ))
             .child(self.render_tool_button(
                 CounterTool::LassoDelete,
                 "Lasso | Delete".to_string(),
-                *current_tool == CounterTool::LassoDelete,
+                *current_tool == Some(CounterTool::LassoDelete),
                 cx,
             ))
             .child(self.render_tool_button(
                 CounterTool::Review,
                 "Review".to_string(),
-                *current_tool == CounterTool::Review,
+                *current_tool == Some(CounterTool::Review),
                 cx,
             ))
     }
@@ -801,7 +810,7 @@ impl CounterView {
             .child(self.render_tools_bar(cx));
 
         // Add review UI when Review tool is active
-        if state.active_tool == CounterTool::Review {
+        if state.active_tool == Some(CounterTool::Review) {
             ui = ui.child(self.render_review_ui(state, cx));
         }
 

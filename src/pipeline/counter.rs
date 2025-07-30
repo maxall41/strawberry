@@ -113,7 +113,7 @@ pub struct CounterState {
     pub manual_counts: HashMap<u16, Vec<CountData>>,
     pub auto_counts: Vec<CountData>,
     pub mode: CounterMode,
-    pub active_tool: CounterTool,
+    pub active_tool: Option<CounterTool>,
     pub active_count_type: Option<u16>,
     pub filter_proxys: Vec<FilterProxy>,
     // Review state fields
@@ -242,7 +242,7 @@ impl ToolBackend for Counter {
                     }
                     if let Some(id) = self.state.active_count_type {
                         match self.state.active_tool {
-                            CounterTool::Place => {
+                            Some(CounterTool::Place) => {
                                 if self.state.manual_counts.contains_key(&id) {
                                     let mut count_type = self
                                         .state
@@ -265,7 +265,7 @@ impl ToolBackend for Counter {
                                     );
                                 }
                             }
-                            CounterTool::Delete => {
+                            Some(CounterTool::Delete) => {
                                 if self.state.manual_counts.contains_key(&id) {
                                     let counts = self
                                         .state
@@ -512,7 +512,7 @@ impl Counter {
                 manual_counts: HashMap::new(),
                 auto_counts: Vec::new(),
                 mode: CounterMode::Manual,
-                active_tool: CounterTool::Place,
+                active_tool: None,
                 active_count_type: None,
                 review_current_index: 0,
                 filter_proxys,
