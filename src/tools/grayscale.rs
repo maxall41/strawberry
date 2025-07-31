@@ -76,47 +76,51 @@ impl GrayscaleView {
 
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command { match message {
-                    FrontendMessage::ReturnState(tool_state) => if let ToolState::GrayscaleState(new_state) = tool_state {
-                        if let Ok(mut locked_state) = state.write() {
-                            if *locked_state != new_state {
-                                *locked_state = new_state;
-                                if let Err(e) = this.update(cx, |_this, cx| {
-                                    cx.notify();
-                                }) {
-                                    eprintln!(
-                                        "Failed to update UI after state change: {e}"
-                                    );
+                if let PipelineCommand::FrontendMessage(message) = command {
+                    match message {
+                        FrontendMessage::ReturnState(tool_state) => {
+                            if let ToolState::GrayscaleState(new_state) = tool_state {
+                                if let Ok(mut locked_state) = state.write() {
+                                    if *locked_state != new_state {
+                                        *locked_state = new_state;
+                                        if let Err(e) = this.update(cx, |_this, cx| {
+                                            cx.notify();
+                                        }) {
+                                            eprintln!(
+                                                "Failed to update UI after state change: {e}"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    eprintln!("Failed to acquire write lock on grayscale state");
                                 }
                             }
-                        } else {
-                            eprintln!("Failed to acquire write lock on grayscale state");
                         }
-                    },
-                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                        println!("Received backend tools | Frontend Grayscale");
-                        if let Err(e) = this.update(cx, |this, _cx| {
-                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                            {
-                                *current_tool_index = backend_ids.first().copied();
-                            } else {
-                                eprintln!("Failed to acquire write lock on current tool index");
-                                return;
-                            }
-                            this.backend_tool_indicies = backend_ids;
-                            this.send_channels = senders;
+                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                            println!("Received backend tools | Frontend Grayscale");
+                            if let Err(e) = this.update(cx, |this, _cx| {
+                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                {
+                                    *current_tool_index = backend_ids.first().copied();
+                                } else {
+                                    eprintln!("Failed to acquire write lock on current tool index");
+                                    return;
+                                }
+                                this.backend_tool_indicies = backend_ids;
+                                this.send_channels = senders;
 
-                            if let Some(sender) = this.send_channels.first() {
-                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                    eprintln!("Failed to request initial state: {e}");
+                                if let Some(sender) = this.send_channels.first() {
+                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                        eprintln!("Failed to request initial state: {e}");
+                                    }
                                 }
+                            }) {
+                                eprintln!("Failed to update backend tools: {e}");
                             }
-                        }) {
-                            eprintln!("Failed to update backend tools: {e}");
                         }
+                        _ => {}
                     }
-                    _ => {}
-                } }
+                }
             } else {
                 break;
             }

@@ -141,68 +141,72 @@ impl ContrastView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command { match message {
-                    FrontendMessage::ReturnState(tool_state) => if let ToolState::ContrastState(new_state) = tool_state {
-                        if let Ok(mut locked_state) = state.write() {
-                            if *locked_state != new_state {
-                                let min_ref = new_state.min;
-                                let max_ref = new_state.max;
-                                *locked_state = new_state;
-                                if let Err(e) = this.update(cx, |this, cx| {
-                                    this.min_control
-                                        .as_ref()
-                                        .expect(
-                                            "min_control should be initialized before use",
-                                        )
-                                        .update(cx, |control, cx| {
-                                            control.value = min_ref;
+                if let PipelineCommand::FrontendMessage(message) = command {
+                    match message {
+                        FrontendMessage::ReturnState(tool_state) => {
+                            if let ToolState::ContrastState(new_state) = tool_state {
+                                if let Ok(mut locked_state) = state.write() {
+                                    if *locked_state != new_state {
+                                        let min_ref = new_state.min;
+                                        let max_ref = new_state.max;
+                                        *locked_state = new_state;
+                                        if let Err(e) = this.update(cx, |this, cx| {
+                                            this.min_control
+                                                .as_ref()
+                                                .expect(
+                                                    "min_control should be initialized before use",
+                                                )
+                                                .update(cx, |control, cx| {
+                                                    control.value = min_ref;
+                                                    cx.notify();
+                                                });
+                                            this.max_control
+                                                .as_ref()
+                                                .expect(
+                                                    "max_control should be initialized before use",
+                                                )
+                                                .update(cx, |control, cx| {
+                                                    control.value = max_ref;
+                                                    cx.notify();
+                                                });
                                             cx.notify();
-                                        });
-                                    this.max_control
-                                        .as_ref()
-                                        .expect(
-                                            "max_control should be initialized before use",
-                                        )
-                                        .update(cx, |control, cx| {
-                                            control.value = max_ref;
-                                            cx.notify();
-                                        });
-                                    cx.notify();
-                                }) {
-                                    eprintln!(
-                                        "Failed to update UI after state change: {e}"
-                                    );
+                                        }) {
+                                            eprintln!(
+                                                "Failed to update UI after state change: {e}"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    eprintln!("Failed to acquire write lock on contrast state");
                                 }
                             }
-                        } else {
-                            eprintln!("Failed to acquire write lock on contrast state");
                         }
-                    },
-                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                        println!("Received backend tools | Frontend Contrast");
-                        if let Err(e) = this.update(cx, |this, cx| {
-                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                            {
-                                *current_tool_index = backend_ids.first().copied();
-                            } else {
-                                eprintln!("Failed to acquire write lock on current tool index");
-                                return;
-                            }
-                            this.backend_tool_indicies = backend_ids;
-                            this.send_channels = senders;
+                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                            println!("Received backend tools | Frontend Contrast");
+                            if let Err(e) = this.update(cx, |this, cx| {
+                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                {
+                                    *current_tool_index = backend_ids.first().copied();
+                                } else {
+                                    eprintln!("Failed to acquire write lock on current tool index");
+                                    return;
+                                }
+                                this.backend_tool_indicies = backend_ids;
+                                this.send_channels = senders;
 
-                            // Request initial state when backend is discovered
-                            if let Some(sender) = this.send_channels.first() {
-                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                    eprintln!("Failed to request initial state: {e}");
+                                // Request initial state when backend is discovered
+                                if let Some(sender) = this.send_channels.first() {
+                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                        eprintln!("Failed to request initial state: {e}");
+                                    }
                                 }
+                            }) {
+                                eprintln!("Failed to update backend tools: {e}");
                             }
-                        }) {
-                            eprintln!("Failed to update backend tools: {e}");
                         }
+                        _ => {}
                     }
-                    _ => {}
-                } }
+                }
             } else {
                 break;
             }
@@ -372,18 +376,14 @@ impl ContrastView {
 
     // Min value control component
     fn render_min_control(&self, cx: &mut Context<Self>, _window: &mut Window) -> impl IntoElement {
-        
-        self
-            .min_control
+        self.min_control
             .clone()
             .expect("min_control should be initialized before use")
     }
 
     // Max value control component
     fn render_max_control(&self, cx: &mut Context<Self>, _window: &mut Window) -> impl IntoElement {
-        
-        self
-            .max_control
+        self.max_control
             .clone()
             .expect("max_control should be initialized before use")
     }

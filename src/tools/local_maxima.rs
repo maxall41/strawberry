@@ -382,9 +382,7 @@ impl LocalMaximaView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        
-        self
-            .min_distance_control
+        self.min_distance_control
             .clone()
             .expect("min_distance_control should be initialized before use")
     }

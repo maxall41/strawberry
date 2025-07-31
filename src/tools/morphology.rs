@@ -412,9 +412,7 @@ impl MorphologyView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        
-        self
-            .element_size_control
+        self.element_size_control
             .clone()
             .expect("element_size_control should be initialized before use")
     }
