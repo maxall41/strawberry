@@ -9,13 +9,13 @@
 - [X] Sobel filter
 - [X] Grayscale
 - [X] Image export
-- [ ] If compositing > 7 images then just batch into 7 image batches and run each and then composite them together (supports up to 49 images which should be enough for pretty much everything)
+- [X] If compositing > 7 images then just batch into 7 image batches and run each and then composite them together (supports up to 49 images which should be enough for pretty much everything)
 - [X] Safe indexing
-- [ ] Add delete currently selected count feature to counter review mode
+- [X] Add delete currently selected count feature to counter review mode
 - [ ] Keyboard shortcuts for EVERYTHING (See reMarkable)
 - [ ] Move viewport to center of image on image load unless dimensions of new images match the current image dimensions.
 - [X] Default counter to no tool selected
-- [ ] Allow user to toggle display of each count type in Counter
+- [X] Allow user to toggle display of each count type in Counter
 - [X] Make sure CMD+Q quit app shortcut works
 
 - [X] If tokio backend panics handle it properly

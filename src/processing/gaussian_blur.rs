@@ -52,20 +52,14 @@ impl GpuGaussianBlur {
         }
     }
 
-    pub async fn apply_blur(
-        &self,
-        image: &RgbaImage,
-        radius: f32,
-        sigma: f32,
-    ) -> Result<RgbaImage> {
+    pub async fn apply_blur(&self, image: &RgbaImage, sigma: f32) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
         let tile_config = TileConfig::from_limits(&self.gpu.device.limits());
+        let radius = (sigma * 3.0).ceil();
 
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
-            println!(
-                "Image {width}x{height} requires tile-based processing for GPU limits"
-            );
+            println!("Image {width}x{height} requires tile-based processing for GPU limits");
             self.apply_blur_tiled(image, radius, sigma, &tile_config)
                 .await
         } else {
@@ -147,9 +141,7 @@ impl GpuGaussianBlur {
             .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)
             .await?;
 
-        println!(
-            "Applied gaussian blur with radius: {radius}, sigma: {sigma}"
-        );
+        println!("Applied gaussian blur with radius: {radius}, sigma: {sigma}");
         Ok(result_image)
     }
 

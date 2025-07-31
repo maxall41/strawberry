@@ -53,6 +53,37 @@ impl GpuCompositor {
             return Err(anyhow::anyhow!("Cannot composite empty image list"));
         }
 
+        // If we have more than 7 images, batch them
+        if images.len() > 7 {
+            return self.composite_images_batched(images).await;
+        }
+
+        // Direct compositing for <= 7 images
+        self.composite_images_direct(images).await
+    }
+
+    async fn composite_images_batched(&self, images: &[RgbaImage]) -> Result<RgbaImage> {
+        let mut batched_results = Vec::new();
+
+        // Process images in batches of 7
+        for batch in images.chunks(7) {
+            let batch_result = self.composite_images_direct(batch).await?;
+            batched_results.push(batch_result);
+        }
+
+        // Composite the batch results
+        self.composite_images_direct(&batched_results).await
+    }
+
+    async fn composite_images_direct(&self, images: &[RgbaImage]) -> Result<RgbaImage> {
+        if images.is_empty() {
+            return Err(anyhow::anyhow!("Cannot composite empty image list"));
+        }
+
+        if images.len() > 7 {
+            return Err(anyhow::anyhow!("Direct compositing supports max 7 images"));
+        }
+
         let (width, height) = images[0].dimensions();
         let pixel_count = (width * height) as usize;
 
@@ -61,14 +92,6 @@ impl GpuCompositor {
         for img in images {
             let buffer = self.gpu.create_input_buffer(img);
             image_buffers.push(buffer);
-        }
-
-        // Ensure we don't exceed shader limits (max 7 images for now)
-        if image_buffers.len() > 7 {
-            return Err(anyhow::anyhow!(
-                "GPU compositor currently supports max 7 images, got {}",
-                image_buffers.len()
-            ));
         }
 
         // Create buffers using helper methods
