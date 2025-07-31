@@ -70,8 +70,6 @@ pub fn ramer_douglas_peucker_closed(mut points: Vec<(u64, u64)>) -> Vec<(u64, u6
         points.push(first_point);
     }
 
-    
-
     ramer_douglas_peucker(points)
 }
 
@@ -91,9 +89,7 @@ pub fn find_counts_within_polygon(
         },
     );
 
-    println!(
-        "Bounding Box: ({min_x}, {min_y}) to ({max_x}, {max_y})"
-    );
+    println!("Bounding Box: ({min_x}, {min_y}) to ({max_x}, {max_y})");
 
     // Phase 2: Filter and test
     counts

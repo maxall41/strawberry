@@ -249,9 +249,7 @@ impl RollingBallView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        
-        self
-            .ball_radius_control
+        self.ball_radius_control
             .clone()
             .expect("ball_radius_control should be initialized before use")
     }

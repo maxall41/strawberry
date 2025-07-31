@@ -24,7 +24,6 @@ pub struct GaussianBlurView {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
-    pub radius_control: Option<Entity<ValueControl>>,
     pub sigma_control: Option<Entity<ValueControl>>,
     _cleanup_guard: crate::tools::CleanupGuard,
     focus_handle: Option<FocusHandle>,
@@ -51,7 +50,6 @@ impl GaussianBlurView {
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
-            radius_control: None,
             sigma_control: None,
             _cleanup_guard: crate::tools::CleanupGuard::new(
                 command_sender,
@@ -71,67 +69,62 @@ impl GaussianBlurView {
         // Spawn message processing thread
         cx.spawn_in(window, async move |this, cx| loop {
             if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command { match message {
-                    FrontendMessage::ReturnState(tool_state) => if let ToolState::GaussianBlurState(new_state) = tool_state {
-                        if let Ok(mut locked_state) = state.write() {
-                            if *locked_state != new_state {
-                                let sigma_ref = new_state.sigma;
-                                let radius_ref = new_state.radius;
-                                *locked_state = new_state;
-                                if let Err(e) = this.update(cx, |this, cx| {
-                                    this.sigma_control
-                                        .as_ref()
-                                        .expect("sigma_control should be initialized before use")
-                                        .update(cx, |this, cx| {
-                                            this.value = sigma_ref;
+                if let PipelineCommand::FrontendMessage(message) = command {
+                    match message {
+                        FrontendMessage::ReturnState(tool_state) => {
+                            if let ToolState::GaussianBlurState(new_state) = tool_state {
+                                if let Ok(mut locked_state) = state.write() {
+                                    if *locked_state != new_state {
+                                        let sigma_ref = new_state.sigma;
+                                        *locked_state = new_state;
+                                        if let Err(e) = this.update(cx, |this, cx| {
+                                            this.sigma_control
+                                                .as_ref()
+                                                .expect("sigma_control should be initialized before use")
+                                                .update(cx, |this, cx| {
+                                                    this.value = sigma_ref;
+                                                    cx.notify();
+                                                });
                                             cx.notify();
-                                        });
-                                    this.radius_control
-                                        .as_ref()
-                                        .expect("radius_control should be initialized before use")
-                                        .update(cx, |this, cx| {
-                                            this.value = radius_ref;
-                                            cx.notify();
-                                        },
-                                    );
-                                    cx.notify();
-                                }) {
+                                        }) {
+                                            eprintln!(
+                                                "Failed to update UI after state change: {e}"
+                                            );
+                                        }
+                                    }
+                                } else {
                                     eprintln!(
-                                        "Failed to update UI after state change: {e}"
+                                        "Failed to acquire write lock on gaussian blur state"
                                     );
                                 }
                             }
-                        } else {
-                            eprintln!(
-                                "Failed to acquire write lock on gaussian blur state"
-                            );
                         }
-                    },
-                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                        println!("Received backend tools | Frontend GaussianBlur");
-                        if let Err(e) = this.update(cx, |this, cx| {
-                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
-                            {
-                                *current_tool_index = backend_ids.first().copied();
-                            } else {
-                                eprintln!("Failed to acquire write lock on current tool index");
-                                return;
-                            }
-                            this.backend_tool_indicies = backend_ids;
-                            this.send_channels = senders;
-
-                            // Request initial state when backend is discovered
-                            if let Some(sender) = this.send_channels.first() {
-                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                    eprintln!("Failed to request initial state: {e}");
+                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                            println!("Received backend tools | Frontend GaussianBlur");
+                            if let Err(e) = this.update(cx, |this, cx| {
+                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                {
+                                    *current_tool_index = backend_ids.first().copied();
+                                } else {
+                                    eprintln!("Failed to acquire write lock on current tool index");
+                                    return;
                                 }
+                                this.backend_tool_indicies = backend_ids;
+                                this.send_channels = senders;
+
+                                // Request initial state when backend is discovered
+                                if let Some(sender) = this.send_channels.first() {
+                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
+                                        eprintln!("Failed to request initial state: {e}");
+                                    }
+                                }
+                            }) {
+                                eprintln!("Failed to update backend tools: {e}");
                             }
-                        }) {
-                            eprintln!("Failed to update backend tools: {e}");
                         }
+                        _ => {}
                     }
-                    _ => {}
-                } }
+                }
             } else {
                 break;
             }
@@ -171,16 +164,14 @@ impl GaussianBlurView {
         }
     }
 
-    fn update_radius_sigma(&mut self, radius: f32, sigma: f32) {
+    fn update_sigma(&mut self, sigma: f32) {
         let Some(current_tool_index) = self.get_current_tool_index() else {
             return;
         };
 
         if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::GaussianBlurMessage(GaussianBlurMessage::SetRadiusSigma(
-                    radius, sigma,
-                )),
+                PipelineObjectMessage::GaussianBlurMessage(GaussianBlurMessage::SetSigma(sigma)),
             )) {
                 eprintln!("Failed to send radius/sigma update: {e}");
             }
@@ -215,19 +206,6 @@ impl GaussianBlurView {
     }
 
     // Value control component for radius and sigma
-
-    // Radius control component
-    fn render_radius_control(
-        &self,
-        cx: &mut Context<Self>,
-        _window: &mut Window,
-    ) -> impl IntoElement {
-        self.radius_control
-            .clone()
-            .expect("radius_control should be initialized before use")
-    }
-
-    // Sigma control component
     fn render_sigma_control(
         &self,
         cx: &mut Context<Self>,
@@ -238,7 +216,6 @@ impl GaussianBlurView {
             .expect("sigma_control should be initialized before use")
     }
 
-    // Preset button component
     fn render_preset_button(
         &self,
         label: String,
@@ -261,13 +238,12 @@ impl GaussianBlurView {
                           _event: &MouseDownEvent,
                           _window: &mut Window,
                           _cx: &mut Context<GaussianBlurView>| {
-                        this.update_radius_sigma(radius, sigma);
+                        this.update_sigma(sigma);
                     },
                 ),
             )
     }
 
-    // Presets section component
     fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
@@ -286,7 +262,6 @@ impl GaussianBlurView {
             )
     }
 
-    // Controls section component
     fn render_controls_section(
         &self,
         cx: &mut Context<Self>,
@@ -296,7 +271,6 @@ impl GaussianBlurView {
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_radius_control(cx, _window))
             .child(self.render_sigma_control(cx, _window))
     }
 }
@@ -319,8 +293,6 @@ impl Render for GaussianBlurView {
                     .child("Error: Unable to read gaussian blur state");
             }
         };
-
-        let is_enabled = state.is_enabled;
 
         if self.sigma_control.is_none() {
             return div()
@@ -393,18 +365,6 @@ impl ToolFrontend for GaussianBlurView {
             .expect("State lock should not be poisoned")
             .clone();
 
-        let radius_control = cx.new(|cx| {
-            ValueControl::new(
-                format!("{:.2}", state.radius),
-                state.radius,
-                "Radius".to_string(),
-                0.1,
-                "radius".to_string(),
-                0.1,
-                10.0,
-            )
-        });
-
         let sigma_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.2}", state.sigma),
@@ -417,23 +377,6 @@ impl ToolFrontend for GaussianBlurView {
             )
         });
 
-        // Handle ValueControl events
-        cx.subscribe(
-            &radius_control,
-            |this, _control, event: &ValueControlEvent, _cx| {
-                if event.id == "radius" {
-                    let current_state = this
-                        .state
-                        .read()
-                        .expect("State lock should not be poisoned");
-                    let s = current_state.sigma;
-                    drop(current_state);
-                    this.update_radius_sigma(event.value, s);
-                }
-            },
-        )
-        .detach();
-
         cx.subscribe(
             &sigma_control,
             |this, _control, event: &ValueControlEvent, _cx| {
@@ -442,15 +385,13 @@ impl ToolFrontend for GaussianBlurView {
                         .state
                         .read()
                         .expect("State lock should not be poisoned");
-                    let r = current_state.radius;
                     drop(current_state);
-                    this.update_radius_sigma(r, event.value);
+                    this.update_sigma(event.value);
                 }
             },
         )
         .detach();
 
-        self.radius_control = Some(radius_control);
         self.sigma_control = Some(sigma_control);
 
         cx.notify();

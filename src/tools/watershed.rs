@@ -308,9 +308,7 @@ impl WatershedView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        
-        self
-            .sigma_control
+        self.sigma_control
             .clone()
             .expect("sigma_control should be initialized before use")
     }
@@ -321,9 +319,7 @@ impl WatershedView {
         cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
-        
-        self
-            .min_distance_control
+        self.min_distance_control
             .clone()
             .expect("min_distance_control should be initialized before use")
     }
