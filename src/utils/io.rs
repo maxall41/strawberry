@@ -165,6 +165,7 @@ impl CellCounterMarkerFile {
     /// Convert to CounterState
     pub fn to_counter_state(&self) -> CounterState {
         let mut manual_counts = HashMap::new();
+        let mut count_type_visibility = HashMap::new();
 
         for marker_type in &self.marker_data.marker_types {
             let counts: Vec<CountData> = marker_type
@@ -174,6 +175,7 @@ impl CellCounterMarkerFile {
                 .collect();
             if !counts.is_empty() {
                 manual_counts.insert(marker_type.type_id, counts);
+                count_type_visibility.insert(marker_type.type_id, true);
             }
         }
 
@@ -186,6 +188,7 @@ impl CellCounterMarkerFile {
             active_count_type: Some(self.marker_data.current_type),
             filter_proxys: Vec::new(),
             review_current_index: 0,
+            count_type_visibility,
         }
     }
 }

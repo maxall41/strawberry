@@ -114,6 +114,7 @@ pub enum FilterMessage {
 pub enum CountMessage {
     NewCountType(u16),
     DeleteCountType(u16),
+    ToggleCountTypeVisibility(u16),
     SetMode(counter::CounterMode),
     SetActiveCountType(u16),
     SetActiveTool(Option<CounterTool>),
@@ -124,6 +125,7 @@ pub enum CountMessage {
     CopyToManual,
     ReviewNavigatePrevious,
     ReviewNavigateNext,
+    DeleteCurrentCount,
     DeletionLasso(Vec<(u64, u64)>),
 }
 

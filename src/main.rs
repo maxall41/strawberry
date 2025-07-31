@@ -535,6 +535,15 @@ impl Render for PrimaryViewer {
 
                         // Draw manual counts
                         for (count_type_id, counts) in &counter_state.manual_counts {
+                            // Only draw if visible
+                            let is_visible = counter_state
+                                .count_type_visibility
+                                .get(count_type_id)
+                                .unwrap_or(&true);
+                            if !*is_visible {
+                                continue;
+                            }
+
                             let color_index = (*count_type_id as usize) % CIRCLE_COLORS.len();
                             let color = CIRCLE_COLORS[color_index];
                             let gpui_color = rgb((color[0] as u32) << 16

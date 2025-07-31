@@ -9,7 +9,7 @@ use gpui::{
 use rfd::FileDialog;
 
 use crate::{
-    gui::{value_control::ValueControl, ToggleButton},
+    gui::{icon::Icon, value_control::ValueControl, ToggleButton},
     pipeline::{
         counter::{CounterMode, CounterState, CounterTool},
         BackendToolType, CountMessage, FilterMessage, FrontendMessage, PipelineCommand,
@@ -368,6 +368,28 @@ impl CounterView {
         }
     }
 
+    fn toggle_count_type_visibility(&self, count_type_id: u16) {
+        let current_tool_index = match self.get_current_tool_index() {
+            Some(index) => index,
+            None => {
+                eprintln!("No current tool index available for toggle count type visibility");
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::CountMessage(CountMessage::ToggleCountTypeVisibility(
+                    count_type_id,
+                )),
+            )) {
+                eprintln!("Failed to send toggle count type visibility command: {e}");
+            }
+        } else {
+            eprintln!("No sender available for toggle count type visibility command");
+        }
+    }
+
     fn set_tool(
         &mut self,
         tool: Option<CounterTool>,
@@ -539,6 +561,7 @@ impl CounterView {
         count_type_id: u16,
         count_data: &Vec<crate::pipeline::counter::CountData>,
         is_selected: bool,
+        is_visible: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let ii = count_type_id as usize % CIRCLE_COLORS.len();
@@ -572,6 +595,32 @@ impl CounterView {
                                   _window: &mut Window,
                                   _cx: &mut Context<CounterView>| {
                                 this.delete_count_type(count_type_id);
+                            },
+                        ),
+                    ),
+            )
+            .child(
+                // Eye toggle button
+                div()
+                    .w_4()
+                    .h_4()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .child(if is_visible {
+                        Icon::eye_open().size(16.0)
+                    } else {
+                        Icon::eye_closed().size(16.0)
+                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(
+                            move |this: &mut CounterView,
+                                  _event: &MouseDownEvent,
+                                  _window: &mut Window,
+                                  _cx: &mut Context<CounterView>| {
+                                this.toggle_count_type_visibility(count_type_id);
                             },
                         ),
                     ),
@@ -621,7 +670,17 @@ impl CounterView {
                 .into_iter()
                 .map(|(&count_type_id, count_data)| {
                     let is_selected = selected_type == Some(count_type_id);
-                    self.render_count_type_item(count_type_id, count_data, is_selected, cx)
+                    let is_visible = state
+                        .count_type_visibility
+                        .get(&count_type_id)
+                        .unwrap_or(&true);
+                    self.render_count_type_item(
+                        count_type_id,
+                        count_data,
+                        is_selected,
+                        *is_visible,
+                        cx,
+                    )
                 })
         })
     }
@@ -1171,6 +1230,28 @@ impl CounterView {
                                 ),
                             ),
                     )
+                    .child(
+                        div()
+                            .px_3()
+                            .py_1()
+                            .bg(rgb(0xaa3333))
+                            .hover(|style| style.bg(rgb(0xbb4444)))
+                            .rounded_md()
+                            .text_sm()
+                            .child("Delete")
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(
+                                    |this: &mut CounterView,
+                                     _event: &MouseDownEvent,
+                                     _window: &mut Window,
+                                     _cx: &mut Context<CounterView>| {
+                                        this.send_delete_current_count();
+                                        _cx.notify();
+                                    },
+                                ),
+                            ),
+                    )
                     .child(if current_index < review_counts.len() {
                         let count = &review_counts[current_index];
                         div()
@@ -1236,6 +1317,32 @@ impl CounterView {
             eprintln!("Invalid tool index: {current_tool_index}");
         }
     }
+
+    fn send_delete_current_count(&self) {
+        let current_tool_index = match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => index,
+                None => {
+                    eprintln!("No current tool index available");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {e}");
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::CountMessage(CountMessage::DeleteCurrentCount),
+            )) {
+                eprintln!("Failed to send delete current count command: {e}");
+            }
+        } else {
+            eprintln!("Invalid tool index: {current_tool_index}");
+        }
+    }
 }
 
 impl Render for CounterView {
@@ -1288,27 +1395,29 @@ impl Render for CounterView {
                     .justify_between()
                     .mt_auto()
                     .child(self.render_storage_buttons(cx))
-                    .child(
-                        div()
-                            .px_4()
-                            .py_2()
-                            .bg(rgb(0x0066cc))
-                            .hover(|style| style.bg(rgb(0x0077dd)))
-                            .rounded_md()
-                            .text_sm()
-                            .child("Copy to Manual")
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(
-                                    |this: &mut CounterView,
-                                     _event: &MouseDownEvent,
-                                     _window: &mut Window,
-                                     _cx: &mut Context<CounterView>| {
-                                        this.copy_to_manual();
-                                    },
-                                ),
-                            )
-                    ),
+                    .when(state.mode == CounterMode::Auto, |this| {
+                        this.child(
+                            div()
+                                .px_4()
+                                .py_2()
+                                .bg(rgb(0x0066cc))
+                                .hover(|style| style.bg(rgb(0x0077dd)))
+                                .rounded_md()
+                                .text_sm()
+                                .child("Copy to Manual")
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(
+                                        |this: &mut CounterView,
+                                         _event: &MouseDownEvent,
+                                         _window: &mut Window,
+                                         _cx: &mut Context<CounterView>| {
+                                            this.copy_to_manual();
+                                        },
+                                    ),
+                                )
+                        )
+                    }),
             )
     }
 }

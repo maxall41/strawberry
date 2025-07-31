@@ -116,6 +116,7 @@ pub struct CounterState {
     pub active_tool: Option<CounterTool>,
     pub active_count_type: Option<u16>,
     pub filter_proxys: Vec<FilterProxy>,
+    pub count_type_visibility: HashMap<u16, bool>,
     // Review state fields
     pub review_current_index: usize,
 }
@@ -297,6 +298,7 @@ impl ToolBackend for Counter {
                     PipelineObjectMessage::CountMessage(count_message) => match count_message {
                         CountMessage::NewCountType(id) => {
                             self.state.manual_counts.insert(id, vec![]);
+                            self.state.count_type_visibility.insert(id, true);
                         }
                         CountMessage::DeletionLasso(points) => {
                             if let Some(active_count_type) = &self.state.active_count_type {
@@ -326,6 +328,14 @@ impl ToolBackend for Counter {
                         }
                         CountMessage::DeleteCountType(id) => {
                             self.state.manual_counts.remove(&id);
+                            self.state.count_type_visibility.remove(&id);
+                        }
+                        CountMessage::ToggleCountTypeVisibility(id) => {
+                            let current_visibility =
+                                self.state.count_type_visibility.get(&id).unwrap_or(&true);
+                            self.state
+                                .count_type_visibility
+                                .insert(id, !current_visibility);
                         }
                         CountMessage::SetMode(new_mode) => {
                             self.state.mode = new_mode;
@@ -370,6 +380,14 @@ impl ToolBackend for Counter {
                                     self.state.mode = loaded_state.mode;
                                     self.state.active_count_type = loaded_state.active_count_type;
 
+                                    // Initialize visibility for all loaded count types
+                                    self.state.count_type_visibility.clear();
+                                    for &count_type_id in self.state.manual_counts.keys() {
+                                        self.state
+                                            .count_type_visibility
+                                            .insert(count_type_id, true);
+                                    }
+
                                     self.global_sender.send(PipelineCommand::FrontendMessage(
                                         FrontendMessage::UserFeedback(
                                             "Counts loaded successfully!".to_string(),
@@ -395,6 +413,7 @@ impl ToolBackend for Counter {
                             self.state
                                 .manual_counts
                                 .insert(new_key, self.state.auto_counts.clone());
+                            self.state.count_type_visibility.insert(new_key, true);
                             self.state.mode = CounterMode::Manual;
                             self.state.active_count_type = Some(0)
                         }
@@ -428,6 +447,26 @@ impl ToolBackend for Counter {
                                     if counts_len > 0 {
                                         let new_index = (current_index + 1) % counts_len;
                                         self.state.review_current_index = new_index;
+                                    }
+                                }
+                            }
+                        }
+                        CountMessage::DeleteCurrentCount => {
+                            if let Some(active_count_type) = self.state.active_count_type {
+                                if let Some(counts) =
+                                    self.state.manual_counts.get_mut(&active_count_type)
+                                {
+                                    let current_index = self.state.review_current_index;
+
+                                    if current_index < counts.len() {
+                                        counts.remove(current_index);
+
+                                        // Adjust review index if necessary
+                                        if counts.is_empty() {
+                                            self.state.review_current_index = 0;
+                                        } else if current_index >= counts.len() {
+                                            self.state.review_current_index = counts.len() - 1;
+                                        }
                                     }
                                 }
                             }
@@ -516,6 +555,7 @@ impl Counter {
                 active_count_type: None,
                 review_current_index: 0,
                 filter_proxys,
+                count_type_visibility: HashMap::new(),
             },
             frontend_senders: vec![],
             index: 0,
