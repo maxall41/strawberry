@@ -9,7 +9,6 @@
 - [X] Sobel filter
 - [X] Grayscale
 - [X] Image export
-- [ ] Fallback to CPU for all image processors with OpenCV: https://crates.io/crates/opencv
 - [ ] If compositing > 7 images then just batch into 7 image batches and run each and then composite them together (supports up to 49 images which should be enough for pretty much everything)
 - [X] Safe indexing
 - [ ] Add delete currently selected count feature to counter review mode
@@ -30,9 +29,11 @@
 - [X] Compositor layers count does not update on new image load
 - [ ] Turning a layer or adjusting contrast (or anything that pushes new image to viewer) on and off snaps the viewport back to the current review index.
 - [ ] Build actual macos .app
+- [ ] Make compositor/decompositor layer start 1 and not 0 in the GUI
 
 
 ## Alpha 0.2
+- [ ] Replace Arc with Rc's. Most of them can be replaced with Rc's as they single threaded.
 - [ ] Command pallete
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
 - [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
@@ -45,6 +46,7 @@
 - [ ] Documentation
 - [ ] Welcome screen & onboarding
 - [ ] Themes & Nicer GUI
+- [ ] Try to get all core interactions under 100ms response time including start up time, image load time, and tool processing time for as many tools as possible.
 
 # Alpha 0.3
 - [ ] Flat field correction

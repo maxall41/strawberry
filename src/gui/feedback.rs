@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, rgb, Context, InteractiveElement, IntoElement, MouseDownEvent, ParentElement,
-    Render, Styled, Window,
+    div, rgb, Context, InteractiveElement, IntoElement, MouseDownEvent, ParentElement, Render,
+    Styled, Window,
 };
 
 #[derive(Clone, Debug)]
