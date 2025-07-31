@@ -58,7 +58,7 @@ pub enum ContrastMessage {
 
 #[derive(Debug, Clone)]
 pub enum GaussianBlurMessage {
-    SetRadiusSigma(f32, f32),
+    SetSigma(f32),
 }
 
 #[derive(Debug, Clone)]

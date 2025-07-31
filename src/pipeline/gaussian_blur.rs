@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GaussianBlurState {
-    pub radius: f32,
     pub sigma: f32,
     pub is_enabled: bool,
 }
@@ -58,11 +57,7 @@ impl ToolBackend for GaussianBlur {
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self
-                .gaussian_blur
-                .apply_blur(image, self.state.radius, self.state.sigma)
-                .await
-            {
+            *image = match self.gaussian_blur.apply_blur(image, self.state.sigma).await {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
@@ -88,8 +83,7 @@ impl ToolBackend for GaussianBlur {
                         self.state.is_enabled = value;
                     }
                     PipelineObjectMessage::GaussianBlurMessage(message) => match message {
-                        GaussianBlurMessage::SetRadiusSigma(radius, sigma) => {
-                            self.state.radius = radius;
+                        GaussianBlurMessage::SetSigma(sigma) => {
                             self.state.sigma = sigma;
                         }
                     },
@@ -158,7 +152,6 @@ impl GaussianBlur {
         Self {
             state: GaussianBlurState {
                 is_enabled: false,
-                radius: 5.0,
                 sigma: 2.0,
             },
             gaussian_blur: GpuGaussianBlur::new(gpu_image_processor).await,

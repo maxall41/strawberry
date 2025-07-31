@@ -7,7 +7,6 @@ use gpui::{
     Point, RenderImage, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use gui::feedback::FeedbackModal;
-use human_panic::setup_panic;
 use image::{Frame, RgbaImage};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -134,6 +133,7 @@ impl PrimaryViewer {
                         }
                         PipelineCommand::FrontendMessage(msg) => {
                             if let FrontendMessage::UserFeedback(text) = msg {
+                                println!("Toast added {}", text);
                                 let raw_modal = FeedbackModal::new(text);
                                 let modal = cx.new(|cx| {
                                     raw_modal.enable_auto_close(cx);
@@ -143,7 +143,6 @@ impl PrimaryViewer {
                                     this.toasts.push(
                                         modal.expect("Modal entity should be created successfully"),
                                     );
-                                    println!("Toast added");
                                     cx.notify();
                                 }) {
                                     eprintln!("Failed to add toast: {e}");
@@ -681,7 +680,6 @@ fn create_tool_window<T, A>(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    setup_panic!();
     env_logger::init();
     let args = Args::parse();
 
