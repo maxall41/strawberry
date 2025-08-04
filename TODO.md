@@ -14,7 +14,7 @@
 - [X] Add delete currently selected count feature to counter review mode
 - [ ] Keyboard shortcuts for EVERYTHING (See reMarkable)
       - [X] CMD+T | Enable/disable tool shortcut
-      - [ ] Counter: CMD+X = Place, CMD+Y = Delete, CMD+Z=Lasso, CMD+R=Review
+      - [X] Counter: CMD+1 = Place, CMD+2 = Delete, CMD+3=Lasso, CMD+4=Review
       - [ ] Compositor/Decompositor: CMD+(0-9) = Enable/disable layer (0-9)
       - [ ] Counter: <- (left arrow) = last count, -> (right arrow) = next count
       - [ ] Counter: CMD+S = Save counts, CMD+L = Load counts
@@ -36,7 +36,7 @@
 - [ ] Turning a layer or adjusting contrast (or anything that pushes new image to viewer) on and off snaps the viewport back to the current review index.
 - [ ] Build actual macos .app
 - [ ] Make compositor/decompositor layer start 1 and not 0 in the GUI
-
+- [ ] Toast stays in toast list after disappearing causing future toasts to be placed higher and higher even though no toasts are below it.
 
 ## Alpha 0.2 (Rebar)
 - [ ] Replace Arc with Rc's. Most of them can be replaced with Rc's as they single threaded.
