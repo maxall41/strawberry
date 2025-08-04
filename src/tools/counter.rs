@@ -588,6 +588,126 @@ impl CounterView {
         self.load_counts(window, cx);
     }
 
+    fn new_count_type_action(
+        &mut self,
+        _: &CounterNewCountType,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.add_count_type();
+        cx.notify();
+    }
+
+    fn select_count_type_by_position(
+        &mut self,
+        position: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = match self.state.read() {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+
+        let mut sorted_counts: Vec<_> = state.manual_counts.iter().collect();
+        sorted_counts.sort_by_key(|(id, _)| **id);
+
+        if let Some((&count_type_id, _)) = sorted_counts.get(position) {
+            drop(state); // Release the read lock before calling select_count_type
+            self.select_count_type(count_type_id, window, cx);
+        }
+    }
+
+    fn select_count_type_0_action(
+        &mut self,
+        _: &CounterSelectType0,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_count_type_by_position(0, window, cx);
+    }
+
+    fn select_count_type_1_action(
+        &mut self,
+        _: &CounterSelectType1,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_count_type_by_position(1, window, cx);
+    }
+
+    fn select_count_type_2_action(
+        &mut self,
+        _: &CounterSelectType2,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_count_type_by_position(2, window, cx);
+    }
+
+    fn select_count_type_3_action(
+        &mut self,
+        _: &CounterSelectType3,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_count_type_by_position(3, window, cx);
+    }
+
+    fn select_count_type_4_action(
+        &mut self,
+        _: &CounterSelectType4,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_count_type_by_position(4, window, cx);
+    }
+
+    fn select_count_type_5_action(
+        &mut self,
+        _: &CounterSelectType5,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_count_type_by_position(5, window, cx);
+    }
+
+    fn select_count_type_6_action(
+        &mut self,
+        _: &CounterSelectType6,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_count_type_by_position(6, window, cx);
+    }
+
+    fn select_count_type_7_action(
+        &mut self,
+        _: &CounterSelectType7,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_count_type_by_position(7, window, cx);
+    }
+
+    fn select_count_type_8_action(
+        &mut self,
+        _: &CounterSelectType8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_count_type_by_position(8, window, cx);
+    }
+
+    fn select_count_type_9_action(
+        &mut self,
+        _: &CounterSelectType9,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_count_type_by_position(9, window, cx);
+    }
+
     fn toggle_mode(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
         let current_tool_index = match self.current_tool_index.read() {
             Ok(guard) => match *guard {
@@ -699,6 +819,7 @@ impl CounterView {
         count_data: &Vec<crate::pipeline::counter::CountData>,
         is_selected: bool,
         is_visible: bool,
+        position: Option<usize>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let ii = count_type_id as usize % CIRCLE_COLORS.len();
@@ -717,6 +838,7 @@ impl CounterView {
                     .w_4()
                     .h_4()
                     .bg(rgb(0xaa0000))
+                    .hover(|style| style.bg(rgb(0xbb1111)))
                     .rounded_sm()
                     .flex()
                     .items_center()
@@ -744,7 +866,6 @@ impl CounterView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .cursor_pointer()
                     .child(if is_visible {
                         Icon::eye_open().size(16.0)
                     } else {
@@ -771,10 +892,24 @@ impl CounterView {
             .child(
                 // Selection indicator
                 div()
-                    .w_3()
-                    .h_3()
+                    .w_4()
+                    .h_4()
+                    .id(ElementId::Name(SharedString::from(format!(
+                        "count-type-{}-selection-circle",
+                        count_type_id
+                    ))))
+                    .when(position.is_some() && position.unwrap() <= 9, |this| {
+                        let pos = position.unwrap();
+                        this.tooltip(move |_window, cx| {
+                            let tooltip_view = crate::gui::tooltip::TooltipView {
+                                text: format!("⌘{}", pos),
+                            };
+                            cx.new(|_cx| tooltip_view).into()
+                        })
+                    })
                     .rounded_full()
                     .bg(if is_selected { color } else { rgb(0x888888) })
+                    .when(!is_selected, |el| el.hover(|style| style.bg(rgb(0xaaaaaa))))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
@@ -805,7 +940,8 @@ impl CounterView {
             sorted_counts.sort_by_key(|(id, _)| **id);
             sorted_counts
                 .into_iter()
-                .map(|(&count_type_id, count_data)| {
+                .enumerate()
+                .map(|(position, (&count_type_id, count_data))| {
                     let is_selected = selected_type == Some(count_type_id);
                     let is_visible = state
                         .count_type_visibility
@@ -816,6 +952,7 @@ impl CounterView {
                         count_data,
                         is_selected,
                         *is_visible,
+                        Some(position),
                         cx,
                     )
                 })
@@ -836,6 +973,13 @@ impl CounterView {
             .justify_center()
             .text_lg()
             .child("+")
+            .id("add-count-type-button")
+            .tooltip(move |_window, cx| {
+                let tooltip_view = crate::gui::tooltip::TooltipView {
+                    text: "⌘N".to_string(),
+                };
+                cx.new(|_cx| tooltip_view).into()
+            })
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(
@@ -1545,7 +1689,18 @@ actions!([
     CounterReviewNext,
     CounterDeleteCount,
     CounterSaveCounts,
-    CounterLoadCounts
+    CounterLoadCounts,
+    CounterNewCountType,
+    CounterSelectType0,
+    CounterSelectType1,
+    CounterSelectType2,
+    CounterSelectType3,
+    CounterSelectType4,
+    CounterSelectType5,
+    CounterSelectType6,
+    CounterSelectType7,
+    CounterSelectType8,
+    CounterSelectType9
 ]);
 
 impl Render for CounterView {
@@ -1599,6 +1754,17 @@ impl Render for CounterView {
             .on_action(cx.listener(Self::delete_count_action))
             .on_action(cx.listener(Self::save_counts_action))
             .on_action(cx.listener(Self::load_counts_action))
+            .on_action(cx.listener(Self::new_count_type_action))
+            .on_action(cx.listener(Self::select_count_type_0_action))
+            .on_action(cx.listener(Self::select_count_type_1_action))
+            .on_action(cx.listener(Self::select_count_type_2_action))
+            .on_action(cx.listener(Self::select_count_type_3_action))
+            .on_action(cx.listener(Self::select_count_type_4_action))
+            .on_action(cx.listener(Self::select_count_type_5_action))
+            .on_action(cx.listener(Self::select_count_type_6_action))
+            .on_action(cx.listener(Self::select_count_type_7_action))
+            .on_action(cx.listener(Self::select_count_type_8_action))
+            .on_action(cx.listener(Self::select_count_type_9_action))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
             .child(self.render_mode_toggle(&state, cx))
@@ -1671,7 +1837,6 @@ impl ToolFrontend for CounterView {
         println!("Sent discovery request to backend | Counter");
 
         cx.bind_keys([
-            //  CMD+W = Place, CMD+E = Delete, CMD+L=Lasso, CMD+R=Review
             KeyBinding::new("cmd-t", CounterToggleActivity, None),
             KeyBinding::new("cmd-w", CounterPlaceTool, None),
             KeyBinding::new("cmd-e", CounterDeleteTool, None),
@@ -1682,6 +1847,17 @@ impl ToolFrontend for CounterView {
             KeyBinding::new("cmd-d", CounterDeleteCount, None),
             KeyBinding::new("cmd-s", CounterSaveCounts, None),
             KeyBinding::new("cmd-l", CounterLoadCounts, None),
+            KeyBinding::new("cmd-n", CounterNewCountType, None),
+            KeyBinding::new("cmd-0", CounterSelectType0, None),
+            KeyBinding::new("cmd-1", CounterSelectType1, None),
+            KeyBinding::new("cmd-2", CounterSelectType2, None),
+            KeyBinding::new("cmd-3", CounterSelectType3, None),
+            KeyBinding::new("cmd-4", CounterSelectType4, None),
+            KeyBinding::new("cmd-5", CounterSelectType5, None),
+            KeyBinding::new("cmd-6", CounterSelectType6, None),
+            KeyBinding::new("cmd-7", CounterSelectType7, None),
+            KeyBinding::new("cmd-8", CounterSelectType8, None),
+            KeyBinding::new("cmd-9", CounterSelectType9, None),
         ]);
 
         self.process_messages(window, cx);

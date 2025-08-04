@@ -71,7 +71,6 @@ impl<V: 'static> ToggleButton<V> {
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .cursor_pointer()
                     .bg(if is_enabled {
                         rgb(0x00aa00)
                     } else {
