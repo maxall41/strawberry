@@ -1,8 +1,9 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, FocusHandle, Focusable, MouseDownEvent,
-    Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, FocusHandle, Focusable,
+    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 
 use crate::gui::ToggleButton;
@@ -165,6 +166,21 @@ impl GrayscaleView {
         }
     }
 
+    fn toggle_activity_action(
+        &mut self,
+        _: &GrayscaleToggleActivity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current_enabled = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .is_enabled;
+
+        self.toggle_enabled(current_enabled, window, cx);
+    }
+
     fn render_header(&self) -> impl IntoElement {
         div()
             .text_xl()
@@ -185,9 +201,12 @@ impl GrayscaleView {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
+        .with_keyboard_shortcut("⌘T")
         .render(cx)
     }
 }
+
+actions!([GrayscaleToggleActivity]);
 
 impl Render for GrayscaleView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -209,6 +228,7 @@ impl Render for GrayscaleView {
         };
 
         div()
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -227,6 +247,7 @@ impl Render for GrayscaleView {
                     },
                 )
             })
+            .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
     }
@@ -262,6 +283,8 @@ impl ToolFrontend for GrayscaleView {
             return;
         }
         println!("Sent discovery request to backend | Grayscale");
+
+        cx.bind_keys([KeyBinding::new("cmd-t", GrayscaleToggleActivity, None)]);
 
         self.process_messages(window, cx);
     }

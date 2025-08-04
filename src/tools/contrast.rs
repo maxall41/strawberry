@@ -4,8 +4,9 @@ use std::sync::{Arc, RwLock};
 
 use flume;
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
-    MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
@@ -323,30 +324,6 @@ impl ContrastView {
         }
     }
 
-    fn adjust_min(&mut self, delta: f32, _window: &mut Window, _cx: &mut Context<Self>) {
-        let (min, max) = match self.state.read() {
-            Ok(state) => (state.min, state.max),
-            Err(e) => {
-                eprintln!("Failed to read state for min adjustment: {e}");
-                return;
-            }
-        };
-        let new_min = (min + delta).clamp(0.0, max - 0.01);
-        self.update_min_max(new_min, max, _window, _cx);
-    }
-
-    fn adjust_max(&mut self, delta: f32, _window: &mut Window, _cx: &mut Context<Self>) {
-        let (min, max) = match self.state.read() {
-            Ok(state) => (state.min, state.max),
-            Err(e) => {
-                eprintln!("Failed to read state for max adjustment: {e}");
-                return;
-            }
-        };
-        let new_max = (max + delta).clamp(min + 0.01, 1.0);
-        self.update_min_max(min, new_max, _window, _cx);
-    }
-
     // Header component
     fn render_header(&self) -> impl IntoElement {
         div()
@@ -369,10 +346,9 @@ impl ContrastView {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
+        .with_keyboard_shortcut("⌘T")
         .render(cx)
     }
-
-    // Value control component (reusable for min/max)
 
     // Min value control component
     fn render_min_control(&self, cx: &mut Context<Self>, _window: &mut Window) -> impl IntoElement {
@@ -443,6 +419,21 @@ impl ContrastView {
             )
     }
 
+    fn toggle_activity_action(
+        &mut self,
+        _: &ContrastToggleActivity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current_enabled = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .is_enabled;
+
+        self.toggle_enabled(current_enabled, window, cx);
+    }
+
     // Controls section component
     fn render_controls_section(
         &self,
@@ -457,6 +448,8 @@ impl ContrastView {
             .child(self.render_max_control(cx, _window))
     }
 }
+
+actions!([ContrastToggleActivity]);
 
 impl Render for ContrastView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -478,6 +471,8 @@ impl Render for ContrastView {
         };
 
         div()
+            .track_focus(&self.focus_handle(cx))
+            .on_action(cx.listener(Self::toggle_activity_action))
             .flex()
             .flex_col()
             .gap_3()
@@ -533,6 +528,8 @@ impl ToolFrontend for ContrastView {
             return;
         }
         println!("Sent discovery request to backend | Contrast");
+
+        cx.bind_keys([KeyBinding::new("cmd-t", ContrastToggleActivity, None)]);
 
         // Create and initialize ValueControl components
         let state = self

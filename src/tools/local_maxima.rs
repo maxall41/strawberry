@@ -3,8 +3,9 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
-    MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
@@ -351,6 +352,21 @@ impl LocalMaximaView {
         );
     }
 
+    fn toggle_activity_action(
+        &mut self,
+        _: &LocalMaximaToggleActivity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current_enabled = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .is_enabled;
+
+        self.toggle_enabled(current_enabled, window, cx);
+    }
+
     // Header component
     fn render_header(&self) -> impl IntoElement {
         div()
@@ -373,6 +389,7 @@ impl LocalMaximaView {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
+        .with_keyboard_shortcut("⌘T")
         .render(cx)
     }
 
@@ -572,6 +589,8 @@ impl LocalMaximaView {
     }
 }
 
+actions!([LocalMaximaToggleActivity]);
+
 impl Render for LocalMaximaView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
@@ -594,6 +613,7 @@ impl Render for LocalMaximaView {
         let is_enabled = state.is_enabled;
 
         div()
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -612,6 +632,7 @@ impl Render for LocalMaximaView {
                     },
                 )
             })
+            .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
             .child(self.render_controls_section(cx, _window))
@@ -649,6 +670,8 @@ impl ToolFrontend for LocalMaximaView {
             return;
         }
         println!("Sent discovery request to backend | LocalMaxima");
+
+        cx.bind_keys([KeyBinding::new("cmd-t", LocalMaximaToggleActivity, None)]);
 
         // Create and initialize ValueControl components
         let state = self

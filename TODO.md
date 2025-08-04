@@ -1,4 +1,4 @@
-## Alpha 0.1:
+## Alpha 0.1 (Foundation):
 - [X] Decomposer tool that takes in one image and splits out each color channel as it's own image
 - [X] Allow user to type values directly into value control + psuedo-slider
 - [X] Saving and loading pipelines
@@ -13,6 +13,11 @@
 - [X] Safe indexing
 - [X] Add delete currently selected count feature to counter review mode
 - [ ] Keyboard shortcuts for EVERYTHING (See reMarkable)
+      - [X] CMD+T | Enable/disable tool shortcut
+      - [ ] Counter: CMD+X = Place, CMD+Y = Delete, CMD+Z=Lasso, CMD+R=Review
+      - [ ] Compositor/Decompositor: CMD+(0-9) = Enable/disable layer (0-9)
+      - [ ] Counter: <- (left arrow) = last count, -> (right arrow) = next count
+      - [ ] Counter: CMD+S = Save counts, CMD+L = Load counts
 - [ ] Move viewport to center of image on image load unless dimensions of new images match the current image dimensions.
 - [X] Default counter to no tool selected
 - [X] Allow user to toggle display of each count type in Counter
@@ -24,6 +29,7 @@
 - [X] Debounce pipeline events so if the user is changing the state rapdily like with a value counter it is all processed in a bundle
 - [X] Throw error when trying to composite images of different sizes
 - [X] Don't allow user to enable compositor if there is only one image to prevent RGBA-BRGA mixups
+- [ ] Turning on and off compositor does not actually enable/disable on backend
 - [ ] Fix Clippy Warnings
 - [ ] Reset counter on new image load: Loading a new image for the second time and then loading the second set of counts causes a panic.
 - [X] Compositor layers count does not update on new image load
@@ -32,9 +38,10 @@
 - [ ] Make compositor/decompositor layer start 1 and not 0 in the GUI
 
 
-## Alpha 0.2
+## Alpha 0.2 (Rebar)
 - [ ] Replace Arc with Rc's. Most of them can be replaced with Rc's as they single threaded.
 - [ ] Command pallete
+- [ ] Allow user to configure counter to also measure things like circularity, and area in counter settings. Include in export. Also allow user to export counts as .CSV, and .XLSX in addition to .XML.
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
 - [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
 - [ ] Add mode toggle to "Threshold" that in addition to manual thresholding it supports Otsu thresholding, Local thresholding, and maybe one or two other thresholding methods.
@@ -46,29 +53,38 @@
 - [ ] Documentation
 - [ ] Welcome screen & onboarding
 - [ ] Themes & Nicer GUI
+- [ ] Fill Holes Morphology Option
 - [ ] Try to get all core interactions under 100ms response time including start up time, image load time, and tool processing time for as many tools as possible.
 
-# Alpha 0.3
+# Alpha 0.3 (Cement)
 - [ ] Flat field correction
 - [ ] Deconvolution with Richardson-Lucy
-- [ ] Cropping + General Selection tools (Line drawing, Rectangle drawing, Ellipse drawing, Lasso drawing)
-- [ ] Flourescene intensity measurment tool (Use general selection tools)
+- [ ] Cropping + General Selection tools (Line drawing, Rectangle drawing, Ellipse drawing, Lasso drawing, Area selection)
+- [ ] Size/length/height/area measurement tools (Depends on general selection tools)
+- [ ] Fluorescence intensity measurement tool (Use general selection tools)
 - [ ] Submit feedback/feature request/bug report button
 - [ ] Abstract drop menu in tools/manager.rs into GUI component & Use proper GPUI drag system to improve UX
 - [ ] Difference of Guassians
 - [ ] Run Lutz on GPU
-- [ ] Support Z-stacking
-- [ ] Support stitching
-- [ ] Settings menu with option to force CPU processing + themes
+- [ ] Themes
 - [ ] Multiple tool instances
 - [ ] Undo & Redo
 - [ ] Linux & Windows builds
 
+# Alpha 0.4 (Cedar)
+- [ ] Weka segmentation with weka-rs
+- [ ] StarDist Support
+- [ ] SAM Support: https://github.com/segment-anything-models-java/SAMJ-IJ
+- [ ] Support Z-stacking
+- [ ] Support stitching
+
+# Alpha 0.5 (Acacia)
+- [ ] Cell/object tracking support (see Fiji/ImageJ TrackMate)
+- [ ] Colocalization analysis tool
+
 ## Other Features
 
 - [ ] Try replacing Flume with Kanal and see if it improves performance
-- [ ] Weka segmentation with weka-rs
-- [ ] Colocalization analysis tool
 - [ ] Non local means denoise
 
 ## Big features:

@@ -1,8 +1,9 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
-    MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
@@ -198,6 +199,21 @@ impl SobelView {
         }
     }
 
+    fn toggle_activity_action(
+        &mut self,
+        _: &SobelToggleActivity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current_enabled = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .is_enabled;
+
+        self.toggle_enabled(current_enabled, window, cx);
+    }
+
     fn toggle_threshold_enabled(&mut self, current_value: bool) {
         let Some(current_tool_index) = self.get_current_tool_index() else {
             return;
@@ -255,6 +271,7 @@ impl SobelView {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
+        .with_keyboard_shortcut("⌘T")
         .render(cx)
     }
 
@@ -362,6 +379,8 @@ impl SobelView {
     }
 }
 
+actions!([SobelToggleActivity]);
+
 impl Render for SobelView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
@@ -382,6 +401,7 @@ impl Render for SobelView {
         };
 
         div()
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -400,6 +420,7 @@ impl Render for SobelView {
                     },
                 )
             })
+            .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
             .child(self.render_controls_section(&state, cx, _window))
@@ -437,6 +458,8 @@ impl ToolFrontend for SobelView {
             return;
         }
         println!("Sent discovery request to backend | Sobel");
+
+        cx.bind_keys([KeyBinding::new("cmd-t", SobelToggleActivity, None)]);
 
         let state = self
             .state
