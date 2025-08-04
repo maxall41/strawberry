@@ -540,6 +540,54 @@ impl CounterView {
         }
     }
 
+    fn review_previous_action(
+        &mut self,
+        _: &CounterReviewPrevious,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.send_review_navigate_previous();
+        cx.notify();
+    }
+
+    fn review_next_action(
+        &mut self,
+        _: &CounterReviewNext,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.send_review_navigate_next();
+        cx.notify();
+    }
+
+    fn delete_count_action(
+        &mut self,
+        _: &CounterDeleteCount,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.send_delete_current_count();
+        cx.notify();
+    }
+
+    fn save_counts_action(
+        &mut self,
+        _: &CounterSaveCounts,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_counts(window, cx);
+    }
+
+    fn load_counts_action(
+        &mut self,
+        _: &CounterLoadCounts,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.load_counts(window, cx);
+    }
+
     fn toggle_mode(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
         let current_tool_index = match self.current_tool_index.read() {
             Ok(guard) => match *guard {
@@ -887,28 +935,28 @@ impl CounterView {
                 CounterTool::Place,
                 "Place".to_string(),
                 *current_tool == Some(CounterTool::Place),
-                "⌘1",
+                "⌘W",
                 cx,
             ))
             .child(self.render_tool_button(
                 CounterTool::Delete,
                 "Delete".to_string(),
                 *current_tool == Some(CounterTool::Delete),
-                "⌘2",
+                "⌘E",
                 cx,
             ))
             .child(self.render_tool_button(
                 CounterTool::LassoDelete,
                 "Lasso | Delete".to_string(),
                 *current_tool == Some(CounterTool::LassoDelete),
-                "⌘3",
+                "⌘A",
                 cx,
             ))
             .child(self.render_tool_button(
                 CounterTool::Review,
                 "Review".to_string(),
                 *current_tool == Some(CounterTool::Review),
-                "⌘4",
+                "⌘R",
                 cx,
             ))
     }
@@ -927,6 +975,13 @@ impl CounterView {
                     .rounded_md()
                     .text_sm()
                     .child("Save")
+                    .id("save-button")
+                    .tooltip(move |_window, cx| {
+                        let tooltip_view = crate::gui::tooltip::TooltipView {
+                            text: "⌘S".to_string(),
+                        };
+                        cx.new(|_cx| tooltip_view).into()
+                    })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
@@ -948,6 +1003,13 @@ impl CounterView {
                     .rounded_md()
                     .text_sm()
                     .child("Load")
+                    .id("load-button")
+                    .tooltip(move |_window, cx| {
+                        let tooltip_view = crate::gui::tooltip::TooltipView {
+                            text: "⌘L".to_string(),
+                        };
+                        cx.new(|_cx| tooltip_view).into()
+                    })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
@@ -1295,6 +1357,7 @@ impl CounterView {
                     .gap_2()
                     .child(
                         div()
+                            .id("prev-count")
                             .px_3()
                             .py_1()
                             .bg(rgb(0x666666))
@@ -1302,6 +1365,12 @@ impl CounterView {
                             .rounded_md()
                             .text_sm()
                             .child("← Prev")
+                            .tooltip(move |_window, cx| {
+                                let tooltip_view = crate::gui::tooltip::TooltipView {
+                                    text: "←".to_string(),
+                                };
+                                cx.new(|_cx| tooltip_view).into()
+                            })
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(
@@ -1317,6 +1386,7 @@ impl CounterView {
                     )
                     .child(
                         div()
+                            .id("next-count")
                             .px_3()
                             .py_1()
                             .bg(rgb(0x666666))
@@ -1324,6 +1394,12 @@ impl CounterView {
                             .rounded_md()
                             .text_sm()
                             .child("Next →")
+                            .tooltip(move |_window, cx| {
+                                let tooltip_view = crate::gui::tooltip::TooltipView {
+                                    text: "→".to_string(),
+                                };
+                                cx.new(|_cx| tooltip_view).into()
+                            })
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(
@@ -1346,6 +1422,13 @@ impl CounterView {
                             .rounded_md()
                             .text_sm()
                             .child("Delete")
+                            .id("delete-button")
+                            .tooltip(move |_window, cx| {
+                                let tooltip_view = crate::gui::tooltip::TooltipView {
+                                    text: "⌘D".to_string(),
+                                };
+                                cx.new(|_cx| tooltip_view).into()
+                            })
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(
@@ -1457,7 +1540,12 @@ actions!([
     CounterPlaceTool,
     CounterDeleteTool,
     CounterLassoTool,
-    CounterReviewTool
+    CounterReviewTool,
+    CounterReviewPrevious,
+    CounterReviewNext,
+    CounterDeleteCount,
+    CounterSaveCounts,
+    CounterLoadCounts
 ]);
 
 impl Render for CounterView {
@@ -1506,6 +1594,11 @@ impl Render for CounterView {
             .on_action(cx.listener(Self::delete_tool_action))
             .on_action(cx.listener(Self::lasso_tool_action))
             .on_action(cx.listener(Self::review_tool_action))
+            .on_action(cx.listener(Self::review_previous_action))
+            .on_action(cx.listener(Self::review_next_action))
+            .on_action(cx.listener(Self::delete_count_action))
+            .on_action(cx.listener(Self::save_counts_action))
+            .on_action(cx.listener(Self::load_counts_action))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
             .child(self.render_mode_toggle(&state, cx))
@@ -1578,11 +1671,17 @@ impl ToolFrontend for CounterView {
         println!("Sent discovery request to backend | Counter");
 
         cx.bind_keys([
+            //  CMD+W = Place, CMD+E = Delete, CMD+L=Lasso, CMD+R=Review
             KeyBinding::new("cmd-t", CounterToggleActivity, None),
-            KeyBinding::new("cmd-1", CounterPlaceTool, None),
-            KeyBinding::new("cmd-2", CounterDeleteTool, None),
-            KeyBinding::new("cmd-3", CounterLassoTool, None),
-            KeyBinding::new("cmd-4", CounterReviewTool, None),
+            KeyBinding::new("cmd-w", CounterPlaceTool, None),
+            KeyBinding::new("cmd-e", CounterDeleteTool, None),
+            KeyBinding::new("cmd-a", CounterLassoTool, None),
+            KeyBinding::new("cmd-r", CounterReviewTool, None),
+            KeyBinding::new("left", CounterReviewPrevious, None),
+            KeyBinding::new("right", CounterReviewNext, None),
+            KeyBinding::new("cmd-d", CounterDeleteCount, None),
+            KeyBinding::new("cmd-s", CounterSaveCounts, None),
+            KeyBinding::new("cmd-l", CounterLoadCounts, None),
         ]);
 
         self.process_messages(window, cx);

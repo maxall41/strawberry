@@ -14,10 +14,12 @@
 - [X] Add delete currently selected count feature to counter review mode
 - [ ] Keyboard shortcuts for EVERYTHING (See reMarkable)
       - [X] CMD+T | Enable/disable tool shortcut
-      - [X] Counter: CMD+1 = Place, CMD+2 = Delete, CMD+3=Lasso, CMD+4=Review
+      - [X] Counter: CMD+W = Place, CMD+E = Delete, CMD+A=Lasso, CMD+R=Review
+      - [X] Counter (Review mode): <- (left arrow) = last count, -> (right arrow) = next count
+      - [ ] Counter: CMD+(0-9) Count type: 0 - 9
+      - [X] Counter: CMD+S = Save counts, CMD+L = Load counts
+      - [X] Counter (Review mode): CMD+D = Delete count
       - [ ] Compositor/Decompositor: CMD+(0-9) = Enable/disable layer (0-9)
-      - [ ] Counter: <- (left arrow) = last count, -> (right arrow) = next count
-      - [ ] Counter: CMD+S = Save counts, CMD+L = Load counts
 - [ ] Move viewport to center of image on image load unless dimensions of new images match the current image dimensions.
 - [X] Default counter to no tool selected
 - [X] Allow user to toggle display of each count type in Counter
@@ -37,6 +39,7 @@
 - [ ] Build actual macos .app
 - [ ] Make compositor/decompositor layer start 1 and not 0 in the GUI
 - [ ] Toast stays in toast list after disappearing causing future toasts to be placed higher and higher even though no toasts are below it.
+- [ ] Backend debouncing not working: Try holding down keyboard shortcut (cmd+T) in compositor or holding ← (left arrow) in counter to see what I mean
 
 ## Alpha 0.2 (Rebar)
 - [ ] Replace Arc with Rc's. Most of them can be replaced with Rc's as they single threaded.
