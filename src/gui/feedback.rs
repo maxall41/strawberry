@@ -143,7 +143,6 @@ impl Render for FeedbackModal {
                                         .text_xl()
                                         .opacity(0.7)
                                         .hover(|style| style.opacity(1.0))
-                                        .cursor_pointer()
                                         .child("×")
                                         .on_mouse_down(
                                             gpui::MouseButton::Left,
