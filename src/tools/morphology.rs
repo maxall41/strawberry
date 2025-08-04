@@ -3,8 +3,9 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
-    MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
@@ -302,6 +303,21 @@ impl MorphologyView {
         self.update_operation_and_size(operation, new_element_size, _window, _cx);
     }
 
+    fn toggle_activity_action(
+        &mut self,
+        _: &MorphologyToggleActivity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current_enabled = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .is_enabled;
+
+        self.toggle_enabled(current_enabled, window, cx);
+    }
+
     // Header component
     fn render_header(&self) -> impl IntoElement {
         div()
@@ -324,6 +340,7 @@ impl MorphologyView {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
+        .with_keyboard_shortcut("⌘T")
         .render(cx)
     }
 
@@ -509,6 +526,8 @@ impl MorphologyView {
     }
 }
 
+actions!([MorphologyToggleActivity]);
+
 impl Render for MorphologyView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
@@ -529,6 +548,7 @@ impl Render for MorphologyView {
         };
 
         div()
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -547,6 +567,7 @@ impl Render for MorphologyView {
                     },
                 )
             })
+            .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
             .child(self.render_controls_section(cx, _window))
@@ -585,7 +606,9 @@ impl ToolFrontend for MorphologyView {
         }
         println!("Sent discovery request to backend | Morphology");
 
-        // Create and initialize ValueControl component
+        cx.bind_keys([KeyBinding::new("cmd-t", MorphologyToggleActivity, None)]);
+
+        // Create and initialize ValueControl components
         let state = self
             .state
             .read()

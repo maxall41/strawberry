@@ -1,8 +1,9 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
-    MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
@@ -198,6 +199,21 @@ impl RollingBallView {
         }
     }
 
+    fn toggle_activity_action(
+        &mut self,
+        _: &RollingBallToggleActivity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current_enabled = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .is_enabled;
+
+        self.toggle_enabled(current_enabled, window, cx);
+    }
+
     fn update_ball_radius(&mut self, ball_radius: u32) {
         let Some(current_tool_index) = self.get_current_tool_index() else {
             return;
@@ -241,6 +257,7 @@ impl RollingBallView {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
+        .with_keyboard_shortcut("⌘T")
         .render(cx)
     }
 
@@ -312,6 +329,8 @@ impl RollingBallView {
     }
 }
 
+actions!([RollingBallToggleActivity]);
+
 impl Render for RollingBallView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
@@ -334,6 +353,7 @@ impl Render for RollingBallView {
         let is_enabled = state.is_enabled;
 
         div()
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -352,6 +372,7 @@ impl Render for RollingBallView {
                     },
                 )
             })
+            .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
             .child(self.render_controls_section(cx, _window))
@@ -389,6 +410,8 @@ impl ToolFrontend for RollingBallView {
             return;
         }
         println!("Sent discovery request to backend | RollingBall");
+
+        cx.bind_keys([KeyBinding::new("cmd-t", RollingBallToggleActivity, None)]);
 
         let state = self
             .state

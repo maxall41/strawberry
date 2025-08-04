@@ -1,4 +1,22 @@
-use gpui::{div, prelude::*, rgb, Context, IntoElement, MouseDownEvent};
+use gpui::{div, prelude::*, rgb, AnyView, Context, IntoElement, MouseDownEvent, RenderOnce};
+
+struct TooltipView {
+    text: String,
+}
+
+impl Render for TooltipView {
+    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .p_1()
+            .bg(rgb(0x333333))
+            .border_2()
+            .border_color(rgb(0x979797))
+            .text_color(rgb(0xffffff))
+            .rounded_md()
+            .text_xs()
+            .child(self.text.clone())
+    }
+}
 
 pub struct ToggleButton<V: 'static> {
     pub label: String,
@@ -7,6 +25,7 @@ pub struct ToggleButton<V: 'static> {
     pub disabled_text: String,
     pub on_click:
         Box<dyn Fn(&mut V, &MouseDownEvent, &mut gpui::Window, &mut Context<V>) + 'static>,
+    pub keyboard_shortcut: Option<String>,
 }
 
 impl<V: 'static> ToggleButton<V> {
@@ -21,7 +40,13 @@ impl<V: 'static> ToggleButton<V> {
             enabled_text: "Yes".to_string(),
             disabled_text: "No".to_string(),
             on_click: Box::new(on_click),
+            keyboard_shortcut: None,
         }
+    }
+
+    pub fn with_keyboard_shortcut(mut self, shortcut: &str) -> Self {
+        self.keyboard_shortcut = Some(shortcut.to_string());
+        self
     }
 
     pub fn with_text(mut self, enabled_text: String, disabled_text: String) -> Self {
@@ -40,11 +65,23 @@ impl<V: 'static> ToggleButton<V> {
         };
 
         div()
+            .id("button")
             .flex()
             .items_center()
             .gap_2()
             .mb_3()
             .child(format!("{label}:"))
+            .when(self.keyboard_shortcut.is_some(), |this| {
+                this.tooltip(move |_window, cx| {
+                    let tooltip_view = TooltipView {
+                        text: self
+                            .keyboard_shortcut
+                            .clone()
+                            .expect("Should never fire: Checked is some"),
+                    };
+                    cx.new(|_cx| tooltip_view).into()
+                })
+            })
             .child(
                 div()
                     .px_2()

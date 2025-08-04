@@ -3,8 +3,9 @@
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, AppContext, Bounds, Context, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, FocusHandle, Focusable,
+    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 
 use crate::gui::ToggleButton;
@@ -24,6 +25,15 @@ pub struct CompositorView {
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     _cleanup_guard: crate::tools::CleanupGuard,
+    focus_handle: Option<FocusHandle>,
+}
+
+impl Focusable for CompositorView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle
+            .clone()
+            .expect("focus_handle should be initialized before use")
+    }
 }
 
 impl CompositorView {
@@ -43,6 +53,7 @@ impl CompositorView {
                 command_sender,
                 crate::pipeline::BackendToolType::Compositor,
             ),
+            focus_handle: None,
         }
     }
 
@@ -169,6 +180,21 @@ impl CompositorView {
         }
     }
 
+    fn toggle_activity_action(
+        &mut self,
+        _: &CompositorToggleActivity,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current_enabled = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned")
+            .is_enabled;
+
+        self.toggle_enabled(current_enabled, window, cx);
+    }
+
     // Header component
     fn render_header(&self) -> impl IntoElement {
         div()
@@ -191,6 +217,7 @@ impl CompositorView {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
+        .with_keyboard_shortcut("⌘T")
         .render(cx)
     }
 
@@ -261,6 +288,8 @@ impl CompositorView {
     }
 }
 
+actions!([CompositorToggleActivity]);
+
 impl Render for CompositorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
@@ -281,6 +310,7 @@ impl Render for CompositorView {
         };
 
         div()
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -289,6 +319,17 @@ impl Render for CompositorView {
             .p_4()
             .shadow_lg()
             .text_color(rgb(0xffffff))
+            .on_mouse_down(gpui::MouseButton::Left, {
+                cx.listener(
+                    move |this: &mut CompositorView,
+                          _event: &MouseDownEvent,
+                          window: &mut Window,
+                          cx: &mut Context<CompositorView>| {
+                        this.focus_handle(cx).focus(window);
+                    },
+                )
+            })
+            .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
             .child(self.render_layers_section(&state, cx))
@@ -316,6 +357,7 @@ impl ToolFrontend for CompositorView {
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver);
+        self.focus_handle = Some(cx.focus_handle());
         if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
             BackendToolType::Compositor,
             sender,
@@ -324,6 +366,9 @@ impl ToolFrontend for CompositorView {
             return;
         }
         println!("Sent discovery request to backend | Compositor");
+
+        cx.bind_keys([KeyBinding::new("cmd-t", CompositorToggleActivity, None)]);
+
         self.process_messages(window, cx);
     }
 }
