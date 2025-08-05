@@ -140,6 +140,8 @@ impl PrimaryViewer {
                                     raw_modal
                                 });
                                 if let Err(e) = this.update(cx, |this, cx| {
+                                    this.toasts
+                                        .retain(|toast| !toast.read(cx).marked_for_deletion);
                                     this.toasts.push(
                                         modal.expect("Modal entity should be created successfully"),
                                     );
