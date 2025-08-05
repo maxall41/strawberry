@@ -6,6 +6,7 @@ use super::{
     BackendToolType, FrontendMessage, ManagerMessage, PipelineCommand, PipelineObjectMessage,
     ToolBackend, ToolState,
 };
+use crate::utils::commands::collect_and_deduplicate_commands;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,7 +110,9 @@ impl ToolBackend for ToolManager {
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        if let Ok(message) = self.receiver.try_recv() {
+        let commands = collect_and_deduplicate_commands(&self.receiver);
+
+        for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
                     self.send_to_frontend(PipelineCommand::FrontendMessage(
@@ -239,7 +242,7 @@ impl ToolBackend for ToolManager {
                 },
                 _ => {}
             }
-        };
+        }
 
         let new_proxy_tools = update_proxy_tools(&self.tools);
         if new_proxy_tools != self.state.proxy_tools {

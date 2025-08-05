@@ -4,6 +4,7 @@ use crate::processing::{
     local_maxima::{GpuLocalMaxima, ThresholdType},
     GpuImageProcessor,
 };
+use crate::utils::commands::collect_and_deduplicate_commands;
 
 use serde::{Deserialize, Serialize};
 
@@ -96,7 +97,9 @@ impl ToolBackend for LocalMaxima {
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        if let Ok(message) = self.receiver.try_recv() {
+        let commands = collect_and_deduplicate_commands(&self.receiver);
+
+        for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
                     self.send_to_frontend(PipelineCommand::FrontendMessage(

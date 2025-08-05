@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::processing::{sobel::GpuSobel, GpuImageProcessor};
+use crate::utils::commands::collect_and_deduplicate_commands;
 
 use super::{
     BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, SobelMessage,
@@ -78,7 +79,9 @@ impl ToolBackend for Sobel {
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        if let Ok(message) = self.receiver.try_recv() {
+        let commands = collect_and_deduplicate_commands(&self.receiver);
+
+        for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
                     self.send_to_frontend(PipelineCommand::FrontendMessage(

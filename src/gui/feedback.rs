@@ -6,38 +6,11 @@ use gpui::{
     Styled, Window,
 };
 
-#[derive(Clone, Debug)]
-pub enum ToastType {
-    Info,
-    Success,
-    Warning,
-    Error,
-}
-
-impl ToastType {
-    fn background_color(&self) -> gpui::Rgba {
-        match self {
-            ToastType::Info => rgb(0x3b82f6),
-            ToastType::Success => rgb(0x10b981),
-            ToastType::Warning => rgb(0xf59e0b),
-            ToastType::Error => rgb(0xef4444),
-        }
-    }
-
-    fn icon(&self) -> &'static str {
-        match self {
-            ToastType::Info => "ℹ",
-            ToastType::Success => "✓",
-            ToastType::Warning => "⚠",
-            ToastType::Error => "✕",
-        }
-    }
-}
-
 pub struct FeedbackModal {
     pub message: String,
     pub show_toast: bool,
     pub progress: f32,
+    pub marked_for_deletion: bool,
 }
 
 impl FeedbackModal {
@@ -46,6 +19,7 @@ impl FeedbackModal {
             message,
             show_toast: true,
             progress: 1.0,
+            marked_for_deletion: false,
         }
     }
 
@@ -71,6 +45,7 @@ impl FeedbackModal {
 
             this.update(cx, |this, cx| {
                 this.show_toast = false;
+                this.marked_for_deletion = true;
                 cx.notify();
             })
             .ok();
@@ -152,6 +127,7 @@ impl Render for FeedbackModal {
                                                  _window: &mut Window,
                                                  cx: &mut Context<FeedbackModal>| {
                                                     this.show_toast = false;
+                                                    this.marked_for_deletion = true;
                                                     cx.notify();
                                                 }
                                             )

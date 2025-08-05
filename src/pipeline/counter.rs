@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Instant};
+use std::collections::HashMap;
 
 use crate::utils::fitting::{find_counts_within_polygon, ramer_douglas_peucker_closed};
 
@@ -8,6 +8,7 @@ use super::{
     BackendToolType, CountMessage, FilterMessage, FrontendMessage, PipelineCommand,
     PipelineObjectMessage, ToolBackend, ToolState,
 };
+use crate::utils::commands::collect_and_deduplicate_commands;
 use crate::utils::io::export_counter_to_xml_file;
 use async_trait::async_trait;
 use lutz::{lutz, Image as LutzImage, Pixel};
@@ -189,7 +190,6 @@ impl ToolBackend for Counter {
         self.frontend_senders.clear();
     }
     async fn process(&mut self, output_images: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
-        let now = Instant::now();
         if self.state.mode == CounterMode::Auto {
             self.state.auto_counts.clear();
 
@@ -223,14 +223,13 @@ impl ToolBackend for Counter {
             FrontendMessage::ReturnState(self.get_state()),
         ))?;
 
-        let elapsed = now.elapsed();
-        println!("Elapsed: {:.2?}", elapsed);
-
         Ok(())
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        if let Ok(message) = self.receiver.try_recv() {
+        let commands = collect_and_deduplicate_commands(&self.receiver);
+
+        for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
                     self.send_to_frontend(PipelineCommand::FrontendMessage(
@@ -476,11 +475,11 @@ impl ToolBackend for Counter {
                 },
                 _ => {}
             }
+        }
 
-            let new_filter_proxys = update_filter_proxys(&self.filters);
-            if new_filter_proxys != self.state.filter_proxys {
-                self.state.filter_proxys = new_filter_proxys;
-            }
+        let new_filter_proxys = update_filter_proxys(&self.filters);
+        if new_filter_proxys != self.state.filter_proxys {
+            self.state.filter_proxys = new_filter_proxys;
         }
 
         if self.frontend_latest_state.is_none() {
