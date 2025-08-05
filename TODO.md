@@ -12,15 +12,15 @@
 - [X] If compositing > 7 images then just batch into 7 image batches and run each and then composite them together (supports up to 49 images which should be enough for pretty much everything)
 - [X] Safe indexing
 - [X] Add delete currently selected count feature to counter review mode
-- [ ] Keyboard shortcuts (See reMarkable)
+- [X] Keyboard shortcuts (See reMarkable)
       - [X] CMD+T | Enable/disable tool shortcut
       - [X] Counter: CMD+W = Place, CMD+E = Delete, CMD+A=Lasso, CMD+R=Review
       - [X] Counter (Review mode): <- (left arrow) = last count, -> (right arrow) = next count
       - [X] Counter: CMD+N = New count type
-      - [X] Counter: CMD+(0-9) Count type: 0 - 9
+      - [X] Counter: CMD+(1-9) Count type: 1 - 9
       - [X] Counter: CMD+S = Save counts, CMD+L = Load counts
       - [X] Counter (Review mode): CMD+D = Delete count
-      - [ ] Compositor/Decompositor: CMD+(0-9) = Enable/disable layer (0-9)
+      - [X] Compositor/Decompositor: CMD+(1-9) = Enable/disable layer (1-9)
 - [ ] Move viewport to center of image on image load unless dimensions of new images match the current image dimensions.
 - [X] Default counter to no tool selected
 - [X] Allow user to toggle display of each count type in Counter

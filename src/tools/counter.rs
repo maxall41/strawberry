@@ -618,22 +618,13 @@ impl CounterView {
         }
     }
 
-    fn select_count_type_0_action(
-        &mut self,
-        _: &CounterSelectType0,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.select_count_type_by_position(0, window, cx);
-    }
-
     fn select_count_type_1_action(
         &mut self,
         _: &CounterSelectType1,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_count_type_by_position(1, window, cx);
+        self.select_count_type_by_position(0, window, cx);
     }
 
     fn select_count_type_2_action(
@@ -642,7 +633,7 @@ impl CounterView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_count_type_by_position(2, window, cx);
+        self.select_count_type_by_position(1, window, cx);
     }
 
     fn select_count_type_3_action(
@@ -651,7 +642,7 @@ impl CounterView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_count_type_by_position(3, window, cx);
+        self.select_count_type_by_position(2, window, cx);
     }
 
     fn select_count_type_4_action(
@@ -660,7 +651,7 @@ impl CounterView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_count_type_by_position(4, window, cx);
+        self.select_count_type_by_position(3, window, cx);
     }
 
     fn select_count_type_5_action(
@@ -669,7 +660,7 @@ impl CounterView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_count_type_by_position(5, window, cx);
+        self.select_count_type_by_position(4, window, cx);
     }
 
     fn select_count_type_6_action(
@@ -678,7 +669,7 @@ impl CounterView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_count_type_by_position(6, window, cx);
+        self.select_count_type_by_position(5, window, cx);
     }
 
     fn select_count_type_7_action(
@@ -687,7 +678,7 @@ impl CounterView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_count_type_by_position(7, window, cx);
+        self.select_count_type_by_position(6, window, cx);
     }
 
     fn select_count_type_8_action(
@@ -696,7 +687,7 @@ impl CounterView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_count_type_by_position(8, window, cx);
+        self.select_count_type_by_position(7, window, cx);
     }
 
     fn select_count_type_9_action(
@@ -705,7 +696,7 @@ impl CounterView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_count_type_by_position(9, window, cx);
+        self.select_count_type_by_position(8, window, cx);
     }
 
     fn toggle_mode(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
@@ -885,9 +876,11 @@ impl CounterView {
             )
             .child(
                 // Type label and count
-                div()
-                    .flex_1()
-                    .child(format!("Type {} ({})", count_type_id, count_data.len())),
+                div().flex_1().child(format!(
+                    "Type {} ({})",
+                    position.map_or(count_type_id, |p| p as u16 + 1),
+                    count_data.len()
+                )),
             )
             .child(
                 // Selection indicator
@@ -898,8 +891,8 @@ impl CounterView {
                         "count-type-{}-selection-circle",
                         count_type_id
                     ))))
-                    .when(position.is_some() && position.unwrap() <= 9, |this| {
-                        let pos = position.unwrap();
+                    .when(position.is_some() && position.unwrap() <= 8, |this| {
+                        let pos = position.unwrap() + 1;
                         this.tooltip(move |_window, cx| {
                             let tooltip_view = crate::gui::tooltip::TooltipView {
                                 text: format!("⌘{}", pos),
@@ -1691,7 +1684,6 @@ actions!([
     CounterSaveCounts,
     CounterLoadCounts,
     CounterNewCountType,
-    CounterSelectType0,
     CounterSelectType1,
     CounterSelectType2,
     CounterSelectType3,
@@ -1755,7 +1747,6 @@ impl Render for CounterView {
             .on_action(cx.listener(Self::save_counts_action))
             .on_action(cx.listener(Self::load_counts_action))
             .on_action(cx.listener(Self::new_count_type_action))
-            .on_action(cx.listener(Self::select_count_type_0_action))
             .on_action(cx.listener(Self::select_count_type_1_action))
             .on_action(cx.listener(Self::select_count_type_2_action))
             .on_action(cx.listener(Self::select_count_type_3_action))
@@ -1848,7 +1839,6 @@ impl ToolFrontend for CounterView {
             KeyBinding::new("cmd-s", CounterSaveCounts, None),
             KeyBinding::new("cmd-l", CounterLoadCounts, None),
             KeyBinding::new("cmd-n", CounterNewCountType, None),
-            KeyBinding::new("cmd-0", CounterSelectType0, None),
             KeyBinding::new("cmd-1", CounterSelectType1, None),
             KeyBinding::new("cmd-2", CounterSelectType2, None),
             KeyBinding::new("cmd-3", CounterSelectType3, None),

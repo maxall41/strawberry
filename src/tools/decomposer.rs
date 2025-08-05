@@ -209,6 +209,104 @@ impl DecomposerView {
         self.toggle_enabled(current_enabled, window, cx);
     }
 
+    fn toggle_layer_by_index(
+        &mut self,
+        layer_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self
+            .state
+            .read()
+            .expect("State lock should not be poisoned");
+        if layer_index < state.enabled_layers.len() {
+            let current_value = state.enabled_layers[layer_index];
+            drop(state);
+            self.toggle_layer(current_value, layer_index, window, cx);
+        }
+    }
+
+    fn toggle_layer_1_action(
+        &mut self,
+        _: &DecomposerToggleLayer1,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_layer_by_index(0, window, cx);
+    }
+
+    fn toggle_layer_2_action(
+        &mut self,
+        _: &DecomposerToggleLayer2,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_layer_by_index(1, window, cx);
+    }
+
+    fn toggle_layer_3_action(
+        &mut self,
+        _: &DecomposerToggleLayer3,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_layer_by_index(2, window, cx);
+    }
+
+    fn toggle_layer_4_action(
+        &mut self,
+        _: &DecomposerToggleLayer4,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_layer_by_index(3, window, cx);
+    }
+
+    fn toggle_layer_5_action(
+        &mut self,
+        _: &DecomposerToggleLayer5,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_layer_by_index(4, window, cx);
+    }
+
+    fn toggle_layer_6_action(
+        &mut self,
+        _: &DecomposerToggleLayer6,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_layer_by_index(5, window, cx);
+    }
+
+    fn toggle_layer_7_action(
+        &mut self,
+        _: &DecomposerToggleLayer7,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_layer_by_index(6, window, cx);
+    }
+
+    fn toggle_layer_8_action(
+        &mut self,
+        _: &DecomposerToggleLayer8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_layer_by_index(7, window, cx);
+    }
+
+    fn toggle_layer_9_action(
+        &mut self,
+        _: &DecomposerToggleLayer9,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_layer_by_index(8, window, cx);
+    }
+
     // Header component
     fn render_header(&self) -> impl IntoElement {
         div()
@@ -242,35 +340,20 @@ impl DecomposerView {
         is_enabled: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(format!("Layer {index}:"))
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(if is_enabled {
-                        rgb(0x00aa00)
-                    } else {
-                        rgb(0xaa0000)
-                    })
-                    .text_sm()
-                    .child(if is_enabled { "On" } else { "Off" })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(
-                            move |this: &mut DecomposerView,
-                                  _event: &MouseDownEvent,
-                                  window: &mut Window,
-                                  cx: &mut Context<DecomposerView>| {
-                                this.toggle_layer(is_enabled, index, window, cx);
-                            },
-                        ),
-                    ),
-            )
+        ToggleButton::new(
+            format!("Layer {}", index + 1),
+            is_enabled,
+            move |this: &mut DecomposerView,
+                  _event: &MouseDownEvent,
+                  window: &mut Window,
+                  cx: &mut Context<DecomposerView>| {
+                this.toggle_layer(is_enabled, index, window, cx);
+            },
+        )
+        .with_text("On".to_string(), "Off".to_string())
+        .with_keyboard_shortcut(&format!("⌘{}", index + 1))
+        .with_no_margin()
+        .render(cx)
     }
 
     // Layers section component
@@ -296,7 +379,18 @@ impl DecomposerView {
     }
 }
 
-actions!([DecomposerToggleActivity]);
+actions!([
+    DecomposerToggleActivity,
+    DecomposerToggleLayer1,
+    DecomposerToggleLayer2,
+    DecomposerToggleLayer3,
+    DecomposerToggleLayer4,
+    DecomposerToggleLayer5,
+    DecomposerToggleLayer6,
+    DecomposerToggleLayer7,
+    DecomposerToggleLayer8,
+    DecomposerToggleLayer9
+]);
 
 impl Render for DecomposerView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -338,6 +432,15 @@ impl Render for DecomposerView {
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
+            .on_action(cx.listener(Self::toggle_layer_1_action))
+            .on_action(cx.listener(Self::toggle_layer_2_action))
+            .on_action(cx.listener(Self::toggle_layer_3_action))
+            .on_action(cx.listener(Self::toggle_layer_4_action))
+            .on_action(cx.listener(Self::toggle_layer_5_action))
+            .on_action(cx.listener(Self::toggle_layer_6_action))
+            .on_action(cx.listener(Self::toggle_layer_7_action))
+            .on_action(cx.listener(Self::toggle_layer_8_action))
+            .on_action(cx.listener(Self::toggle_layer_9_action))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
             .child(self.render_layers_section(&state, cx))
@@ -375,7 +478,18 @@ impl ToolFrontend for DecomposerView {
         }
         println!("Sent discovery request to backend | Decomposer");
 
-        cx.bind_keys([KeyBinding::new("cmd-t", DecomposerToggleActivity, None)]);
+        cx.bind_keys([
+            KeyBinding::new("cmd-t", DecomposerToggleActivity, None),
+            KeyBinding::new("cmd-1", DecomposerToggleLayer1, None),
+            KeyBinding::new("cmd-2", DecomposerToggleLayer2, None),
+            KeyBinding::new("cmd-3", DecomposerToggleLayer3, None),
+            KeyBinding::new("cmd-4", DecomposerToggleLayer4, None),
+            KeyBinding::new("cmd-5", DecomposerToggleLayer5, None),
+            KeyBinding::new("cmd-6", DecomposerToggleLayer6, None),
+            KeyBinding::new("cmd-7", DecomposerToggleLayer7, None),
+            KeyBinding::new("cmd-8", DecomposerToggleLayer8, None),
+            KeyBinding::new("cmd-9", DecomposerToggleLayer9, None),
+        ]);
 
         self.process_messages(window, cx);
     }
