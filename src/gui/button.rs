@@ -1,4 +1,7 @@
-use gpui::{div, prelude::*, rgb, AnyView, Context, IntoElement, MouseDownEvent, RenderOnce};
+use gpui::{
+    div, prelude::*, rgb, AnyView, Context, ElementId, IntoElement, MouseDownEvent, RenderOnce,
+    SharedString,
+};
 
 use super::tooltip::TooltipView;
 
@@ -10,6 +13,7 @@ pub struct ToggleButton<V: 'static> {
     pub on_click:
         Box<dyn Fn(&mut V, &MouseDownEvent, &mut gpui::Window, &mut Context<V>) + 'static>,
     pub keyboard_shortcut: Option<String>,
+    pub disable_margin: bool,
 }
 
 impl<V: 'static> ToggleButton<V> {
@@ -25,6 +29,7 @@ impl<V: 'static> ToggleButton<V> {
             disabled_text: "No".to_string(),
             on_click: Box::new(on_click),
             keyboard_shortcut: None,
+            disable_margin: false,
         }
     }
 
@@ -39,6 +44,11 @@ impl<V: 'static> ToggleButton<V> {
         self
     }
 
+    pub fn with_no_margin(mut self) -> Self {
+        self.disable_margin = true;
+        self
+    }
+
     pub fn render(self, cx: &mut Context<V>) -> impl IntoElement {
         let label = self.label;
         let is_enabled = self.is_enabled;
@@ -49,11 +59,14 @@ impl<V: 'static> ToggleButton<V> {
         };
 
         div()
-            .id("button")
+            .id(ElementId::Name(SharedString::new(format!(
+                "button-{}",
+                label
+            ))))
             .flex()
             .items_center()
             .gap_2()
-            .mb_3()
+            .when(!self.disable_margin, |this| this.mb_3())
             .child(format!("{label}:"))
             .when(self.keyboard_shortcut.is_some(), |this| {
                 this.tooltip(move |_window, cx| {
