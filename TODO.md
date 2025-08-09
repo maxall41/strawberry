@@ -49,10 +49,10 @@
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
 - [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
 - [ ] Add mode toggle to "Threshold" that in addition to manual thresholding it supports Otsu thresholding, Local thresholding, and maybe one or two other thresholding methods.
-- [ ] Kuwahara filter, Bilateral filter, and Median filter. Noise reduction
+- [ ] Kuwahara filter, Bilateral filter, and Median filter for noise reduction
 - [ ] If toast is error make time bar red and if sucessfull make it green & add icons to toasts
 - [ ] Error toasts for frontend errors
-- [ ] Replace human-panic with proper automatic panic reporting (with user prompt OK) & GUI
+- [ ] Proper automatic panic reporting (with user prompt OK) & GUI
 - [ ] Auto updater
 - [ ] Documentation
 - [ ] Welcome screen & onboarding
