@@ -242,23 +242,17 @@ impl CounterView {
                 eprintln!("Failed to send new count type command: {e}");
                 return;
             }
+            println!("Sent new count type message!")
         } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+            eprintln!(
+                "Failed to send new count type message. Invalid tool index: {current_tool_index}"
+            );
             return;
         }
 
         // Increment the next ID
         if let Ok(mut next_id) = self.next_count_type_id.write() {
             *next_id += 1;
-        }
-
-        // Set as selected by sending message to backend
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::SetActiveCountType(new_id)),
-            )) {
-                eprintln!("Failed to send set active count type command: {e}");
-            }
         }
 
         println!("Added count type {new_id}");
@@ -819,15 +813,16 @@ impl CounterView {
             .flex()
             .items_center()
             .gap_2()
-            .p_2()
             .mb_1()
             .bg(rgb(0x444444))
             .rounded_md()
+            .child(div().bg(color).w_2().h_full().rounded_l_md())
             .child(
                 // X button
                 div()
-                    .w_4()
-                    .h_4()
+                    .m_2()
+                    .w_5()
+                    .h_5()
                     .bg(rgb(0xaa0000))
                     .hover(|style| style.bg(rgb(0xbb1111)))
                     .rounded_sm()
@@ -852,15 +847,16 @@ impl CounterView {
             .child(
                 // Eye toggle button
                 div()
-                    .w_4()
-                    .h_4()
+                    .m_2()
+                    .w_5()
+                    .h_5()
                     .flex()
                     .items_center()
                     .justify_center()
                     .child(if is_visible {
-                        Icon::eye_open().size(16.0)
+                        Icon::eye_open().size(21.0)
                     } else {
-                        Icon::eye_closed().size(16.0)
+                        Icon::eye_closed().size(21.0)
                     })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -876,7 +872,7 @@ impl CounterView {
             )
             .child(
                 // Type label and count
-                div().flex_1().child(format!(
+                div().m_2().flex_1().child(format!(
                     "Type {} ({})",
                     position.map_or(count_type_id, |p| p as u16 + 1),
                     count_data.len()
@@ -885,6 +881,7 @@ impl CounterView {
             .child(
                 // Selection indicator
                 div()
+                    .m_2()
                     .w_4()
                     .h_4()
                     .id(ElementId::Name(SharedString::from(format!(

@@ -25,6 +25,7 @@
 - [X] Default counter to no tool selected
 - [X] Allow user to toggle display of each count type in Counter
 - [X] Make sure CMD+Q quit app shortcut works
+- [ ] Color bar got removed from counter GUI somehow?
 
 - [X] If tokio backend panics handle it properly
 - [X] Refuses to load weka probability map file (the one that is 100+MB) with error: Failed to process pipeline after loading images: No input images provided
@@ -33,14 +34,13 @@
 - [X] Throw error when trying to composite images of different sizes
 - [X] Don't allow user to enable compositor if there is only one image to prevent RGBA-BRGA mixups
 - [ ] Turning on and off compositor does not actually enable/disable on backend
-- [ ] Fix Clippy Warnings
 - [ ] Reset counter on new image load: Loading a new image for the second time and then loading the second set of counts causes a panic.
 - [X] Compositor layers count does not update on new image load
 - [ ] Turning a layer or adjusting contrast (or anything that pushes new image to viewer) on and off snaps the viewport back to the current review index.
 - [ ] Build actual macos .app
 - [X] Toast stays in toast list after disappearing causing future toasts to be placed higher and higher even though no toasts are below it.
 - [X] Backend debouncing not working: Try holding down keyboard shortcut (cmd+T) in compositor or holding ← (left arrow) in counter to see what I mean
-
+- [ ] Cleanup code
 
 ## Alpha 0.2 (Rebar)
 - [ ] Replace Arc with Rc's. Most of them can be replaced with Rc's as they single threaded.
@@ -49,19 +49,20 @@
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
 - [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
 - [ ] Add mode toggle to "Threshold" that in addition to manual thresholding it supports Otsu thresholding, Local thresholding, and maybe one or two other thresholding methods.
-- [ ] Kuwahara filter, Bilateral filter, and Median filter for noise reduction
 - [ ] If toast is error make time bar red and if sucessfull make it green & add icons to toasts
 - [ ] Error toasts for frontend errors
-- [ ] Proper automatic panic reporting (with user prompt OK) & GUI
-- [ ] Auto updater
-- [ ] Documentation
-- [ ] Welcome screen & onboarding
-- [ ] Themes & Nicer GUI
 - [ ] Fill Holes Morphology Option
+- [ ] Proper global keyboard shortcuts!
 - [ ] Try to get all core interactions under 100ms response time including start up time, image load time, and tool processing time for as many tools as possible.
 
 # Alpha 0.3 (Cement)
 - [ ] Flat field correction
+- [ ] Proper automatic panic reporting (with user prompt OK) & GUI
+- [ ] Documentation
+- [ ] Kuwahara filter, Bilateral filter, and Median filter for noise reduction
+- [ ] Themes & Nicer GUI
+- [ ] Welcome screen & onboarding
+- [ ] Auto updater
 - [ ] Deconvolution with Richardson-Lucy
 - [ ] Cropping + General Selection tools (Line drawing, Rectangle drawing, Ellipse drawing, Lasso drawing, Area selection)
 - [ ] Size/length/height/area measurement tools (Depends on general selection tools)

@@ -298,6 +298,7 @@ impl ToolBackend for Counter {
                         CountMessage::NewCountType(id) => {
                             self.state.manual_counts.insert(id, vec![]);
                             self.state.count_type_visibility.insert(id, true);
+                            self.state.active_count_type = Some(id);
                         }
                         CountMessage::DeletionLasso(points) => {
                             if let Some(active_count_type) = &self.state.active_count_type {
