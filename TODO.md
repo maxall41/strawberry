@@ -8,6 +8,8 @@
 - [X] GUI Error handling with toasts
 - [X] Sobel filter
 - [X] Grayscale
+- [ ] Color Deconvolution
+- [ ] Mouse zooming
 - [X] Image export
 - [X] If compositing > 7 images then just batch into 7 image batches and run each and then composite them together (supports up to 49 images which should be enough for pretty much everything)
 - [X] Safe indexing
@@ -25,7 +27,8 @@
 - [X] Default counter to no tool selected
 - [X] Allow user to toggle display of each count type in Counter
 - [X] Make sure CMD+Q quit app shortcut works
-- [ ] Color bar got removed from counter GUI somehow?
+- [X] Color bar got removed from counter GUI somehow?
+- [ ] Temporary global keyboard shorcuts for Counter
 
 - [X] If tokio backend panics handle it properly
 - [X] Refuses to load weka probability map file (the one that is 100+MB) with error: Failed to process pipeline after loading images: No input images provided
@@ -41,10 +44,15 @@
 - [X] Toast stays in toast list after disappearing causing future toasts to be placed higher and higher even though no toasts are below it.
 - [X] Backend debouncing not working: Try holding down keyboard shortcut (cmd+T) in compositor or holding ← (left arrow) in counter to see what I mean
 - [ ] Cleanup code
+- [ ] Strawberry does not respect type name in XML counts format in frontend GUI
+- [ ] Default folder when clicking "Save" in counter should be the folder the counts were loaded from if applicable
+- [ ] Movement of the "Camera" is jerky
+- [ ] Counter should be enabled when counts are loaded
 
 ## Alpha 0.2 (Rebar)
 - [ ] Replace Arc with Rc's. Most of them can be replaced with Rc's as they single threaded.
 - [ ] Command pallete
+- [ ] CLAHE
 - [ ] Allow user to configure counter to also measure things like circularity, and area in counter settings. Include in export. Also allow user to export counts as .CSV, and .XLSX in addition to .XML.
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
 - [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
@@ -53,10 +61,10 @@
 - [ ] Error toasts for frontend errors
 - [ ] Fill Holes Morphology Option
 - [ ] Proper global keyboard shortcuts!
-- [ ] Try to get all core interactions under 100ms response time including start up time, image load time, and tool processing time for as many tools as possible.
 
 # Alpha 0.3 (Cement)
 - [ ] Flat field correction
+- [ ] Try to get all core interactions under 100ms response time including start up time, image load time, and tool processing time for as many tools as possible.
 - [ ] Proper automatic panic reporting (with user prompt OK) & GUI
 - [ ] Documentation
 - [ ] Kuwahara filter, Bilateral filter, and Median filter for noise reduction
