@@ -151,6 +151,8 @@ pub enum FrontendMessage {
     ReturnState(ToolState),
     ReturnBackendTools(Vec<u16>, Vec<flume::Sender<PipelineCommand>>),
     UserFeedback(String),
+    ReturnOverlays(crate::overlay::OverlayCollection),
+    SnapToPosition(f32, f32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -202,6 +204,14 @@ pub enum PipelineCommand {
     CLILoadPipeline(PathBuf),
     /// Save output image to file
     SaveOutput(PathBuf),
+    /// Request overlay updates from all tools
+    RequestOverlays,
+    /// Interaction start (mouse down) at image coordinates
+    InteractionStart(u64, u64),
+    /// Interaction move (mouse move while dragging) at image coordinates
+    InteractionMove(u64, u64),
+    /// Interaction end (mouse up)
+    InteractionEnd,
 }
 
 /// Result of pipeline processing
@@ -283,6 +293,12 @@ pub trait ToolBackend: Send + Sync {
 
     /// Invalidate the cache
     fn invalidate_cache(&mut self) {}
+
+    /// Get overlay elements to render on the primary viewer.
+    /// Returns None if the tool doesn't produce overlays.
+    fn get_overlays(&self) -> Option<crate::overlay::ToolOverlay> {
+        None
+    }
 }
 
 /// Pipeline that processes images through a series of tools
@@ -423,6 +439,17 @@ impl Pipeline {
         Ok((pipeline, command_tx, output_rx))
     }
 
+    /// Collect overlays from all tools
+    fn collect_overlays(&mut self) -> crate::overlay::OverlayCollection {
+        let mut collection = crate::overlay::OverlayCollection::new();
+        for tool in &self.tool_manager.tools {
+            if let Some(overlay) = tool.get_overlays() {
+                collection.merge(overlay);
+            }
+        }
+        collection
+    }
+
     /// Process images through the pipeline starting from the given index
     pub async fn process_from(&mut self, start_index: usize) -> anyhow::Result<()> {
         let start_time = std::time::Instant::now();
@@ -491,6 +518,7 @@ impl Pipeline {
         if images.len() > 1 {
             println!("OUTPUT CONTAINS >1 IMAGE");
             if let Some(compositor_tool) = self.tool_manager.tools.get_mut(0) {
+                //TODO: Very dangerous. Assumes compositor at index 0.
                 compositor_tool.process(&mut images).await?;
             }
         }
@@ -727,6 +755,32 @@ impl Pipeline {
                                 )),
                             ));
                         }
+                    }
+                }
+                PipelineCommand::RequestOverlays => {
+                    let overlays = self.collect_overlays();
+                    if let Err(e) = self.output_sender.send(PipelineCommand::FrontendMessage(
+                        FrontendMessage::ReturnOverlays(overlays),
+                    )) {
+                        eprintln!("Failed to send overlays: {e}");
+                    }
+                }
+                PipelineCommand::InteractionStart(x, y) => {
+                    // Route interaction start to all click receivers (tools can filter based on their mode)
+                    for recv in &self.click_receivers {
+                        let _ = recv.send(PipelineCommand::InteractionStart(*x, *y));
+                    }
+                }
+                PipelineCommand::InteractionMove(x, y) => {
+                    // Route interaction move to all click receivers
+                    for recv in &self.click_receivers {
+                        let _ = recv.send(PipelineCommand::InteractionMove(*x, *y));
+                    }
+                }
+                PipelineCommand::InteractionEnd => {
+                    // Route interaction end to all click receivers
+                    for recv in &self.click_receivers {
+                        let _ = recv.send(PipelineCommand::InteractionEnd);
                     }
                 }
                 _ => {}
