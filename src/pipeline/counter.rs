@@ -8,7 +8,9 @@ use super::{
     BackendToolType, CountMessage, FilterMessage, FrontendMessage, PipelineCommand,
     PipelineObjectMessage, ToolBackend, ToolState,
 };
+use crate::overlay::{CircleStyle, OverlayElement, ToolOverlay};
 use crate::utils::commands::collect_and_deduplicate_commands;
+use crate::utils::consts::CIRCLE_COLORS;
 use crate::utils::io::export_counter_to_xml_file;
 use async_trait::async_trait;
 use lutz::{lutz, Image as LutzImage, Pixel};
@@ -166,6 +168,8 @@ pub struct Counter {
     pub cached_state: Option<CounterState>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub frontend_latest_state: Option<CounterState>,
+    pub lasso_points: Vec<(u64, u64)>,
+    pub is_lasso_dragging: bool,
 }
 
 #[async_trait]
@@ -289,6 +293,59 @@ impl ToolBackend for Counter {
                             _ => {}
                         }
                     };
+                }
+                PipelineCommand::InteractionStart(x, y) => {
+                    if !self.state.is_enabled {
+                        return Ok(());
+                    }
+                    if self.state.active_tool == Some(CounterTool::LassoDelete) {
+                        self.is_lasso_dragging = true;
+                        self.lasso_points.clear();
+                        self.lasso_points.push((x, y));
+                        // Trigger overlay update
+                        let overlays = self.get_overlays();
+                        if let Some(overlays) = overlays {
+                            let _ = self.global_sender.send(PipelineCommand::FrontendMessage(
+                                FrontendMessage::ReturnOverlays({
+                                    let mut collection = crate::overlay::OverlayCollection::new();
+                                    collection.merge(overlays);
+                                    collection
+                                }),
+                            ));
+                        }
+                    }
+                }
+                PipelineCommand::InteractionMove(x, y) => {
+                    if self.is_lasso_dragging {
+                        self.lasso_points.push((x, y));
+                        // Trigger overlay update for visual feedback
+                        let overlays = self.get_overlays();
+                        if let Some(overlays) = overlays {
+                            let _ = self.global_sender.send(PipelineCommand::FrontendMessage(
+                                FrontendMessage::ReturnOverlays({
+                                    let mut collection = crate::overlay::OverlayCollection::new();
+                                    collection.merge(overlays);
+                                    collection
+                                }),
+                            ));
+                        }
+                    }
+                }
+                PipelineCommand::InteractionEnd => {
+                    if self.is_lasso_dragging && !self.lasso_points.is_empty() {
+                        // Process the lasso deletion
+                        if let Some(active_count_type) = &self.state.active_count_type {
+                            let polygon = ramer_douglas_peucker_closed(self.lasso_points.clone());
+                            if let Some(counts) = self.state.manual_counts.get(active_count_type) {
+                                let filtered = find_counts_within_polygon(polygon, counts.clone());
+                                self.state
+                                    .manual_counts
+                                    .insert(*active_count_type, filtered);
+                            }
+                        }
+                        self.is_lasso_dragging = false;
+                        self.lasso_points.clear();
+                    }
                 }
                 PipelineCommand::PipelineObject(message) => match message {
                     PipelineObjectMessage::ToggleActive(value) => {
@@ -432,6 +489,18 @@ impl ToolBackend for Counter {
                                             current_index - 1
                                         };
                                         self.state.review_current_index = new_index;
+
+                                        // Emit snap to position
+                                        if let Some(count) = counts.get(new_index) {
+                                            let _ = self.global_sender.send(
+                                                PipelineCommand::FrontendMessage(
+                                                    FrontendMessage::SnapToPosition(
+                                                        count.position.0 as f32,
+                                                        count.position.1 as f32,
+                                                    ),
+                                                ),
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -447,6 +516,18 @@ impl ToolBackend for Counter {
                                     if counts_len > 0 {
                                         let new_index = (current_index + 1) % counts_len;
                                         self.state.review_current_index = new_index;
+
+                                        // Emit snap to position
+                                        if let Some(count) = counts.get(new_index) {
+                                            let _ = self.global_sender.send(
+                                                PipelineCommand::FrontendMessage(
+                                                    FrontendMessage::SnapToPosition(
+                                                        count.position.0 as f32,
+                                                        count.position.1 as f32,
+                                                    ),
+                                                ),
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -530,6 +611,81 @@ impl ToolBackend for Counter {
         self.cached_output = None;
         self.cached_state = None;
     }
+
+    fn get_overlays(&self) -> Option<crate::overlay::ToolOverlay> {
+        if !self.state.is_enabled {
+            return None;
+        }
+
+        let mut elements = Vec::new();
+
+        // Manual counts
+        for (count_type_id, counts) in &self.state.manual_counts {
+            let is_visible = self
+                .state
+                .count_type_visibility
+                .get(count_type_id)
+                .unwrap_or(&true);
+            if !*is_visible {
+                continue;
+            }
+
+            let color_index = (*count_type_id as usize) % CIRCLE_COLORS.len();
+            let color = CIRCLE_COLORS[color_index].0;
+
+            for (index, count) in counts.iter().enumerate() {
+                let is_selected = self.state.active_tool == Some(CounterTool::Review)
+                    && self.state.active_count_type == Some(*count_type_id)
+                    && index == self.state.review_current_index;
+
+                let circle_color = if is_selected {
+                    [255, 213, 0, 255] // Hot yellow for selected
+                } else {
+                    color
+                };
+
+                elements.push(OverlayElement::Circle {
+                    x: count.position.0 as f32,
+                    y: count.position.1 as f32,
+                    radius: 10.0,
+                    color: circle_color,
+                    style: CircleStyle::Border { width: 2.0 },
+                });
+            }
+        }
+
+        // Auto counts
+        if self.state.mode == CounterMode::Auto {
+            let color = CIRCLE_COLORS[0].0; // Use first color for auto counts
+            for count in &self.state.auto_counts {
+                elements.push(OverlayElement::Circle {
+                    x: count.position.0 as f32,
+                    y: count.position.1 as f32,
+                    radius: 10.0,
+                    color,
+                    style: CircleStyle::Border { width: 2.0 },
+                });
+            }
+        }
+
+        // Lasso points (during drag)
+        if self.is_lasso_dragging && self.lasso_points.len() > 1 {
+            for point in &self.lasso_points {
+                elements.push(OverlayElement::Point {
+                    x: point.0 as f32,
+                    y: point.1 as f32,
+                    radius: 2.0,
+                    color: [255, 0, 0, 255], // Red
+                });
+            }
+        }
+
+        Some(ToolOverlay {
+            tool_id: crate::pipeline::BackendToolType::Counter,
+            z_order: 100, // High priority - on top
+            elements,
+        })
+    }
 }
 
 impl Counter {
@@ -567,6 +723,8 @@ impl Counter {
             cached_output: None,
             cached_state: None,
             frontend_latest_state: None,
+            lasso_points: Vec::new(),
+            is_lasso_dragging: false,
         })
     }
     fn update_state(&mut self) -> anyhow::Result<()> {
