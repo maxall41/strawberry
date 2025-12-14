@@ -40,7 +40,6 @@ mod cli;
 mod gui;
 mod overlay;
 mod pipeline;
-mod processing;
 mod tools;
 mod utils;
 

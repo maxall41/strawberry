@@ -1,40 +1,39 @@
 use std::sync::Arc;
 
-use crate::processing::{compositor::GpuCompositor, GpuImageProcessor};
+use strawberry_processing::{compositor::GpuCompositor, GpuImageProcessor};
 use crate::utils::commands::collect_and_deduplicate_commands;
 
 use super::{
-    BackendToolType, DecomposerMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,
+    BackendToolType, CompositorMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,
     ToolBackend, ToolState,
 };
-use crate::processing::decomposer::GpuDecomposer;
 use async_trait::async_trait;
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct DecomposerState {
+pub struct CompositorState {
     pub is_enabled: bool,
     pub enabled_layers: Vec<bool>,
+    pub real_layers_len: usize,
 }
 
-pub struct Decomposer {
-    pub state: DecomposerState,
+pub struct Compositor {
+    pub state: CompositorState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub compositer: GpuCompositor,
-    pub gpu_decomposer: GpuDecomposer,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
-    pub cached_state: Option<DecomposerState>,
-    pub frontend_latest_state: Option<DecomposerState>,
+    pub cached_state: Option<CompositorState>,
+    pub frontend_latest_state: Option<CompositorState>,
 }
 
 #[async_trait]
-impl ToolBackend for Decomposer {
+impl ToolBackend for Compositor {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
@@ -45,12 +44,12 @@ impl ToolBackend for Decomposer {
         self.state.is_enabled = enabled;
     }
     fn apply_state(&mut self, state: ToolState) {
-        if let ToolState::DecomposerState(new_state) = state {
+        if let ToolState::CompositorState(new_state) = state {
             self.state = new_state;
         }
     }
     fn get_state(&self) -> ToolState {
-        ToolState::DecomposerState(self.state.clone())
+        ToolState::CompositorState(self.state.clone())
     }
     fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
         self.frontend_senders.push(sender);
@@ -59,36 +58,21 @@ impl ToolBackend for Decomposer {
         self.frontend_senders.clear();
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
-        if input.len() > 1 {
-            let error_msg = format!(
-                "Decomposer can only process one image, received {}",
-                input.len()
-            );
+        println!("Processing images for Compositor");
+        self.state.real_layers_len = input.len();
+
+        if input.len() == 1 {
             self.global_sender.send(PipelineCommand::FrontendMessage(
-                FrontendMessage::UserFeedback(error_msg.clone()),
+                FrontendMessage::UserFeedback("Compositor needs >1 image to composite".to_string()),
             ))?;
-            return Err(anyhow::anyhow!(error_msg));
+            self.set_enabled(false);
+            self.send_to_frontend(PipelineCommand::FrontendMessage(
+                FrontendMessage::ReturnState(self.get_state()),
+            ))?;
+            return Ok(());
         }
 
-        let first_image = input.first().ok_or_else(|| {
-            let error_msg = "No input image provided to decomposer".to_string();
-            let _ = self.global_sender.send(PipelineCommand::FrontendMessage(
-                FrontendMessage::UserFeedback(error_msg.clone()),
-            ));
-            anyhow::anyhow!(error_msg)
-        })?;
-
-        let decomposed = match self.gpu_decomposer.apply_decomposition(first_image).await {
-            Ok(result) => result,
-            Err(e) => {
-                self.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::UserFeedback(format!("Decomposer error: {e}")),
-                ))?;
-                return Err(e);
-            }
-        };
-
-        let images: Vec<image::RgbaImage> = decomposed
+        let images: Vec<image::RgbaImage> = input
             .clone()
             .into_iter()
             .enumerate()
@@ -105,13 +89,30 @@ impl ToolBackend for Decomposer {
             Ok(image) => image,
             Err(e) => {
                 self.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::UserFeedback(format!("Decomposer compositor error: {e}")),
+                    FrontendMessage::UserFeedback(format!("Compositor error: {e}")),
                 ))?;
                 return Err(e);
             }
         };
 
         *input = vec![composited];
+
+        if self.frontend_latest_state.is_some() {
+            println!(
+                "State Status {}",
+                self.frontend_latest_state
+                    .as_ref()
+                    .expect("Just checked that frontend_latest_state is some")
+                    == &self.state
+            );
+            println!(
+                "Real Layers Length Comparison | Frontend: {} Backend: {}",
+                self.frontend_latest_state.as_ref().unwrap().real_layers_len,
+                self.state.real_layers_len
+            )
+        } else {
+            println!("Frontend state is empty")
+        }
 
         Ok(())
     }
@@ -130,14 +131,14 @@ impl ToolBackend for Decomposer {
                     PipelineObjectMessage::ToggleActive(value) => {
                         self.state.is_enabled = value;
                     }
-                    PipelineObjectMessage::DecomposerMessage(message) => match message {
-                        DecomposerMessage::ToggleVisibility(value, layer_index) => {
+                    PipelineObjectMessage::CompositorMessage(message) => match message {
+                        CompositorMessage::ToggleVisibility(value, layer_index) => {
                             let mut mutated = self.state.enabled_layers.clone();
                             let index = layer_index as usize;
 
                             if index >= mutated.len() {
                                 let error_msg = format!(
-                                    "Decomposer: Layer index {} out of bounds (max: {})",
+                                    "Compositor: Layer index {} out of bounds (max: {})",
                                     index,
                                     mutated.len()
                                 );
@@ -148,6 +149,17 @@ impl ToolBackend for Decomposer {
                             }
 
                             mutated[index] = value;
+
+                            let end_range =
+                                std::cmp::min(self.state.real_layers_len, mutated.len());
+                            if mutated
+                                .get(0..end_range)
+                                .map(|slice| slice.iter().all(|&x| !x))
+                                .unwrap_or(true)
+                            {
+                                return Ok(());
+                            }
+
                             self.state.enabled_layers = mutated;
                         }
                     },
@@ -172,7 +184,7 @@ impl ToolBackend for Decomposer {
     }
 
     fn iam(&self) -> BackendToolType {
-        BackendToolType::Decomposer
+        BackendToolType::Compositor
     }
 
     fn get_index(&self) -> usize {
@@ -206,20 +218,20 @@ impl ToolBackend for Decomposer {
     }
 }
 
-impl Decomposer {
+impl Compositor {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
-        Decomposer {
-            state: DecomposerState {
+        Compositor {
+            state: CompositorState {
                 is_enabled: false,
-                enabled_layers: vec![true; 3],
+                enabled_layers: vec![true; 8], //TODO: Mmmm danger. Should be fine since buffer only supports 7 input images anyways...
+                real_layers_len: 0,
             },
-            compositer: GpuCompositor::new(gpu_image_processor.clone()).await,
-            gpu_decomposer: GpuDecomposer::new(gpu_image_processor).await,
+            compositer: GpuCompositor::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
             global_sender,

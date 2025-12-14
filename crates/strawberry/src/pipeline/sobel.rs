@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::processing::{sobel::GpuSobel, GpuImageProcessor};
+use strawberry_processing::{sobel::GpuSobel, GpuImageProcessor};
 use crate::utils::commands::collect_and_deduplicate_commands;
 
 use super::{

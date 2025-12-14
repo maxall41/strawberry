@@ -1,55 +1,54 @@
 use std::sync::Arc;
 
-use crate::processing::{watershed::GpuWatershed, GpuImageProcessor};
+use strawberry_processing::{gaussian_blur::GpuGaussianBlur, GpuImageProcessor};
 use crate::utils::commands::collect_and_deduplicate_commands;
 
 use super::{
-    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolBackend,
-    ToolState, WatershedMessage,
+    BackendToolType, FrontendMessage, GaussianBlurMessage, PipelineCommand, PipelineObjectMessage,
+    ToolBackend, ToolState,
 };
 use async_trait::async_trait;
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct WatershedState {
+pub struct GaussianBlurState {
     pub sigma: f32,
-    pub min_distance: u32,
     pub is_enabled: bool,
 }
 
-pub struct Watershed {
-    pub state: WatershedState,
+pub struct GaussianBlur {
+    pub state: GaussianBlurState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub watershed: GpuWatershed,
+    pub gaussian_blur: GpuGaussianBlur,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
-    pub cached_state: Option<WatershedState>,
-    pub frontend_latest_state: Option<WatershedState>,
+    pub cached_state: Option<GaussianBlurState>,
+    pub frontend_latest_state: Option<GaussianBlurState>,
 }
 
 #[async_trait]
-impl ToolBackend for Watershed {
+impl ToolBackend for GaussianBlur {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
-    fn apply_state(&mut self, state: ToolState) {
-        if let ToolState::WatershedState(new_state) = state {
-            self.state = new_state;
-        }
-    }
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
+    }
+    fn apply_state(&mut self, state: ToolState) {
+        if let ToolState::GaussianBlurState(new_state) = state {
+            self.state = new_state;
+        }
     }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
     }
     fn get_state(&self) -> ToolState {
-        ToolState::WatershedState(self.state.clone())
+        ToolState::GaussianBlurState(self.state.clone())
     }
     fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
         self.frontend_senders.push(sender);
@@ -59,15 +58,11 @@ impl ToolBackend for Watershed {
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self
-                .watershed
-                .apply_watershed(image, self.state.sigma, self.state.min_distance)
-                .await
-            {
+            *image = match self.gaussian_blur.apply_blur(image, self.state.sigma).await {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Watershed error: {e}")),
+                        FrontendMessage::UserFeedback(format!("Gaussian Blur error: {e}")),
                     ))?;
                     return Err(e);
                 }
@@ -90,10 +85,9 @@ impl ToolBackend for Watershed {
                     PipelineObjectMessage::ToggleActive(value) => {
                         self.state.is_enabled = value;
                     }
-                    PipelineObjectMessage::WatershedMessage(message) => match message {
-                        WatershedMessage::SetParameters(sigma, min_distance) => {
+                    PipelineObjectMessage::GaussianBlurMessage(message) => match message {
+                        GaussianBlurMessage::SetSigma(sigma) => {
                             self.state.sigma = sigma;
-                            self.state.min_distance = min_distance;
                         }
                     },
                     _ => {}
@@ -117,7 +111,7 @@ impl ToolBackend for Watershed {
     }
 
     fn iam(&self) -> BackendToolType {
-        BackendToolType::Watershed
+        BackendToolType::GaussianBlur
     }
 
     fn get_index(&self) -> usize {
@@ -151,7 +145,7 @@ impl ToolBackend for Watershed {
     }
 }
 
-impl Watershed {
+impl GaussianBlur {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -159,12 +153,11 @@ impl Watershed {
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
         Self {
-            state: WatershedState {
+            state: GaussianBlurState {
                 is_enabled: false,
-                sigma: 1.0,
-                min_distance: 10,
+                sigma: 2.0,
             },
-            watershed: GpuWatershed::new(gpu_image_processor).await,
+            gaussian_blur: GpuGaussianBlur::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
             global_sender,

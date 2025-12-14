@@ -1,38 +1,37 @@
 use std::sync::Arc;
 
-use crate::processing::{gaussian_blur::GpuGaussianBlur, GpuImageProcessor};
+use strawberry_processing::{grayscale::GpuGrayscale, GpuImageProcessor};
 use crate::utils::commands::collect_and_deduplicate_commands;
 
 use super::{
-    BackendToolType, FrontendMessage, GaussianBlurMessage, PipelineCommand, PipelineObjectMessage,
-    ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolBackend,
+    ToolState,
 };
 use async_trait::async_trait;
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct GaussianBlurState {
-    pub sigma: f32,
+pub struct GrayscaleState {
     pub is_enabled: bool,
 }
 
-pub struct GaussianBlur {
-    pub state: GaussianBlurState,
+pub struct Grayscale {
+    pub state: GrayscaleState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub gaussian_blur: GpuGaussianBlur,
+    pub grayscale: GpuGrayscale,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
-    pub cached_state: Option<GaussianBlurState>,
-    pub frontend_latest_state: Option<GaussianBlurState>,
+    pub cached_state: Option<GrayscaleState>,
+    pub frontend_latest_state: Option<GrayscaleState>,
 }
 
 #[async_trait]
-impl ToolBackend for GaussianBlur {
+impl ToolBackend for Grayscale {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
@@ -40,7 +39,7 @@ impl ToolBackend for GaussianBlur {
         self.sender.clone()
     }
     fn apply_state(&mut self, state: ToolState) {
-        if let ToolState::GaussianBlurState(new_state) = state {
+        if let ToolState::GrayscaleState(new_state) = state {
             self.state = new_state;
         }
     }
@@ -48,7 +47,7 @@ impl ToolBackend for GaussianBlur {
         self.state.is_enabled = enabled;
     }
     fn get_state(&self) -> ToolState {
-        ToolState::GaussianBlurState(self.state.clone())
+        ToolState::GrayscaleState(self.state.clone())
     }
     fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
         self.frontend_senders.push(sender);
@@ -58,11 +57,11 @@ impl ToolBackend for GaussianBlur {
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self.gaussian_blur.apply_blur(image, self.state.sigma).await {
+            *image = match self.grayscale.apply_grayscale(image).await {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Gaussian Blur error: {e}")),
+                        FrontendMessage::UserFeedback(format!("Grayscale error: {e}")),
                     ))?;
                     return Err(e);
                 }
@@ -81,17 +80,11 @@ impl ToolBackend for GaussianBlur {
                         FrontendMessage::ReturnState(self.get_state()),
                     ))?;
                 }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
+                PipelineCommand::PipelineObject(message) => {
+                    if let PipelineObjectMessage::ToggleActive(value) = message {
                         self.state.is_enabled = value;
                     }
-                    PipelineObjectMessage::GaussianBlurMessage(message) => match message {
-                        GaussianBlurMessage::SetSigma(sigma) => {
-                            self.state.sigma = sigma;
-                        }
-                    },
-                    _ => {}
-                },
+                }
                 _ => {}
             }
         }
@@ -111,7 +104,7 @@ impl ToolBackend for GaussianBlur {
     }
 
     fn iam(&self) -> BackendToolType {
-        BackendToolType::GaussianBlur
+        BackendToolType::Grayscale
     }
 
     fn get_index(&self) -> usize {
@@ -145,7 +138,7 @@ impl ToolBackend for GaussianBlur {
     }
 }
 
-impl GaussianBlur {
+impl Grayscale {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -153,11 +146,8 @@ impl GaussianBlur {
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
         Self {
-            state: GaussianBlurState {
-                is_enabled: false,
-                sigma: 2.0,
-            },
-            gaussian_blur: GpuGaussianBlur::new(gpu_image_processor).await,
+            state: GrayscaleState { is_enabled: false },
+            grayscale: GpuGrayscale::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
             global_sender,
@@ -175,10 +165,10 @@ impl GaussianBlur {
         self.send_to_frontend(PipelineCommand::FrontendMessage(
             FrontendMessage::ReturnState(self.get_state()),
         ))?;
+        self.frontend_latest_state = Some(self.state.clone());
         self.command_sender
             .send(PipelineCommand::Refresh(self.index))
             .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
-        self.frontend_latest_state = Some(self.state.clone());
         Ok(())
     }
 

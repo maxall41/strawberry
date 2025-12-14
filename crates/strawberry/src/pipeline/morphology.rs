@@ -1,70 +1,58 @@
 use std::sync::Arc;
 
-use crate::processing::{
-    local_maxima::{GpuLocalMaxima, ThresholdType},
+use crate::utils::commands::collect_and_deduplicate_commands;
+use strawberry_processing::{
+    morphology::{GpuMorphology, MorphologyOperation},
     GpuImageProcessor,
 };
-use crate::utils::commands::collect_and_deduplicate_commands;
 
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BackendToolType, FrontendMessage, LocalMaximaMessage, PipelineCommand, PipelineObjectMessage,
+    BackendToolType, FrontendMessage, MorphologyMessage, PipelineCommand, PipelineObjectMessage,
     ToolBackend, ToolState,
 };
 use async_trait::async_trait;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LocalMaximaState {
-    pub min_distance: u32,
-    pub threshold: ThresholdType,
-    pub exclude_border: bool,
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MorphologyState {
+    pub operation: MorphologyOperation,
+    pub element_size: u32,
     pub is_enabled: bool,
 }
 
-impl Default for LocalMaximaState {
-    fn default() -> Self {
-        Self {
-            min_distance: 5,
-            threshold: ThresholdType::Relative(0.01),
-            exclude_border: true,
-            is_enabled: false,
-        }
-    }
-}
-
-pub struct LocalMaxima {
-    pub state: LocalMaximaState,
+pub struct Morphology {
+    pub state: MorphologyState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub local_maxima: GpuLocalMaxima,
+    pub morphology: GpuMorphology,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
-    pub cached_state: Option<LocalMaximaState>,
-    pub frontend_latest_state: Option<LocalMaximaState>,
+    pub cached_state: Option<MorphologyState>,
+    pub frontend_latest_state: Option<MorphologyState>,
 }
 
 #[async_trait]
-impl ToolBackend for LocalMaxima {
+impl ToolBackend for Morphology {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
-    fn apply_state(&mut self, state: ToolState) {
-        if let ToolState::LocalMaximaState(new_state) = state {
-            self.state = new_state;
-        }
-    }
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
+    }
+    fn apply_state(&mut self, state: ToolState) {
+        if let ToolState::MorphologyState(new_state) = state {
+            self.state = new_state;
+        }
     }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
     }
     fn get_state(&self) -> ToolState {
-        ToolState::LocalMaximaState(self.state.clone())
+        ToolState::MorphologyState(self.state.clone())
     }
     fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
         self.frontend_senders.push(sender);
@@ -75,19 +63,14 @@ impl ToolBackend for LocalMaxima {
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
             *image = match self
-                .local_maxima
-                .apply_local_maxima(
-                    image,
-                    self.state.min_distance,
-                    self.state.threshold.clone(),
-                    self.state.exclude_border,
-                )
+                .morphology
+                .apply_morphology(image, self.state.operation, self.state.element_size)
                 .await
             {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Local Maxima error: {e}")),
+                        FrontendMessage::UserFeedback(format!("Morphology error: {e}")),
                     ))?;
                     return Err(e);
                 }
@@ -110,15 +93,12 @@ impl ToolBackend for LocalMaxima {
                     PipelineObjectMessage::ToggleActive(value) => {
                         self.state.is_enabled = value;
                     }
-                    PipelineObjectMessage::LocalMaximaMessage(message) => match message {
-                        LocalMaximaMessage::SetParameters(
-                            min_distance,
-                            threshold,
-                            exclude_border,
-                        ) => {
-                            self.state.min_distance = min_distance;
-                            self.state.threshold = threshold;
-                            self.state.exclude_border = exclude_border;
+                    PipelineObjectMessage::MorphologyMessage(message) => match message {
+                        MorphologyMessage::SetOperation(operation) => {
+                            self.state.operation = operation;
+                        }
+                        MorphologyMessage::SetElementSize(element_size) => {
+                            self.state.element_size = element_size;
                         }
                     },
                     _ => {}
@@ -142,7 +122,7 @@ impl ToolBackend for LocalMaxima {
     }
 
     fn iam(&self) -> BackendToolType {
-        BackendToolType::LocalMaxima
+        BackendToolType::Morphology
     }
 
     fn get_index(&self) -> usize {
@@ -176,7 +156,7 @@ impl ToolBackend for LocalMaxima {
     }
 }
 
-impl LocalMaxima {
+impl Morphology {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -184,8 +164,12 @@ impl LocalMaxima {
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
         Self {
-            state: LocalMaximaState::default(),
-            local_maxima: GpuLocalMaxima::new(gpu_image_processor).await,
+            state: MorphologyState {
+                is_enabled: false,
+                operation: MorphologyOperation::Dilation,
+                element_size: 3,
+            },
+            morphology: GpuMorphology::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
             global_sender,
@@ -203,10 +187,10 @@ impl LocalMaxima {
         self.send_to_frontend(PipelineCommand::FrontendMessage(
             FrontendMessage::ReturnState(self.get_state()),
         ))?;
-        self.frontend_latest_state = Some(self.state.clone());
         self.command_sender
             .send(PipelineCommand::Refresh(self.index))
             .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
+        self.frontend_latest_state = Some(self.state.clone());
         Ok(())
     }
 
