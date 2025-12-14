@@ -306,6 +306,9 @@ impl ToolBackend for Counter {
                         CountMessage::NewCountType(id) => {
                             self.state.manual_counts.insert(id, vec![]);
                             self.state.count_type_visibility.insert(id, true);
+                            self.state
+                                .count_type_names
+                                .insert(id, format!("Type {}", id));
                             self.state.active_count_type = Some(id);
                         }
                         CountMessage::DeletionLasso(points) => {
@@ -337,6 +340,7 @@ impl ToolBackend for Counter {
                         CountMessage::DeleteCountType(id) => {
                             self.state.manual_counts.remove(&id);
                             self.state.count_type_visibility.remove(&id);
+                            self.state.count_type_names.remove(&id);
                         }
                         CountMessage::ToggleCountTypeVisibility(id) => {
                             let current_visibility =
@@ -387,6 +391,7 @@ impl ToolBackend for Counter {
                                     self.state.auto_counts = loaded_state.auto_counts;
                                     self.state.mode = loaded_state.mode;
                                     self.state.active_count_type = loaded_state.active_count_type;
+                                    self.state.count_type_names = loaded_state.count_type_names;
 
                                     // Initialize visibility for all loaded count types
                                     self.state.count_type_visibility.clear();
@@ -422,6 +427,9 @@ impl ToolBackend for Counter {
                                 .manual_counts
                                 .insert(new_key, self.state.auto_counts.clone());
                             self.state.count_type_visibility.insert(new_key, true);
+                            self.state
+                                .count_type_names
+                                .insert(new_key, format!("Type {}", new_key));
                             self.state.mode = CounterMode::Manual;
                             self.state.active_count_type = Some(0)
                         }
@@ -662,6 +670,7 @@ impl Counter {
                 review_current_index: 0,
                 filter_proxys,
                 count_type_visibility: HashMap::new(),
+                count_type_names: HashMap::new(),
             },
             frontend_senders: vec![],
             index: 0,

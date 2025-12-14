@@ -27,6 +27,8 @@
 - [X] Allow user to toggle display of each count type in Counter
 - [X] Make sure CMD+Q quit app shortcut works
 - [X] Color bar got removed from counter GUI somehow?
+- [ ] Nerve tracer w/A*
+- [ ] If toast is error make time bar red and if sucessfull make it green
 
 - [X] If tokio backend panics handle it properly
 - [X] Refuses to load weka probability map file (the one that is 100+MB) with error: Failed to process pipeline after loading images: No input images provided
@@ -58,7 +60,6 @@
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
 - [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
 - [ ] Add mode toggle to "Threshold" that in addition to manual thresholding it supports Otsu thresholding, Local thresholding, and maybe one or two other thresholding methods.
-- [ ] If toast is error make time bar red and if sucessfull make it green & add icons to toasts
 - [ ] Error toasts for frontend errors
 - [ ] Fill Holes Morphology Option
 - [ ] Consider global keyboard shortcuts, use global_hotkey.
