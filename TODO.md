@@ -8,7 +8,7 @@
 - [X] GUI Error handling with toasts
 - [X] Sobel filter
 - [X] Grayscale
-- [ ] Mouse zooming
+- [X] Mouse zooming
 - [X] Image export
 - [X] If compositing > 7 images then just batch into 7 image batches and run each and then composite them together (supports up to 49 images which should be enough for pretty much everything)
 - [X] Safe indexing
@@ -22,12 +22,11 @@
       - [X] Counter: CMD+S = Save counts, CMD+L = Load counts
       - [X] Counter (Review mode): CMD+D = Delete count
       - [X] Compositor/Decompositor: CMD+(1-9) = Enable/disable layer (1-9)
-- [ ] Move viewport to center of image on image load unless dimensions of new images match the current image dimensions.
+- [X] Move viewport to center of image on image load unless dimensions of new images match the current image dimensions.
 - [X] Default counter to no tool selected
 - [X] Allow user to toggle display of each count type in Counter
 - [X] Make sure CMD+Q quit app shortcut works
 - [X] Color bar got removed from counter GUI somehow?
-- [ ] Proper global keyboard shortcuts!
 
 - [X] If tokio backend panics handle it properly
 - [X] Refuses to load weka probability map file (the one that is 100+MB) with error: Failed to process pipeline after loading images: No input images provided
@@ -62,6 +61,7 @@
 - [ ] If toast is error make time bar red and if sucessfull make it green & add icons to toasts
 - [ ] Error toasts for frontend errors
 - [ ] Fill Holes Morphology Option
+- [ ] Consider global keyboard shortcuts, use global_hotkey.
 
 # Alpha 0.3 (Cement)
 - [ ] Flat field correction
