@@ -47,6 +47,7 @@
 - [ ] Default folder when clicking "Save" in counter should be the folder the counts were loaded from if applicable
 - [ ] Movement of the "Camera" is jerky
 - [ ] Counter should be enabled when counts are loaded
+- [ ] Closing the main window should close the application
 
 ## Alpha 0.2 (Rebar)
 - [ ] Make UI nice

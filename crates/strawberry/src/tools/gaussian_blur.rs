@@ -149,7 +149,12 @@ impl GaussianBlurView {
         }
     }
 
-    fn toggle_enabled(&mut self, current_value: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_enabled(
+        &mut self,
+        current_value: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
         let Some(current_tool_index) = self.get_current_tool_index() else {
             return;
         };
@@ -225,7 +230,7 @@ impl GaussianBlurView {
     // Value control component for radius and sigma
     fn render_sigma_control(
         &self,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
         self.sigma_control
@@ -236,7 +241,6 @@ impl GaussianBlurView {
     fn render_preset_button(
         &self,
         label: String,
-        radius: f32,
         sigma: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -272,10 +276,10 @@ impl GaussianBlurView {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(self.render_preset_button("Light".to_string(), 2.0, 1.0, cx))
-                    .child(self.render_preset_button("Medium".to_string(), 5.0, 2.0, cx))
-                    .child(self.render_preset_button("Heavy".to_string(), 10.0, 4.0, cx))
-                    .child(self.render_preset_button("Extreme".to_string(), 15.0, 6.0, cx)),
+                    .child(self.render_preset_button("Light".to_string(), 2.0, cx))
+                    .child(self.render_preset_button("Medium".to_string(), 5.0, cx))
+                    .child(self.render_preset_button("Heavy".to_string(), 10.0, cx))
+                    .child(self.render_preset_button("Extreme".to_string(), 15.0, cx)),
             )
     }
 
@@ -388,7 +392,7 @@ impl ToolFrontend for GaussianBlurView {
             .expect("State lock should not be poisoned")
             .clone();
 
-        let sigma_control = cx.new(|cx| {
+        let sigma_control = cx.new(|_cx| {
             ValueControl::new(
                 format!("{:.2}", state.sigma),
                 state.sigma,

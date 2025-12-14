@@ -1,4 +1,4 @@
-use gpui::{div, prelude::*, rgb, AnyView, Context, IntoElement, MouseDownEvent, RenderOnce};
+use gpui::{div, prelude::*, rgb, Context, IntoElement};
 
 pub struct TooltipView {
     pub text: String,

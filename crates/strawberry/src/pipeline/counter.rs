@@ -83,11 +83,6 @@ fn update_filter_proxys(input: &Vec<Box<dyn Filter>>) -> Vec<FilterProxy> {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct CountDataContainer {
-    pub counts: Vec<CountData>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub enum CounterMode {
     #[default]
     Manual,
@@ -177,7 +172,7 @@ impl ToolBackend for Counter {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
-    fn apply_state(&mut self, state: ToolState) {}
+    fn apply_state(&mut self, _state: ToolState) {}
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
     }
@@ -564,13 +559,12 @@ impl ToolBackend for Counter {
             self.state.filter_proxys = new_filter_proxys;
         }
 
-        if self.frontend_latest_state.is_none() {
-            self.update_state()?;
-        } else if self
-            .frontend_latest_state
-            .as_ref()
-            .expect("Just checked that frontend_latest_state is some")
-            != &self.state
+        if self.frontend_latest_state.is_none()
+            || self
+                .frontend_latest_state
+                .as_ref()
+                .expect("Just checked that frontend_latest_state is some")
+                != &self.state
         {
             self.update_state()?;
         }

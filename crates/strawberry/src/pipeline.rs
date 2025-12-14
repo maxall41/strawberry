@@ -4,21 +4,20 @@ use std::{path::PathBuf, sync::Arc, time::Instant, vec};
 use async_trait::async_trait;
 use compositor::{Compositor, CompositorState};
 use decomposer::{Decomposer, DecomposerState};
-use gpui::Rgba;
 use serde::{Deserialize, Serialize};
 
-use strawberry_processing::{colorspace::GpuColorspaceConverter, local_maxima::ThresholdType};
 use anyhow::anyhow;
 use contrast::{Contrast, ContrastState};
 use counter::{Counter, CounterState, CounterTool};
 use gaussian_blur::{GaussianBlur, GaussianBlurState};
 use grayscale::{Grayscale, GrayscaleState};
-use image::{ImageBuffer, ImageReader, RgbaImage};
+use image::{ImageReader, RgbaImage};
 use local_maxima::{LocalMaxima, LocalMaximaState};
 use manager::{ManagerState, PipelineConfig, ToolManager};
 use morphology::{Morphology, MorphologyState};
 use rolling_ball::{RollingBall, RollingBallState};
 use sobel::{Sobel, SobelState};
+use strawberry_processing::{colorspace::GpuColorspaceConverter, local_maxima::ThresholdType};
 use watershed::{Watershed, WatershedState};
 
 use futures::future::try_join_all;
@@ -98,11 +97,6 @@ pub enum WatershedMessage {
 pub enum SobelMessage {
     SetThreshold(f32),
     ToggleThreshold(bool),
-}
-
-#[derive(Debug, Clone)]
-pub struct Polygon {
-    vertices: Vec<(f32, f32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -588,13 +582,13 @@ impl Pipeline {
                             .await?;
                         out_img.save(file)?;
                         self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::UserFeedback(format!("Image saved successfully!")),
+                            FrontendMessage::UserFeedback("Image saved successfully!".to_string()),
                         ))?;
                     } else {
                         self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::UserFeedback(format!(
-                                "No image in output buffer to save!"
-                            )),
+                            FrontendMessage::UserFeedback(
+                                "No image in output buffer to save!".to_string(),
+                            ),
                         ))?;
                     }
                 }
@@ -614,9 +608,9 @@ impl Pipeline {
                                 Err(e) => {
                                     eprintln!("Error decoding image: {}", e);
                                     self.output_sender.send(PipelineCommand::FrontendMessage(
-                                        FrontendMessage::UserFeedback(format!(
-                                            "Failed to decode image!"
-                                        )),
+                                        FrontendMessage::UserFeedback(
+                                            "Failed to decode image!".to_string(),
+                                        ),
                                     ))?;
                                     return Ok(());
                                 }
@@ -624,7 +618,9 @@ impl Pipeline {
                             Err(e) => {
                                 eprintln!("Error loading image: {}", e);
                                 self.output_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::UserFeedback(format!("Failed to load image!")),
+                                    FrontendMessage::UserFeedback(
+                                        "Failed to load image!".to_string(),
+                                    ),
                                 ))?;
                                 return Ok(());
                             }
@@ -635,9 +631,9 @@ impl Pipeline {
                         let first_size = sizes[0];
                         if !sizes.iter().all(|&size| size == first_size) {
                             self.output_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::UserFeedback(format!(
-                                    "Error: All images must have the same dimensions",
-                                )),
+                                FrontendMessage::UserFeedback(
+                                    "Error: All images must have the same dimensions".to_string(),
+                                ),
                             ))?;
                             return Ok(());
                         }

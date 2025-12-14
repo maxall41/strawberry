@@ -35,7 +35,6 @@ pub struct ValueControl {
     pub text: String,
     pub value: f32,
     last_key_time: Instant,
-    last_key: String,
     initialized: bool,
     focus_handle: Option<FocusHandle>,
     highlight: bool,
@@ -49,7 +48,7 @@ pub struct ValueControl {
 pub struct DragDummy {}
 
 impl Render for DragDummy {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
     }
 }
@@ -68,7 +67,6 @@ impl ValueControl {
             text,
             value,
             last_key_time: Instant::now(),
-            last_key: String::new(),
             initialized: false,
             focus_handle: None,
             highlight: false,
@@ -86,7 +84,7 @@ impl ValueControl {
             },
         }
     }
-    pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn initialize(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle = Some(cx.focus_handle());
 
         cx.observe_keystrokes(|this, event, _window, cx| {
@@ -256,7 +254,7 @@ impl Render for ValueControl {
                                 )
                             })
                             .on_drag(DragDummy {
-                            }, |this : &DragDummy, point, _, cx| {
+                            }, |_this : &DragDummy, _point, _, cx| {
                                   cx.new(|_| DragDummy {
                                   })
                             })
@@ -286,8 +284,8 @@ impl Render for ValueControl {
                                 cx.listener(
                                     move |this: &mut ValueControl,
                                           _event: &DragMoveEvent<DragDummy>,
-                                          window: &mut Window,
-                                          cx: &mut Context<ValueControl>| {
+                                          _window: &mut Window,
+                                          _cx: &mut Context<ValueControl>| {
                                             this.mouse_down = false;
                                             this.drag_start_position = None;
                                     },
@@ -311,7 +309,7 @@ impl Render for ValueControl {
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         {
-                                            cx.listener(move |this: &mut Self, _event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>| {
+                                            cx.listener(move |this: &mut Self, _event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
                                                 this.value -= this.config.step;
                                                 cx.emit(ValueControlEvent::value_changed(
                                                     this.config.id.clone(),
@@ -334,7 +332,7 @@ impl Render for ValueControl {
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         {
-                                            cx.listener(move |this: &mut Self, _event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>| {
+                                            cx.listener(move |this: &mut Self, _event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
                                                 this.value += this.config.step;
                                                 cx.emit(ValueControlEvent::value_changed(
                                                     this.config.id.clone(),
