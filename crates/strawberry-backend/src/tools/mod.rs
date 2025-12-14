@@ -1,0 +1,28 @@
+pub mod compositor;
+pub mod contrast;
+pub mod counter;
+pub mod decomposer;
+pub mod gaussian_blur;
+pub mod grayscale;
+pub mod local_maxima;
+pub mod manager;
+pub mod morphology;
+pub mod rolling_ball;
+pub mod sobel;
+pub mod threshold;
+pub mod watershed;
+
+// Re-export main backend tool structs (states are in strawberry-types)
+pub use compositor::Compositor;
+pub use contrast::Contrast;
+pub use counter::Counter;
+pub use decomposer::Decomposer;
+pub use gaussian_blur::GaussianBlur;
+pub use grayscale::Grayscale;
+pub use local_maxima::LocalMaxima;
+pub use manager::ToolManager;
+pub use morphology::Morphology;
+pub use rolling_ball::RollingBall;
+pub use sobel::Sobel;
+pub use threshold::Threshold;
+pub use watershed::Watershed;

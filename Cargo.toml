@@ -2,5 +2,9 @@
 resolver = "2"
 members = [
     "crates/processing",
-    "crates/strawberry",
+    "crates/strawberry-types",
+    "crates/strawberry-backend",
+    "crates/strawberry-frontend",
+    "crates/strawberry-cli",
 ]
+default-members = ["crates/strawberry-frontend"]

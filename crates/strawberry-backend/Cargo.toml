@@ -1,0 +1,18 @@
+[package]
+name = "strawberry-backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+strawberry-types = { path = "../strawberry-types" }
+strawberry-processing = { path = "../processing" }
+anyhow = "1.0"
+futures = "0.3"
+image = { git = "https://github.com/maxall41/image.git", branch = "single-channel-support" }
+tokio = { version = "1.0", features = ["full"] }
+flume = "0.11"
+async-trait = "0.1.88"
+lutz = "1.4.1"
+serde = "1.0.219"
+quick-xml = { version = "0.38.0", features = ["serialize"] }
+toml = "0.9.2"
