@@ -18,6 +18,12 @@ pub enum MorphologyOperation {
     Closing,
 }
 
+impl Default for MorphologyOperation {
+    fn default() -> Self {
+        MorphologyOperation::Dilation
+    }
+}
+
 impl MorphologyOperation {
     fn to_u32(self) -> u32 {
         match self {

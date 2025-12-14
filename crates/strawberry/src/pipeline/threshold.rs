@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::processing::{threshold::GpuThreshold, GpuImageProcessor};
+use strawberry_processing::{threshold::GpuThreshold, GpuImageProcessor};
 use crate::utils::commands::collect_and_deduplicate_commands;
 
 use super::{

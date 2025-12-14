@@ -14,7 +14,7 @@ use crate::pipeline::{
     local_maxima::LocalMaximaState, BackendToolType, FrontendMessage, LocalMaximaMessage,
     PipelineCommand, PipelineObjectMessage, ToolState,
 };
-use crate::processing::local_maxima::ThresholdType;
+use strawberry_processing::local_maxima::ThresholdType;
 
 use super::ToolFrontend;
 

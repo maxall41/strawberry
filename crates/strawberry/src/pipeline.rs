@@ -7,7 +7,7 @@ use decomposer::{Decomposer, DecomposerState};
 use gpui::Rgba;
 use serde::{Deserialize, Serialize};
 
-use crate::processing::{colorspace::GpuColorspaceConverter, local_maxima::ThresholdType};
+use strawberry_processing::{colorspace::GpuColorspaceConverter, local_maxima::ThresholdType};
 use anyhow::anyhow;
 use contrast::{Contrast, ContrastState};
 use counter::{Counter, CounterState, CounterTool};
@@ -25,7 +25,7 @@ use futures::future::try_join_all;
 use threshold::{Threshold, ThresholdState};
 use tokio::sync::broadcast;
 
-use crate::processing::GpuImageProcessor;
+use strawberry_processing::GpuImageProcessor;
 
 pub mod compositor;
 pub mod contrast;
@@ -68,7 +68,7 @@ pub enum LocalMaximaMessage {
 
 #[derive(Debug, Clone)]
 pub enum MorphologyMessage {
-    SetOperation(crate::processing::morphology::MorphologyOperation),
+    SetOperation(strawberry_processing::morphology::MorphologyOperation),
     SetElementSize(u32),
 }
 

@@ -1,41 +1,46 @@
 use std::sync::Arc;
 
-use crate::processing::{compositor::GpuCompositor, GpuImageProcessor};
+use strawberry_processing::{watershed::GpuWatershed, GpuImageProcessor};
 use crate::utils::commands::collect_and_deduplicate_commands;
 
 use super::{
-    BackendToolType, CompositorMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,
-    ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolBackend,
+    ToolState, WatershedMessage,
 };
 use async_trait::async_trait;
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct CompositorState {
+pub struct WatershedState {
+    pub sigma: f32,
+    pub min_distance: u32,
     pub is_enabled: bool,
-    pub enabled_layers: Vec<bool>,
-    pub real_layers_len: usize,
 }
 
-pub struct Compositor {
-    pub state: CompositorState,
+pub struct Watershed {
+    pub state: WatershedState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub compositer: GpuCompositor,
+    pub watershed: GpuWatershed,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
-    pub cached_state: Option<CompositorState>,
-    pub frontend_latest_state: Option<CompositorState>,
+    pub cached_state: Option<WatershedState>,
+    pub frontend_latest_state: Option<WatershedState>,
 }
 
 #[async_trait]
-impl ToolBackend for Compositor {
+impl ToolBackend for Watershed {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
+    }
+    fn apply_state(&mut self, state: ToolState) {
+        if let ToolState::WatershedState(new_state) = state {
+            self.state = new_state;
+        }
     }
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
@@ -43,13 +48,8 @@ impl ToolBackend for Compositor {
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
     }
-    fn apply_state(&mut self, state: ToolState) {
-        if let ToolState::CompositorState(new_state) = state {
-            self.state = new_state;
-        }
-    }
     fn get_state(&self) -> ToolState {
-        ToolState::CompositorState(self.state.clone())
+        ToolState::WatershedState(self.state.clone())
     }
     fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
         self.frontend_senders.push(sender);
@@ -58,62 +58,21 @@ impl ToolBackend for Compositor {
         self.frontend_senders.clear();
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
-        println!("Processing images for Compositor");
-        self.state.real_layers_len = input.len();
-
-        if input.len() == 1 {
-            self.global_sender.send(PipelineCommand::FrontendMessage(
-                FrontendMessage::UserFeedback("Compositor needs >1 image to composite".to_string()),
-            ))?;
-            self.set_enabled(false);
-            self.send_to_frontend(PipelineCommand::FrontendMessage(
-                FrontendMessage::ReturnState(self.get_state()),
-            ))?;
-            return Ok(());
-        }
-
-        let images: Vec<image::RgbaImage> = input
-            .clone()
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, image)| {
-                if self.state.enabled_layers.get(i).copied().unwrap_or(false) {
-                    Some(image)
-                } else {
-                    None
+        for image in input {
+            *image = match self
+                .watershed
+                .apply_watershed(image, self.state.sigma, self.state.min_distance)
+                .await
+            {
+                Ok(img) => img,
+                Err(e) => {
+                    self.global_sender.send(PipelineCommand::FrontendMessage(
+                        FrontendMessage::UserFeedback(format!("Watershed error: {e}")),
+                    ))?;
+                    return Err(e);
                 }
-            })
-            .collect();
-
-        let composited = match self.compositer.composite_images(&images).await {
-            Ok(image) => image,
-            Err(e) => {
-                self.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::UserFeedback(format!("Compositor error: {e}")),
-                ))?;
-                return Err(e);
-            }
-        };
-
-        *input = vec![composited];
-
-        if self.frontend_latest_state.is_some() {
-            println!(
-                "State Status {}",
-                self.frontend_latest_state
-                    .as_ref()
-                    .expect("Just checked that frontend_latest_state is some")
-                    == &self.state
-            );
-            println!(
-                "Real Layers Length Comparison | Frontend: {} Backend: {}",
-                self.frontend_latest_state.as_ref().unwrap().real_layers_len,
-                self.state.real_layers_len
-            )
-        } else {
-            println!("Frontend state is empty")
+            };
         }
-
         Ok(())
     }
 
@@ -131,36 +90,10 @@ impl ToolBackend for Compositor {
                     PipelineObjectMessage::ToggleActive(value) => {
                         self.state.is_enabled = value;
                     }
-                    PipelineObjectMessage::CompositorMessage(message) => match message {
-                        CompositorMessage::ToggleVisibility(value, layer_index) => {
-                            let mut mutated = self.state.enabled_layers.clone();
-                            let index = layer_index as usize;
-
-                            if index >= mutated.len() {
-                                let error_msg = format!(
-                                    "Compositor: Layer index {} out of bounds (max: {})",
-                                    index,
-                                    mutated.len()
-                                );
-                                self.global_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::UserFeedback(error_msg.clone()),
-                                ))?;
-                                return Err(anyhow::anyhow!(error_msg));
-                            }
-
-                            mutated[index] = value;
-
-                            let end_range =
-                                std::cmp::min(self.state.real_layers_len, mutated.len());
-                            if mutated
-                                .get(0..end_range)
-                                .map(|slice| slice.iter().all(|&x| !x))
-                                .unwrap_or(true)
-                            {
-                                return Ok(());
-                            }
-
-                            self.state.enabled_layers = mutated;
+                    PipelineObjectMessage::WatershedMessage(message) => match message {
+                        WatershedMessage::SetParameters(sigma, min_distance) => {
+                            self.state.sigma = sigma;
+                            self.state.min_distance = min_distance;
                         }
                     },
                     _ => {}
@@ -184,7 +117,7 @@ impl ToolBackend for Compositor {
     }
 
     fn iam(&self) -> BackendToolType {
-        BackendToolType::Compositor
+        BackendToolType::Watershed
     }
 
     fn get_index(&self) -> usize {
@@ -218,20 +151,20 @@ impl ToolBackend for Compositor {
     }
 }
 
-impl Compositor {
+impl Watershed {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
-        Compositor {
-            state: CompositorState {
+        Self {
+            state: WatershedState {
                 is_enabled: false,
-                enabled_layers: vec![true; 8], //TODO: Mmmm danger. Should be fine since buffer only supports 7 input images anyways...
-                real_layers_len: 0,
+                sigma: 1.0,
+                min_distance: 10,
             },
-            compositer: GpuCompositor::new(gpu_image_processor).await,
+            watershed: GpuWatershed::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
             global_sender,

@@ -1,87 +1,93 @@
 use std::sync::Arc;
 
-use crate::processing::{rolling_ball::GpuRollingBall, GpuImageProcessor};
+use strawberry_processing::{
+    local_maxima::{GpuLocalMaxima, ThresholdType},
+    GpuImageProcessor,
+};
 use crate::utils::commands::collect_and_deduplicate_commands;
 
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, RollingBallMessage,
+    BackendToolType, FrontendMessage, LocalMaximaMessage, PipelineCommand, PipelineObjectMessage,
     ToolBackend, ToolState,
 };
 use async_trait::async_trait;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RollingBallState {
-    pub ball_radius: u32,
+pub struct LocalMaximaState {
+    pub min_distance: u32,
+    pub threshold: ThresholdType,
+    pub exclude_border: bool,
     pub is_enabled: bool,
 }
 
-impl Default for RollingBallState {
+impl Default for LocalMaximaState {
     fn default() -> Self {
         Self {
-            ball_radius: 50,
+            min_distance: 5,
+            threshold: ThresholdType::Relative(0.01),
+            exclude_border: true,
             is_enabled: false,
         }
     }
 }
 
-pub struct RollingBall {
-    pub state: RollingBallState,
+pub struct LocalMaxima {
+    pub state: LocalMaximaState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub rolling_ball: GpuRollingBall,
+    pub local_maxima: GpuLocalMaxima,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
-    pub cached_state: Option<RollingBallState>,
-    pub frontend_latest_state: Option<RollingBallState>,
+    pub cached_state: Option<LocalMaximaState>,
+    pub frontend_latest_state: Option<LocalMaximaState>,
 }
 
 #[async_trait]
-impl ToolBackend for RollingBall {
+impl ToolBackend for LocalMaxima {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
-
-    fn get_sender(&self) -> flume::Sender<PipelineCommand> {
-        self.sender.clone()
-    }
     fn apply_state(&mut self, state: ToolState) {
-        if let ToolState::RollingBallState(new_state) = state {
+        if let ToolState::LocalMaximaState(new_state) = state {
             self.state = new_state;
         }
     }
-
+    fn get_sender(&self) -> flume::Sender<PipelineCommand> {
+        self.sender.clone()
+    }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
     }
-
     fn get_state(&self) -> ToolState {
-        ToolState::RollingBallState(self.state.clone())
+        ToolState::LocalMaximaState(self.state.clone())
     }
-
     fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
         self.frontend_senders.push(sender);
     }
-
     fn disconnect(&mut self) {
         self.frontend_senders.clear();
     }
-
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
             *image = match self
-                .rolling_ball
-                .apply_rolling_ball(image, self.state.ball_radius)
+                .local_maxima
+                .apply_local_maxima(
+                    image,
+                    self.state.min_distance,
+                    self.state.threshold.clone(),
+                    self.state.exclude_border,
+                )
                 .await
             {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Rolling Ball error: {e}")),
+                        FrontendMessage::UserFeedback(format!("Local Maxima error: {e}")),
                     ))?;
                     return Err(e);
                 }
@@ -104,9 +110,15 @@ impl ToolBackend for RollingBall {
                     PipelineObjectMessage::ToggleActive(value) => {
                         self.state.is_enabled = value;
                     }
-                    PipelineObjectMessage::RollingBallMessage(message) => match message {
-                        RollingBallMessage::SetBallRadius(ball_radius) => {
-                            self.state.ball_radius = ball_radius;
+                    PipelineObjectMessage::LocalMaximaMessage(message) => match message {
+                        LocalMaximaMessage::SetParameters(
+                            min_distance,
+                            threshold,
+                            exclude_border,
+                        ) => {
+                            self.state.min_distance = min_distance;
+                            self.state.threshold = threshold;
+                            self.state.exclude_border = exclude_border;
                         }
                     },
                     _ => {}
@@ -130,7 +142,7 @@ impl ToolBackend for RollingBall {
     }
 
     fn iam(&self) -> BackendToolType {
-        BackendToolType::RollingBall
+        BackendToolType::LocalMaxima
     }
 
     fn get_index(&self) -> usize {
@@ -164,7 +176,7 @@ impl ToolBackend for RollingBall {
     }
 }
 
-impl RollingBall {
+impl LocalMaxima {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -172,8 +184,8 @@ impl RollingBall {
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
         Self {
-            state: RollingBallState::default(),
-            rolling_ball: GpuRollingBall::new(gpu_image_processor).await,
+            state: LocalMaximaState::default(),
+            local_maxima: GpuLocalMaxima::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
             global_sender,
@@ -191,10 +203,10 @@ impl RollingBall {
         self.send_to_frontend(PipelineCommand::FrontendMessage(
             FrontendMessage::ReturnState(self.get_state()),
         ))?;
+        self.frontend_latest_state = Some(self.state.clone());
         self.command_sender
             .send(PipelineCommand::Refresh(self.index))
             .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
-        self.frontend_latest_state = Some(self.state.clone());
         Ok(())
     }
 

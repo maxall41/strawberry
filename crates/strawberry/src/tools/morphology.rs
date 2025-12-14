@@ -14,7 +14,7 @@ use crate::pipeline::{
     morphology::MorphologyState, BackendToolType, FrontendMessage, MorphologyMessage,
     PipelineCommand, PipelineObjectMessage, ToolState,
 };
-use crate::processing::morphology::MorphologyOperation;
+use strawberry_processing::morphology::MorphologyOperation;
 
 use super::ToolFrontend;
 

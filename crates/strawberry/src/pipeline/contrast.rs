@@ -1,37 +1,39 @@
 use std::sync::Arc;
 
-use crate::processing::{grayscale::GpuGrayscale, GpuImageProcessor};
+use strawberry_processing::{contrast::GpuContrast, GpuImageProcessor};
 use crate::utils::commands::collect_and_deduplicate_commands;
 
 use super::{
-    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolBackend,
-    ToolState,
+    BackendToolType, ContrastMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,
+    ToolBackend, ToolState,
 };
 use async_trait::async_trait;
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct GrayscaleState {
+pub struct ContrastState {
+    pub min: f32,
+    pub max: f32,
     pub is_enabled: bool,
 }
 
-pub struct Grayscale {
-    pub state: GrayscaleState,
+pub struct Contrast {
+    pub state: ContrastState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub grayscale: GpuGrayscale,
+    pub contrast: GpuContrast,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub index: usize,
     pub cached_output: Option<Vec<image::RgbaImage>>,
-    pub cached_state: Option<GrayscaleState>,
-    pub frontend_latest_state: Option<GrayscaleState>,
+    pub cached_state: Option<ContrastState>,
+    pub frontend_latest_state: Option<ContrastState>,
 }
 
 #[async_trait]
-impl ToolBackend for Grayscale {
+impl ToolBackend for Contrast {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
@@ -39,7 +41,7 @@ impl ToolBackend for Grayscale {
         self.sender.clone()
     }
     fn apply_state(&mut self, state: ToolState) {
-        if let ToolState::GrayscaleState(new_state) = state {
+        if let ToolState::ContrastState(new_state) = state {
             self.state = new_state;
         }
     }
@@ -47,7 +49,7 @@ impl ToolBackend for Grayscale {
         self.state.is_enabled = enabled;
     }
     fn get_state(&self) -> ToolState {
-        ToolState::GrayscaleState(self.state.clone())
+        ToolState::ContrastState(self.state.clone())
     }
     fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
         self.frontend_senders.push(sender);
@@ -57,11 +59,15 @@ impl ToolBackend for Grayscale {
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self.grayscale.apply_grayscale(image).await {
+            *image = match self
+                .contrast
+                .apply_contrast(image, self.state.min, self.state.max)
+                .await
+            {
                 Ok(img) => img,
                 Err(e) => {
                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Grayscale error: {e}")),
+                        FrontendMessage::UserFeedback(format!("Contrast error: {e}")),
                     ))?;
                     return Err(e);
                 }
@@ -80,11 +86,18 @@ impl ToolBackend for Grayscale {
                         FrontendMessage::ReturnState(self.get_state()),
                     ))?;
                 }
-                PipelineCommand::PipelineObject(message) => {
-                    if let PipelineObjectMessage::ToggleActive(value) = message {
+                PipelineCommand::PipelineObject(message) => match message {
+                    PipelineObjectMessage::ToggleActive(value) => {
                         self.state.is_enabled = value;
                     }
-                }
+                    PipelineObjectMessage::ContrastMessage(message) => match message {
+                        ContrastMessage::SetMinMax(min, max) => {
+                            self.state.min = min;
+                            self.state.max = max;
+                        }
+                    },
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -104,7 +117,7 @@ impl ToolBackend for Grayscale {
     }
 
     fn iam(&self) -> BackendToolType {
-        BackendToolType::Grayscale
+        BackendToolType::Contrast
     }
 
     fn get_index(&self) -> usize {
@@ -138,7 +151,7 @@ impl ToolBackend for Grayscale {
     }
 }
 
-impl Grayscale {
+impl Contrast {
     pub async fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -146,8 +159,12 @@ impl Grayscale {
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
         Self {
-            state: GrayscaleState { is_enabled: false },
-            grayscale: GpuGrayscale::new(gpu_image_processor).await,
+            state: ContrastState {
+                is_enabled: false,
+                min: 0.0,
+                max: 1.0,
+            },
+            contrast: GpuContrast::new(gpu_image_processor).await,
             frontend_senders: Vec::new(),
             command_sender,
             global_sender,
@@ -165,10 +182,10 @@ impl Grayscale {
         self.send_to_frontend(PipelineCommand::FrontendMessage(
             FrontendMessage::ReturnState(self.get_state()),
         ))?;
-        self.frontend_latest_state = Some(self.state.clone());
         self.command_sender
             .send(PipelineCommand::Refresh(self.index))
             .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
+        self.frontend_latest_state = Some(self.state.clone());
         Ok(())
     }
 
