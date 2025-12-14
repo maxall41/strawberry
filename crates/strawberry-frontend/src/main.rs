@@ -3,20 +3,21 @@ use gpui::{
     actions, div, img, prelude::*, px, rgb, size, App, AppContext, Application, AssetSource,
     Bounds, Context, Entity, ExternalPaths, FocusHandle, Focusable, ImageSource, KeyBinding,
     KeyDownEvent, KeyUpEvent, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, RenderImage, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    Point, RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 use gui::feedback::FeedbackModal;
 use image::{Frame, RgbaImage};
-use strawberry_types::{
-    overlay::{CircleStyle, OverlayCollection, OverlayElement},
-    FrontendMessage, PipelineCommand, ToolFrontend,
-};
-use strawberry_backend::Pipeline;
 use rfd::FileDialog;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::{fs, panic};
+use strawberry_backend::Pipeline;
+use strawberry_types::{
+    overlay::{CircleStyle, OverlayCollection, OverlayElement},
+    FrontendMessage, PipelineCommand, ToolFrontend,
+};
 use tools::compositor::CompositorView;
 use tools::contrast::ContrastView;
 use tools::counter::CounterView;
@@ -78,6 +79,7 @@ struct PrimaryViewer {
     overlays: OverlayCollection,
     snap_target: Option<(f32, f32)>,
     toasts: Vec<Entity<FeedbackModal>>,
+    last_viewport_size: Option<gpui::Size<Pixels>>,
 }
 
 impl PrimaryViewer {
@@ -99,8 +101,26 @@ impl PrimaryViewer {
                             let img_data = Arc::new(RenderImage::new(img_frames));
 
                             if let Err(e) = this.update(cx, |this, cx| {
-                                this.original_width = img_data.size(0).width.0 as u32;
-                                this.original_height = img_data.size(0).height.0 as u32;
+                                let new_width = img_data.size(0).width.0 as u32;
+                                let new_height = img_data.size(0).height.0 as u32;
+
+                                if new_width != this.original_width
+                                    || new_height != this.original_height
+                                {
+                                    if let Some(viewport) = this.last_viewport_size {
+                                        let viewport_width = viewport.width.0;
+                                        let viewport_height = viewport.height.0;
+                                        let zoom = this.zoom_level;
+
+                                        this.pan_x = (viewport_width / 2.0)
+                                            - ((new_width as f32 / 2.0) * zoom);
+                                        this.pan_y = (viewport_height / 2.0)
+                                            - ((new_height as f32 / 2.0) * zoom);
+                                    }
+                                }
+
+                                this.original_width = new_width;
+                                this.original_height = new_height;
                                 this.display_image = ImageSource::Render(img_data);
                                 cx.notify();
                             }) {
@@ -213,16 +233,47 @@ impl PrimaryViewer {
 
     fn adjust_pan_for_center_zoom(&mut self, window: &mut Window, old_zoom: f32, new_zoom: f32) {
         let viewport = window.viewport_size();
-        let viewport_center_x = viewport.width.0 / 2.0;
-        let viewport_center_y = viewport.height.0 / 2.0;
+        let center = Point::new(viewport.width / 2.0, viewport.height / 2.0);
+        self.adjust_pan_around_point(center, old_zoom, new_zoom);
+    }
 
-        // Find the point in image coordinates that's currently at viewport center
-        let image_center_x = (viewport_center_x - self.pan_x) / old_zoom;
-        let image_center_y = (viewport_center_y - self.pan_y) / old_zoom;
+    fn adjust_pan_around_point(&mut self, center: Point<Pixels>, old_zoom: f32, new_zoom: f32) {
+        let center_x = center.x.0;
+        let center_y = center.y.0;
 
-        // Adjust pan so this same point remains at viewport center with new zoom
-        self.pan_x = viewport_center_x - (image_center_x * new_zoom);
-        self.pan_y = viewport_center_y - (image_center_y * new_zoom);
+        // Find the point in image coordinates that's currently at center
+        let image_center_x = (center_x - self.pan_x) / old_zoom;
+        let image_center_y = (center_y - self.pan_y) / old_zoom;
+
+        // Adjust pan so this same point remains at center with new zoom
+        self.pan_x = center_x - (image_center_x * new_zoom);
+        self.pan_y = center_y - (image_center_y * new_zoom);
+    }
+
+    fn on_scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let delta_y = match event.delta {
+            gpui::ScrollDelta::Pixels(point) => point.y.0,
+            gpui::ScrollDelta::Lines(point) => point.y * 20.0,
+        };
+
+        if delta_y == 0.0 {
+            return;
+        }
+
+        let old_zoom = self.zoom_level;
+        let scale = 1.001f32.powf(delta_y);
+        self.zoom_level *= scale;
+
+        // Clamp zoom level to reasonable bounds
+        self.zoom_level = self.zoom_level.clamp(0.1, 50.0);
+
+        self.adjust_pan_around_point(event.position, old_zoom, self.zoom_level);
+        cx.notify();
     }
 
     fn handle_zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
@@ -385,6 +436,8 @@ impl Focusable for PrimaryViewer {
 
 impl Render for PrimaryViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.last_viewport_size = Some(window.viewport_size());
+
         // Handle snap if needed
         if let Some((x, y)) = self.snap_target.take() {
             let viewport = window.viewport_size();
@@ -475,6 +528,7 @@ impl Render for PrimaryViewer {
             .track_focus(&self.focus_handle(cx))
             .focusable()
             .size_full()
+            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .on_action(cx.listener(Self::handle_zoom_in))
             .on_action(cx.listener(Self::handle_zoom_out))
             .on_action(cx.listener(Self::handle_open_file))
@@ -780,6 +834,7 @@ async fn main() -> Result<()> {
                     overlays: OverlayCollection::new(),
                     snap_target: None,
                     toasts: vec![],
+                    last_viewport_size: None,
                 };
 
                 let viewer = cx.new(|cx| {
