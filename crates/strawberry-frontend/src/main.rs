@@ -253,7 +253,7 @@ impl PrimaryViewer {
     fn on_scroll_wheel(
         &mut self,
         event: &ScrollWheelEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let delta_y = match event.delta {
@@ -521,7 +521,6 @@ impl Render for PrimaryViewer {
                 },
             ),
         );
-
         div()
             .id("main")
             .key_context("PrimaryViewer")

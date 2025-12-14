@@ -106,9 +106,15 @@ impl CellCounterMarkerFile {
             for (&type_id, counts) in &state.manual_counts {
                 if !counts.is_empty() {
                     let markers: Vec<Marker> = counts.iter().map(|count| count.into()).collect();
+                    let name = state
+                        .count_type_names
+                        .get(&type_id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("Type {}", type_id));
+
                     marker_types.push(MarkerType {
                         type_id,
-                        name: format!("Type {type_id}"),
+                        name,
                         markers,
                     });
                 }
@@ -166,6 +172,7 @@ impl CellCounterMarkerFile {
     pub fn to_counter_state(&self) -> CounterState {
         let mut manual_counts = HashMap::new();
         let mut count_type_visibility = HashMap::new();
+        let mut count_type_names = HashMap::new();
 
         for marker_type in &self.marker_data.marker_types {
             let counts: Vec<CountData> = marker_type
@@ -176,6 +183,7 @@ impl CellCounterMarkerFile {
             if !counts.is_empty() {
                 manual_counts.insert(marker_type.type_id, counts);
                 count_type_visibility.insert(marker_type.type_id, true);
+                count_type_names.insert(marker_type.type_id, marker_type.name.clone());
             }
         }
 
@@ -189,6 +197,7 @@ impl CellCounterMarkerFile {
             filter_proxys: Vec::new(),
             review_current_index: 0,
             count_type_visibility,
+            count_type_names,
         }
     }
 }

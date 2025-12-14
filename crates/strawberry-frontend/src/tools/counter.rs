@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 
 use gpui::{
     actions, div, prelude::*, px, rgb, size, App, Bounds, Context, ElementId, FocusHandle,
-    Focusable, KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window,
+    Focusable, KeyBinding, MouseDownEvent, Point, Rgba, SharedString, TitlebarOptions, Window,
     WindowBounds, WindowOptions,
 };
 use rfd::FileDialog;
@@ -798,6 +798,7 @@ impl CounterView {
     fn render_count_type_item(
         &self,
         count_type_id: u16,
+        name: String,
         count_data: &Vec<CountData>,
         is_selected: bool,
         is_visible: bool,
@@ -869,11 +870,10 @@ impl CounterView {
             )
             .child(
                 // Type label and count
-                div().m_2().flex_1().child(format!(
-                    "Type {} ({})",
-                    position.map_or(count_type_id, |p| p as u16 + 1),
-                    count_data.len()
-                )),
+                div()
+                    .m_2()
+                    .flex_1()
+                    .child(format!("{} ({})", name, count_data.len())),
             )
             .child(
                 // Selection indicator
@@ -934,8 +934,14 @@ impl CounterView {
                         .count_type_visibility
                         .get(&count_type_id)
                         .unwrap_or(&true);
+                    let name = state
+                        .count_type_names
+                        .get(&count_type_id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("Type {}", position + 1));
                     self.render_count_type_item(
                         count_type_id,
+                        name,
                         count_data,
                         is_selected,
                         *is_visible,

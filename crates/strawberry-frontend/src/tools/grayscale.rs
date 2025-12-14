@@ -8,8 +8,8 @@ use gpui::{
 
 use crate::gui::ToggleButton;
 use strawberry_types::{
-    GrayscaleState, BackendToolType, FrontendMessage, PipelineCommand,
-    PipelineObjectMessage, ToolState,
+    BackendToolType, FrontendMessage, GrayscaleState, PipelineCommand, PipelineObjectMessage,
+    ToolState,
 };
 
 use strawberry_types::ToolFrontend;

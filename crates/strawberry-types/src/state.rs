@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use strawberry_processing::{local_maxima::ThresholdType, morphology::MorphologyOperation};
 
 // Counter-specific types
@@ -141,6 +141,7 @@ pub struct CounterState {
     pub filter_proxys: Vec<FilterProxy>,
     pub count_type_visibility: HashMap<u16, bool>,
     pub review_current_index: usize,
+    pub count_type_names: HashMap<u16, String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
