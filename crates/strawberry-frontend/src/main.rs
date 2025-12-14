@@ -313,36 +313,43 @@ impl PrimaryViewer {
                 style,
             } => {
                 let (screen_x, screen_y) = self.image_to_screen_coords(*x, *y);
+                let screen_radius = radius * self.zoom_level;
                 let gpui_color =
                     rgb((color[0] as u32) << 16 | (color[1] as u32) << 8 | color[2] as u32);
 
                 match style {
-                    CircleStyle::Border { width: _ } => div()
-                        .absolute()
-                        .left(px(screen_x - radius))
-                        .top(px(screen_y - radius))
-                        .w(px(radius * 2.0))
-                        .h(px(radius * 2.0))
-                        .rounded_full()
-                        .border_2()
-                        .border_color(gpui_color),
+                    CircleStyle::Border { width } => {
+                        let screen_width = width * self.zoom_level;
+                        div()
+                            .absolute()
+                            .left(px(screen_x - screen_radius))
+                            .top(px(screen_y - screen_radius))
+                            .w(px(screen_radius * 2.0))
+                            .h(px(screen_radius * 2.0))
+                            .rounded_full()
+                            .border(px(screen_width))
+                            .border_color(gpui_color)
+                    }
                     CircleStyle::Filled => div()
                         .absolute()
-                        .left(px(screen_x - radius))
-                        .top(px(screen_y - radius))
-                        .w(px(radius * 2.0))
-                        .h(px(radius * 2.0))
+                        .left(px(screen_x - screen_radius))
+                        .top(px(screen_y - screen_radius))
+                        .w(px(screen_radius * 2.0))
+                        .h(px(screen_radius * 2.0))
                         .rounded_full()
                         .bg(gpui_color),
-                    CircleStyle::Selected { width: _ } => div()
-                        .absolute()
-                        .left(px(screen_x - radius))
-                        .top(px(screen_y - radius))
-                        .w(px(radius * 2.0))
-                        .h(px(radius * 2.0))
-                        .rounded_full()
-                        .border_2()
-                        .border_color(gpui_color),
+                    CircleStyle::Selected { width } => {
+                        let screen_width = width * self.zoom_level;
+                        div()
+                            .absolute()
+                            .left(px(screen_x - screen_radius))
+                            .top(px(screen_y - screen_radius))
+                            .w(px(screen_radius * 2.0))
+                            .h(px(screen_radius * 2.0))
+                            .rounded_full()
+                            .border(px(screen_width))
+                            .border_color(gpui_color)
+                    }
                 }
             }
             OverlayElement::Point {
@@ -352,15 +359,16 @@ impl PrimaryViewer {
                 color,
             } => {
                 let (screen_x, screen_y) = self.image_to_screen_coords(*x, *y);
+                let screen_radius = radius * self.zoom_level;
                 let gpui_color =
                     rgb((color[0] as u32) << 16 | (color[1] as u32) << 8 | color[2] as u32);
 
                 div()
                     .absolute()
-                    .left(px(screen_x - radius))
-                    .top(px(screen_y - radius))
-                    .w(px(radius * 2.0))
-                    .h(px(radius * 2.0))
+                    .left(px(screen_x - screen_radius))
+                    .top(px(screen_y - screen_radius))
+                    .w(px(screen_radius * 2.0))
+                    .h(px(screen_radius * 2.0))
                     .rounded_full()
                     .bg(gpui_color)
             }
