@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use strawberry_processing::{compositor::GpuCompositor, GpuImageProcessor};
 use crate::utils::commands::collect_and_deduplicate_commands;
+use strawberry_processing::{compositor::GpuCompositor, GpuImageProcessor};
 
 use super::{
     BackendToolType, DecomposerMessage, FrontendMessage, PipelineCommand, PipelineObjectMessage,
     ToolBackend, ToolState,
 };
-use strawberry_processing::decomposer::GpuDecomposer;
 use async_trait::async_trait;
+use strawberry_processing::decomposer::GpuDecomposer;
 
 use serde::{Deserialize, Serialize};
 
@@ -157,13 +157,12 @@ impl ToolBackend for Decomposer {
             }
         }
 
-        if self.frontend_latest_state.is_none() {
-            self.update_state()?;
-        } else if self
-            .frontend_latest_state
-            .as_ref()
-            .expect("Just checked that frontend_latest_state is some")
-            != &self.state
+        if self.frontend_latest_state.is_none()
+            || self
+                .frontend_latest_state
+                .as_ref()
+                .expect("Just checked that frontend_latest_state is some")
+                != &self.state
         {
             self.update_state()?;
         }

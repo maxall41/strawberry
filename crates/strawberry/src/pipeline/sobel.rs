@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use strawberry_processing::{sobel::GpuSobel, GpuImageProcessor};
 use crate::utils::commands::collect_and_deduplicate_commands;
+use strawberry_processing::{sobel::GpuSobel, GpuImageProcessor};
 
 use super::{
     BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, SobelMessage,
@@ -106,13 +106,12 @@ impl ToolBackend for Sobel {
             }
         }
 
-        if self.frontend_latest_state.is_none() {
-            self.update_state()?;
-        } else if self
-            .frontend_latest_state
-            .as_ref()
-            .expect("Just checked that frontend_latest_state is some")
-            != &self.state
+        if self.frontend_latest_state.is_none()
+            || self
+                .frontend_latest_state
+                .as_ref()
+                .expect("Just checked that frontend_latest_state is some")
+                != &self.state
         {
             self.update_state()?;
         }

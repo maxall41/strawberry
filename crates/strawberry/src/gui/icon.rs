@@ -1,4 +1,4 @@
-use gpui::{div, img, prelude::*, px, rgb, svg, Context, IntoElement, Rgba, SharedString};
+use gpui::{div, prelude::*, px, rgb, svg, IntoElement, Rgba, SharedString};
 
 pub struct Icon {
     path: SharedString,

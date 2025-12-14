@@ -1,5 +1,5 @@
 use gpui::{
-    div, prelude::*, rgb, AnyView, Context, ElementId, IntoElement, MouseDownEvent, RenderOnce,
+    div, prelude::*, rgb, Context, ElementId, IntoElement, MouseDownEvent,
     SharedString,
 };
 

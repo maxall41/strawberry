@@ -92,7 +92,7 @@ impl ToolBackend for ToolManager {
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
     }
-    fn apply_state(&mut self, state: ToolState) {}
+    fn apply_state(&mut self, _state: ToolState) {}
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
     }
@@ -105,7 +105,7 @@ impl ToolBackend for ToolManager {
     fn disconnect(&mut self) {
         self.frontend_senders.clear();
     }
-    async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
+    async fn process(&mut self, _input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("Not implemented"))
     }
 
@@ -249,13 +249,12 @@ impl ToolBackend for ToolManager {
             self.state.proxy_tools = new_proxy_tools;
         }
 
-        if self.frontend_latest_state.is_none() {
-            self.update_state()?;
-        } else if self
-            .frontend_latest_state
-            .as_ref()
-            .expect("Just checked that frontend_latest_state is some")
-            != &self.state
+        if self.frontend_latest_state.is_none()
+            || self
+                .frontend_latest_state
+                .as_ref()
+                .expect("Just checked that frontend_latest_state is some")
+                != &self.state
         {
             self.update_state()?;
         }

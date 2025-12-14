@@ -7,7 +7,9 @@ pub fn collect_and_deduplicate_commands(
 ) -> Vec<PipelineCommand> {
     let commands: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
 
-    let commands = if commands.len() > 1 {
+    
+
+    if commands.len() > 1 {
         let mut seen_discriminants = HashSet::new();
         let mut deduplicated = Vec::new();
 
@@ -22,7 +24,5 @@ pub fn collect_and_deduplicate_commands(
         deduplicated
     } else {
         commands
-    };
-
-    commands
+    }
 }

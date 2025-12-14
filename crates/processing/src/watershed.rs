@@ -265,7 +265,7 @@ impl GpuWatershed {
 
         let buffers = self.create_distance_buffers(&binary_u32, pixel_count)?;
 
-        self.run_distance_pass(&self.distance_init_pipeline, &buffers, width, height, 0, 0);
+        self.run_distance_pass(&self.distance_init_pipeline, &buffers, width, height, 0, 0)?;
 
         let max_dimension = width.max(height);
         let mut step_size = max_dimension.next_power_of_two() / 2;
@@ -278,11 +278,11 @@ impl GpuWatershed {
                 height,
                 step_size,
                 0,
-            );
+            )?;
             step_size /= 2;
         }
 
-        self.run_distance_pass(&self.distance_final_pipeline, &buffers, width, height, 0, 0);
+        self.run_distance_pass(&self.distance_final_pipeline, &buffers, width, height, 0, 0)?;
 
         self.read_distance_results(&buffers.distance, &buffers.staging, pixel_count)
             .await
@@ -339,7 +339,7 @@ impl GpuWatershed {
         height: u32,
         step_size: u32,
         iteration: u32,
-    ) {
+    ) -> Result<()> {
         let uniforms = [width, height, step_size, iteration];
         let uniform_buffer =
             self.gpu
@@ -399,7 +399,8 @@ impl GpuWatershed {
         }
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
-        self.gpu.device.poll(wgpu::MaintainBase::Wait);
+        self.gpu.device.poll(wgpu::MaintainBase::Wait)?;
+        Ok(())
     }
 
     async fn read_distance_results(
@@ -431,7 +432,7 @@ impl GpuWatershed {
             let _ = sender.send(result);
         });
 
-        self.gpu.device.poll(wgpu::MaintainBase::Wait);
+        self.gpu.device.poll(wgpu::MaintainBase::Wait)?;
         let map_result = receiver
             .recv_async()
             .await
@@ -553,7 +554,7 @@ impl GpuWatershed {
             let _ = sender.send(result);
         });
 
-        self.gpu.device.poll(wgpu::MaintainBase::Wait);
+        self.gpu.device.poll(wgpu::MaintainBase::Wait)?;
         let map_result = receiver
             .recv_async()
             .await

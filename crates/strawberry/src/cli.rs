@@ -599,38 +599,6 @@ impl CliProcessor {
         Ok(output_filename)
     }
 
-    fn generate_output_filename(&self, input_file: &Path, output_dir: &Path) -> Result<PathBuf> {
-        let filename = input_file
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow!("Invalid input filename: {}", input_file.display()))?;
-
-        let extension = match &self.args.format {
-            OutputFormat::Preserve => input_file
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("png"),
-            _ => self.args.format.extension(),
-        };
-
-        let mut output_filename = String::new();
-
-        if let Some(prefix) = &self.args.prefix {
-            output_filename.push_str(prefix);
-        }
-
-        output_filename.push_str(filename);
-
-        if let Some(suffix) = &self.args.suffix {
-            output_filename.push_str(suffix);
-        }
-
-        output_filename.push('.');
-        output_filename.push_str(extension);
-
-        Ok(output_dir.join(output_filename))
-    }
-
     fn generate_output_filename_with_structure(
         &self,
         input_file: &Path,

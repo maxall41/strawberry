@@ -158,7 +158,7 @@ impl GpuImageProcessor {
             }
         });
 
-        self.device.poll(wgpu::MaintainBase::Wait);
+        self.device.poll(wgpu::MaintainBase::Wait)?;
         let map_result = receiver
             .recv_async()
             .await
