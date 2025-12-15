@@ -78,7 +78,9 @@ pub struct NerveTracerState {
     pub is_enabled: bool,
     pub paths: Vec<Path>,
     pub current_path_segments: Vec<PathSegment>,
-    pub current_points: Vec<(u64, u64)>,
+    pub first_point: Option<(u64, u64)>,
+    pub selected_image_index: usize,
+    pub total_images: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

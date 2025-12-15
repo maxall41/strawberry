@@ -340,6 +340,34 @@ impl NerveTracerView {
         }
     }
 
+    fn set_selected_image(&mut self, image_index: usize) {
+        let current_tool_index = match self.current_tool_index.read() {
+            Ok(guard) => match *guard {
+                Some(index) => index,
+                None => {
+                    eprintln!("No current tool index available");
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("Failed to read current tool index: {e}");
+                return;
+            }
+        };
+
+        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                PipelineObjectMessage::NerveTracerMessage(
+                    NerveTracerMessage::SetSelectedImageIndex(image_index),
+                ),
+            )) {
+                eprintln!("Failed to send set selected image command: {e}");
+            }
+        } else {
+            eprintln!("Invalid tool index: {current_tool_index}");
+        }
+    }
+
     fn toggle_activity_action(
         &mut self,
         _: &NerveTracerToggleActivity,
@@ -407,6 +435,67 @@ impl NerveTracerView {
         )
         .with_keyboard_shortcut("⌘T")
         .render(cx)
+    }
+
+    // Image selector component
+    fn render_image_selector(
+        &self,
+        state: &NerveTracerState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        if state.total_images <= 1 {
+            return div();
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("Source Image:"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .flex_wrap()
+                    .children((0..state.total_images).map(|i| {
+                        let is_selected = i == state.selected_image_index;
+                        div()
+                            .px_3()
+                            .py_1()
+                            .bg(if is_selected {
+                                rgb(0x0066cc)
+                            } else {
+                                rgb(0x444444)
+                            })
+                            .hover(|style| {
+                                style.bg(if is_selected {
+                                    rgb(0x0077dd)
+                                } else {
+                                    rgb(0x555555)
+                                })
+                            })
+                            .rounded_md()
+                            .text_sm()
+                            .text_center()
+                            .child(format!("{}", i + 1))
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(
+                                    move |this: &mut NerveTracerView,
+                                          _event: &MouseDownEvent,
+                                          _window: &mut Window,
+                                          _cx: &mut Context<NerveTracerView>| {
+                                        this.set_selected_image(i);
+                                    },
+                                ),
+                            )
+                    })),
+            )
     }
 
     // Segments section
@@ -517,16 +606,17 @@ impl NerveTracerView {
         if has_segments {
             div()
                 .w_full()
-                .p_3()
-                .my_3()
+                .px_4()
+                .py_2()
+                .my_2()
                 .bg(rgb(0x0066cc))
                 .hover(|style| style.bg(rgb(0x0077dd)))
                 .rounded_md()
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_lg()
-                .child("Commit")
+                .text_sm()
+                .child("COMMIT")
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(
@@ -541,16 +631,17 @@ impl NerveTracerView {
         } else {
             div()
                 .w_full()
-                .p_3()
-                .my_3()
+                .px_4()
+                .py_2()
+                .my_2()
                 .bg(rgb(0x555555))
                 .rounded_md()
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_lg()
+                .text_sm()
                 .text_color(rgb(0x888888))
-                .child("Commit")
+                .child("COMMIT")
         }
     }
 
@@ -839,6 +930,7 @@ impl Render for NerveTracerView {
             .on_action(cx.listener(Self::load_traces_action))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
+            .child(self.render_image_selector(&state, cx))
             .child(self.render_segments_section(&state, cx))
             .child(self.render_add_to_path_button(&state, cx))
             .child(self.render_paths_section(&state, cx))
