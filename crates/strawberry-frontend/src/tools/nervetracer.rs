@@ -142,7 +142,7 @@ impl NerveTracerView {
 
         cx.spawn_in(_window, async move |this, cx| {
             let file = FileDialog::new()
-                .add_filter("json", &["json"])
+                .add_filter("traces", &["traces", "xml"])
                 .set_directory("~/")
                 .save_file();
 
