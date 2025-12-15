@@ -10,6 +10,7 @@ pub mod gaussian_blur;
 pub mod grayscale;
 pub mod local_maxima;
 pub mod morphology;
+pub mod nervetracer;
 pub mod rolling_ball;
 pub mod sobel;
 pub mod threshold;

@@ -392,6 +392,7 @@ impl ToolBackend for Counter {
                                     self.state.mode = loaded_state.mode;
                                     self.state.active_count_type = loaded_state.active_count_type;
                                     self.state.count_type_names = loaded_state.count_type_names;
+                                    self.state.is_enabled = true;
 
                                     // Initialize visibility for all loaded count types
                                     self.state.count_type_visibility.clear();
@@ -507,6 +508,15 @@ impl ToolBackend for Counter {
                                         } else if current_index >= counts.len() {
                                             self.state.review_current_index = counts.len() - 1;
                                         }
+                                        let count = &counts[self.state.review_current_index];
+                                        let _ = self.global_sender.send(
+                                            PipelineCommand::FrontendMessage(
+                                                FrontendMessage::SnapToPosition(
+                                                    count.position.0 as f32,
+                                                    count.position.1 as f32,
+                                                ),
+                                            ),
+                                        );
                                     }
                                 }
                             }
