@@ -429,53 +429,24 @@ impl PrimaryViewer {
                 color,
                 stroke_width,
             } => {
-                let gpui_color =
-                    rgb((color[0] as u32) << 16 | (color[1] as u32) << 8 | color[2] as u32);
-                let screen_stroke = stroke_width * self.zoom_level;
-
-                // Create a container for all line segments
-                let mut container = div().absolute().left(px(0.0)).top(px(0.0));
-
-                // Draw line segments by sampling points along the line
-                for window in points.windows(2) {
-                    if let [p1, p2] = window {
-                        let (x1, y1) = self.image_to_screen_coords(p1.0, p1.1);
-                        let (x2, y2) = self.image_to_screen_coords(p2.0, p2.1);
-
-                        // Calculate distance between points
-                        let dx = x2 - x1;
-                        let dy = y2 - y1;
-                        let length = (dx * dx + dy * dy).sqrt();
-
-                        // Sample points along the line
-                        // Use a sample spacing of half the stroke width for smooth appearance
-                        let sample_spacing = (screen_stroke / 2.0).max(0.5);
-                        let num_samples = (length / sample_spacing).ceil() as i32;
-
-                        for i in 0..=num_samples {
-                            let t = if num_samples > 0 {
-                                i as f32 / num_samples as f32
-                            } else {
-                                0.0
-                            };
-                            let x = x1 + t * dx;
-                            let y = y1 + t * dy;
-
-                            container = container.child(
-                                div()
-                                    .absolute()
-                                    .left(px(x - screen_stroke / 2.0))
-                                    .top(px(y - screen_stroke / 2.0))
-                                    .w(px(screen_stroke))
-                                    .h(px(screen_stroke))
-                                    .rounded_full()
-                                    .bg(gpui_color)
-                            );
-                        }
-                    }
+                if points.is_empty() {
+                    return div();
                 }
 
-                container
+                let screen_stroke = stroke_width * self.zoom_level;
+
+                // Convert image coordinates to screen coordinates
+                let screen_points: Vec<(f32, f32)> = points
+                    .iter()
+                    .map(|(x, y)| self.image_to_screen_coords(*x, *y))
+                    .collect();
+
+                // Convert RGBA array to gpui::Rgba
+                let gpui_color =
+                    rgb((color[0] as u32) << 16 | (color[1] as u32) << 8 | color[2] as u32);
+
+                gui::polyline::Polyline::new(screen_points, gpui_color, px(screen_stroke))
+                    .into_element()
             }
             _ => div(), // Placeholder for other element types not yet implemented
         }
