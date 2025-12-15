@@ -22,7 +22,7 @@ pub struct NerveTracer {
     pub cached_output: Option<Vec<image::RgbaImage>>,
     pub cached_state: Option<NerveTracerState>,
     pub frontend_latest_state: Option<NerveTracerState>,
-    pub cached_input: Option<Vec<image::RgbaImage>>,
+    pub cached_input: Option<image::RgbaImage>,
 }
 
 #[async_trait]
@@ -51,7 +51,20 @@ impl ToolBackend for NerveTracer {
         self.frontend_senders.clear();
     }
     async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
-        self.cached_input = Some(input.clone()); //TODO: THIS IS TERRIBLE! AT VERY LEAST USER SHOULD SELECT THE INPUT IMAGE. FIND BETTER SOLUTION.
+        self.state.total_images = input.len();
+
+        // Clamp selected_image_index if it's out of bounds
+        if self.state.selected_image_index >= input.len() && !input.is_empty() {
+            self.state.selected_image_index = input.len() - 1;
+        }
+
+        // Cache the selected image
+        if !input.is_empty() {
+            self.cached_input = Some(input[self.state.selected_image_index].clone());
+        } else {
+            self.cached_input = None;
+        }
+
         Ok(())
     }
 
@@ -67,17 +80,19 @@ impl ToolBackend for NerveTracer {
                     let Some(image) = &self.cached_input else {
                         return Ok(());
                     };
-                    self.state.current_points.push((x, y)); //TODO: This is also terrible
-                    if self.state.current_points.len() == 2 {
-                        //TODO: DANGEROUS
-                        let new_path = create_path(
-                            self.state.current_points[0],
-                            self.state.current_points[1],
-                            &image[0], //TODO: Let user specify source image
-                        );
-                        self.state.current_points.clear();
-                        if let Some(new_path) = new_path {
-                            self.state.current_path_segments.push(new_path);
+
+                    match self.state.first_point {
+                        None => {
+                            // First click - store the point
+                            self.state.first_point = Some((x, y));
+                        }
+                        Some(first) => {
+                            // Second click - create path segment
+                            let new_path = create_path(first, (x, y), image);
+                            self.state.first_point = None;
+                            if let Some(new_path) = new_path {
+                                self.state.current_path_segments.push(new_path);
+                            }
                         }
                     }
                 }
@@ -111,6 +126,9 @@ impl ToolBackend for NerveTracer {
                         }
                         NerveTracerMessage::LoadTraces(path) => {}
                         NerveTracerMessage::SaveTraces(path) => {}
+                        NerveTracerMessage::SetSelectedImageIndex(index) => {
+                            self.state.selected_image_index = index;
+                        }
                     },
                     _ => {}
                 },
@@ -167,11 +185,11 @@ impl ToolBackend for NerveTracer {
         let stroke_width = 2.0;
         let point_radius = 2.0;
 
-        // Draw current points (points clicked but not yet converted to segments)
-        for (x, y) in &self.state.current_points {
+        // Draw first point if waiting for second click
+        if let Some((x, y)) = self.state.first_point {
             elements.push(OverlayElement::Point {
-                x: *x as f32,
-                y: *y as f32,
+                x: x as f32,
+                y: y as f32,
                 radius: point_radius,
                 color: current_point_color,
             });
@@ -250,8 +268,10 @@ impl NerveTracer {
             state: NerveTracerState {
                 is_enabled: false,
                 paths: vec![],
-                current_points: vec![],
                 current_path_segments: vec![],
+                first_point: None,
+                selected_image_index: 0,
+                total_images: 0,
             },
             frontend_senders: Vec::new(),
             command_sender,

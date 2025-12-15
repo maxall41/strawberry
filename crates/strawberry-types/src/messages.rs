@@ -76,6 +76,7 @@ pub enum NerveTracerMessage {
     DeletePath(usize),
     SaveTraces(PathBuf),
     LoadTraces(PathBuf),
+    SetSelectedImageIndex(usize),
 }
 
 // Note: counter module types need to be forward-declared since they're in the backend crate
