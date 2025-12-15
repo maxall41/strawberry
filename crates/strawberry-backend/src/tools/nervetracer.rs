@@ -1,11 +1,9 @@
-use std::sync::Arc;
-
+use crate::nervetracer::io::{export_nervetracer_to_xml_file, import_nervetracer_from_xml_file};
 use crate::utils::commands::collect_and_deduplicate_commands;
-use strawberry_processing::{grayscale::GpuGrayscale, nervetracer::create_path, GpuImageProcessor};
+use strawberry_processing::nervetracer::create_path;
 
 use async_trait::async_trait;
 use strawberry_types::{
-    messages,
     overlay::{OverlayElement, ToolOverlay},
     BackendToolType, FrontendMessage, NerveTracerMessage, NerveTracerState, PipelineCommand,
     PipelineObjectMessage, ToolBackend, ToolState,
@@ -124,8 +122,70 @@ impl ToolBackend for NerveTracer {
                         NerveTracerMessage::DeleteUncomittedPathSegment(id) => {
                             self.state.current_path_segments.remove(id);
                         }
-                        NerveTracerMessage::LoadTraces(path) => {}
-                        NerveTracerMessage::SaveTraces(path) => {}
+                        NerveTracerMessage::LoadTraces(path) => {
+                            match import_nervetracer_from_xml_file(&path).await {
+                                Ok(loaded_state) => {
+                                    self.state = loaded_state;
+                                    self.global_sender.send(PipelineCommand::FrontendMessage(
+                                        FrontendMessage::UserFeedback(
+                                            "Traces loaded successfully!".to_string(),
+                                        ),
+                                    ))?;
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to load traces from {:?}: {}", path, e);
+                                    if let Err(send_err) =
+                                        self.global_sender.send(PipelineCommand::FrontendMessage(
+                                            FrontendMessage::UserFeedback(format!(
+                                                "Failed to load traces: {}",
+                                                e
+                                            )),
+                                        ))
+                                    {
+                                        eprintln!("Failed to send error feedback: {}", send_err);
+                                    }
+                                }
+                            }
+                        }
+                        NerveTracerMessage::SaveTraces(path) => {
+                            let state = self.state.clone();
+                            let global_sender = self.global_sender.clone();
+                            let path = path.clone();
+                            tokio::spawn(async move {
+                                match export_nervetracer_to_xml_file(&state, &path, None, None)
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        if let Err(e) =
+                                            global_sender.send(PipelineCommand::FrontendMessage(
+                                                FrontendMessage::UserFeedback(format!(
+                                                    "Traces saved to {:?}",
+                                                    path
+                                                )),
+                                            ))
+                                        {
+                                            eprintln!("Failed to send save feedback: {}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to save traces to {:?}: {}", path, e);
+                                        if let Err(send_err) =
+                                            global_sender.send(PipelineCommand::FrontendMessage(
+                                                FrontendMessage::UserFeedback(format!(
+                                                    "Failed to save traces: {}",
+                                                    e
+                                                )),
+                                            ))
+                                        {
+                                            eprintln!(
+                                                "Failed to send error feedback: {}",
+                                                send_err
+                                            );
+                                        }
+                                    }
+                                }
+                            });
+                        }
                         NerveTracerMessage::SetSelectedImageIndex(index) => {
                             self.state.selected_image_index = index;
                         }
