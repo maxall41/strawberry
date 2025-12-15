@@ -162,7 +162,20 @@ impl ToolBackend for NerveTracer {
         let uncommitted_color = [255, 200, 0, 255];
         // Color for committed paths (cyan/blue)
         let committed_color = [0, 200, 255, 255];
+        // Color for current points (bright red/pink)
+        let current_point_color = [255, 50, 100, 255];
         let stroke_width = 2.0;
+        let point_radius = 2.0;
+
+        // Draw current points (points clicked but not yet converted to segments)
+        for (x, y) in &self.state.current_points {
+            elements.push(OverlayElement::Point {
+                x: *x as f32,
+                y: *y as f32,
+                radius: point_radius,
+                color: current_point_color,
+            });
+        }
 
         // Draw uncommitted segments
         for segment in &self.state.current_path_segments {
