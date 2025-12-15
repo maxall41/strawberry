@@ -16,6 +16,7 @@ use tools::*;
 use crate::tools::nervetracer::NerveTracer;
 
 pub mod counter;
+pub mod nervetracer;
 pub mod tools;
 pub mod utils;
 
