@@ -70,6 +70,17 @@ pub struct GrayscaleState {
     pub is_enabled: bool,
 }
 
+type PathSegment = Vec<(u64, u64)>;
+type Path = Vec<PathSegment>;
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NerveTracerState {
+    pub is_enabled: bool,
+    pub paths: Vec<Path>,
+    pub current_path_segments: Vec<PathSegment>,
+    pub current_points: Vec<(u64, u64)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LocalMaximaState {
     pub min_distance: u32,
@@ -173,4 +184,5 @@ pub enum ToolState {
     CounterState(CounterState),
     DecomposerState(DecomposerState),
     WatershedState(WatershedState),
+    NerveTracerState(NerveTracerState),
 }

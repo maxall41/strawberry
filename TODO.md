@@ -36,19 +36,18 @@
 - [X] Debounce pipeline events so if the user is changing the state rapdily like with a value counter it is all processed in a bundle
 - [X] Throw error when trying to composite images of different sizes
 - [X] Don't allow user to enable compositor if there is only one image to prevent RGBA-BRGA mixups
-- [ ] Turning on and off compositor does not actually enable/disable on backend
-- [ ] Reset counter on new image load: Loading a new image for the second time and then loading the second set of counts causes a panic.
 - [X] Compositor layers count does not update on new image load
-- [ ] Turning a layer or adjusting contrast (or anything that pushes new image to viewer) on and off snaps the viewport back to the current review index.
-- [ ] Build actual macos .app
 - [X] Toast stays in toast list after disappearing causing future toasts to be placed higher and higher even though no toasts are below it.
 - [X] Backend debouncing not working: Try holding down keyboard shortcut (cmd+T) in compositor or holding ← (left arrow) in counter to see what I mean
-- [ ] Cleanup code
-- [ ] Strawberry does not respect type name in XML counts format in frontend GUI
+- [X] Strawberry does not respect type name in XML counts format in frontend GUI
+- [X] Counter should be enabled when counts are loaded
 - [ ] Default folder when clicking "Save" in counter should be the folder the counts were loaded from if applicable
 - [ ] Movement of the "Camera" is jerky
-- [ ] Counter should be enabled when counts are loaded
-- [ ] Closing the main window should close the application
+- [ ] Cleanup code
+- [ ] Turning a layer or adjusting contrast (or anything that pushes new image to viewer) on and off snaps the viewport back to the current review index.
+- [ ] Build actual macos .app
+- [ ] Turning on and off compositor does not actually enable/disable on backend
+- [ ] Reset counter on new image load: Loading a new image for the second time and then loading the second set of counts causes a panic.
 
 ## Alpha 0.2 (Rebar)
 - [ ] Make UI nice
@@ -56,7 +55,6 @@
 - [ ] Replace Arc with Rc's. Most of them can be replaced with Rc's as they single threaded.
 - [ ] Command pallete
 - [ ] CLAHE
-- [ ] Allow user to configure counter to also measure things like circularity, and area in counter settings. Include in export. Also allow user to export counts as .CSV, and .XLSX in addition to .XML.
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
 - [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
 - [ ] Add mode toggle to "Threshold" that in addition to manual thresholding it supports Otsu thresholding, Local thresholding, and maybe one or two other thresholding methods.

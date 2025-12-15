@@ -15,6 +15,7 @@ pub enum BackendToolType {
     Threshold,
     Watershed,
     Decomposer,
+    NerveTracer,
 }
 
 impl fmt::Display for BackendToolType {

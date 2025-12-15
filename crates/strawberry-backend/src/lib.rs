@@ -13,8 +13,10 @@ use strawberry_types::*;
 // Import tool implementations from tools module
 use tools::*;
 
-pub mod tools;
+use crate::tools::nervetracer::NerveTracer;
+
 pub mod counter;
+pub mod tools;
 pub mod utils;
 
 /// Pipeline that processes images through a series of tools
@@ -138,6 +140,7 @@ impl Pipeline {
                     )
                     .await,
                 ),
+                Box::new(NerveTracer::new(command_tx.clone(), output_tx.clone())?),
             ],
             command_tx.clone(),
             output_tx.clone(),

@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use image::RgbaImage;
+use std::path::PathBuf;
 use strawberry_processing::local_maxima::ThresholdType;
 
 use super::*;
@@ -68,6 +68,16 @@ pub enum FilterMessage {
     ConfigureSizeFilter(u16), // Min size
 }
 
+#[derive(Debug, Clone)]
+pub enum NerveTracerMessage {
+    CommitCurrentPathSegments(),
+    DeleteUncomittedPathSegment(usize),
+    DeletePathSegmentInCommitedPath(usize, usize),
+    DeletePath(usize),
+    SaveTraces(PathBuf),
+    LoadTraces(PathBuf),
+}
+
 // Note: counter module types need to be forward-declared since they're in the backend crate
 // We use a placeholder type here that will be resolved when the backend crate depends on this
 #[derive(Debug, Clone)]
@@ -107,6 +117,7 @@ pub enum PipelineObjectMessage {
     ToggleActive(bool),
     ManagerMessage(ManagerMessage),
     CountMessage(CountMessage),
+    NerveTracerMessage(NerveTracerMessage),
 }
 
 #[derive(Debug, Clone)]

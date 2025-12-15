@@ -7,11 +7,11 @@ pub mod grayscale;
 pub mod local_maxima;
 pub mod manager;
 pub mod morphology;
+pub mod nervetracer;
 pub mod rolling_ball;
 pub mod sobel;
 pub mod threshold;
 pub mod watershed;
-
 // Re-export main backend tool structs (states are in strawberry-types)
 pub use compositor::Compositor;
 pub use contrast::Contrast;
