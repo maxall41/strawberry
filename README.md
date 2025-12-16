@@ -1,5 +1,7 @@
 # 🍓 Strawberry
 
+A modern scientific image editor.
+
 ## License
 
 Polyform Noncommercial License 1.0.0

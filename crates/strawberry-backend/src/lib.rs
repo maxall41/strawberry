@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 use futures::future::try_join_all;
 use image::{ImageReader, RgbaImage};
@@ -19,6 +19,19 @@ pub mod counter;
 pub mod nervetracer;
 pub mod tools;
 pub mod utils;
+
+/// Helper macros for tool registration
+macro_rules! create_gpu_tool {
+    ($tool:ident, $cmd:expr, $out:expr, $gpu:expr) => {
+        Box::new($tool::new($cmd.clone(), $out.clone(), $gpu.clone()).await) as Box<dyn ToolBackend>
+    };
+}
+
+macro_rules! create_cpu_tool {
+    ($tool:ident, $cmd:expr, $out:expr) => {
+        Box::new($tool::new($cmd.clone(), $out.clone()).await?) as Box<dyn ToolBackend>
+    };
+}
 
 /// Pipeline that processes images through a series of tools
 pub struct Pipeline {
@@ -52,96 +65,20 @@ impl Pipeline {
 
         let tool_manager = ToolManager::new(
             vec![
-                Box::new(
-                    Compositor::new(
-                        command_tx.clone(),
-                        output_tx.clone(),
-                        gpu_image_processor.clone(),
-                    )
-                    .await,
-                ),
-                Box::new(
-                    Contrast::new(
-                        command_tx.clone(),
-                        output_tx.clone(),
-                        gpu_image_processor.clone(),
-                    )
-                    .await,
-                ),
-                Box::new(
-                    GaussianBlur::new(
-                        command_tx.clone(),
-                        output_tx.clone(),
-                        gpu_image_processor.clone(),
-                    )
-                    .await,
-                ),
-                Box::new(
-                    LocalMaxima::new(
-                        command_tx.clone(),
-                        output_tx.clone(),
-                        gpu_image_processor.clone(),
-                    )
-                    .await,
-                ),
-                Box::new(
-                    Morphology::new(
-                        command_tx.clone(),
-                        output_tx.clone(),
-                        gpu_image_processor.clone(),
-                    )
-                    .await,
-                ),
-                Box::new(
-                    RollingBall::new(
-                        command_tx.clone(),
-                        output_tx.clone(),
-                        gpu_image_processor.clone(),
-                    )
-                    .await,
-                ),
-                Box::new(
-                    Threshold::new(
-                        command_tx.clone(),
-                        output_tx.clone(),
-                        gpu_image_processor.clone(),
-                    )
-                    .await,
-                ),
-                Box::new(
-                    Watershed::new(
-                        command_tx.clone(),
-                        output_tx.clone(),
-                        gpu_image_processor.clone(),
-                    )
-                    .await,
-                ),
-                Box::new(Counter::new(command_tx.clone(), output_tx.clone()).await?),
-                Box::new(
-                    Decomposer::new(
-                        command_tx.clone(),
-                        output_tx.clone(),
-                        gpu_image_processor.clone(),
-                    )
-                    .await,
-                ),
-                Box::new(
-                    Sobel::new(
-                        command_tx.clone(),
-                        output_tx.clone(),
-                        gpu_image_processor.clone(),
-                    )
-                    .await,
-                ),
-                Box::new(
-                    Grayscale::new(
-                        command_tx.clone(),
-                        output_tx.clone(),
-                        gpu_image_processor.clone(),
-                    )
-                    .await,
-                ),
-                Box::new(NerveTracer::new(command_tx.clone(), output_tx.clone())?),
+                // GPU-accelerated tools
+                create_gpu_tool!(Compositor, command_tx, output_tx, gpu_image_processor),
+                create_gpu_tool!(Contrast, command_tx, output_tx, gpu_image_processor),
+                create_gpu_tool!(GaussianBlur, command_tx, output_tx, gpu_image_processor),
+                create_gpu_tool!(LocalMaxima, command_tx, output_tx, gpu_image_processor),
+                create_gpu_tool!(Morphology, command_tx, output_tx, gpu_image_processor),
+                create_gpu_tool!(RollingBall, command_tx, output_tx, gpu_image_processor),
+                create_gpu_tool!(Threshold, command_tx, output_tx, gpu_image_processor),
+                create_gpu_tool!(Watershed, command_tx, output_tx, gpu_image_processor),
+                create_cpu_tool!(Counter, command_tx, output_tx),
+                create_gpu_tool!(Decomposer, command_tx, output_tx, gpu_image_processor),
+                create_gpu_tool!(Sobel, command_tx, output_tx, gpu_image_processor),
+                create_gpu_tool!(Grayscale, command_tx, output_tx, gpu_image_processor),
+                Box::new(NerveTracer::new(command_tx.clone(), output_tx.clone())?) as Box<dyn ToolBackend>,
             ],
             command_tx.clone(),
             output_tx.clone(),

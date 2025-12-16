@@ -1,3 +1,5 @@
+pub mod base;
+pub mod cache;
 pub mod compositor;
 pub mod contrast;
 pub mod counter;
