@@ -41,21 +41,20 @@
 - [X] Backend debouncing not working: Try holding down keyboard shortcut (cmd+T) in compositor or holding ← (left arrow) in counter to see what I mean
 - [X] Strawberry does not respect type name in XML counts format in frontend GUI
 - [X] Counter should be enabled when counts are loaded
-- [ ] Default folder when clicking "Save" in counter should be the folder the counts were loaded from if applicable
+- [X] Default folder when clicking "Save" in counter should be the folder the counts were loaded from if applicable
 - [ ] Movement of the "Camera" is jerky
-- [ ] Cleanup code
 - [ ] Turning a layer or adjusting contrast (or anything that pushes new image to viewer) on and off snaps the viewport back to the current review index.
 - [ ] Build actual macos .app
 - [ ] Turning on and off compositor does not actually enable/disable on backend
 - [ ] Reset counter on new image load: Loading a new image for the second time and then loading the second set of counts causes a panic.
-- [ ] Update GPUI version
+- [X] Update GPUI version
+- [ ] Cleanup frontend code to reduce boilerplate/repeition. Use composition and maybe macros (see backend)
 
 ## Alpha 0.2 (Rebar)
 - [ ] Make UI nice
 - [ ] Color Deconvolution
 - [ ] Replace Arc with Rc's. Most of them can be replaced with Rc's as they single threaded.
 - [ ] Command pallete
-- [ ] CLAHE
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
 - [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
 - [ ] Add mode toggle to "Threshold" that in addition to manual thresholding it supports Otsu thresholding, Local thresholding, and maybe one or two other thresholding methods.
@@ -65,6 +64,7 @@
 
 # Alpha 0.3 (Cement)
 - [ ] Flat field correction
+- [ ] CLAHE
 - [ ] Try to get all core interactions under 100ms response time including start up time, image load time, and tool processing time for as many tools as possible.
 - [ ] Proper automatic panic reporting (with user prompt OK) & GUI
 - [ ] Documentation
@@ -100,12 +100,6 @@
 
 - [ ] Try replacing Flume with Kanal and see if it improves performance
 - [ ] Non local means denoise
-
-## Big features:
-- [ ] Parallel node based editor instead of linear flow
-- [ ] Scripting with RustPython: https://crates.io/crates/rustpython
-- [ ] Plugins
-- [ ] Backend on a server
 
 ## Known issues:
 
