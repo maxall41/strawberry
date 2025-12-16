@@ -271,7 +271,7 @@ impl Render for ValueControl {
                                                 let value_range = this.config.max - this.config.min;
                                                 let pixels_for_full_range = 200.0;
                                                 let scaling_factor = value_range / pixels_for_full_range;
-                                                let delta_x = event.event.position.x.0 - start_pos.x.0;
+                                                let delta_x = event.event.position.x.to_f64() as f32 - start_pos.x.to_f64() as f32;
                                                 let delta_value = delta_x * scaling_factor;
                                                 let new_value = (this.drag_start_value + delta_value).clamp(this.config.min, this.config.max);
                                                 this.value = new_value;
