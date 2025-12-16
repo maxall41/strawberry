@@ -10,4 +10,4 @@ flume = "0.11"
 async-trait = "0.1.88"
 anyhow = "1.0"
 strawberry-processing = { path = "../processing" }
-gpui = { git = "https://github.com/maxall41/gpui-m", rev = "a9c8b62f7aa91fe6567d16cf380cd26f99c7758e" }
+gpui = { git = "https://github.com/maxall41/gpui-m", rev = "73cd86967cef927d2eda0ca77224123c4b33fb67" }

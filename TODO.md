@@ -27,7 +27,7 @@
 - [X] Allow user to toggle display of each count type in Counter
 - [X] Make sure CMD+Q quit app shortcut works
 - [X] Color bar got removed from counter GUI somehow?
-- [ ] Nerve tracer w/A*
+- [X] Nerve tracer w/A*
 - [ ] If toast is error make time bar red and if sucessfull make it green
 
 - [X] If tokio backend panics handle it properly
@@ -48,6 +48,7 @@
 - [ ] Build actual macos .app
 - [ ] Turning on and off compositor does not actually enable/disable on backend
 - [ ] Reset counter on new image load: Loading a new image for the second time and then loading the second set of counts causes a panic.
+- [ ] Update GPUI version
 
 ## Alpha 0.2 (Rebar)
 - [ ] Make UI nice

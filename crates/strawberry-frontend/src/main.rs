@@ -109,13 +109,13 @@ impl PrimaryViewer {
                                     || new_height != this.original_height
                                 {
                                     if let Some(viewport) = this.last_viewport_size {
-                                        let viewport_width = viewport.width.0;
-                                        let viewport_height = viewport.height.0;
+                                        let viewport_width = viewport.width;
+                                        let viewport_height = viewport.height;
                                         let zoom = this.zoom_level;
 
-                                        this.pan_x = (viewport_width / 2.0)
+                                        this.pan_x = (viewport_width.to_f64() as f32 / 2.0)
                                             - ((new_width as f32 / 2.0) * zoom);
-                                        this.pan_y = (viewport_height / 2.0)
+                                        this.pan_y = (viewport_height.to_f64() as f32 / 2.0)
                                             - ((new_height as f32 / 2.0) * zoom);
                                     }
                                 }
@@ -239,16 +239,16 @@ impl PrimaryViewer {
     }
 
     fn adjust_pan_around_point(&mut self, center: Point<Pixels>, old_zoom: f32, new_zoom: f32) {
-        let center_x = center.x.0;
-        let center_y = center.y.0;
+        let center_x = center.x;
+        let center_y = center.y;
 
         // Find the point in image coordinates that's currently at center
-        let image_center_x = (center_x - self.pan_x) / old_zoom;
-        let image_center_y = (center_y - self.pan_y) / old_zoom;
+        let image_center_x = (center_x.to_f64() as f32 - self.pan_x) / old_zoom;
+        let image_center_y = (center_y.to_f64() as f32 - self.pan_y) / old_zoom;
 
         // Adjust pan so this same point remains at center with new zoom
-        self.pan_x = center_x - (image_center_x * new_zoom);
-        self.pan_y = center_y - (image_center_y * new_zoom);
+        self.pan_x = center_x.to_f64() as f32 - (image_center_x * new_zoom);
+        self.pan_y = center_y.to_f64() as f32 - (image_center_y * new_zoom);
     }
 
     fn on_scroll_wheel(
@@ -258,7 +258,7 @@ impl PrimaryViewer {
         cx: &mut Context<Self>,
     ) {
         let delta_y = match event.delta {
-            gpui::ScrollDelta::Pixels(point) => point.y.0,
+            gpui::ScrollDelta::Pixels(point) => point.y.to_f64() as f32,
             gpui::ScrollDelta::Lines(point) => point.y * 20.0,
         };
 
@@ -331,8 +331,10 @@ impl PrimaryViewer {
             .read()
             .expect("Image coordinates lock should not be poisoned")
         {
-            let relative_x = (screen_x - coords.origin.x.0) / coords.size.width.0;
-            let relative_y = (screen_y - coords.origin.y.0) / coords.size.height.0;
+            let relative_x =
+                (screen_x - coords.origin.x.to_f64() as f32) / coords.size.width.to_f64() as f32;
+            let relative_y =
+                (screen_y - coords.origin.y.to_f64() as f32) / coords.size.height.to_f64() as f32;
 
             if (0.0..=1.0).contains(&relative_x) && (0.0..=1.0).contains(&relative_y) {
                 let image_pixel_x = (relative_x * self.original_width as f32) as u64;
@@ -466,12 +468,12 @@ impl Render for PrimaryViewer {
         // Handle snap if needed
         if let Some((x, y)) = self.snap_target.take() {
             let viewport = window.viewport_size();
-            let viewport_center_x = viewport.width.0 / 2.0;
-            let viewport_center_y = viewport.height.0 / 2.0;
+            let viewport_center_x = viewport.width / 2.0;
+            let viewport_center_y = viewport.height / 2.0;
 
             // Calculate pan to center the position
-            self.pan_x = viewport_center_x - (x * self.zoom_level);
-            self.pan_y = viewport_center_y - (y * self.zoom_level);
+            self.pan_x = viewport_center_x.to_f64() as f32 - (x * self.zoom_level);
+            self.pan_y = viewport_center_y.to_f64() as f32 - (y * self.zoom_level);
         }
 
         // Ensure this element is always focused
@@ -494,10 +496,11 @@ impl Render for PrimaryViewer {
                       event: &MouseDownEvent,
                       _window: &mut Window,
                       _: &mut Context<PrimaryViewer>| {
-                    let mouse_x = event.position.x.0;
-                    let mouse_y = event.position.y.0;
+                    let mouse_x = event.position.x;
+                    let mouse_y = event.position.y;
 
-                    if let Some((image_x, image_y)) = this.screen_to_image_coords(mouse_x, mouse_y)
+                    if let Some((image_x, image_y)) = this
+                        .screen_to_image_coords(mouse_x.to_f64() as f32, mouse_y.to_f64() as f32)
                     {
                         // Send both interaction start (for lasso) and click (for place/delete)
                         if let Err(e) = mouse_down_sender
@@ -522,10 +525,12 @@ impl Render for PrimaryViewer {
                   event: &MouseMoveEvent,
                   _window: &mut Window,
                   _cx: &mut Context<PrimaryViewer>| {
-                let mouse_x = event.position.x.0;
-                let mouse_y = event.position.y.0;
+                let mouse_x = event.position.x;
+                let mouse_y = event.position.y;
 
-                if let Some((image_x, image_y)) = this.screen_to_image_coords(mouse_x, mouse_y) {
+                if let Some((image_x, image_y)) =
+                    this.screen_to_image_coords(mouse_x.to_f64() as f32, mouse_y.to_f64() as f32)
+                {
                     let _ = this
                         .command_sender
                         .send(PipelineCommand::InteractionMove(image_x, image_y));
