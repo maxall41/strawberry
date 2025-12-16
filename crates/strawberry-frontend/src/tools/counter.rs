@@ -1,5 +1,6 @@
 // Implements UI for counter tool
 
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
@@ -27,6 +28,7 @@ pub struct CounterView {
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     pub next_count_type_id: Arc<RwLock<u16>>,
+    pub last_directory: Arc<RwLock<Option<PathBuf>>>,
     _cleanup_guard: crate::tools::CleanupGuard,
     focus_handle: Option<FocusHandle>,
 }
@@ -53,6 +55,7 @@ impl CounterView {
             send_channels: vec![],
             receive_channel: None,
             next_count_type_id: Arc::new(RwLock::new(0)),
+            last_directory: Arc::new(RwLock::new(None)),
             _cleanup_guard: crate::tools::CleanupGuard::new(
                 command_sender,
                 strawberry_types::BackendToolType::Counter,
@@ -154,10 +157,18 @@ impl CounterView {
             return;
         };
 
+        let last_directory = self.last_directory.clone();
+
         cx.spawn_in(_window, async move |this, cx| {
+            let default_dir = last_directory
+                .read()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|p| p.to_string_lossy().to_string()))
+                .unwrap_or_else(|| "~/".to_string());
+
             let file = FileDialog::new()
                 .add_filter("xml", &["xml"])
-                .set_directory("~/")
+                .set_directory(&default_dir)
                 .save_file();
 
             if let Some(file) = file {
@@ -184,13 +195,28 @@ impl CounterView {
             return;
         };
 
+        let last_directory = self.last_directory.clone();
+
         cx.spawn_in(_window, async move |this, cx| {
+            let default_dir = last_directory
+                .read()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|p| p.to_string_lossy().to_string()))
+                .unwrap_or_else(|| "~/".to_string());
+
             let file = FileDialog::new()
                 .add_filter("xml", &["xml"])
-                .set_directory("~/")
+                .set_directory(&default_dir)
                 .pick_file();
 
             if let Some(file) = file {
+                // Store the directory for future save/load operations
+                if let Some(parent) = file.parent() {
+                    if let Ok(mut dir) = last_directory.write() {
+                        *dir = Some(parent.to_path_buf());
+                    }
+                }
+
                 if let Err(e) = this.update(cx, |this, cx| {
                     if let Some(sender) = this.send_channels.get(current_tool_index as usize) {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
