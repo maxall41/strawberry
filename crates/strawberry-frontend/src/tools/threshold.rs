@@ -10,6 +10,7 @@ use gpui::{
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
+use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ThresholdMessage,
     ThresholdState, ToolState,
@@ -47,122 +48,8 @@ impl ThresholdView {
         }
     }
 
-    pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.base.receive_channel = Some(receiver);
-        if let Err(e) = self
-            .base
-            .command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Threshold,
-                sender,
-            ))
-        {
-            eprintln!("Failed to send backend discovery request: {e}");
-            return;
-        }
-        println!("Sent discovery request to backend | Threshold");
-
-        // Create and initialize ValueControl component
-        let state = self
-            .state
-            .read()
-            .expect("State lock should not be poisoned")
-            .clone();
-        let threshold_control = cx.new(|cx| {
-            ValueControl::new(
-                format!("{:.3}", state.threshold_value),
-                state.threshold_value,
-                "Threshold".to_string(),
-                0.01,
-                "threshold".to_string(),
-                0.0,
-                1.0,
-            )
-        });
-
-        // Handle ValueControl events
-        cx.subscribe(
-            &threshold_control,
-            |this, _control, event: &ValueControlEvent, _cx| {
-                if event.id == "threshold" {
-                    this.adjust_threshold(event.value);
-                }
-            },
-        )
-        .detach();
-
-        self.threshold_control = Some(threshold_control);
-
-        self.process_messages(window, cx);
-    }
-
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.clone();
-        let channel_receiver_ref = self
-            .base
-            .receive_channel
-            .clone()
-            .expect("Should never fire: Created during init");
-
-        // Spawn message processing thread
-        cx.spawn_in(window, async move |this, cx| loop {
-            if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command { match message {
-                    FrontendMessage::ReturnState(tool_state) => if let ToolState::ThresholdState(new_state) = tool_state {
-                        if let Ok(mut locked_state) = state.write() {
-                            if *locked_state != new_state {
-                                let threshold_value_ref = new_state.threshold_value;
-                                *locked_state = new_state;
-                                if let Err(e) = this.update(cx, |this, cx| {
-                                    this.threshold_control
-                                        .as_ref()
-                                        .expect("threshold_control should be initialized before use")
-                                        .update(cx, |control, cx| {
-                                            control.value = threshold_value_ref;
-                                            cx.notify();
-                                        });
-                                    cx.notify();
-                                }) {
-                                    eprintln!(
-                                        "Failed to update UI after state change: {e}"
-                                    );
-                                }
-                            }
-                        } else {
-                            eprintln!("Failed to acquire write lock on threshold state");
-                        }
-                    },
-                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                        println!("Received backend tools | Frontend Threshold");
-                        if let Err(e) = this.update(cx, |this, cx| {
-                            if let Ok(mut current_tool_index) = this.base.current_tool_index.write()
-                            {
-                                *current_tool_index = backend_ids.first().copied();
-                            } else {
-                                eprintln!("Failed to acquire write lock on current tool index");
-                                return;
-                            }
-                            this.base.backend_tool_indicies = backend_ids;
-                            this.base.send_channels = senders;
-
-                            // Request initial state when backend is discovered
-                            if let Some(sender) = this.base.send_channels.first() {
-                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                    eprintln!("Failed to request initial state: {e}");
-                                }
-                            }
-                        }) {
-                            eprintln!("Failed to update backend tools: {e}");
-                        }
-                    }
-                    _ => {}
-                } }
-            } else {
-                break;
-            }
-        })
-        .detach();
+        spawn_message_processor(self, window, cx);
     }
 
     fn toggle_enabled(
@@ -299,6 +186,38 @@ impl ThresholdView {
 
 actions!([ThresholdToggleActivity]);
 
+impl FrontendMessageHandler for ThresholdView {
+    type State = ThresholdState;
+
+    fn state_arc(&self) -> Arc<RwLock<Self::State>> {
+        self.state.clone()
+    }
+
+    fn base(&self) -> &crate::tools::ToolBase {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
+        &mut self.base
+    }
+
+    fn extract_state(tool_state: ToolState) -> Option<Self::State> {
+        match tool_state {
+            ToolState::ThresholdState(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn on_state_changed(&mut self, new_state: &ThresholdState, cx: &mut Context<Self>) {
+        if let Some(ref ctrl) = self.threshold_control {
+            ctrl.update(cx, |c, cx| {
+                c.value = new_state.threshold_value;
+                cx.notify();
+            });
+        }
+    }
+}
+
 impl Render for ThresholdView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
@@ -387,6 +306,7 @@ impl ToolFrontend for ThresholdView {
 
         cx.bind_keys([KeyBinding::new("cmd-t", ThresholdToggleActivity, None)]);
 
+        // Create and initialize ValueControl component
         let state = self
             .state
             .read()

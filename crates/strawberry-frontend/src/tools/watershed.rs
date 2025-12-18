@@ -10,6 +10,7 @@ use gpui::{
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
+use crate::tools::{spawn_message_processor, FrontendMessageHandler};
 use strawberry_types::{
     BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolState,
     WatershedMessage, WatershedState,
@@ -49,166 +50,8 @@ impl WatershedView {
         }
     }
 
-    pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.base.receive_channel = Some(receiver);
-        if let Err(e) = self
-            .base
-            .command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Watershed,
-                sender,
-            ))
-        {
-            eprintln!("Failed to send backend discovery request: {e}");
-            return;
-        }
-        println!("Sent discovery request to backend | Watershed");
-
-        // Create and initialize ValueControl components
-        let state = self
-            .state
-            .read()
-            .expect("State lock should not be poisoned")
-            .clone();
-        let sigma_control = cx.new(|cx| {
-            ValueControl::new(
-                format!("{:.2}", state.sigma),
-                state.sigma,
-                "Sigma".to_string(),
-                0.1,
-                "sigma".to_string(),
-                0.1,
-                10.0,
-            )
-        });
-
-        let min_distance_control = cx.new(|cx| {
-            ValueControl::new(
-                format!("{:.0}", state.min_distance),
-                state.min_distance as f32,
-                "Min Distance".to_string(),
-                1.0,
-                "min_distance".to_string(),
-                1.0,
-                100.0,
-            )
-        });
-
-        // Handle ValueControl events
-        cx.subscribe(
-            &sigma_control,
-            |this, _control, event: &ValueControlEvent, _cx| {
-                if event.id == "sigma" {
-                    let current_state = this
-                        .state
-                        .read()
-                        .expect("State lock should not be poisoned");
-                    let min_dist = current_state.min_distance;
-                    drop(current_state);
-                    this.adjust_sigma(event.value, min_dist);
-                }
-            },
-        )
-        .detach();
-
-        cx.subscribe(
-            &min_distance_control,
-            |this, _control, event: &ValueControlEvent, _cx| {
-                if event.id == "min_distance" {
-                    let current_state = this
-                        .state
-                        .read()
-                        .expect("State lock should not be poisoned");
-                    let sigma = current_state.sigma;
-                    drop(current_state);
-                    this.adjust_min_distance(sigma, event.value as u32);
-                }
-            },
-        )
-        .detach();
-
-        self.sigma_control = Some(sigma_control);
-        self.min_distance_control = Some(min_distance_control);
-
-        self.process_messages(window, cx);
-    }
-
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.clone();
-        let channel_receiver_ref = self
-            .base
-            .receive_channel
-            .clone()
-            .expect("Should never fire: Created during init");
-
-        // Spawn message processing thread
-        cx.spawn_in(window, async move |this, cx| loop {
-            if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command { match message {
-                    FrontendMessage::ReturnState(tool_state) => if let ToolState::WatershedState(new_state) = tool_state {
-                        if let Ok(mut locked_state) = state.write() {
-                            if *locked_state != new_state {
-                                let sigma_ref = new_state.sigma;
-                                let min_distance_ref = new_state.min_distance;
-                                *locked_state = new_state;
-                                if let Err(e) = this.update(cx, |this, cx| {
-                                    this.sigma_control
-                                        .as_ref()
-                                        .expect("sigma_control should be initialized before use")
-                                        .update(cx, |control, cx| {
-                                            control.value = sigma_ref;
-                                            cx.notify();
-                                        });
-                                    this.min_distance_control
-                                        .as_ref()
-                                        .expect("min_distance_control should be initialized before use")
-                                        .update(cx, |control, cx| {
-                                            control.value = min_distance_ref as f32;
-                                            cx.notify();
-                                        },
-                                    );
-                                    cx.notify();
-                                }) {
-                                    eprintln!(
-                                        "Failed to update UI after state change: {e}"
-                                    );
-                                }
-                            }
-                        } else {
-                            eprintln!("Failed to acquire write lock on watershed state");
-                        }
-                    },
-                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                        println!("Received backend tools | Frontend Watershed");
-                        if let Err(e) = this.update(cx, |this, cx| {
-                            if let Ok(mut current_tool_index) = this.base.current_tool_index.write()
-                            {
-                                *current_tool_index = backend_ids.first().copied();
-                            } else {
-                                eprintln!("Failed to acquire write lock on current tool index");
-                                return;
-                            }
-                            this.base.backend_tool_indicies = backend_ids;
-                            this.base.send_channels = senders;
-
-                            // Request initial state when backend is discovered
-                            if let Some(sender) = this.base.send_channels.first() {
-                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                    eprintln!("Failed to request initial state: {e}");
-                                }
-                            }
-                        }) {
-                            eprintln!("Failed to update backend tools: {e}");
-                        }
-                    }
-                    _ => {}
-                } }
-            } else {
-                break;
-            }
-        })
-        .detach();
+        spawn_message_processor(self, window, cx);
     }
 
     fn toggle_enabled(
@@ -363,6 +206,44 @@ impl WatershedView {
 actions!([WatershedToggleActivity]);
 
 impl_tool_view_basics!(WatershedView, "Watershed");
+
+impl FrontendMessageHandler for WatershedView {
+    type State = WatershedState;
+
+    fn state_arc(&self) -> Arc<RwLock<Self::State>> {
+        self.state.clone()
+    }
+
+    fn base(&self) -> &crate::tools::ToolBase {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
+        &mut self.base
+    }
+
+    fn extract_state(tool_state: ToolState) -> Option<Self::State> {
+        match tool_state {
+            ToolState::WatershedState(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn on_state_changed(&mut self, new_state: &WatershedState, cx: &mut Context<Self>) {
+        if let Some(ref ctrl) = self.sigma_control {
+            ctrl.update(cx, |c, cx| {
+                c.value = new_state.sigma;
+                cx.notify();
+            });
+        }
+        if let Some(ref ctrl) = self.min_distance_control {
+            ctrl.update(cx, |c, cx| {
+                c.value = new_state.min_distance as f32;
+                cx.notify();
+            });
+        }
+    }
+}
 
 impl Render for WatershedView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

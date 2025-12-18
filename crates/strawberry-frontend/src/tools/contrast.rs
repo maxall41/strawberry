@@ -10,6 +10,7 @@ use gpui::{
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
+use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     BackendToolType, ContrastMessage, ContrastState, FrontendMessage, PipelineCommand,
     PipelineObjectMessage, ToolState,
@@ -123,86 +124,7 @@ impl ContrastView {
     }
 
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.clone();
-        let channel_receiver_ref = self
-            .base
-            .receive_channel
-            .clone()
-            .expect("Should never fire: Created during init");
-
-        // Spawn message processing thread
-        cx.spawn_in(window, async move |this, cx| loop {
-            if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command {
-                    match message {
-                        FrontendMessage::ReturnState(tool_state) => {
-                            if let ToolState::ContrastState(new_state) = tool_state {
-                                if let Ok(mut locked_state) = state.write() {
-                                    if *locked_state != new_state {
-                                        let min_ref = new_state.min;
-                                        let max_ref = new_state.max;
-                                        *locked_state = new_state;
-                                        if let Err(e) =
-                                            this.update(cx, |this, cx| {
-                                                this.min_control
-                                        .as_ref()
-                                        .expect("min_control should be initialized before use")
-                                        .update(cx, |control, cx| {
-                                            control.value = min_ref;
-                                            cx.notify();
-                                        });
-                                                this.max_control
-                                        .as_ref()
-                                        .expect("max_control should be initialized before use")
-                                        .update(cx, |control, cx| {
-                                            control.value = max_ref;
-                                            cx.notify();
-                                        });
-                                                cx.notify();
-                                            })
-                                        {
-                                            eprintln!(
-                                                "Failed to update UI after state change: {e}"
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    eprintln!("Failed to acquire write lock on contrast state");
-                                }
-                            }
-                        }
-                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                            println!("Received backend tools | Frontend Contrast");
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) =
-                                    this.base.current_tool_index.write()
-                                {
-                                    *current_tool_index = backend_ids.first().copied();
-                                } else {
-                                    eprintln!("Failed to acquire write lock on current tool index");
-                                    return;
-                                }
-                                this.base.backend_tool_indicies = backend_ids;
-                                this.base.send_channels = senders;
-
-                                // Request initial state when backend is discovered
-                                if let Some(sender) = this.base.send_channels.first() {
-                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                        eprintln!("Failed to request initial state: {e}");
-                                    }
-                                }
-                            }) {
-                                eprintln!("Failed to update backend tools: {e}");
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            } else {
-                break;
-            }
-        })
-        .detach();
+        spawn_message_processor(self, window, cx);
     }
 
     fn toggle_enabled(
@@ -365,6 +287,44 @@ impl ContrastView {
 }
 
 impl_tool_view_basics!(ContrastView, "Contrast");
+
+impl FrontendMessageHandler for ContrastView {
+    type State = ContrastState;
+
+    fn state_arc(&self) -> Arc<RwLock<Self::State>> {
+        self.state.clone()
+    }
+
+    fn base(&self) -> &crate::tools::ToolBase {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
+        &mut self.base
+    }
+
+    fn extract_state(tool_state: ToolState) -> Option<Self::State> {
+        match tool_state {
+            ToolState::ContrastState(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn on_state_changed(&mut self, new_state: &ContrastState, cx: &mut Context<Self>) {
+        if let Some(ref ctrl) = self.min_control {
+            ctrl.update(cx, |c, cx| {
+                c.value = new_state.min;
+                cx.notify();
+            });
+        }
+        if let Some(ref ctrl) = self.max_control {
+            ctrl.update(cx, |c, cx| {
+                c.value = new_state.max;
+                cx.notify();
+            });
+        }
+    }
+}
 
 actions!([ContrastToggleActivity]);
 
