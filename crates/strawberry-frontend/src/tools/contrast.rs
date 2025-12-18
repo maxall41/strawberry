@@ -2,7 +2,6 @@
 
 use std::sync::{Arc, RwLock};
 
-use flume;
 use gpui::{
     actions, div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
     KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
@@ -12,29 +11,23 @@ use gpui::{
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
 use strawberry_types::{
-    ContrastState, BackendToolType, ContrastMessage, FrontendMessage, PipelineCommand,
+    BackendToolType, ContrastMessage, ContrastState, FrontendMessage, PipelineCommand,
     PipelineObjectMessage, ToolState,
 };
 
 use strawberry_types::ToolFrontend;
 
 pub struct ContrastView {
-    pub command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-    pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub state: Arc<RwLock<ContrastState>>,
-    pub backend_tool_indicies: Vec<u16>,
-    pub current_tool_index: Arc<RwLock<Option<u16>>>,
-    pub send_channels: Vec<flume::Sender<PipelineCommand>>,
-    pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     pub min_control: Option<Entity<ValueControl>>,
     pub max_control: Option<Entity<ValueControl>>,
-    _cleanup_guard: crate::tools::CleanupGuard,
-    focus_handle: Option<FocusHandle>,
+    pub base: crate::tools::base::ToolBase,
 }
 
 impl Focusable for ContrastView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle
+        self.base
+            .focus_handle
             .clone()
             .expect("focus_handle should be initialized before use")
     }
@@ -42,34 +35,31 @@ impl Focusable for ContrastView {
 
 impl ContrastView {
     pub fn new(
-        command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
+        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> Self {
         Self {
-            command_receiver,
-            command_sender: command_sender.clone(),
             state: Arc::new(RwLock::new(ContrastState::default())),
-            backend_tool_indicies: vec![],
-            current_tool_index: Arc::new(RwLock::new(None)),
-            send_channels: vec![],
-            receive_channel: None,
             min_control: None,
             max_control: None,
-            _cleanup_guard: crate::tools::CleanupGuard::new(
-                command_sender,
+            base: crate::tools::base::ToolBase::new(
+                command_sender.clone(),
                 strawberry_types::BackendToolType::Contrast,
             ),
-            focus_handle: None,
         }
     }
 
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver);
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::Contrast,
-            sender,
-        )) {
+        self.base.receive_channel = Some(receiver);
+        if let Err(e) = self
+            .base
+            .command_sender
+            .send(PipelineCommand::DiscoverBackend(
+                BackendToolType::Contrast,
+                sender,
+            ))
+        {
             eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
@@ -135,6 +125,7 @@ impl ContrastView {
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.clone();
         let channel_receiver_ref = self
+            .base
             .receive_channel
             .clone()
             .expect("Should never fire: Created during init");
@@ -151,27 +142,25 @@ impl ContrastView {
                                         let min_ref = new_state.min;
                                         let max_ref = new_state.max;
                                         *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| {
-                                            this.min_control
-                                                .as_ref()
-                                                .expect(
-                                                    "min_control should be initialized before use",
-                                                )
-                                                .update(cx, |control, cx| {
-                                                    control.value = min_ref;
-                                                    cx.notify();
-                                                });
-                                            this.max_control
-                                                .as_ref()
-                                                .expect(
-                                                    "max_control should be initialized before use",
-                                                )
-                                                .update(cx, |control, cx| {
-                                                    control.value = max_ref;
-                                                    cx.notify();
-                                                });
+                                        if let Err(e) =
+                                            this.update(cx, |this, cx| {
+                                                this.min_control
+                                        .as_ref()
+                                        .expect("min_control should be initialized before use")
+                                        .update(cx, |control, cx| {
+                                            control.value = min_ref;
                                             cx.notify();
-                                        }) {
+                                        });
+                                                this.max_control
+                                        .as_ref()
+                                        .expect("max_control should be initialized before use")
+                                        .update(cx, |control, cx| {
+                                            control.value = max_ref;
+                                            cx.notify();
+                                        });
+                                                cx.notify();
+                                            })
+                                        {
                                             eprintln!(
                                                 "Failed to update UI after state change: {e}"
                                             );
@@ -185,18 +174,19 @@ impl ContrastView {
                         FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
                             println!("Received backend tools | Frontend Contrast");
                             if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                if let Ok(mut current_tool_index) =
+                                    this.base.current_tool_index.write()
                                 {
                                     *current_tool_index = backend_ids.first().copied();
                                 } else {
                                     eprintln!("Failed to acquire write lock on current tool index");
                                     return;
                                 }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
+                                this.base.backend_tool_indicies = backend_ids;
+                                this.base.send_channels = senders;
 
                                 // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.first() {
+                                if let Some(sender) = this.base.send_channels.first() {
                                     if let Err(e) = sender.send(PipelineCommand::RequestState()) {
                                         eprintln!("Failed to request initial state: {e}");
                                     }
@@ -215,62 +205,24 @@ impl ContrastView {
         .detach();
     }
 
-    fn get_current_tool_index(&self) -> Option<u16> {
-        match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => Some(index),
-                None => {
-                    eprintln!("No current tool index available");
-                    None
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                None
-            }
-        }
-    }
-
     fn toggle_enabled(
         &mut self,
         current_value: bool,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::ToggleActive(!current_value),
-            )) {
-                eprintln!("Failed to send toggle enabled command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::ToggleActive(!current_value),
+        )) {
+            eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
-    fn update_min_max(
-        &mut self,
-        min: f32,
-        max: f32,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(min, max)),
-            )) {
-                eprintln!("Failed to send min/max update command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+    fn update_min_max(&mut self, min: f32, max: f32) {
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(min, max)),
+        )) {
+            eprintln!("Failed to send min/max update command: {e}");
         }
     }
 
@@ -282,21 +234,7 @@ impl ContrastView {
         let max_val = current_state.max;
         drop(current_state);
 
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(
-                    new_min, max_val,
-                )),
-            )) {
-                eprintln!("Failed to send min/max update command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
-        }
+        self.update_min_max(new_min, max_val);
     }
 
     fn adjust_max_value(&mut self, new_max: f32) {
@@ -307,30 +245,7 @@ impl ContrastView {
         let min_val = current_state.min;
         drop(current_state);
 
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(
-                    min_val, new_max,
-                )),
-            )) {
-                eprintln!("Failed to send min/max update command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
-        }
-    }
-
-    // Header component
-    fn render_header(&self) -> impl IntoElement {
-        div()
-            .text_xl()
-            .font_weight(gpui::FontWeight::BOLD)
-            .mb_4()
-            .child("Contrast")
+        self.update_min_max(min_val, new_max);
     }
 
     // Status component showing enabled/disabled state
@@ -385,9 +300,9 @@ impl ContrastView {
                 cx.listener(
                     move |this: &mut ContrastView,
                           _event: &MouseDownEvent,
-                          window: &mut Window,
-                          cx: &mut Context<ContrastView>| {
-                        this.update_min_max(min, max, window, cx);
+                          _window: &mut Window,
+                          _cx: &mut Context<ContrastView>| {
+                        this.update_min_max(min, max);
                     },
                 ),
             )
@@ -449,6 +364,8 @@ impl ContrastView {
     }
 }
 
+impl_tool_view_basics!(ContrastView, "Contrast");
+
 actions!([ContrastToggleActivity]);
 
 impl Render for ContrastView {
@@ -471,8 +388,7 @@ impl Render for ContrastView {
         };
 
         div()
-            .track_focus(&self.focus_handle(cx))
-            .on_action(cx.listener(Self::toggle_activity_action))
+            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
             .flex()
             .flex_col()
             .gap_3()
@@ -491,6 +407,7 @@ impl Render for ContrastView {
                     },
                 )
             })
+            .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
             .child(self.render_status(&state, cx))
             .child(self.render_controls_section(cx, _window))
@@ -518,12 +435,16 @@ impl ToolFrontend for ContrastView {
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver);
-        self.focus_handle = Some(cx.focus_handle());
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::Contrast,
-            sender,
-        )) {
+        self.base.receive_channel = Some(receiver);
+        self.base.focus_handle = Some(cx.focus_handle());
+        if let Err(e) = self
+            .base
+            .command_sender
+            .send(PipelineCommand::DiscoverBackend(
+                BackendToolType::Contrast,
+                sender,
+            ))
+        {
             eprintln!("Failed to send backend discovery request: {e}");
             return;
         }

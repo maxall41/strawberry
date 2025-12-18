@@ -612,20 +612,6 @@ actions!([
     ZoomOut,
     OpenFile,
     SaveImage,
-    CompositorSettings,
-    SobelSettings,
-    ContrastSettings,
-    CounterSettings,
-    GaussianBlurSettings,
-    GrayscaleSettings,
-    LocalMaximaSettings,
-    ManagerSettings,
-    MorphologySettings,
-    NerveTracerSettings,
-    RollingBallSettings,
-    ThresholdSettings,
-    WatershedSettings,
-    DecomposerSettings
 ]);
 
 // Generic tool window creation function
@@ -658,6 +644,24 @@ fn create_tool_window<T, A>(
         }
     });
 }
+
+// Generate tool action declarations
+actions!([
+    CompositorSettings,
+    ContrastSettings,
+    CounterSettings,
+    GaussianBlurSettings,
+    GrayscaleSettings,
+    ThresholdSettings,
+    LocalMaximaSettings,
+    MorphologySettings,
+    RollingBallSettings,
+    WatershedSettings,
+    ManagerSettings,
+    DecomposerSettings,
+    SobelSettings,
+    NerveTracerSettings,
+]);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -692,91 +696,39 @@ async fn main() -> Result<()> {
             base: manifest_dir.join("examples"),
         })
         .run(move |cx: &mut App| {
-            // Register all tool windows using the generic function
-            create_tool_window::<CompositorView, CompositorSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                CompositorView::new,
-            );
-            create_tool_window::<ContrastView, ContrastSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                ContrastView::new,
-            );
-            create_tool_window::<CounterView, CounterSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                CounterView::new,
-            );
-            create_tool_window::<GaussianBlurView, GaussianBlurSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                GaussianBlurView::new,
-            );
-            create_tool_window::<GrayscaleView, GrayscaleSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                GrayscaleView::new,
-            );
-            create_tool_window::<ThresholdView, ThresholdSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                ThresholdView::new,
-            );
-            create_tool_window::<LocalMaximaView, LocalMaximaSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                LocalMaximaView::new,
-            );
-            create_tool_window::<MorphologyView, MorphologySettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                MorphologyView::new,
-            );
-            create_tool_window::<RollingBallView, RollingBallSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                RollingBallView::new,
-            );
-            create_tool_window::<WatershedView, WatershedSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                WatershedView::new,
-            );
-            create_tool_window::<ManagerView, ManagerSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                ManagerView::new,
-            );
-            create_tool_window::<DecomposerView, DecomposerSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                DecomposerView::new,
-            );
-            create_tool_window::<SobelView, SobelSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                SobelView::new,
-            );
-            create_tool_window::<NerveTracerView, NerveTracerSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                NerveTracerView::new,
-            );
+            // Register all tool windows
+            create_tool_window::<CompositorView, CompositorSettings>(cx, view_sender.clone(), view_recv.resubscribe(), CompositorView::new);
+            create_tool_window::<ContrastView, ContrastSettings>(cx, view_sender.clone(), view_recv.resubscribe(), ContrastView::new);
+            create_tool_window::<CounterView, CounterSettings>(cx, view_sender.clone(), view_recv.resubscribe(), CounterView::new);
+            create_tool_window::<GaussianBlurView, GaussianBlurSettings>(cx, view_sender.clone(), view_recv.resubscribe(), GaussianBlurView::new);
+            create_tool_window::<GrayscaleView, GrayscaleSettings>(cx, view_sender.clone(), view_recv.resubscribe(), GrayscaleView::new);
+            create_tool_window::<ThresholdView, ThresholdSettings>(cx, view_sender.clone(), view_recv.resubscribe(), ThresholdView::new);
+            create_tool_window::<LocalMaximaView, LocalMaximaSettings>(cx, view_sender.clone(), view_recv.resubscribe(), LocalMaximaView::new);
+            create_tool_window::<MorphologyView, MorphologySettings>(cx, view_sender.clone(), view_recv.resubscribe(), MorphologyView::new);
+            create_tool_window::<RollingBallView, RollingBallSettings>(cx, view_sender.clone(), view_recv.resubscribe(), RollingBallView::new);
+            create_tool_window::<WatershedView, WatershedSettings>(cx, view_sender.clone(), view_recv.resubscribe(), WatershedView::new);
+            create_tool_window::<ManagerView, ManagerSettings>(cx, view_sender.clone(), view_recv.resubscribe(), ManagerView::new);
+            create_tool_window::<DecomposerView, DecomposerSettings>(cx, view_sender.clone(), view_recv.resubscribe(), DecomposerView::new);
+            create_tool_window::<SobelView, SobelSettings>(cx, view_sender.clone(), view_recv.resubscribe(), SobelView::new);
+            create_tool_window::<NerveTracerView, NerveTracerSettings>(cx, view_sender.clone(), view_recv.resubscribe(), NerveTracerView::new);
+
+            // Generate menu items for tools
+            let tool_menu_items = vec![
+                MenuItem::action("Compositor", CompositorSettings),
+                MenuItem::action("Contrast", ContrastSettings),
+                MenuItem::action("Counter", CounterSettings),
+                MenuItem::action("Gaussian Blur", GaussianBlurSettings),
+                MenuItem::action("Grayscale", GrayscaleSettings),
+                MenuItem::action("Threshold", ThresholdSettings),
+                MenuItem::action("Local Maxima", LocalMaximaSettings),
+                MenuItem::action("Morphology", MorphologySettings),
+                MenuItem::action("Rolling Ball", RollingBallSettings),
+                MenuItem::action("Watershed", WatershedSettings),
+                MenuItem::action("Pipeline", ManagerSettings),
+                MenuItem::action("Decomposer", DecomposerSettings),
+                MenuItem::action("Sobel", SobelSettings),
+                MenuItem::action("Nerve Tracer", NerveTracerSettings),
+            ];
 
             cx.on_action(|_: &Quit, cx| cx.quit());
 
@@ -802,22 +754,7 @@ async fn main() -> Result<()> {
                 },
                 Menu {
                     name: "Tools".into(),
-                    items: vec![
-                        MenuItem::action("Pipeline", ManagerSettings),
-                        MenuItem::action("Compositor", CompositorSettings),
-                        MenuItem::action("Contrast", ContrastSettings),
-                        MenuItem::action("Counter", CounterSettings),
-                        MenuItem::action("Gaussian Blur", GaussianBlurSettings),
-                        MenuItem::action("Grayscale", GrayscaleSettings),
-                        MenuItem::action("Local Maxima", LocalMaximaSettings),
-                        MenuItem::action("Morphology", MorphologySettings),
-                        MenuItem::action("Nerve Tracer", NerveTracerSettings),
-                        MenuItem::action("Rolling Ball", RollingBallSettings),
-                        MenuItem::action("Threshold", ThresholdSettings),
-                        MenuItem::action("Watershed", WatershedSettings),
-                        MenuItem::action("Decomposer", DecomposerSettings),
-                        MenuItem::action("Sobel", SobelSettings),
-                    ],
+                    items: tool_menu_items,
                 },
             ]);
 

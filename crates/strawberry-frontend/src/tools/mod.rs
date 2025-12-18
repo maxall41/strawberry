@@ -1,5 +1,11 @@
 use gpui::{Context, Window, WindowOptions};
 
+pub mod base;
+#[macro_use]
+pub mod macros;
+
+pub use base::ToolBase;
+
 pub mod compositor;
 pub mod contrast;
 pub mod counter;

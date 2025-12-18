@@ -11,28 +11,22 @@ use gpui::{
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
 use strawberry_types::{
-    GaussianBlurState, BackendToolType, FrontendMessage, GaussianBlurMessage,
-    PipelineCommand, PipelineObjectMessage, ToolState,
+    BackendToolType, FrontendMessage, GaussianBlurMessage, GaussianBlurState, PipelineCommand,
+    PipelineObjectMessage, ToolState,
 };
 
 use strawberry_types::ToolFrontend;
 
 pub struct GaussianBlurView {
-    pub command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-    pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub state: Arc<RwLock<GaussianBlurState>>,
-    pub backend_tool_indicies: Vec<u16>,
-    pub current_tool_index: Arc<RwLock<Option<u16>>>,
-    pub send_channels: Vec<flume::Sender<PipelineCommand>>,
-    pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     pub sigma_control: Option<Entity<ValueControl>>,
-    _cleanup_guard: crate::tools::CleanupGuard,
-    focus_handle: Option<FocusHandle>,
+    pub base: crate::tools::base::ToolBase,
 }
 
 impl Focusable for GaussianBlurView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle
+        self.base
+            .focus_handle
             .clone()
             .expect("focus_handle should be initialized before use")
     }
@@ -40,29 +34,23 @@ impl Focusable for GaussianBlurView {
 
 impl GaussianBlurView {
     pub fn new(
-        command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
+        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> Self {
         Self {
-            command_receiver,
-            command_sender: command_sender.clone(),
             state: Arc::new(RwLock::new(GaussianBlurState::default())),
-            backend_tool_indicies: vec![],
-            current_tool_index: Arc::new(RwLock::new(None)),
-            send_channels: vec![],
-            receive_channel: None,
             sigma_control: None,
-            _cleanup_guard: crate::tools::CleanupGuard::new(
-                command_sender,
+            base: crate::tools::base::ToolBase::new(
+                command_sender.clone(),
                 strawberry_types::BackendToolType::GaussianBlur,
             ),
-            focus_handle: None,
         }
     }
 
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.clone();
         let channel_receiver_ref = self
+            .base
             .receive_channel
             .clone()
             .expect("Should never fire: Created during init");
@@ -80,12 +68,12 @@ impl GaussianBlurView {
                                         *locked_state = new_state;
                                         if let Err(e) = this.update(cx, |this, cx| {
                                             this.sigma_control
-                                                .as_ref()
-                                                .expect("sigma_control should be initialized before use")
-                                                .update(cx, |this, cx| {
-                                                    this.value = sigma_ref;
-                                                    cx.notify();
-                                                });
+                                        .as_ref()
+                                        .expect("sigma_control should be initialized before use")
+                                        .update(cx, |control, cx| {
+                                            control.value = sigma_ref;
+                                            cx.notify();
+                                        });
                                             cx.notify();
                                         }) {
                                             eprintln!(
@@ -103,18 +91,19 @@ impl GaussianBlurView {
                         FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
                             println!("Received backend tools | Frontend GaussianBlur");
                             if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                if let Ok(mut current_tool_index) =
+                                    this.base.current_tool_index.write()
                                 {
                                     *current_tool_index = backend_ids.first().copied();
                                 } else {
                                     eprintln!("Failed to acquire write lock on current tool index");
                                     return;
                                 }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
+                                this.base.backend_tool_indicies = backend_ids;
+                                this.base.send_channels = senders;
 
                                 // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.first() {
+                                if let Some(sender) = this.base.send_channels.first() {
                                     if let Err(e) = sender.send(PipelineCommand::RequestState()) {
                                         eprintln!("Failed to request initial state: {e}");
                                     }
@@ -133,56 +122,24 @@ impl GaussianBlurView {
         .detach();
     }
 
-    fn get_current_tool_index(&self) -> Option<u16> {
-        match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => Some(index),
-                None => {
-                    eprintln!("No current tool index available");
-                    None
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                None
-            }
-        }
-    }
-
     fn toggle_enabled(
         &mut self,
         current_value: bool,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::ToggleActive(!current_value),
-            )) {
-                eprintln!("Failed to send toggle enabled command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::ToggleActive(!current_value),
+        )) {
+            eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
     fn update_sigma(&mut self, sigma: f32) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::GaussianBlurMessage(GaussianBlurMessage::SetSigma(sigma)),
-            )) {
-                eprintln!("Failed to send radius/sigma update: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::GaussianBlurMessage(GaussianBlurMessage::SetSigma(sigma)),
+        )) {
+            eprintln!("Failed to send radius/sigma update: {e}");
         }
     }
 
@@ -199,15 +156,6 @@ impl GaussianBlurView {
             .is_enabled;
 
         self.toggle_enabled(current_enabled, window, cx);
-    }
-
-    // Header component
-    fn render_header(&self) -> impl IntoElement {
-        div()
-            .text_xl()
-            .font_weight(gpui::FontWeight::BOLD)
-            .mb_4()
-            .child("Gaussian Blur")
     }
 
     // Status component showing enabled/disabled state
@@ -317,15 +265,10 @@ impl Render for GaussianBlurView {
             }
         };
 
-        if self.sigma_control.is_none() {
-            return div()
-                .bg(rgb(0x505050))
-                .text_color(rgb(0xffffff))
-                .child("Initialising...");
-        }
+        let is_enabled = state.is_enabled;
 
         div()
-            .track_focus(&self.focus_handle(cx))
+            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
             .flex()
             .flex_col()
             .gap_3()
@@ -352,6 +295,8 @@ impl Render for GaussianBlurView {
     }
 }
 
+impl_tool_view_basics!(GaussianBlurView, "Gaussian Blur");
+
 impl ToolFrontend for GaussianBlurView {
     fn get_window_options(&self) -> WindowOptions {
         WindowOptions {
@@ -372,12 +317,16 @@ impl ToolFrontend for GaussianBlurView {
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver);
-        self.focus_handle = Some(cx.focus_handle());
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::GaussianBlur,
-            sender,
-        )) {
+        self.base.receive_channel = Some(receiver);
+        self.base.focus_handle = Some(cx.focus_handle());
+        if let Err(e) = self
+            .base
+            .command_sender
+            .send(PipelineCommand::DiscoverBackend(
+                BackendToolType::GaussianBlur,
+                sender,
+            ))
+        {
             eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
