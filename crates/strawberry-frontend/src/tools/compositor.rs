@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use crate::gui::ToggleButton;
+use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     BackendToolType, CompositorMessage, CompositorState, FrontendMessage, PipelineCommand,
     PipelineObjectMessage, ToolState,
@@ -45,66 +46,7 @@ impl CompositorView {
     }
 
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.clone();
-        let channel_receiver_ref = self
-            .base
-            .receive_channel
-            .clone()
-            .expect("Should never fire: Created during init");
-
-        // Spawn message processing thread
-        cx.spawn_in(window, async move |this, cx| loop {
-            if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command {
-                    match message {
-                        FrontendMessage::ReturnState(tool_state) => {
-                            if let ToolState::CompositorState(new_state) = tool_state {
-                                if let Ok(mut locked_state) = state.write() {
-                                    if *locked_state != new_state {
-                                        *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| cx.notify()) {
-                                            eprintln!(
-                                                "Failed to update UI after state change: {e}"
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    eprintln!("Failed to acquire write lock on compositor state");
-                                }
-                            }
-                        }
-                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                            println!("Received backend tools | Frontend Compositor");
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) =
-                                    this.base.current_tool_index.write()
-                                {
-                                    *current_tool_index = backend_ids.first().copied();
-                                } else {
-                                    eprintln!("Failed to acquire write lock on current tool index");
-                                    return;
-                                }
-                                this.base.backend_tool_indicies = backend_ids;
-                                this.base.send_channels = senders;
-
-                                // Request initial state when backend is discovered
-                                if let Some(sender) = this.base.send_channels.first() {
-                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                        eprintln!("Failed to request initial state: {e}");
-                                    }
-                                }
-                            }) {
-                                eprintln!("Failed to update backend tools: {e}");
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            } else {
-                break;
-            }
-        })
-        .detach();
+        spawn_message_processor(self, window, cx);
     }
 
     fn toggle_layer(
@@ -331,6 +273,29 @@ actions!([
     CompositorToggleLayer8,
     CompositorToggleLayer9
 ]);
+
+impl FrontendMessageHandler for CompositorView {
+    type State = CompositorState;
+
+    fn state_arc(&self) -> Arc<RwLock<Self::State>> {
+        self.state.clone()
+    }
+
+    fn base(&self) -> &crate::tools::ToolBase {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
+        &mut self.base
+    }
+
+    fn extract_state(tool_state: ToolState) -> Option<Self::State> {
+        match tool_state {
+            ToolState::CompositorState(s) => Some(s),
+            _ => None,
+        }
+    }
+}
 
 impl Render for CompositorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

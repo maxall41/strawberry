@@ -10,6 +10,7 @@ use gpui::{
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
+use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_processing::local_maxima::ThresholdType;
 use strawberry_types::{
     BackendToolType, FrontendMessage, LocalMaximaMessage, LocalMaximaState, PipelineCommand,
@@ -54,164 +55,8 @@ impl LocalMaximaView {
         }
     }
 
-    pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.base.receive_channel = Some(receiver);
-        if let Err(e) = self
-            .base
-            .command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::LocalMaxima,
-                sender,
-            ))
-        {
-            eprintln!("Failed to send backend discovery request: {e}");
-            return;
-        }
-        println!("Sent discovery request to backend | LocalMaxima");
-
-        // Create and initialize ValueControl components
-        let state = self
-            .state
-            .read()
-            .expect("State lock should not be poisoned")
-            .clone();
-        let min_distance_control = cx.new(|cx| {
-            ValueControl::new(
-                format!("{:.0}", state.min_distance),
-                state.min_distance as f32,
-                "Min Distance".to_string(),
-                1.0,
-                "min_distance".to_string(),
-                1.0,
-                100.0,
-            )
-        });
-
-        let threshold_value = match &state.threshold {
-            ThresholdType::Absolute(val) => *val,
-            ThresholdType::Relative(val) => *val,
-            ThresholdType::None => 0.0,
-        };
-
-        let threshold_control = cx.new(|cx| {
-            ValueControl::new(
-                format!("{threshold_value:.3}"),
-                threshold_value,
-                "Threshold".to_string(),
-                0.01,
-                "threshold".to_string(),
-                0.0,
-                1.0,
-            )
-        });
-
-        // Handle ValueControl events
-        cx.subscribe(
-            &min_distance_control,
-            |this, _control, event: &ValueControlEvent, cx| {
-                if event.id == "min_distance" {
-                    this.adjust_min_distance_value(event.value as u32);
-                }
-            },
-        )
-        .detach();
-
-        cx.subscribe(
-            &threshold_control,
-            |this, _control, event: &ValueControlEvent, cx| {
-                if event.id == "threshold" {
-                    this.adjust_threshold_value(event.value);
-                }
-            },
-        )
-        .detach();
-
-        self.min_distance_control = Some(min_distance_control);
-        self.threshold_control = Some(threshold_control);
-
-        self.process_messages(window, cx);
-    }
-
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.clone();
-        let channel_receiver_ref = self
-            .base
-            .receive_channel
-            .clone()
-            .expect("Should never fire: Created during init");
-
-        // Spawn message processing thread
-        cx.spawn_in(window, async move |this, cx| loop {
-            if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command { match message {
-                    FrontendMessage::ReturnState(tool_state) => if let ToolState::LocalMaximaState(new_state) = tool_state {
-                        if let Ok(mut locked_state) = state.write() {
-                            if *locked_state != new_state {
-                                let min_distance_ref = new_state.min_distance;
-                                let threshold_value_ref = match &new_state.threshold {
-                                    ThresholdType::Absolute(val) => *val,
-                                    ThresholdType::Relative(val) => *val,
-                                    ThresholdType::None => 0.0,
-                                };
-                                *locked_state = new_state;
-                                if let Err(e) = this.update(cx, |this, cx| {
-                                    this.min_distance_control
-                                        .as_ref()
-                                        .expect("min_distance_control should be initialized before use")
-                                        .update(cx, |control, cx| {
-                                            control.value = min_distance_ref as f32;
-                                            cx.notify();
-                                        });
-                                    this.threshold_control
-                                        .as_ref()
-                                        .expect("threshold_control should be initialized before use")
-                                        .update(cx, |control, cx| {
-                                            control.value = threshold_value_ref;
-                                            cx.notify();
-                                        },
-                                    );
-                                    cx.notify();
-                                }) {
-                                    eprintln!(
-                                        "Failed to update UI after state change: {e}"
-                                    );
-                                }
-                            }
-                        } else {
-                            eprintln!("Failed to acquire write lock on local maxima state");
-                        }
-                    },
-                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                        println!("Received backend tools | Frontend LocalMaxima");
-                        if let Err(e) = this.update(cx, |this, cx| {
-                            if let Ok(mut current_tool_index) = this.base.current_tool_index.write()
-                            {
-                                *current_tool_index = backend_ids.first().copied();
-                            } else {
-                                eprintln!("Failed to acquire write lock on current tool index");
-                                return;
-                            }
-                            this.base.backend_tool_indicies = backend_ids;
-                            this.base.send_channels = senders;
-
-                            // Request initial state when backend is discovered
-                            if let Some(sender) = this.base.send_channels.first() {
-                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                    eprintln!("Failed to request initial state: {e}");
-                                }
-                            }
-                        }) {
-                            eprintln!("Failed to update backend tools: {e}");
-                        }
-                    }
-                    _ => {}
-                } }
-            } else {
-                break;
-            }
-        })
-        .detach();
+        spawn_message_processor(self, window, cx);
     }
 
     fn toggle_enabled(
@@ -550,6 +395,49 @@ actions!([LocalMaximaToggleActivity]);
 
 impl_tool_view_basics!(LocalMaximaView, "Local Maxima");
 
+impl FrontendMessageHandler for LocalMaximaView {
+    type State = LocalMaximaState;
+
+    fn state_arc(&self) -> Arc<RwLock<Self::State>> {
+        self.state.clone()
+    }
+
+    fn base(&self) -> &crate::tools::ToolBase {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
+        &mut self.base
+    }
+
+    fn extract_state(tool_state: ToolState) -> Option<Self::State> {
+        match tool_state {
+            ToolState::LocalMaximaState(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn on_state_changed(&mut self, new_state: &LocalMaximaState, cx: &mut Context<Self>) {
+        if let Some(ref ctrl) = self.min_distance_control {
+            ctrl.update(cx, |c, cx| {
+                c.value = new_state.min_distance as f32;
+                cx.notify();
+            });
+        }
+        if let Some(ref ctrl) = self.threshold_control {
+            let threshold_value = match &new_state.threshold {
+                ThresholdType::Absolute(val) => *val,
+                ThresholdType::Relative(val) => *val,
+                ThresholdType::None => 0.0,
+            };
+            ctrl.update(cx, |c, cx| {
+                c.value = threshold_value;
+                cx.notify();
+            });
+        }
+    }
+}
+
 impl Render for LocalMaximaView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
@@ -636,6 +524,7 @@ impl ToolFrontend for LocalMaximaView {
 
         cx.bind_keys([KeyBinding::new("cmd-t", LocalMaximaToggleActivity, None)]);
 
+        // Create and initialize ValueControl components
         let state = self
             .state
             .read()

@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+
 use gpui::{Context, Window, WindowOptions};
 
 pub mod base;
@@ -5,6 +7,7 @@ pub mod base;
 pub mod macros;
 
 pub use base::ToolBase;
+use strawberry_types::{FrontendMessage, PipelineCommand, ToolState};
 
 pub mod compositor;
 pub mod contrast;
@@ -20,6 +23,7 @@ pub mod rolling_ball;
 pub mod sobel;
 pub mod threshold;
 pub mod watershed;
+
 /// RAII guard that automatically sends disconnect command when dropped
 pub struct CleanupGuard {
     command_sender: tokio::sync::broadcast::Sender<strawberry_types::PipelineCommand>,
@@ -56,4 +60,82 @@ impl Drop for CleanupGuard {
             );
         }
     }
+}
+
+pub trait FrontendMessageHandler: Sized + 'static {
+    type State: Clone + PartialEq + Send + Sync + 'static;
+
+    /// Get the state Arc
+    fn state_arc(&self) -> Arc<RwLock<Self::State>>;
+
+    /// Get the base (immutable)
+    fn base(&self) -> &ToolBase;
+
+    /// Get the base (mutable)
+    fn base_mut(&mut self) -> &mut ToolBase;
+
+    /// Extract tool-specific state from ToolState enum
+    fn extract_state(tool_state: ToolState) -> Option<Self::State>;
+
+    /// Called when state changes (before cx.notify)
+    /// Default: does nothing extra
+    fn on_state_changed(&mut self, _new_state: &Self::State, _cx: &mut Context<Self>) {}
+}
+
+pub fn spawn_message_processor<V: FrontendMessageHandler>(
+    view: &V,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) {
+    let state = view.state_arc();
+    let receiver = view
+        .base()
+        .receive_channel
+        .clone()
+        .expect("receive_channel should be initialized");
+
+    cx.spawn_in(window, async move |this, cx| loop {
+        let Ok(command) = receiver.recv_async().await else {
+            break;
+        };
+        let PipelineCommand::FrontendMessage(message) = command else {
+            continue;
+        };
+
+        match message {
+            FrontendMessage::ReturnState(tool_state) => {
+                let Some(new_state) = V::extract_state(tool_state) else {
+                    continue;
+                };
+                let Ok(mut locked) = state.write() else {
+                    eprintln!("Failed to acquire write lock on state");
+                    continue;
+                };
+                if *locked != new_state {
+                    *locked = new_state.clone();
+                    drop(locked);
+                    let _ = this.update(cx, |view, cx| {
+                        view.on_state_changed(&new_state, cx);
+                        cx.notify();
+                    });
+                }
+            }
+            FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                let _ = this.update(cx, |view, _cx| {
+                    let base = view.base_mut();
+                    if let Ok(mut idx) = base.current_tool_index.write() {
+                        *idx = backend_ids.first().copied();
+                    }
+                    base.backend_tool_indicies = backend_ids;
+                    base.send_channels = senders;
+
+                    if let Some(sender) = base.send_channels.first() {
+                        let _ = sender.send(PipelineCommand::RequestState());
+                    }
+                });
+            }
+            _ => {}
+        }
+    })
+    .detach();
 }

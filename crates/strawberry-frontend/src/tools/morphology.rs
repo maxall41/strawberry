@@ -10,6 +10,7 @@ use gpui::{
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
+use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_processing::morphology::MorphologyOperation;
 use strawberry_types::{
     BackendToolType, FrontendMessage, MorphologyMessage, MorphologyState, PipelineCommand,
@@ -48,122 +49,8 @@ impl MorphologyView {
         }
     }
 
-    pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.base.receive_channel = Some(receiver);
-        if let Err(e) = self
-            .base
-            .command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Morphology,
-                sender,
-            ))
-        {
-            eprintln!("Failed to send backend discovery request: {e}");
-            return;
-        }
-        println!("Sent discovery request to backend | Morphology");
-
-        // Create and initialize ValueControl component
-        let state = self
-            .state
-            .read()
-            .expect("State lock should not be poisoned")
-            .clone();
-        let element_size_control = cx.new(|cx| {
-            ValueControl::new(
-                format!("{:.0}", state.element_size),
-                state.element_size as f32,
-                "Element Size".to_string(),
-                1.0,
-                "element_size".to_string(),
-                1.0,
-                50.0,
-            )
-        });
-
-        // Handle ValueControl events
-        cx.subscribe(
-            &element_size_control,
-            |this, _control, event: &ValueControlEvent, _cx| {
-                if event.id == "element_size" {
-                    this.adjust_element_size_value(event.value as u32);
-                }
-            },
-        )
-        .detach();
-
-        self.element_size_control = Some(element_size_control);
-
-        self.process_messages(window, cx);
-    }
-
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.clone();
-        let channel_receiver_ref = self
-            .base
-            .receive_channel
-            .clone()
-            .expect("Should never fire: Created during init");
-
-        // Spawn message processing thread
-        cx.spawn_in(window, async move |this, cx| loop {
-            if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command { match message {
-                    FrontendMessage::ReturnState(tool_state) => if let ToolState::MorphologyState(new_state) = tool_state {
-                        if let Ok(mut locked_state) = state.write() {
-                            if *locked_state != new_state {
-                                let element_size_ref = new_state.element_size;
-                                *locked_state = new_state;
-                                if let Err(e) = this.update(cx, |this, cx| {
-                                    this.element_size_control
-                                        .as_ref()
-                                        .expect("element_size_control should be initialized before use")
-                                        .update(cx, |control, cx| {
-                                            control.value = element_size_ref as f32;
-                                            cx.notify();
-                                        });
-                                    cx.notify();
-                                }) {
-                                    eprintln!(
-                                        "Failed to update UI after state change: {e}"
-                                    );
-                                }
-                            }
-                        } else {
-                            eprintln!("Failed to acquire write lock on morphology state");
-                        }
-                    },
-                    FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                        println!("Received backend tools | Frontend Morphology");
-                        if let Err(e) = this.update(cx, |this, cx| {
-                            if let Ok(mut current_tool_index) = this.base.current_tool_index.write()
-                            {
-                                *current_tool_index = backend_ids.first().copied();
-                            } else {
-                                eprintln!("Failed to acquire write lock on current tool index");
-                                return;
-                            }
-                            this.base.backend_tool_indicies = backend_ids;
-                            this.base.send_channels = senders;
-
-                            // Request initial state when backend is discovered
-                            if let Some(sender) = this.base.send_channels.first() {
-                                if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                    eprintln!("Failed to request initial state: {e}");
-                                }
-                            }
-                        }) {
-                            eprintln!("Failed to update backend tools: {e}");
-                        }
-                    }
-                    _ => {}
-                } }
-            } else {
-                break;
-            }
-        })
-        .detach();
+        spawn_message_processor(self, window, cx);
     }
 
     fn toggle_enabled(
@@ -465,6 +352,38 @@ impl MorphologyView {
 
 actions!([MorphologyToggleActivity]);
 
+impl FrontendMessageHandler for MorphologyView {
+    type State = MorphologyState;
+
+    fn state_arc(&self) -> Arc<RwLock<Self::State>> {
+        self.state.clone()
+    }
+
+    fn base(&self) -> &crate::tools::ToolBase {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
+        &mut self.base
+    }
+
+    fn extract_state(tool_state: ToolState) -> Option<Self::State> {
+        match tool_state {
+            ToolState::MorphologyState(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn on_state_changed(&mut self, new_state: &MorphologyState, cx: &mut Context<Self>) {
+        if let Some(ref ctrl) = self.element_size_control {
+            ctrl.update(cx, |c, cx| {
+                c.value = new_state.element_size as f32;
+                cx.notify();
+            });
+        }
+    }
+}
+
 impl Render for MorphologyView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
@@ -553,6 +472,7 @@ impl ToolFrontend for MorphologyView {
 
         cx.bind_keys([KeyBinding::new("cmd-t", MorphologyToggleActivity, None)]);
 
+        // Create and initialize ValueControl component
         let state = self
             .state
             .read()

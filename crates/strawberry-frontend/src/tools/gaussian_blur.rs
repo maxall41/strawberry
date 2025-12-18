@@ -10,6 +10,7 @@ use gpui::{
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
+use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     BackendToolType, FrontendMessage, GaussianBlurMessage, GaussianBlurState, PipelineCommand,
     PipelineObjectMessage, ToolState,
@@ -48,78 +49,7 @@ impl GaussianBlurView {
     }
 
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.clone();
-        let channel_receiver_ref = self
-            .base
-            .receive_channel
-            .clone()
-            .expect("Should never fire: Created during init");
-
-        // Spawn message processing thread
-        cx.spawn_in(window, async move |this, cx| loop {
-            if let Ok(command) = channel_receiver_ref.recv_async().await {
-                if let PipelineCommand::FrontendMessage(message) = command {
-                    match message {
-                        FrontendMessage::ReturnState(tool_state) => {
-                            if let ToolState::GaussianBlurState(new_state) = tool_state {
-                                if let Ok(mut locked_state) = state.write() {
-                                    if *locked_state != new_state {
-                                        let sigma_ref = new_state.sigma;
-                                        *locked_state = new_state;
-                                        if let Err(e) = this.update(cx, |this, cx| {
-                                            this.sigma_control
-                                        .as_ref()
-                                        .expect("sigma_control should be initialized before use")
-                                        .update(cx, |control, cx| {
-                                            control.value = sigma_ref;
-                                            cx.notify();
-                                        });
-                                            cx.notify();
-                                        }) {
-                                            eprintln!(
-                                                "Failed to update UI after state change: {e}"
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    eprintln!(
-                                        "Failed to acquire write lock on gaussian blur state"
-                                    );
-                                }
-                            }
-                        }
-                        FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                            println!("Received backend tools | Frontend GaussianBlur");
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) =
-                                    this.base.current_tool_index.write()
-                                {
-                                    *current_tool_index = backend_ids.first().copied();
-                                } else {
-                                    eprintln!("Failed to acquire write lock on current tool index");
-                                    return;
-                                }
-                                this.base.backend_tool_indicies = backend_ids;
-                                this.base.send_channels = senders;
-
-                                // Request initial state when backend is discovered
-                                if let Some(sender) = this.base.send_channels.first() {
-                                    if let Err(e) = sender.send(PipelineCommand::RequestState()) {
-                                        eprintln!("Failed to request initial state: {e}");
-                                    }
-                                }
-                            }) {
-                                eprintln!("Failed to update backend tools: {e}");
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            } else {
-                break;
-            }
-        })
-        .detach();
+        spawn_message_processor(self, window, cx);
     }
 
     fn toggle_enabled(
@@ -246,6 +176,38 @@ impl GaussianBlurView {
 
 actions!([GaussianBlurToggleActivity]);
 
+impl FrontendMessageHandler for GaussianBlurView {
+    type State = GaussianBlurState;
+
+    fn state_arc(&self) -> Arc<RwLock<Self::State>> {
+        self.state.clone()
+    }
+
+    fn base(&self) -> &crate::tools::ToolBase {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
+        &mut self.base
+    }
+
+    fn extract_state(tool_state: ToolState) -> Option<Self::State> {
+        match tool_state {
+            ToolState::GaussianBlurState(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn on_state_changed(&mut self, new_state: &GaussianBlurState, cx: &mut Context<Self>) {
+        if let Some(ref ctrl) = self.sigma_control {
+            ctrl.update(cx, |c, cx| {
+                c.value = new_state.sigma;
+                cx.notify();
+            });
+        }
+    }
+}
+
 impl Render for GaussianBlurView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
@@ -264,8 +226,6 @@ impl Render for GaussianBlurView {
                     .child("Error: Unable to read gaussian blur state");
             }
         };
-
-        let is_enabled = state.is_enabled;
 
         div()
             .track_focus(&self.base.focus_handle.clone().expect("initialized"))
