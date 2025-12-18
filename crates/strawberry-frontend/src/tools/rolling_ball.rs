@@ -16,21 +16,15 @@ use strawberry_types::{
 use strawberry_types::ToolFrontend;
 
 pub struct RollingBallView {
-    pub command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-    pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub state: Arc<RwLock<RollingBallState>>,
-    pub backend_tool_indicies: Vec<u16>,
-    pub current_tool_index: Arc<RwLock<Option<u16>>>,
-    pub send_channels: Vec<flume::Sender<PipelineCommand>>,
-    pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     pub ball_radius_control: Option<Entity<ValueControl>>,
-    _cleanup_guard: crate::tools::CleanupGuard,
-    focus_handle: Option<FocusHandle>,
+    pub base: crate::tools::base::ToolBase,
 }
 
 impl Focusable for RollingBallView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle
+        self.base
+            .focus_handle
             .clone()
             .expect("focus_handle should be initialized before use")
     }
@@ -38,33 +32,30 @@ impl Focusable for RollingBallView {
 
 impl RollingBallView {
     pub fn new(
-        command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
+        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> Self {
         Self {
-            command_receiver,
-            command_sender: command_sender.clone(),
             state: Arc::new(RwLock::new(RollingBallState::default())),
-            backend_tool_indicies: vec![],
-            current_tool_index: Arc::new(RwLock::new(None)),
-            send_channels: vec![],
-            receive_channel: None,
             ball_radius_control: None,
-            _cleanup_guard: crate::tools::CleanupGuard::new(
-                command_sender,
+            base: crate::tools::base::ToolBase::new(
+                command_sender.clone(),
                 strawberry_types::BackendToolType::RollingBall,
             ),
-            focus_handle: None,
         }
     }
 
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver);
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::RollingBall,
-            sender,
-        )) {
+        self.base.receive_channel = Some(receiver);
+        if let Err(e) = self
+            .base
+            .command_sender
+            .send(PipelineCommand::DiscoverBackend(
+                BackendToolType::RollingBall,
+                sender,
+            ))
+        {
             eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
@@ -105,6 +96,7 @@ impl RollingBallView {
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.clone();
         let channel_receiver_ref = self
+            .base
             .receive_channel
             .clone()
             .expect("Should never fire: Created during init");
@@ -139,17 +131,17 @@ impl RollingBallView {
                     FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
                         println!("Received backend tools | Frontend RollingBall");
                         if let Err(e) = this.update(cx, |this, cx| {
-                            if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                            if let Ok(mut current_tool_index) = this.base.current_tool_index.write()
                             {
                                 *current_tool_index = backend_ids.first().copied();
                             } else {
                                 eprintln!("Failed to acquire write lock on current tool index");
                                 return;
                             }
-                            this.backend_tool_indicies = backend_ids;
-                            this.send_channels = senders;
+                            this.base.backend_tool_indicies = backend_ids;
+                            this.base.send_channels = senders;
 
-                            if let Some(sender) = this.send_channels.first() {
+                            if let Some(sender) = this.base.send_channels.first() {
                                 if let Err(e) = sender.send(PipelineCommand::RequestState()) {
                                     eprintln!("Failed to request initial state: {e}");
                                 }
@@ -167,35 +159,16 @@ impl RollingBallView {
         .detach();
     }
 
-    fn get_current_tool_index(&self) -> Option<u16> {
-        match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => Some(index),
-                None => {
-                    eprintln!("No current tool index available");
-                    None
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                None
-            }
-        }
-    }
-
-    fn toggle_enabled(&mut self, current_value: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::ToggleActive(!current_value),
-            )) {
-                eprintln!("Failed to send toggle enabled command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+    fn toggle_enabled(
+        &mut self,
+        current_value: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::ToggleActive(!current_value),
+        )) {
+            eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
@@ -215,34 +188,18 @@ impl RollingBallView {
     }
 
     fn update_ball_radius(&mut self, ball_radius: u32) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::RollingBallMessage(RollingBallMessage::SetBallRadius(
-                    ball_radius,
-                )),
-            )) {
-                eprintln!("Failed to send ball radius update: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::RollingBallMessage(RollingBallMessage::SetBallRadius(
+                ball_radius,
+            )),
+        )) {
+            eprintln!("Failed to send ball radius update: {e}");
         }
     }
 
     fn adjust_ball_radius(&mut self, new_radius: u32) {
         let clamped_radius = new_radius.clamp(1, 200);
         self.update_ball_radius(clamped_radius);
-    }
-
-    fn render_header(&self) -> impl IntoElement {
-        div()
-            .text_xl()
-            .font_weight(gpui::FontWeight::BOLD)
-            .mb_4()
-            .child("Rolling Ball")
     }
 
     fn render_status(&self, state: &RollingBallState, cx: &mut Context<Self>) -> impl IntoElement {
@@ -353,7 +310,7 @@ impl Render for RollingBallView {
         let is_enabled = state.is_enabled;
 
         div()
-            .track_focus(&self.focus_handle(cx))
+            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
             .flex()
             .flex_col()
             .gap_3()
@@ -380,6 +337,8 @@ impl Render for RollingBallView {
     }
 }
 
+impl_tool_view_basics!(RollingBallView, "Rolling Ball");
+
 impl ToolFrontend for RollingBallView {
     fn get_window_options(&self) -> WindowOptions {
         WindowOptions {
@@ -400,12 +359,16 @@ impl ToolFrontend for RollingBallView {
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver);
-        self.focus_handle = Some(cx.focus_handle());
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::RollingBall,
-            sender,
-        )) {
+        self.base.receive_channel = Some(receiver);
+        self.base.focus_handle = Some(cx.focus_handle());
+        if let Err(e) = self
+            .base
+            .command_sender
+            .send(PipelineCommand::DiscoverBackend(
+                BackendToolType::RollingBall,
+                sender,
+            ))
+        {
             eprintln!("Failed to send backend discovery request: {e}");
             return;
         }

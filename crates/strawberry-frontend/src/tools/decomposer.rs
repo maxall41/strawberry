@@ -17,20 +17,14 @@ use strawberry_types::{
 use strawberry_types::ToolFrontend;
 
 pub struct DecomposerView {
-    pub command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-    pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub state: Arc<RwLock<DecomposerState>>,
-    pub backend_tool_indicies: Vec<u16>,
-    pub current_tool_index: Arc<RwLock<Option<u16>>>,
-    pub send_channels: Vec<flume::Sender<PipelineCommand>>,
-    pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
-    _cleanup_guard: crate::tools::CleanupGuard,
-    focus_handle: Option<FocusHandle>,
+    pub base: crate::tools::base::ToolBase,
 }
 
 impl Focusable for DecomposerView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle
+        self.base
+            .focus_handle
             .clone()
             .expect("focus_handle should be initialized before use")
     }
@@ -38,32 +32,29 @@ impl Focusable for DecomposerView {
 
 impl DecomposerView {
     pub fn new(
-        command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
+        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> Self {
         Self {
-            command_receiver,
-            command_sender: command_sender.clone(),
             state: Arc::new(RwLock::new(DecomposerState::default())),
-            backend_tool_indicies: vec![],
-            current_tool_index: Arc::new(RwLock::new(None)),
-            send_channels: vec![],
-            receive_channel: None,
-            _cleanup_guard: crate::tools::CleanupGuard::new(
-                command_sender,
+            base: crate::tools::base::ToolBase::new(
+                command_sender.clone(),
                 strawberry_types::BackendToolType::Decomposer,
             ),
-            focus_handle: None,
         }
     }
 
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver);
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::Decomposer,
-            sender,
-        )) {
+        self.base.receive_channel = Some(receiver);
+        if let Err(e) = self
+            .base
+            .command_sender
+            .send(PipelineCommand::DiscoverBackend(
+                BackendToolType::Decomposer,
+                sender,
+            ))
+        {
             eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
@@ -74,6 +65,7 @@ impl DecomposerView {
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.clone();
         let channel_receiver_ref = self
+            .base
             .receive_channel
             .clone()
             .expect("Should never fire: Created during init");
@@ -102,18 +94,19 @@ impl DecomposerView {
                         FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
                             println!("Received backend tools | Frontend Decomposer");
                             if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                if let Ok(mut current_tool_index) =
+                                    this.base.current_tool_index.write()
                                 {
                                     *current_tool_index = backend_ids.first().copied();
                                 } else {
                                     eprintln!("Failed to acquire write lock on current tool index");
                                     return;
                                 }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
+                                this.base.backend_tool_indicies = backend_ids;
+                                this.base.send_channels = senders;
 
                                 // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.first() {
+                                if let Some(sender) = this.base.send_channels.first() {
                                     if let Err(e) = sender.send(PipelineCommand::RequestState()) {
                                         eprintln!("Failed to request initial state: {e}");
                                     }
@@ -132,44 +125,20 @@ impl DecomposerView {
         .detach();
     }
 
-    fn get_current_tool_index(&self) -> Option<u16> {
-        match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => Some(index),
-                None => {
-                    eprintln!("No current tool index available");
-                    None
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                None
-            }
-        }
-    }
-
     fn toggle_layer(
         &mut self,
         current_value: bool,
         layer_index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
     ) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::DecomposerMessage(DecomposerMessage::ToggleVisibility(
-                    !current_value,
-                    layer_index as u16,
-                )),
-            )) {
-                eprintln!("Failed to send toggle layer command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::DecomposerMessage(DecomposerMessage::ToggleVisibility(
+                !current_value,
+                layer_index as u16,
+            )),
+        )) {
+            eprintln!("Failed to send toggle layer command: {e}");
         }
     }
 
@@ -179,18 +148,10 @@ impl DecomposerView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::ToggleActive(!current_value),
-            )) {
-                eprintln!("Failed to send toggle enabled command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::ToggleActive(!current_value),
+        )) {
+            eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
@@ -307,15 +268,6 @@ impl DecomposerView {
         self.toggle_layer_by_index(8, window, cx);
     }
 
-    // Header component
-    fn render_header(&self) -> impl IntoElement {
-        div()
-            .text_xl()
-            .font_weight(gpui::FontWeight::BOLD)
-            .mb_4()
-            .child("Decomposer")
-    }
-
     // Status component showing enabled/disabled state
     fn render_status(&self, state: &DecomposerState, cx: &mut Context<Self>) -> impl IntoElement {
         let is_enabled = state.is_enabled;
@@ -412,7 +364,7 @@ impl Render for DecomposerView {
         };
 
         div()
-            .track_focus(&self.focus_handle(cx))
+            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
             .flex()
             .flex_col()
             .gap_3()
@@ -447,6 +399,8 @@ impl Render for DecomposerView {
     }
 }
 
+impl_tool_view_basics!(DecomposerView, "Decomposer");
+
 impl ToolFrontend for DecomposerView {
     fn get_window_options(&self) -> WindowOptions {
         WindowOptions {
@@ -467,12 +421,16 @@ impl ToolFrontend for DecomposerView {
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver);
-        self.focus_handle = Some(cx.focus_handle());
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::Decomposer,
-            sender,
-        )) {
+        self.base.receive_channel = Some(receiver);
+        self.base.focus_handle = Some(cx.focus_handle());
+        if let Err(e) = self
+            .base
+            .command_sender
+            .send(PipelineCommand::DiscoverBackend(
+                BackendToolType::Decomposer,
+                sender,
+            ))
+        {
             eprintln!("Failed to send backend discovery request: {e}");
             return;
         }

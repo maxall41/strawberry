@@ -29,6 +29,9 @@
 - [X] Color bar got removed from counter GUI somehow?
 - [X] Nerve tracer w/A*
 - [ ] If toast is error make time bar red and if sucessfull make it green
+- [ ] Refactor frontend message handling
+- [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
+
 
 - [X] If tokio backend panics handle it properly
 - [X] Refuses to load weka probability map file (the one that is 100+MB) with error: Failed to process pipeline after loading images: No input images provided
@@ -48,7 +51,6 @@
 - [ ] Turning on and off compositor does not actually enable/disable on backend
 - [ ] Reset counter on new image load: Loading a new image for the second time and then loading the second set of counts causes a panic.
 - [X] Update GPUI version
-- [ ] Cleanup frontend code to reduce boilerplate/repeition. Use composition and maybe macros (see backend)
 
 ## Alpha 0.2 (Rebar)
 - [ ] Make UI nice
@@ -56,7 +58,6 @@
 - [ ] Replace Arc with Rc's. Most of them can be replaced with Rc's as they single threaded.
 - [ ] Command pallete
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
-- [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
 - [ ] Add mode toggle to "Threshold" that in addition to manual thresholding it supports Otsu thresholding, Local thresholding, and maybe one or two other thresholding methods.
 - [ ] Error toasts for frontend errors
 - [ ] Fill Holes Morphology Option

@@ -20,22 +20,16 @@ use strawberry_types::{
 use strawberry_types::ToolFrontend;
 
 pub struct CounterView {
-    pub command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-    pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub state: Arc<RwLock<CounterState>>,
-    pub backend_tool_indicies: Vec<u16>,
-    pub current_tool_index: Arc<RwLock<Option<u16>>>,
-    pub send_channels: Vec<flume::Sender<PipelineCommand>>,
-    pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     pub next_count_type_id: Arc<RwLock<u16>>,
     pub last_directory: Arc<RwLock<Option<PathBuf>>>,
-    _cleanup_guard: crate::tools::CleanupGuard,
-    focus_handle: Option<FocusHandle>,
+    pub base: crate::tools::base::ToolBase,
 }
 
 impl Focusable for CounterView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle
+        self.base
+            .focus_handle
             .clone()
             .expect("focus_handle should be initialized before use")
     }
@@ -43,24 +37,17 @@ impl Focusable for CounterView {
 
 impl CounterView {
     pub fn new(
-        command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
+        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> Self {
         Self {
-            command_receiver,
-            command_sender: command_sender.clone(),
             state: Arc::new(RwLock::new(CounterState::default())),
-            backend_tool_indicies: vec![],
-            current_tool_index: Arc::new(RwLock::new(None)),
-            send_channels: vec![],
-            receive_channel: None,
             next_count_type_id: Arc::new(RwLock::new(0)),
             last_directory: Arc::new(RwLock::new(None)),
-            _cleanup_guard: crate::tools::CleanupGuard::new(
-                command_sender,
+            base: crate::tools::base::ToolBase::new(
+                command_sender.clone(),
                 strawberry_types::BackendToolType::Counter,
             ),
-            focus_handle: None,
         }
     }
 
@@ -68,6 +55,7 @@ impl CounterView {
         let state = self.state.clone();
         let next_count_type_id = self.next_count_type_id.clone();
         let channel_receiver_ref = self
+            .base
             .receive_channel
             .clone()
             .expect("Should never fire: Created during init");
@@ -106,18 +94,19 @@ impl CounterView {
                         FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
                             println!("Received backend tools | Frontend Counter");
                             if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                if let Ok(mut current_tool_index) =
+                                    this.base.current_tool_index.write()
                                 {
                                     *current_tool_index = backend_ids.first().copied();
                                 } else {
                                     eprintln!("Failed to acquire write lock on current tool index");
                                     return;
                                 }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
+                                this.base.backend_tool_indicies = backend_ids;
+                                this.base.send_channels = senders;
 
                                 // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.first() {
+                                if let Some(sender) = this.base.send_channels.first() {
                                     if let Err(e) = sender.send(PipelineCommand::RequestState()) {
                                         eprintln!("Failed to request initial state: {e}");
                                     }
@@ -136,24 +125,8 @@ impl CounterView {
         .detach();
     }
 
-    fn get_current_tool_index(&self) -> Option<u16> {
-        match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => Some(index),
-                None => {
-                    eprintln!("No current tool index available");
-                    None
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                None
-            }
-        }
-    }
-
     fn save_counts(&self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
+        let Some(current_tool_index) = self.base.get_current_tool_index() else {
             return;
         };
 
@@ -173,7 +146,7 @@ impl CounterView {
 
             if let Some(file) = file {
                 if let Err(e) = this.update(cx, |this, cx| {
-                    if let Some(sender) = this.send_channels.get(current_tool_index as usize) {
+                    if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::CountMessage(CountMessage::SaveCounts(file)),
                         )) {
@@ -191,7 +164,7 @@ impl CounterView {
     }
 
     fn load_counts(&self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
+        let Some(current_tool_index) = self.base.get_current_tool_index() else {
             return;
         };
 
@@ -218,7 +191,7 @@ impl CounterView {
                 }
 
                 if let Err(e) = this.update(cx, |this, cx| {
-                    if let Some(sender) = this.send_channels.get(current_tool_index as usize) {
+                    if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::CountMessage(CountMessage::LoadCounts(file)),
                         )) {
@@ -244,7 +217,7 @@ impl CounterView {
             }
         };
 
-        let current_tool_index = match self.current_tool_index.read() {
+        let current_tool_index = match self.base.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
                 None => {
@@ -258,7 +231,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::NewCountType(new_id)),
             )) {
@@ -282,7 +255,7 @@ impl CounterView {
     }
 
     fn delete_count_type(&mut self, count_type_id: u16) {
-        let current_tool_index = match self.current_tool_index.read() {
+        let current_tool_index = match self.base.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
                 None => {
@@ -296,7 +269,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::DeleteCountType(count_type_id)),
             )) {
@@ -309,7 +282,7 @@ impl CounterView {
         // Clear selection if this was the selected type
         if let Ok(state) = self.state.read() {
             if state.active_count_type == Some(count_type_id) {
-                if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+                if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
                     // Set active count type to None by finding another type or clearing
                     let remaining_types: Vec<u16> = state
                         .manual_counts
@@ -339,7 +312,7 @@ impl CounterView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let current_tool_index = match self.current_tool_index.read() {
+        let current_tool_index = match self.base.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
                 None => {
@@ -353,7 +326,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::SetActiveCountType(
                     count_type_id,
@@ -367,7 +340,7 @@ impl CounterView {
     }
 
     fn copy_to_manual(&self) {
-        let current_tool_index = match self.get_current_tool_index() {
+        let current_tool_index = match self.base.get_current_tool_index() {
             Some(index) => index,
             None => {
                 eprintln!("No current tool index available for copy to manual");
@@ -375,7 +348,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::CopyToManual),
             )) {
@@ -387,7 +360,7 @@ impl CounterView {
     }
 
     fn toggle_count_type_visibility(&self, count_type_id: u16) {
-        let current_tool_index = match self.get_current_tool_index() {
+        let current_tool_index = match self.base.get_current_tool_index() {
             Some(index) => index,
             None => {
                 eprintln!("No current tool index available for toggle count type visibility");
@@ -395,7 +368,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::ToggleCountTypeVisibility(
                     count_type_id,
@@ -414,7 +387,7 @@ impl CounterView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let current_tool_index = match self.current_tool_index.read() {
+        let current_tool_index = match self.base.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
                 None => {
@@ -428,7 +401,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::SetActiveTool(tool)),
             )) {
@@ -445,7 +418,7 @@ impl CounterView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let current_tool_index = match self.current_tool_index.read() {
+        let current_tool_index = match self.base.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
                 None => {
@@ -459,7 +432,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ToggleActive(!current_value),
             )) {
@@ -717,7 +690,7 @@ impl CounterView {
     }
 
     fn toggle_mode(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        let current_tool_index = match self.current_tool_index.read() {
+        let current_tool_index = match self.base.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
                 None => {
@@ -742,7 +715,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::SetMode(new_mode)),
             )) {
@@ -751,15 +724,6 @@ impl CounterView {
         } else {
             eprintln!("Invalid tool index: {current_tool_index}");
         }
-    }
-
-    // Header component
-    fn render_header(&self) -> impl IntoElement {
-        div()
-            .text_xl()
-            .font_weight(gpui::FontWeight::BOLD)
-            .mb_4()
-            .child("Counter")
     }
 
     // Subheader component
@@ -1397,7 +1361,7 @@ impl CounterView {
     }
 
     fn toggle_filter(&mut self, filter_index: u16, enabled: bool) {
-        let current_tool_index = match self.current_tool_index.read() {
+        let current_tool_index = match self.base.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
                 None => {
@@ -1411,7 +1375,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::ToggleFilter(
                     filter_index,
@@ -1426,7 +1390,7 @@ impl CounterView {
     }
 
     fn adjust_size_filter(&mut self, delta: i16) {
-        let current_tool_index = match self.current_tool_index.read() {
+        let current_tool_index = match self.base.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
                 None => {
@@ -1440,7 +1404,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             let current_value = {
                 let state = self
                     .state
@@ -1620,7 +1584,7 @@ impl CounterView {
 
     // Review functionality methods - now sends messages to backend
     fn send_review_navigate_previous(&self) {
-        let current_tool_index = match self.current_tool_index.read() {
+        let current_tool_index = match self.base.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
                 None => {
@@ -1634,7 +1598,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::ReviewNavigatePrevious),
             )) {
@@ -1646,7 +1610,7 @@ impl CounterView {
     }
 
     fn send_review_navigate_next(&self) {
-        let current_tool_index = match self.current_tool_index.read() {
+        let current_tool_index = match self.base.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
                 None => {
@@ -1660,7 +1624,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::ReviewNavigateNext),
             )) {
@@ -1672,7 +1636,7 @@ impl CounterView {
     }
 
     fn send_delete_current_count(&self) {
-        let current_tool_index = match self.current_tool_index.read() {
+        let current_tool_index = match self.base.current_tool_index.read() {
             Ok(guard) => match *guard {
                 Some(index) => index,
                 None => {
@@ -1686,7 +1650,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::DeleteCurrentCount),
             )) {
@@ -1822,6 +1786,8 @@ impl Render for CounterView {
     }
 }
 
+impl_tool_view_basics!(CounterView, "Counter");
+
 impl ToolFrontend for CounterView {
     fn get_window_options(&self) -> WindowOptions {
         WindowOptions {
@@ -1842,12 +1808,16 @@ impl ToolFrontend for CounterView {
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver.clone());
-        self.focus_handle = Some(cx.focus_handle());
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::Counter,
-            sender.clone(),
-        )) {
+        self.base.receive_channel = Some(receiver.clone());
+        self.base.focus_handle = Some(cx.focus_handle());
+        if let Err(e) = self
+            .base
+            .command_sender
+            .send(PipelineCommand::DiscoverBackend(
+                BackendToolType::Counter,
+                sender.clone(),
+            ))
+        {
             eprintln!("Failed to send backend discovery request: {e}");
             return;
         }

@@ -19,21 +19,15 @@ use strawberry_types::{
 use strawberry_types::ToolFrontend;
 
 pub struct NerveTracerView {
-    pub command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-    pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub state: Arc<RwLock<NerveTracerState>>,
-    pub backend_tool_indicies: Vec<u16>,
-    pub current_tool_index: Arc<RwLock<Option<u16>>>,
-    pub send_channels: Vec<flume::Sender<PipelineCommand>>,
-    pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     pub last_directory: Arc<RwLock<Option<PathBuf>>>,
-    _cleanup_guard: crate::tools::CleanupGuard,
-    focus_handle: Option<FocusHandle>,
+    pub base: crate::tools::base::ToolBase,
 }
 
 impl Focusable for NerveTracerView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle
+        self.base
+            .focus_handle
             .clone()
             .expect("focus_handle should be initialized before use")
     }
@@ -41,29 +35,23 @@ impl Focusable for NerveTracerView {
 
 impl NerveTracerView {
     pub fn new(
-        command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
+        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> Self {
         Self {
-            command_receiver,
-            command_sender: command_sender.clone(),
             state: Arc::new(RwLock::new(NerveTracerState::default())),
-            backend_tool_indicies: vec![],
-            current_tool_index: Arc::new(RwLock::new(None)),
-            send_channels: vec![],
-            receive_channel: None,
             last_directory: Arc::new(RwLock::new(None)),
-            _cleanup_guard: crate::tools::CleanupGuard::new(
-                command_sender,
+            base: crate::tools::base::ToolBase::new(
+                command_sender.clone(),
                 strawberry_types::BackendToolType::NerveTracer,
             ),
-            focus_handle: None,
         }
     }
 
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.clone();
         let channel_receiver_ref = self
+            .base
             .receive_channel
             .clone()
             .expect("Should never fire: Created during init");
@@ -92,18 +80,19 @@ impl NerveTracerView {
                         FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
                             println!("Received backend tools | Frontend NerveTracer");
                             if let Err(e) = this.update(cx, |this, cx| {
-                                if let Ok(mut current_tool_index) = this.current_tool_index.write()
+                                if let Ok(mut current_tool_index) =
+                                    this.base.current_tool_index.write()
                                 {
                                     *current_tool_index = backend_ids.first().copied();
                                 } else {
                                     eprintln!("Failed to acquire write lock on current tool index");
                                     return;
                                 }
-                                this.backend_tool_indicies = backend_ids;
-                                this.send_channels = senders;
+                                this.base.backend_tool_indicies = backend_ids;
+                                this.base.send_channels = senders;
 
                                 // Request initial state when backend is discovered
-                                if let Some(sender) = this.send_channels.first() {
+                                if let Some(sender) = this.base.send_channels.first() {
                                     if let Err(e) = sender.send(PipelineCommand::RequestState()) {
                                         eprintln!("Failed to request initial state: {e}");
                                     }
@@ -122,27 +111,7 @@ impl NerveTracerView {
         .detach();
     }
 
-    fn get_current_tool_index(&self) -> Option<u16> {
-        match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => Some(index),
-                None => {
-                    eprintln!("No current tool index available");
-                    None
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                None
-            }
-        }
-    }
-
     fn save_traces(&self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
         let last_directory = self.last_directory.clone();
 
         cx.spawn_in(_window, async move |this, cx| {
@@ -159,16 +128,12 @@ impl NerveTracerView {
 
             if let Some(file) = file {
                 if let Err(e) = this.update(cx, |this, cx| {
-                    if let Some(sender) = this.send_channels.get(current_tool_index as usize) {
-                        if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                            PipelineObjectMessage::NerveTracerMessage(
-                                NerveTracerMessage::SaveTraces(file),
-                            ),
-                        )) {
-                            eprintln!("Failed to send save traces command: {e}");
-                        }
-                    } else {
-                        eprintln!("Invalid tool index: {current_tool_index}");
+                    if let Err(e) = this.base.send_to_backend(PipelineCommand::PipelineObject(
+                        PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::SaveTraces(
+                            file,
+                        )),
+                    )) {
+                        eprintln!("Failed to send save traces command: {e}");
                     }
                 }) {
                     eprintln!("Failed to save traces: {e}");
@@ -179,10 +144,6 @@ impl NerveTracerView {
     }
 
     fn load_traces(&self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(current_tool_index) = self.get_current_tool_index() else {
-            return;
-        };
-
         let last_directory = self.last_directory.clone();
 
         cx.spawn_in(_window, async move |this, cx| {
@@ -206,16 +167,12 @@ impl NerveTracerView {
                 }
 
                 if let Err(e) = this.update(cx, |this, cx| {
-                    if let Some(sender) = this.send_channels.get(current_tool_index as usize) {
-                        if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                            PipelineObjectMessage::NerveTracerMessage(
-                                NerveTracerMessage::LoadTraces(file),
-                            ),
-                        )) {
-                            eprintln!("Failed to send load traces command: {e}");
-                        }
-                    } else {
-                        eprintln!("Invalid tool index: {current_tool_index}");
+                    if let Err(e) = this.base.send_to_backend(PipelineCommand::PipelineObject(
+                        PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::LoadTraces(
+                            file,
+                        )),
+                    )) {
+                        eprintln!("Failed to send load traces command: {e}");
                     }
                 }) {
                     eprintln!("Failed to load traces: {e}");
@@ -226,112 +183,40 @@ impl NerveTracerView {
     }
 
     fn commit_segments(&mut self) {
-        let current_tool_index = match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::NerveTracerMessage(
-                    NerveTracerMessage::CommitCurrentPathSegments(),
-                ),
-            )) {
-                eprintln!("Failed to send commit segments command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::NerveTracerMessage(
+                NerveTracerMessage::CommitCurrentPathSegments(),
+            ),
+        )) {
+            eprintln!("Failed to send commit segments command: {e}");
         }
     }
 
     fn delete_uncommitted_segment(&mut self, segment_id: usize) {
-        let current_tool_index = match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::NerveTracerMessage(
-                    NerveTracerMessage::DeleteUncomittedPathSegment(segment_id),
-                ),
-            )) {
-                eprintln!("Failed to send delete uncommitted segment command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::NerveTracerMessage(
+                NerveTracerMessage::DeleteUncomittedPathSegment(segment_id),
+            ),
+        )) {
+            eprintln!("Failed to send delete uncommitted segment command: {e}");
         }
     }
 
     fn delete_path(&mut self, path_id: usize) {
-        let current_tool_index = match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::DeletePath(path_id)),
-            )) {
-                eprintln!("Failed to send delete path command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::DeletePath(path_id)),
+        )) {
+            eprintln!("Failed to send delete path command: {e}");
         }
     }
 
     fn delete_path_segment(&mut self, path_id: usize, segment_id: usize) {
-        let current_tool_index = match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::NerveTracerMessage(
-                    NerveTracerMessage::DeletePathSegmentInCommitedPath(path_id, segment_id),
-                ),
-            )) {
-                eprintln!("Failed to send delete path segment command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::NerveTracerMessage(
+                NerveTracerMessage::DeletePathSegmentInCommitedPath(path_id, segment_id),
+            ),
+        )) {
+            eprintln!("Failed to send delete path segment command: {e}");
         }
     }
 
@@ -341,56 +226,20 @@ impl NerveTracerView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let current_tool_index = match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::ToggleActive(!current_value),
-            )) {
-                eprintln!("Failed to send toggle enabled command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::ToggleActive(!current_value),
+        )) {
+            eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
     fn set_selected_image(&mut self, image_index: usize) {
-        let current_tool_index = match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::NerveTracerMessage(
-                    NerveTracerMessage::SetSelectedImageIndex(image_index),
-                ),
-            )) {
-                eprintln!("Failed to send set selected image command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::SetSelectedImageIndex(
+                image_index,
+            )),
+        )) {
+            eprintln!("Failed to send set selected image command: {e}");
         }
     }
 
@@ -436,16 +285,6 @@ impl NerveTracerView {
     ) {
         self.load_traces(window, cx);
     }
-
-    // Header component
-    fn render_header(&self) -> impl IntoElement {
-        div()
-            .text_xl()
-            .font_weight(gpui::FontWeight::BOLD)
-            .mb_4()
-            .child("Nerve Tracer")
-    }
-
     // Status component showing enabled/disabled state
     fn render_status(&self, state: &NerveTracerState, cx: &mut Context<Self>) -> impl IntoElement {
         let is_enabled = state.is_enabled;
@@ -931,7 +770,7 @@ impl Render for NerveTracerView {
         };
 
         div()
-            .track_focus(&self.focus_handle(cx))
+            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
             .flex()
             .flex_col()
             .gap_3()
@@ -964,6 +803,8 @@ impl Render for NerveTracerView {
     }
 }
 
+impl_tool_view_basics!(NerveTracerView, "Nerve Tracer");
+
 impl ToolFrontend for NerveTracerView {
     fn get_window_options(&self) -> WindowOptions {
         WindowOptions {
@@ -984,12 +825,16 @@ impl ToolFrontend for NerveTracerView {
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (sender, receiver) = flume::unbounded();
-        self.receive_channel = Some(receiver.clone());
-        self.focus_handle = Some(cx.focus_handle());
-        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
-            BackendToolType::NerveTracer,
-            sender.clone(),
-        )) {
+        self.base.receive_channel = Some(receiver);
+        self.base.focus_handle = Some(cx.focus_handle());
+        if let Err(e) = self
+            .base
+            .command_sender
+            .send(PipelineCommand::DiscoverBackend(
+                BackendToolType::NerveTracer,
+                sender,
+            ))
+        {
             eprintln!("Failed to send backend discovery request: {e}");
             return;
         }
