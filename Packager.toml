@@ -1,0 +1,2 @@
+[package.metadata.packager]
+before-packaging-command = "cargo build --release"

@@ -11,7 +11,7 @@ use gpui::{
 use rfd::FileDialog;
 
 use crate::gui::{icon::Icon, value_control::ValueControl, ToggleButton};
-use crate::tools::{FrontendMessageHandler, spawn_message_processor};
+use crate::tools::{spawn_message_processor, FrontendMessageHandler};
 use strawberry_types::{
     consts::{image_rgba_to_gpui_rgba, CIRCLE_COLORS},
     BackendToolType, CountData, CountMessage, CounterMode, CounterState, CounterTool,
@@ -24,6 +24,7 @@ pub struct CounterView {
     pub state: Arc<RwLock<CounterState>>,
     pub next_count_type_id: Arc<RwLock<u16>>,
     pub last_directory: Arc<RwLock<Option<PathBuf>>>,
+    pub image_directory: Arc<RwLock<Option<PathBuf>>>,
     pub base: crate::tools::base::ToolBase,
 }
 
@@ -40,11 +41,13 @@ impl CounterView {
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        image_directory: Arc<RwLock<Option<PathBuf>>>,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(CounterState::default())),
             next_count_type_id: Arc::new(RwLock::new(0)),
             last_directory: Arc::new(RwLock::new(None)),
+            image_directory,
             base: crate::tools::base::ToolBase::new(
                 command_sender.clone(),
                 strawberry_types::BackendToolType::Counter,
@@ -62,13 +65,27 @@ impl CounterView {
         };
 
         let last_directory = self.last_directory.clone();
+        let image_directory = self.image_directory.clone();
 
         cx.spawn_in(_window, async move |this, cx| {
-            let default_dir = last_directory
+            // let default_dir = last_directory
+            //     .read()
+            //     .ok()
+            //     .and_then(|guard| guard.as_ref().map(|p| p.to_string_lossy().to_string()))
+            //     .or_else(|| {
+            //         image_directory
+            //             .read()
+            //             .ok()
+            //             .and_then(|guard| guard.as_ref().map(|p| p.to_string_lossy().to_string()))
+            //     })
+            //     .unwrap_or_else(|| "~/".to_string());
+            let default_dir = image_directory
                 .read()
                 .ok()
                 .and_then(|guard| guard.as_ref().map(|p| p.to_string_lossy().to_string()))
                 .unwrap_or_else(|| "~/".to_string());
+
+            println!("default_dir {:?}", default_dir);
 
             let file = FileDialog::new()
                 .add_filter("xml", &["xml"])
@@ -100,12 +117,19 @@ impl CounterView {
         };
 
         let last_directory = self.last_directory.clone();
+        let image_directory = self.image_directory.clone();
 
         cx.spawn_in(_window, async move |this, cx| {
             let default_dir = last_directory
                 .read()
                 .ok()
                 .and_then(|guard| guard.as_ref().map(|p| p.to_string_lossy().to_string()))
+                .or_else(|| {
+                    image_directory
+                        .read()
+                        .ok()
+                        .and_then(|guard| guard.as_ref().map(|p| p.to_string_lossy().to_string()))
+                })
                 .unwrap_or_else(|| "~/".to_string());
 
             let file = FileDialog::new()
@@ -1075,7 +1099,6 @@ impl CounterView {
                              _event: &MouseDownEvent,
                              _window: &mut Window,
                              _cx: &mut Context<CounterView>| {
-                                // TODO: Implement load functionality
                                 _this.load_counts(_window, _cx);
                             },
                         ),
