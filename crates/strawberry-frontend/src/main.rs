@@ -81,6 +81,7 @@ struct PrimaryViewer {
     snap_target: Option<(f32, f32)>,
     toasts: Vec<Entity<FeedbackModal>>,
     last_viewport_size: Option<gpui::Size<Pixels>>,
+    image_directory: Arc<RwLock<Option<PathBuf>>>,
 }
 
 impl PrimaryViewer {
@@ -184,6 +185,7 @@ impl PrimaryViewer {
 
     fn handle_open_file(&mut self, _: &OpenFile, _window: &mut Window, cx: &mut Context<Self>) {
         let sender_p = self.command_sender.clone();
+        let image_dir = self.image_directory.clone();
 
         cx.spawn_in(_window, async move |_, _| {
             let files = FileDialog::new()
@@ -192,6 +194,14 @@ impl PrimaryViewer {
                 .pick_files();
 
             if let Some(files) = files {
+                if let Some(first_file) = files.first() {
+                    if let Some(parent) = first_file.parent() {
+                        if let Ok(mut dir) = image_dir.write() {
+                            *dir = Some(parent.to_path_buf());
+                        }
+                    }
+                }
+
                 if let Err(e) = sender_p.send(PipelineCommand::Load(files)) {
                     eprintln!("Failed to send loaded images to pipeline: {e}");
                 }
@@ -691,6 +701,8 @@ async fn main() -> Result<()> {
         }
     });
 
+    let image_directory: Arc<RwLock<Option<PathBuf>>> = Arc::new(RwLock::new(None));
+
     Application::new()
         .with_assets(Assets {
             base: manifest_dir.join("examples"),
@@ -699,7 +711,28 @@ async fn main() -> Result<()> {
             // Register all tool windows
             create_tool_window::<CompositorView, CompositorSettings>(cx, view_sender.clone(), view_recv.resubscribe(), CompositorView::new);
             create_tool_window::<ContrastView, ContrastSettings>(cx, view_sender.clone(), view_recv.resubscribe(), ContrastView::new);
-            create_tool_window::<CounterView, CounterSettings>(cx, view_sender.clone(), view_recv.resubscribe(), CounterView::new);
+
+            // CounterView needs image_directory for file dialogs
+            {
+                let counter_sender = view_sender.clone();
+                let counter_recv = view_recv.resubscribe();
+                let counter_image_dir = image_directory.clone();
+                cx.on_action(move |_: &CounterSettings, cx| {
+                    let mut tool = CounterView::new(
+                        counter_recv.resubscribe(),
+                        counter_sender.clone(),
+                        counter_image_dir.clone(),
+                    );
+                    if let Err(e) = cx.open_window(tool.get_window_options(), |window, cx| {
+                        cx.new(|cx| {
+                            tool.initialize(window, cx);
+                            tool
+                        })
+                    }) {
+                        eprintln!("Failed to open CounterView window: {e}");
+                    }
+                });
+            }
             create_tool_window::<GaussianBlurView, GaussianBlurSettings>(cx, view_sender.clone(), view_recv.resubscribe(), GaussianBlurView::new);
             create_tool_window::<GrayscaleView, GrayscaleSettings>(cx, view_sender.clone(), view_recv.resubscribe(), GrayscaleView::new);
             create_tool_window::<ThresholdView, ThresholdSettings>(cx, view_sender.clone(), view_recv.resubscribe(), ThresholdView::new);
@@ -790,6 +823,7 @@ async fn main() -> Result<()> {
             let img_frames = vec![frame];
             let img_data = Arc::new(RenderImage::new(img_frames));
 
+            let primary_viewer_image_dir = image_directory.clone();
             if let Err(e) = cx.open_window(window_options, |window, cx| {
                 let mut raw_primary_viewer = PrimaryViewer {
                     focus_handle: cx.focus_handle(),
@@ -807,6 +841,7 @@ async fn main() -> Result<()> {
                     snap_target: None,
                     toasts: vec![],
                     last_viewport_size: None,
+                    image_directory: primary_viewer_image_dir,
                 };
 
                 let viewer = cx.new(|cx| {
