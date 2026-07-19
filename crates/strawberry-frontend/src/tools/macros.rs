@@ -11,9 +11,12 @@ macro_rules! impl_tool_view_basics {
             fn render_header(&self) -> impl gpui::IntoElement {
                 use gpui::prelude::*;
                 gpui::div()
-                    .text_xl()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .mb_4()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .pb_2()
+                    .mb_1()
+                    .border_b_1()
+                    .border_color($crate::gui::theme::BORDER_MUTED)
                     .child($tool_name)
             }
         }

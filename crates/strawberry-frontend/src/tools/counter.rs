@@ -1,10 +1,11 @@
+use crate::gui::theme;
 // Implements UI for counter tool
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, ElementId, FocusHandle,
+    actions, div, prelude::*, px, size, App, Bounds, Context, ElementId, FocusHandle,
     Focusable, KeyBinding, MouseDownEvent, Point, Rgba, SharedString, TitlebarOptions, Window,
     WindowBounds, WindowOptions,
 };
@@ -720,8 +721,8 @@ impl CounterView {
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .bg(rgb(0x444444))
-                    .hover(|style| style.bg(rgb(0x555555)))
+                    .bg(theme::CONTROL)
+                    .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
                     .child(match state.mode {
                         CounterMode::Manual => "Manual",
                         CounterMode::Auto => "Auto",
@@ -757,7 +758,7 @@ impl CounterView {
             .items_center()
             .gap_2()
             .mb_1()
-            .bg(rgb(0x444444))
+            .bg(theme::CONTROL)
             .rounded_md()
             .child(div().bg(color).w_2().h_full().rounded_l_md())
             .child(
@@ -766,14 +767,14 @@ impl CounterView {
                     .m_2()
                     .w_5()
                     .h_5()
-                    .bg(rgb(0xaa0000))
-                    .hover(|style| style.bg(rgb(0xbb1111)))
+                    .bg(theme::DANGER)
+                    .cursor_pointer().hover(|style| style.bg(theme::DANGER_HOVER))
                     .rounded_sm()
                     .flex()
                     .items_center()
                     .justify_center()
                     .text_xs()
-                    .text_color(rgb(0xffffff))
+                    .text_color(theme::TEXT)
                     .child("×")
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -840,8 +841,8 @@ impl CounterView {
                         })
                     })
                     .rounded_full()
-                    .bg(if is_selected { color } else { rgb(0x888888) })
-                    .when(!is_selected, |el| el.hover(|style| style.bg(rgb(0xaaaaaa))))
+                    .bg(if is_selected { color } else { theme::CONTROL })
+                    .when(!is_selected, |el| el.cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER)))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
@@ -903,8 +904,8 @@ impl CounterView {
             .w_full()
             .p_2()
             .mt_2()
-            .bg(rgb(0x666666))
-            .hover(|style| style.bg(rgb(0x777777)))
+            .bg(theme::CONTROL)
+            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .flex()
             .items_center()
@@ -948,15 +949,15 @@ impl CounterView {
             .flex_1()
             .p_2()
             .bg(if is_active {
-                rgb(0x0066cc)
+                theme::ACCENT
             } else {
-                rgb(0x444444)
+                theme::CONTROL
             })
             .hover(|style| {
                 style.bg(if is_active {
-                    rgb(0x0077dd)
+                    theme::ACCENT_HOVER
                 } else {
-                    rgb(0x555555)
+                    theme::CONTROL
                 })
             })
             .text_center()
@@ -1009,7 +1010,7 @@ impl CounterView {
 
         div()
             .flex()
-            .bg(rgb(0x333333))
+            .bg(theme::SURFACE)
             .rounded_md()
             .overflow_hidden()
             .mb_4()
@@ -1052,8 +1053,8 @@ impl CounterView {
                 div()
                     .px_4()
                     .py_2()
-                    .bg(rgb(0x006600))
-                    .hover(|style| style.bg(rgb(0x007700)))
+                    .bg(theme::SUCCESS)
+                    .cursor_pointer().hover(|style| style.bg(theme::SUCCESS_HOVER))
                     .rounded_md()
                     .text_sm()
                     .child("Save")
@@ -1080,8 +1081,8 @@ impl CounterView {
                 div()
                     .px_4()
                     .py_2()
-                    .bg(rgb(0x0066cc))
-                    .hover(|style| style.bg(rgb(0x0077dd)))
+                    .bg(theme::ACCENT)
+                    .cursor_pointer().hover(|style| style.bg(theme::ACCENT_HOVER))
                     .rounded_md()
                     .text_sm()
                     .child("Load")
@@ -1150,7 +1151,7 @@ impl CounterView {
                             .px_2()
                             .py_1()
                             .rounded_md()
-                            .bg(rgb(0x444444))
+                            .bg(theme::CONTROL)
                             .child(format!("{}", state.auto_counts.len())),
                     ),
             )
@@ -1168,7 +1169,7 @@ impl CounterView {
             .gap_3()
             .p_3()
             .rounded_md()
-            .bg(rgb(0x2a2a2a))
+            .bg(theme::SURFACE_DEEP)
             .child(
                 div()
                     .font_weight(gpui::FontWeight::BOLD)
@@ -1179,7 +1180,7 @@ impl CounterView {
                 el.child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0xaaaaaa))
+                        .text_color(theme::TEXT_MUTED)
                         .child("No filters available"),
                 )
             })
@@ -1216,22 +1217,22 @@ impl CounterView {
             .p_3()
             .rounded_md()
             .bg(if is_enabled {
-                rgb(0x404040)
+                theme::SURFACE_ALT
             } else {
-                rgb(0x333333)
+                theme::SURFACE
             })
             .hover(|style| {
                 style.bg(if is_enabled {
-                    rgb(0x505050)
+                    theme::WINDOW_BG
                 } else {
-                    rgb(0x404040)
+                    theme::SURFACE_ALT
                 })
             })
             .border_1()
             .border_color(if is_enabled {
-                rgb(0x00aa00)
+                theme::SUCCESS
             } else {
-                rgb(0x555555)
+                theme::CONTROL
             })
             .child(
                 div()
@@ -1256,9 +1257,9 @@ impl CounterView {
                                     .text_xs()
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .bg(if is_enabled {
-                                        rgb(0x00aa00)
+                                        theme::SUCCESS
                                     } else {
-                                        rgb(0xaa0000)
+                                        theme::DANGER
                                     })
                                     .child(if is_enabled { "ACTIVE" } else { "DISABLED" }),
                             ),
@@ -1266,7 +1267,7 @@ impl CounterView {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(0xaaaaaa))
+                            .text_color(theme::TEXT_MUTED)
                             .child("Click to toggle"),
                     )
                     .on_mouse_down(
@@ -1308,7 +1309,7 @@ impl CounterView {
                         .gap_2()
                         .pt_2()
                         .border_t_1()
-                        .border_color(rgb(0x555555))
+                        .border_color(theme::CONTROL)
                         .child(control),
                 )
             })
@@ -1400,7 +1401,7 @@ impl CounterView {
         };
 
         if review_counts.is_empty() {
-            return div().p_3().bg(rgb(0x333333)).rounded_md().child(
+            return div().p_3().bg(theme::SURFACE).rounded_md().child(
                 div()
                     .text_center()
                     .text_sm()
@@ -1413,7 +1414,7 @@ impl CounterView {
             .flex_col()
             .gap_2()
             .p_3()
-            .bg(rgb(0x333333))
+            .bg(theme::SURFACE)
             .rounded_md()
             .child(
                 div()
@@ -1441,8 +1442,8 @@ impl CounterView {
                             .id("prev-count")
                             .px_3()
                             .py_1()
-                            .bg(rgb(0x666666))
-                            .hover(|style| style.bg(rgb(0x777777)))
+                            .bg(theme::CONTROL)
+                            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
                             .rounded_md()
                             .text_sm()
                             .child("← Prev")
@@ -1470,8 +1471,8 @@ impl CounterView {
                             .id("next-count")
                             .px_3()
                             .py_1()
-                            .bg(rgb(0x666666))
-                            .hover(|style| style.bg(rgb(0x777777)))
+                            .bg(theme::CONTROL)
+                            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
                             .rounded_md()
                             .text_sm()
                             .child("Next →")
@@ -1498,8 +1499,8 @@ impl CounterView {
                         div()
                             .px_3()
                             .py_1()
-                            .bg(rgb(0xaa3333))
-                            .hover(|style| style.bg(rgb(0xbb4444)))
+                            .bg(theme::DANGER_HOVER)
+                            .hover(|style| style.bg(theme::DANGER_HOVER))
                             .rounded_md()
                             .text_sm()
                             .child("Delete")
@@ -1685,11 +1686,12 @@ impl Render for CounterView {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .bg(rgb(0x505050))
+                    .bg(theme::WINDOW_BG)
                     .size_full()
+                    .text_sm()
                     .p_4()
                     .shadow_lg()
-                    .text_color(rgb(0xffffff))
+                    .text_color(theme::TEXT)
                     .child("Error: Unable to read counter state");
             }
         };
@@ -1699,11 +1701,12 @@ impl Render for CounterView {
             .flex()
             .flex_col()
             .gap_3()
-            .bg(rgb(0x505050))
+            .bg(theme::WINDOW_BG)
             .size_full()
+            .text_sm()
             .p_4()
             .shadow_lg()
-            .text_color(rgb(0xffffff))
+            .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
                     move |this: &mut CounterView,
@@ -1752,8 +1755,8 @@ impl Render for CounterView {
                             div()
                                 .px_4()
                                 .py_2()
-                                .bg(rgb(0x0066cc))
-                                .hover(|style| style.bg(rgb(0x0077dd)))
+                                .bg(theme::ACCENT)
+                                .cursor_pointer().hover(|style| style.bg(theme::ACCENT_HOVER))
                                 .rounded_md()
                                 .text_sm()
                                 .child("Copy to Manual")

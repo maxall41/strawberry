@@ -1,4 +1,6 @@
-use gpui::{div, prelude::*, px, rgb, svg, IntoElement, Rgba, SharedString};
+use gpui::{div, prelude::*, px, svg, IntoElement, Rgba, SharedString};
+
+use super::theme;
 
 pub struct Icon {
     path: SharedString,
@@ -11,7 +13,7 @@ impl Icon {
         Self {
             path: path.into(),
             size: 16f32,
-            color: rgb(0xffffff),
+            color: theme::TEXT,
         }
     }
 

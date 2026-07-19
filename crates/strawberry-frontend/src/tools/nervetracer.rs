@@ -1,10 +1,11 @@
+use crate::gui::theme;
 // Implements UI for nerve tracer tool
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, FocusHandle, Focusable,
+    actions, div, prelude::*, px, size, App, Bounds, Context, FocusHandle, Focusable,
     KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
     WindowOptions,
 };
@@ -275,15 +276,15 @@ impl NerveTracerView {
                             .px_3()
                             .py_1()
                             .bg(if is_selected {
-                                rgb(0x0066cc)
+                                theme::ACCENT
                             } else {
-                                rgb(0x444444)
+                                theme::CONTROL
                             })
                             .hover(|style| {
                                 style.bg(if is_selected {
-                                    rgb(0x0077dd)
+                                    theme::ACCENT_HOVER
                                 } else {
-                                    rgb(0x555555)
+                                    theme::CONTROL
                                 })
                             })
                             .rounded_md()
@@ -329,7 +330,7 @@ impl NerveTracerView {
                     .flex_col()
                     .gap_1()
                     .p_3()
-                    .bg(rgb(0x333333))
+                    .bg(theme::SURFACE)
                     .rounded_md()
                     .h(px(150.))
                     .overflow_scroll()
@@ -337,7 +338,7 @@ impl NerveTracerView {
                         el.child(
                             div()
                                 .text_sm()
-                                .text_color(rgb(0xaaaaaa))
+                                .text_color(theme::TEXT_MUTED)
                                 .child("No segments yet. Click on the image to create segments."),
                         )
                     })
@@ -367,8 +368,8 @@ impl NerveTracerView {
             .items_center()
             .justify_between()
             .p_2()
-            .bg(rgb(0x444444))
-            .hover(|style| style.bg(rgb(0x555555)))
+            .bg(theme::CONTROL)
+            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .child(div().flex_1().child(format!(
                 "Segment {:03} ({} points)",
@@ -379,14 +380,14 @@ impl NerveTracerView {
                 div()
                     .w_6()
                     .h_6()
-                    .bg(rgb(0xaa0000))
-                    .hover(|style| style.bg(rgb(0xbb1111)))
+                    .bg(theme::DANGER)
+                    .cursor_pointer().hover(|style| style.bg(theme::DANGER_HOVER))
                     .rounded_sm()
                     .flex()
                     .items_center()
                     .justify_center()
                     .text_lg()
-                    .text_color(rgb(0xffffff))
+                    .text_color(theme::TEXT)
                     .child("×")
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -416,8 +417,8 @@ impl NerveTracerView {
                 .px_4()
                 .py_2()
                 .my_2()
-                .bg(rgb(0x0066cc))
-                .hover(|style| style.bg(rgb(0x0077dd)))
+                .bg(theme::ACCENT)
+                .cursor_pointer().hover(|style| style.bg(theme::ACCENT_HOVER))
                 .rounded_md()
                 .flex()
                 .items_center()
@@ -441,13 +442,13 @@ impl NerveTracerView {
                 .px_4()
                 .py_2()
                 .my_2()
-                .bg(rgb(0x555555))
+                .bg(theme::CONTROL)
                 .rounded_md()
                 .flex()
                 .items_center()
                 .justify_center()
                 .text_sm()
-                .text_color(rgb(0x888888))
+                .text_color(theme::TEXT_MUTED)
                 .child("COMMIT")
         }
     }
@@ -476,7 +477,7 @@ impl NerveTracerView {
                     .flex_col()
                     .gap_1()
                     .p_3()
-                    .bg(rgb(0x333333))
+                    .bg(theme::SURFACE)
                     .rounded_md()
                     .h(px(150.))
                     .overflow_scroll()
@@ -484,7 +485,7 @@ impl NerveTracerView {
                         el.child(
                             div()
                                 .text_sm()
-                                .text_color(rgb(0xaaaaaa))
+                                .text_color(theme::TEXT_MUTED)
                                 .child("No paths yet. Create segments and add them to a path."),
                         )
                     })
@@ -519,8 +520,8 @@ impl NerveTracerView {
                     .items_center()
                     .justify_between()
                     .p_2()
-                    .bg(rgb(0x555555))
-                    .hover(|style| style.bg(rgb(0x666666)))
+                    .bg(theme::CONTROL)
+                    .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
                     .rounded_md()
                     .child(
                         div()
@@ -532,14 +533,14 @@ impl NerveTracerView {
                         div()
                             .w_6()
                             .h_6()
-                            .bg(rgb(0xaa0000))
-                            .hover(|style| style.bg(rgb(0xbb1111)))
+                            .bg(theme::DANGER)
+                            .cursor_pointer().hover(|style| style.bg(theme::DANGER_HOVER))
                             .rounded_sm()
                             .flex()
                             .items_center()
                             .justify_center()
                             .text_lg()
-                            .text_color(rgb(0xffffff))
+                            .text_color(theme::TEXT)
                             .child("×")
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
@@ -580,8 +581,8 @@ impl NerveTracerView {
             .items_center()
             .justify_between()
             .p_2()
-            .bg(rgb(0x444444))
-            .hover(|style| style.bg(rgb(0x555555)))
+            .bg(theme::CONTROL)
+            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .child(div().flex_1().child(format!(
                 "Segment {:03} ({} points)",
@@ -592,14 +593,14 @@ impl NerveTracerView {
                 div()
                     .w_5()
                     .h_5()
-                    .bg(rgb(0xaa0000))
-                    .hover(|style| style.bg(rgb(0xbb1111)))
+                    .bg(theme::DANGER)
+                    .cursor_pointer().hover(|style| style.bg(theme::DANGER_HOVER))
                     .rounded_sm()
                     .flex()
                     .items_center()
                     .justify_center()
                     .text_sm()
-                    .text_color(rgb(0xffffff))
+                    .text_color(theme::TEXT)
                     .child("×")
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -625,8 +626,8 @@ impl NerveTracerView {
                     .flex_1()
                     .px_4()
                     .py_2()
-                    .bg(rgb(0x006600))
-                    .hover(|style| style.bg(rgb(0x007700)))
+                    .bg(theme::SUCCESS)
+                    .cursor_pointer().hover(|style| style.bg(theme::SUCCESS_HOVER))
                     .rounded_md()
                     .text_sm()
                     .text_center()
@@ -655,8 +656,8 @@ impl NerveTracerView {
                     .flex_1()
                     .px_4()
                     .py_2()
-                    .bg(rgb(0x0066cc))
-                    .hover(|style| style.bg(rgb(0x0077dd)))
+                    .bg(theme::ACCENT)
+                    .cursor_pointer().hover(|style| style.bg(theme::ACCENT_HOVER))
                     .rounded_md()
                     .text_sm()
                     .text_center()
@@ -725,11 +726,12 @@ impl Render for NerveTracerView {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .bg(rgb(0x505050))
+                    .bg(theme::WINDOW_BG)
                     .size_full()
+                    .text_sm()
                     .p_4()
                     .shadow_lg()
-                    .text_color(rgb(0xffffff))
+                    .text_color(theme::TEXT)
                     .child("Error: Unable to read nerve tracer state");
             }
         };
@@ -739,11 +741,12 @@ impl Render for NerveTracerView {
             .flex()
             .flex_col()
             .gap_3()
-            .bg(rgb(0x505050))
+            .bg(theme::WINDOW_BG)
             .size_full()
+            .text_sm()
             .p_4()
             .shadow_lg()
-            .text_color(rgb(0xffffff))
+            .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
                     move |this: &mut NerveTracerView,

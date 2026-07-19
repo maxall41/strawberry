@@ -2,6 +2,7 @@ pub mod button;
 pub mod feedback;
 pub mod icon;
 pub mod polyline;
+pub mod theme;
 pub mod value_control;
 pub use button::ToggleButton;
 pub mod tooltip;
