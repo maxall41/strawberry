@@ -1,4 +1,6 @@
-use gpui::{div, prelude::*, rgb, Context, IntoElement};
+use gpui::{div, prelude::*, Context, IntoElement};
+
+use super::theme;
 
 pub struct TooltipView {
     pub text: String,
@@ -7,12 +9,14 @@ pub struct TooltipView {
 impl Render for TooltipView {
     fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .p_1()
-            .bg(rgb(0x333333))
-            .border_2()
-            .border_color(rgb(0x979797))
-            .text_color(rgb(0xffffff))
+            .px_2()
+            .py_1()
+            .bg(theme::SURFACE_DEEP)
+            .border_1()
+            .border_color(theme::BORDER)
+            .text_color(theme::TEXT)
             .rounded_md()
+            .shadow_md()
             .text_xs()
             .child(self.text.clone())
     }

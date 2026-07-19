@@ -2,9 +2,11 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, rgb, Context, InteractiveElement, IntoElement, MouseDownEvent, ParentElement, Render,
-    Styled, Window,
+    div, Context, InteractiveElement, IntoElement, MouseDownEvent, ParentElement, Render, Styled,
+    Window,
 };
+
+use super::theme;
 
 pub struct FeedbackModal {
     pub message: String,
@@ -66,23 +68,23 @@ impl Render for FeedbackModal {
                     div()
                         .flex()
                         .flex_col()
-                        .bg(rgb(0x444444))
-                        .text_color(rgb(0xffffff))
+                        .bg(theme::SURFACE)
+                        .text_color(theme::TEXT)
                         .rounded_lg()
                         .shadow_xl()
                         .border_1()
-                        .border_color(rgb(0x00000020))
+                        .border_color(theme::BORDER_MUTED)
                         .child(
                             // Progress bar
                             div()
                                 .w_full()
-                                .h_1()
-                                .bg(rgb(0x666666))
+                                .h(gpui::px(2.))
+                                .bg(theme::SURFACE_DEEP)
                                 .rounded_t_lg()
                                 .child(
                                     div()
                                         .h_full()
-                                        .bg(rgb(0xffffff))
+                                        .bg(theme::ACCENT)
                                         .rounded_t_lg()
                                         .w(gpui::relative(self.progress))
                                 )
@@ -115,9 +117,13 @@ impl Render for FeedbackModal {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .text_xl()
-                                        .opacity(0.7)
-                                        .hover(|style| style.opacity(1.0))
+                                        .rounded_md()
+                                        .text_lg()
+                                        .text_color(theme::TEXT_MUTED)
+                                        .cursor_pointer()
+                                        .hover(|style| {
+                                            style.text_color(theme::TEXT).bg(theme::CONTROL)
+                                        })
                                         .child("×")
                                         .on_mouse_down(
                                             gpui::MouseButton::Left,

@@ -1,9 +1,10 @@
+use crate::gui::theme;
 // Implements UI for pipeline manager tool
 
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    div, prelude::*, px, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Point, SharedString, TitlebarOptions, Window,
     WindowBounds, WindowOptions,
 };
@@ -133,9 +134,9 @@ impl ManagerView {
 
         let opacity = if is_dragging { 0.5 } else { 1.0 };
         let bg_color = if is_dragging {
-            rgb(0x707070)
+            theme::CONTROL_HOVER
         } else {
-            rgb(0x606060)
+            theme::CONTROL
         };
 
         div()
@@ -147,7 +148,7 @@ impl ManagerView {
             .opacity(opacity)
             .rounded_md()
             .border_1()
-            .border_color(rgb(0x707070))
+            .border_color(theme::BORDER)
             .child(
                 div()
                     .flex()
@@ -156,7 +157,7 @@ impl ManagerView {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(0xCCCCCC))
+                            .text_color(theme::TEXT_MUTED)
                             .cursor_pointer()
                             .child("⋮⋮")
                             .on_mouse_down(
@@ -181,7 +182,7 @@ impl ManagerView {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0xCCCCCC))
+                    .text_color(theme::TEXT_MUTED)
                     .child(format!("#{index}")),
             )
     }
@@ -373,8 +374,8 @@ impl ManagerView {
                 div()
                     .px_4()
                     .py_2()
-                    .bg(rgb(0x006600))
-                    .hover(|style| style.bg(rgb(0x007700)))
+                    .bg(theme::SUCCESS)
+                    .cursor_pointer().hover(|style| style.bg(theme::SUCCESS_HOVER))
                     .rounded_md()
                     .text_sm()
                     .child("Save")
@@ -394,8 +395,8 @@ impl ManagerView {
                 div()
                     .px_4()
                     .py_2()
-                    .bg(rgb(0x0066cc))
-                    .hover(|style| style.bg(rgb(0x0077dd)))
+                    .bg(theme::ACCENT)
+                    .cursor_pointer().hover(|style| style.bg(theme::ACCENT_HOVER))
                     .rounded_md()
                     .text_sm()
                     .child("Load")
@@ -424,11 +425,12 @@ impl Render for ManagerView {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .bg(rgb(0x505050))
+                    .bg(theme::WINDOW_BG)
                     .size_full()
+                    .text_sm()
                     .p_4()
                     .shadow_lg()
-                    .text_color(rgb(0xffffff))
+                    .text_color(theme::TEXT)
                     .child("Error: Unable to read manager state");
             }
         };
@@ -438,11 +440,12 @@ impl Render for ManagerView {
             .flex()
             .flex_col()
             .gap_3()
-            .bg(rgb(0x505050))
+            .bg(theme::WINDOW_BG)
             .size_full()
+            .text_sm()
             .p_4()
             .shadow_lg()
-            .text_color(rgb(0xffffff))
+            .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
                     move |this: &mut ManagerView,

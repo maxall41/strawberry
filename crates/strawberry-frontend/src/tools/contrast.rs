@@ -1,9 +1,10 @@
+use crate::gui::theme;
 // Implements UI for contrast tool
 
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    actions, div, prelude::*, px, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
     KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
     WindowOptions,
 };
@@ -213,7 +214,7 @@ impl ContrastView {
             .px_2()
             .py_1()
             .rounded_md()
-            .bg(rgb(0x666666))
+            .bg(theme::CONTROL)
             .text_sm()
             .text_center()
             .child(label)
@@ -338,11 +339,12 @@ impl Render for ContrastView {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .bg(rgb(0x505050))
+                    .bg(theme::WINDOW_BG)
                     .size_full()
+                    .text_sm()
                     .p_4()
                     .shadow_lg()
-                    .text_color(rgb(0xffffff))
+                    .text_color(theme::TEXT)
                     .child("Error: Unable to read contrast state");
             }
         };
@@ -352,11 +354,12 @@ impl Render for ContrastView {
             .flex()
             .flex_col()
             .gap_3()
-            .bg(rgb(0x505050))
+            .bg(theme::WINDOW_BG)
             .size_full()
+            .text_sm()
             .p_4()
             .shadow_lg()
-            .text_color(rgb(0xffffff))
+            .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
                     move |this: &mut ContrastView,

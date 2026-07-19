@@ -1,8 +1,8 @@
 use gpui::{
-    div, prelude::*, rgb, Context, ElementId, IntoElement, MouseDownEvent,
-    SharedString,
+    div, prelude::*, px, Context, ElementId, IntoElement, MouseDownEvent, SharedString,
 };
 
+use super::theme;
 use super::tooltip::TooltipView;
 
 pub struct ToggleButton<V: 'static> {
@@ -52,7 +52,7 @@ impl<V: 'static> ToggleButton<V> {
     pub fn render(self, cx: &mut Context<V>) -> impl IntoElement {
         let label = self.label;
         let is_enabled = self.is_enabled;
-        let button_text = if is_enabled {
+        let state_text = if is_enabled {
             self.enabled_text
         } else {
             self.disabled_text
@@ -65,9 +65,10 @@ impl<V: 'static> ToggleButton<V> {
             ))))
             .flex()
             .items_center()
-            .gap_2()
+            .justify_between()
+            .w_full()
             .when(!self.disable_margin, |this| this.mb_3())
-            .child(format!("{label}:"))
+            .child(label)
             .when(self.keyboard_shortcut.is_some(), |this| {
                 this.tooltip(move |_window, cx| {
                     let tooltip_view = TooltipView {
@@ -81,23 +82,40 @@ impl<V: 'static> ToggleButton<V> {
             })
             .child(
                 div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(if is_enabled {
-                        rgb(0x00aa00)
-                    } else {
-                        rgb(0xaa0000)
-                    })
-                    .hover(|style| {
-                        style.bg(if is_enabled {
-                            rgb(0x00bb00) // Slightly brighter green on hover
-                        } else {
-                            rgb(0xbb0000) // Slightly brighter red on hover
-                        })
-                    })
-                    .child(button_text)
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(self.on_click)),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::TEXT_MUTED)
+                            .child(state_text),
+                    )
+                    .child(
+                        div()
+                            .w(px(34.))
+                            .h(px(20.))
+                            .rounded_full()
+                            .p(px(2.))
+                            .bg(if is_enabled {
+                                theme::ACCENT
+                            } else {
+                                theme::CONTROL
+                            })
+                            .cursor_pointer()
+                            .hover(|style| {
+                                style.bg(if is_enabled {
+                                    theme::ACCENT_HOVER
+                                } else {
+                                    theme::CONTROL_HOVER
+                                })
+                            })
+                            .flex()
+                            .items_center()
+                            .when(is_enabled, |this| this.justify_end())
+                            .child(div().size(px(16.)).rounded_full().bg(theme::TEXT))
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(self.on_click)),
+                    ),
             )
     }
 }

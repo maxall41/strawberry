@@ -567,6 +567,8 @@ impl Render for PrimaryViewer {
             .track_focus(&self.focus_handle(cx))
             .focusable()
             .size_full()
+            .bg(gui::theme::CANVAS)
+            .overflow_hidden()
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .on_action(cx.listener(Self::handle_zoom_in))
             .on_action(cx.listener(Self::handle_zoom_out))

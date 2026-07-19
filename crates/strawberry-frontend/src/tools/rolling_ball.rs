@@ -1,7 +1,8 @@
+use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
+    actions, div, prelude::*, px, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
     KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
     WindowOptions,
 };
@@ -128,8 +129,8 @@ impl RollingBallView {
         div()
             .px_3()
             .py_2()
-            .bg(rgb(0x444444))
-            .hover(|style| style.bg(rgb(0x555555)))
+            .bg(theme::CONTROL)
+            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .text_sm()
             .child(label)
@@ -221,11 +222,12 @@ impl Render for RollingBallView {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .bg(rgb(0x505050))
+                    .bg(theme::WINDOW_BG)
                     .size_full()
+                    .text_sm()
                     .p_4()
                     .shadow_lg()
-                    .text_color(rgb(0xffffff))
+                    .text_color(theme::TEXT)
                     .child("Error: Unable to read rolling ball state");
             }
         };
@@ -237,11 +239,12 @@ impl Render for RollingBallView {
             .flex()
             .flex_col()
             .gap_3()
-            .bg(rgb(0x505050))
+            .bg(theme::WINDOW_BG)
             .size_full()
+            .text_sm()
             .p_4()
             .shadow_lg()
-            .text_color(rgb(0xffffff))
+            .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
                     move |this: &mut RollingBallView,

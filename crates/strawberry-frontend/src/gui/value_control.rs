@@ -3,10 +3,12 @@
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, rgb, App, Context, CursorStyle, DragMoveEvent, ElementId, EventEmitter,
+    div, prelude::*, px, App, Context, CursorStyle, DragMoveEvent, ElementId, EventEmitter,
     FocusHandle, Focusable, Keystroke, MouseDownEvent, Pixels, Point, SharedString, Window,
 };
 use tokio::time::Instant;
+
+use super::theme;
 
 #[derive(Clone)]
 pub struct ValueControlEvent {
@@ -43,6 +45,7 @@ pub struct ValueControl {
     mouse_down: bool,
     drag_start_position: Option<Point<Pixels>>,
     drag_start_value: f32,
+    last_drag_emit: Option<Instant>,
 }
 
 pub struct DragDummy {}
@@ -75,6 +78,7 @@ impl ValueControl {
             mouse_down: false,
             drag_start_position: None,
             drag_start_value: 0.0,
+            last_drag_emit: None,
             config: ValueControlConfig {
                 label,
                 step,
@@ -157,6 +161,42 @@ impl ValueControl {
         }
         self.highlight = false;
     }
+
+    fn step_button(
+        id: String,
+        symbol: &'static str,
+        direction: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .id(ElementId::Name(SharedString::from(id)))
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(theme::CONTROL)
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::CONTROL_HOVER))
+            .active(|style| style.bg(theme::CONTROL_ACTIVE))
+            .text_sm()
+            .child(symbol)
+            .on_mouse_down(gpui::MouseButton::Left, {
+                cx.listener(
+                    move |this: &mut Self,
+                          _event: &MouseDownEvent,
+                          _window: &mut Window,
+                          cx: &mut Context<Self>| {
+                        this.value = (this.value + direction * this.config.step)
+                            .clamp(this.config.min, this.config.max);
+                        this.text = format!("{:.2}", this.value);
+                        cx.emit(ValueControlEvent::value_changed(
+                            this.config.id.clone(),
+                            this.value,
+                        ));
+                        cx.notify();
+                    },
+                )
+            })
+    }
 }
 
 impl Focusable for ValueControl {
@@ -178,13 +218,14 @@ impl Render for ValueControl {
         }
         let focused = self.focus_handle(cx).is_focused(_window);
         if focused != self.last_focus {
-            println!("Focus changed {} {}", self.config.id, focused);
             self.last_focus = focused;
             if !focused {
                 self.on_unfocus(cx);
             }
         }
         let id = self.config.id.clone();
+        let dec_id = format!("{id}-dec");
+        let inc_id = format!("{id}-inc");
 
         div()
             .flex()
@@ -192,7 +233,9 @@ impl Render for ValueControl {
             .gap_2()
             .child(
                 div()
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme::TEXT_MUTED)
                     .child(self.config.label.clone()),
             )
             .child(
@@ -204,23 +247,26 @@ impl Render for ValueControl {
                         div()
                             .px_2()
                             .py_1()
+                            .min_w(px(64.))
                             .rounded_md()
-                            .bg(rgb(0x666666))
-                            .border_2()
+                            .bg(theme::SURFACE_DEEP)
+                            .border_1()
+                            .border_color(theme::BORDER_MUTED)
                             .hover(|style| {
                                 if !focused {
-                                    style.border_color(rgb(0x999999))
+                                    style.border_color(theme::BORDER)
                                 } else {
                                     style
                                 }
                             })
-                            .cursor(if self.mouse_down {
-                                CursorStyle::ResizeLeftRight
+                            // Resize cursor hints that the field is drag-to-adjust
+                            .cursor(if focused {
+                                CursorStyle::IBeam
                             } else {
-                                CursorStyle::Arrow
+                                CursorStyle::ResizeLeftRight
                             })
                             .focus(|style| {
-                                style.border_color(rgb(0x0F8BE7))
+                                style.border_color(theme::ACCENT)
                             })
                             .track_focus(&self.focus_handle(cx))
                             .text_sm()
@@ -228,9 +274,9 @@ impl Render for ValueControl {
                                 div()
                                     .child(self.text.clone())
                                     .bg(if self.highlight && focused {
-                                        rgb(0x0C8CE9)
+                                        theme::ACCENT
                                     } else {
-                                        rgb(0x666666)
+                                        theme::SURFACE_DEEP
                                     })
                             } else {
                                 div()
@@ -276,6 +322,19 @@ impl Render for ValueControl {
                                                 let new_value = (this.drag_start_value + delta_value).clamp(this.config.min, this.config.max);
                                                 this.value = new_value;
                                                 this.text = format!("{new_value:.2}");
+                                                // Live preview while dragging, throttled so the
+                                                // backend isn't flooded with recomputes
+                                                let now = Instant::now();
+                                                let should_emit = this
+                                                    .last_drag_emit
+                                                    .is_none_or(|t| now.duration_since(t) >= Duration::from_millis(80));
+                                                if should_emit {
+                                                    this.last_drag_emit = Some(now);
+                                                    cx.emit(ValueControlEvent::value_changed(
+                                                        this.config.id.clone(),
+                                                        new_value,
+                                                    ));
+                                                }
                                             }
                                     },
                                 )
@@ -285,9 +344,15 @@ impl Render for ValueControl {
                                     move |this: &mut ValueControl,
                                           _event: &DragMoveEvent<DragDummy>,
                                           _window: &mut Window,
-                                          _cx: &mut Context<ValueControl>| {
+                                          cx: &mut Context<ValueControl>| {
                                             this.mouse_down = false;
-                                            this.drag_start_position = None;
+                                            if this.drag_start_position.take().is_some() {
+                                                this.last_drag_emit = None;
+                                                cx.emit(ValueControlEvent::value_changed(
+                                                    this.config.id.clone(),
+                                                    this.value,
+                                                ));
+                                            }
                                     },
                                 )
                             })
@@ -297,52 +362,8 @@ impl Render for ValueControl {
                         div()
                             .flex()
                             .gap_1()
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(rgb(0x444444))
-                                    .hover(|style| style.bg(rgb(0x555555)))
-                                    .text_sm()
-                                    .child("-")
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        {
-                                            cx.listener(move |this: &mut Self, _event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
-                                                this.value -= this.config.step;
-                                                cx.emit(ValueControlEvent::value_changed(
-                                                    this.config.id.clone(),
-                                                    this.value,
-                                                ));
-                                                cx.notify();
-                                            })
-                                        },
-                                    )
-                            )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(rgb(0x444444))
-                                    .hover(|style| style.bg(rgb(0x555555)))
-                                    .text_sm()
-                                    .child("+")
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        {
-                                            cx.listener(move |this: &mut Self, _event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>| {
-                                                this.value += this.config.step;
-                                                cx.emit(ValueControlEvent::value_changed(
-                                                    this.config.id.clone(),
-                                                    this.value,
-                                                ));
-                                                cx.notify();
-                                            })
-                                        },
-                                    ),
-                            ),
+                            .child(Self::step_button(dec_id, "−", -1.0, cx))
+                            .child(Self::step_button(inc_id, "+", 1.0, cx)),
                     ),
             )
     }

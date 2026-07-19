@@ -1,9 +1,10 @@
+use crate::gui::theme;
 // Implements UI for compositor tool
 
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    actions, div, prelude::*, px, rgb, size, App, Bounds, Context, FocusHandle, Focusable,
+    actions, div, prelude::*, px, size, App, Bounds, Context, FocusHandle, Focusable,
     KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
     WindowOptions,
 };
@@ -307,11 +308,12 @@ impl Render for CompositorView {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .bg(rgb(0x505050))
+                    .bg(theme::WINDOW_BG)
                     .size_full()
+                    .text_sm()
                     .p_4()
                     .shadow_lg()
-                    .text_color(rgb(0xffffff))
+                    .text_color(theme::TEXT)
                     .child("Error: Unable to read compositor state");
             }
         };
@@ -321,11 +323,12 @@ impl Render for CompositorView {
             .flex()
             .flex_col()
             .gap_3()
-            .bg(rgb(0x505050))
+            .bg(theme::WINDOW_BG)
             .size_full()
+            .text_sm()
             .p_4()
             .shadow_lg()
-            .text_color(rgb(0xffffff))
+            .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
                     move |this: &mut CompositorView,
