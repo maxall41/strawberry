@@ -40,7 +40,7 @@ struct Assets {
 mod gui;
 mod tools;
 
-const MOVEMENT_SPEED: f32 = 25.0;
+const MOVEMENT_SPEED: f32 = 800.0;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
@@ -82,6 +82,8 @@ struct PrimaryViewer {
     toasts: Vec<Entity<FeedbackModal>>,
     last_viewport_size: Option<gpui::Size<Pixels>>,
     image_directory: Arc<RwLock<Option<PathBuf>>>,
+    image_loaded: bool,
+    pan_loop_running: bool,
 }
 
 impl PrimaryViewer {
@@ -124,6 +126,7 @@ impl PrimaryViewer {
                                 this.original_width = new_width;
                                 this.original_height = new_height;
                                 this.display_image = ImageSource::Render(img_data);
+                                this.image_loaded = true;
                                 cx.notify();
                             }) {
                                 eprintln!("Failed to update display image: {e}");
@@ -269,7 +272,7 @@ impl PrimaryViewer {
     ) {
         let delta_y = match event.delta {
             gpui::ScrollDelta::Pixels(point) => point.y.to_f64() as f32,
-            gpui::ScrollDelta::Lines(point) => point.y * 20.0,
+            gpui::ScrollDelta::Lines(point) => point.y * 40.0,
         };
 
         if delta_y == 0.0 {
@@ -277,7 +280,7 @@ impl PrimaryViewer {
         }
 
         let old_zoom = self.zoom_level;
-        let scale = 1.001f32.powf(delta_y);
+        let scale = 1.0035f32.powf(delta_y);
         self.zoom_level *= scale;
 
         // Clamp zoom level to reasonable bounds
@@ -295,35 +298,72 @@ impl PrimaryViewer {
         self.zoom_out(window, cx);
     }
 
-    fn pan_with_current_keys(&mut self, cx: &mut Context<Self>) {
-        let mut pan_x = 0.0;
-        let mut pan_y = 0.0;
+    fn apply_held_pan(&mut self, dt: f32, cx: &mut Context<Self>) {
+        let mut dx: f32 = 0.0;
+        let mut dy: f32 = 0.0;
 
         if self.pressed_keys.contains("a") {
-            pan_x += MOVEMENT_SPEED;
+            dx += 1.0;
         }
         if self.pressed_keys.contains("d") {
-            pan_x -= MOVEMENT_SPEED;
+            dx -= 1.0;
         }
         if self.pressed_keys.contains("w") {
-            pan_y += MOVEMENT_SPEED;
+            dy += 1.0;
         }
         if self.pressed_keys.contains("s") {
-            pan_y -= MOVEMENT_SPEED;
+            dy -= 1.0;
         }
 
-        if pan_x != 0.0 || pan_y != 0.0 {
-            self.pan_x += pan_x;
-            self.pan_y += pan_y;
+        let length = (dx * dx + dy * dy).sqrt();
+        if length > 0.0 {
+            // Normalize such that diagonal movement is not faster
+            self.pan_x += dx / length * MOVEMENT_SPEED * dt;
+            self.pan_y += dy / length * MOVEMENT_SPEED * dt;
             cx.notify();
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn start_pan_loop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pan_loop_running {
+            return;
+        }
+        self.pan_loop_running = true;
+
+        cx.spawn_in(window, async move |this, cx| {
+            let mut last_tick = std::time::Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+
+                let now = std::time::Instant::now();
+                let dt = now.duration_since(last_tick).as_secs_f32();
+                last_tick = now;
+
+                let done = this.update(cx, |this, cx| {
+                    if this.pressed_keys.is_empty() {
+                        this.pan_loop_running = false;
+                        return true;
+                    }
+                    this.apply_held_pan(dt, cx);
+                    false
+                });
+
+                match done {
+                    Ok(false) => {}
+                    _ => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = &event.keystroke.key;
         if matches!(key.as_str(), "w" | "a" | "s" | "d") {
             self.pressed_keys.insert(key.clone());
-            self.pan_with_current_keys(cx);
+            self.start_pan_loop(window, cx);
         }
     }
 
@@ -589,13 +629,29 @@ impl Render for PrimaryViewer {
                     }
                 },
             ))
-            .child(
-                div()
-                    .absolute()
-                    .left(px(self.pan_x))
-                    .top(px(self.pan_y))
-                    .child(_img),
-            )
+            .when(self.image_loaded, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .left(px(self.pan_x))
+                        .top(px(self.pan_y))
+                        .child(_img),
+                )
+            })
+            .when(!self.image_loaded, |el| {
+                el.child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_1()
+                        .text_color(gui::theme::TEXT_MUTED)
+                        .child(div().text_lg().child("Drop images here"))
+                        .child(div().text_sm().child("or press ⌘L to open files")),
+                )
+            })
             .children(
                 self.toasts
                     .iter()
@@ -618,13 +674,7 @@ impl Render for PrimaryViewer {
     }
 }
 
-actions!([
-    Quit,
-    ZoomIn,
-    ZoomOut,
-    OpenFile,
-    SaveImage,
-]);
+actions!([Quit, ZoomIn, ZoomOut, OpenFile, SaveImage,]);
 
 // Generic tool window creation function
 fn create_tool_window<T, A>(
@@ -711,8 +761,18 @@ async fn main() -> Result<()> {
         })
         .run(move |cx: &mut App| {
             // Register all tool windows
-            create_tool_window::<CompositorView, CompositorSettings>(cx, view_sender.clone(), view_recv.resubscribe(), CompositorView::new);
-            create_tool_window::<ContrastView, ContrastSettings>(cx, view_sender.clone(), view_recv.resubscribe(), ContrastView::new);
+            create_tool_window::<CompositorView, CompositorSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                CompositorView::new,
+            );
+            create_tool_window::<ContrastView, ContrastSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                ContrastView::new,
+            );
 
             // CounterView needs image_directory for file dialogs
             {
@@ -735,17 +795,72 @@ async fn main() -> Result<()> {
                     }
                 });
             }
-            create_tool_window::<GaussianBlurView, GaussianBlurSettings>(cx, view_sender.clone(), view_recv.resubscribe(), GaussianBlurView::new);
-            create_tool_window::<GrayscaleView, GrayscaleSettings>(cx, view_sender.clone(), view_recv.resubscribe(), GrayscaleView::new);
-            create_tool_window::<ThresholdView, ThresholdSettings>(cx, view_sender.clone(), view_recv.resubscribe(), ThresholdView::new);
-            create_tool_window::<LocalMaximaView, LocalMaximaSettings>(cx, view_sender.clone(), view_recv.resubscribe(), LocalMaximaView::new);
-            create_tool_window::<MorphologyView, MorphologySettings>(cx, view_sender.clone(), view_recv.resubscribe(), MorphologyView::new);
-            create_tool_window::<RollingBallView, RollingBallSettings>(cx, view_sender.clone(), view_recv.resubscribe(), RollingBallView::new);
-            create_tool_window::<WatershedView, WatershedSettings>(cx, view_sender.clone(), view_recv.resubscribe(), WatershedView::new);
-            create_tool_window::<ManagerView, ManagerSettings>(cx, view_sender.clone(), view_recv.resubscribe(), ManagerView::new);
-            create_tool_window::<DecomposerView, DecomposerSettings>(cx, view_sender.clone(), view_recv.resubscribe(), DecomposerView::new);
-            create_tool_window::<SobelView, SobelSettings>(cx, view_sender.clone(), view_recv.resubscribe(), SobelView::new);
-            create_tool_window::<NerveTracerView, NerveTracerSettings>(cx, view_sender.clone(), view_recv.resubscribe(), NerveTracerView::new);
+            create_tool_window::<GaussianBlurView, GaussianBlurSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                GaussianBlurView::new,
+            );
+            create_tool_window::<GrayscaleView, GrayscaleSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                GrayscaleView::new,
+            );
+            create_tool_window::<ThresholdView, ThresholdSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                ThresholdView::new,
+            );
+            create_tool_window::<LocalMaximaView, LocalMaximaSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                LocalMaximaView::new,
+            );
+            create_tool_window::<MorphologyView, MorphologySettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                MorphologyView::new,
+            );
+            create_tool_window::<RollingBallView, RollingBallSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                RollingBallView::new,
+            );
+            create_tool_window::<WatershedView, WatershedSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                WatershedView::new,
+            );
+            create_tool_window::<ManagerView, ManagerSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                ManagerView::new,
+            );
+            create_tool_window::<DecomposerView, DecomposerSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                DecomposerView::new,
+            );
+            create_tool_window::<SobelView, SobelSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                SobelView::new,
+            );
+            create_tool_window::<NerveTracerView, NerveTracerSettings>(
+                cx,
+                view_sender.clone(),
+                view_recv.resubscribe(),
+                NerveTracerView::new,
+            );
 
             // Generate menu items for tools
             let tool_menu_items = vec![
@@ -844,6 +959,8 @@ async fn main() -> Result<()> {
                     toasts: vec![],
                     last_viewport_size: None,
                     image_directory: primary_viewer_image_dir,
+                    image_loaded: false,
+                    pan_loop_running: false,
                 };
 
                 let viewer = cx.new(|cx| {
