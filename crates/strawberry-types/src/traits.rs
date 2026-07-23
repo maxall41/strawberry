@@ -42,9 +42,6 @@ pub trait ToolBackend: Send + Sync {
     /// Apply state to the tool. Used during pipeline load.
     fn apply_state(&mut self, state: ToolState);
 
-    /// Get the tool's index in the pipeline
-    fn get_index(&self) -> usize;
-
     /// Set the tool's index in the pipeline
     fn set_index(&mut self, index: usize);
 

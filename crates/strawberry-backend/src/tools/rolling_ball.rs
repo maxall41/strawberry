@@ -46,7 +46,7 @@ impl ToolBackend for RollingBall {
                 Ok(img) => img,
                 Err(e) => {
                     self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Rolling Ball error: {e}")),
+                        FrontendMessage::error(format!("Rolling Ball error: {e}")),
                     ))?;
                     return Err(e);
                 }

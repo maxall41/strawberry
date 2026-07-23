@@ -127,7 +127,7 @@ impl ToolBackend for NerveTracer {
                                 Ok(loaded_state) => {
                                     self.state = loaded_state;
                                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                                        FrontendMessage::UserFeedback(
+                                        FrontendMessage::success(
                                             "Traces loaded successfully!".to_string(),
                                         ),
                                     ))?;
@@ -136,7 +136,7 @@ impl ToolBackend for NerveTracer {
                                     eprintln!("Failed to load traces from {:?}: {}", path, e);
                                     if let Err(send_err) =
                                         self.global_sender.send(PipelineCommand::FrontendMessage(
-                                            FrontendMessage::UserFeedback(format!(
+                                            FrontendMessage::error(format!(
                                                 "Failed to load traces: {}",
                                                 e
                                             )),
@@ -158,7 +158,7 @@ impl ToolBackend for NerveTracer {
                                     Ok(_) => {
                                         if let Err(e) =
                                             global_sender.send(PipelineCommand::FrontendMessage(
-                                                FrontendMessage::UserFeedback(format!(
+                                                FrontendMessage::success(format!(
                                                     "Traces saved to {:?}",
                                                     path
                                                 )),
@@ -171,7 +171,7 @@ impl ToolBackend for NerveTracer {
                                         eprintln!("Failed to save traces to {:?}: {}", path, e);
                                         if let Err(send_err) =
                                             global_sender.send(PipelineCommand::FrontendMessage(
-                                                FrontendMessage::UserFeedback(format!(
+                                                FrontendMessage::error(format!(
                                                     "Failed to save traces: {}",
                                                     e
                                                 )),
@@ -211,10 +211,6 @@ impl ToolBackend for NerveTracer {
 
     fn iam(&self) -> BackendToolType {
         BackendToolType::NerveTracer
-    }
-
-    fn get_index(&self) -> usize {
-        self.index
     }
 
     fn set_index(&mut self, index: usize) {

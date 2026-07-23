@@ -63,7 +63,7 @@ impl ToolBackend for Compositor {
             Ok(image) => image,
             Err(e) => {
                 self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::UserFeedback(format!("Compositor error: {e}")),
+                    FrontendMessage::error(format!("Compositor error: {e}")),
                 ))?;
                 return Err(e);
             }
@@ -117,7 +117,7 @@ impl ToolBackend for Compositor {
                                     mutated.len()
                                 );
                                 self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::UserFeedback(error_msg.clone()),
+                                    FrontendMessage::error(error_msg.clone()),
                                 ))?;
                                 return Err(anyhow::anyhow!(error_msg));
                             }

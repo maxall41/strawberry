@@ -13,8 +13,7 @@ use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
-    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ThresholdMessage,
-    ThresholdState, ToolState,
+    PipelineCommand, PipelineObjectMessage, ThresholdMessage, ThresholdState, ToolState,
 };
 
 use strawberry_types::ToolFrontend;
@@ -291,21 +290,9 @@ impl ToolFrontend for ThresholdView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.base.receive_channel = Some(receiver);
-        self.base.focus_handle = Some(cx.focus_handle());
-        if let Err(e) = self
-            .base
-            .command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Threshold,
-                sender,
-            ))
-        {
-            eprintln!("Failed to send backend discovery request: {e}");
+        if !self.base.connect(cx.focus_handle()) {
             return;
         }
-        println!("Sent discovery request to backend | Threshold");
 
         cx.bind_keys([KeyBinding::new("cmd-t", ThresholdToggleActivity, None)]);
 

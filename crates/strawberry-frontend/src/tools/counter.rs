@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 
 use gpui::{
     actions, div, prelude::*, px, size, App, Bounds, Context, ElementId, FocusHandle,
-    Focusable, KeyBinding, MouseDownEvent, Point, Rgba, SharedString, TitlebarOptions, Window,
+    Focusable, KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window,
     WindowBounds, WindowOptions,
 };
 use rfd::FileDialog;
@@ -15,8 +15,8 @@ use crate::gui::{icon::Icon, value_control::ValueControl, ToggleButton};
 use crate::tools::{spawn_message_processor, FrontendMessageHandler};
 use strawberry_types::{
     consts::{image_rgba_to_gpui_rgba, CIRCLE_COLORS},
-    BackendToolType, CountData, CountMessage, CounterMode, CounterState, CounterTool,
-    FilterMessage, FilterProxy, FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolState,
+    CountData, CountMessage, CounterMode, CounterState, CounterTool, FilterMessage, FilterProxy,
+    PipelineCommand, PipelineObjectMessage, ToolState,
 };
 
 use strawberry_types::ToolFrontend;
@@ -1798,21 +1798,9 @@ impl ToolFrontend for CounterView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.base.receive_channel = Some(receiver.clone());
-        self.base.focus_handle = Some(cx.focus_handle());
-        if let Err(e) = self
-            .base
-            .command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Counter,
-                sender.clone(),
-            ))
-        {
-            eprintln!("Failed to send backend discovery request: {e}");
+        if !self.base.connect(cx.focus_handle()) {
             return;
         }
-        println!("Sent discovery request to backend | Counter");
 
         cx.bind_keys([
             KeyBinding::new("cmd-t", CounterToggleActivity, None),

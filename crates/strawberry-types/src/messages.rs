@@ -121,13 +121,30 @@ pub enum PipelineObjectMessage {
     NerveTracerMessage(NerveTracerMessage),
 }
 
+/// Severity of a `UserFeedback` toast; drives the toast's progress bar color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedbackLevel {
+    Success,
+    Error,
+}
+
 #[derive(Debug, Clone)]
 pub enum FrontendMessage {
     ReturnState(ToolState),
     ReturnBackendTools(Vec<u16>, Vec<flume::Sender<PipelineCommand>>),
-    UserFeedback(String),
+    UserFeedback(String, FeedbackLevel),
     ReturnOverlays(crate::overlay::OverlayCollection),
     SnapToPosition(f32, f32),
+}
+
+impl FrontendMessage {
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::UserFeedback(message.into(), FeedbackLevel::Error)
+    }
+
+    pub fn success(message: impl Into<String>) -> Self {
+        Self::UserFeedback(message.into(), FeedbackLevel::Success)
+    }
 }
 
 /// Commands that can be sent to the pipeline

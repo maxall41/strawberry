@@ -5,20 +5,23 @@ use gpui::{
     div, Context, InteractiveElement, IntoElement, MouseDownEvent, ParentElement, Render, Styled,
     Window,
 };
+use strawberry_types::FeedbackLevel;
 
 use super::theme;
 
 pub struct FeedbackModal {
     pub message: String,
+    pub level: FeedbackLevel,
     pub show_toast: bool,
     pub progress: f32,
     pub marked_for_deletion: bool,
 }
 
 impl FeedbackModal {
-    pub fn new(message: String) -> Self {
+    pub fn new(message: String, level: FeedbackLevel) -> Self {
         Self {
             message,
+            level,
             show_toast: true,
             progress: 1.0,
             marked_for_deletion: false,
@@ -58,6 +61,10 @@ impl FeedbackModal {
 
 impl Render for FeedbackModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let bar_color = match self.level {
+            FeedbackLevel::Success => theme::SUCCESS,
+            FeedbackLevel::Error => theme::DANGER,
+        };
         div()
             .absolute()
             .bottom_4()
@@ -84,7 +91,7 @@ impl Render for FeedbackModal {
                                 .child(
                                     div()
                                         .h_full()
-                                        .bg(theme::ACCENT)
+                                        .bg(bar_color)
                                         .rounded_t_lg()
                                         .w(gpui::relative(self.progress))
                                 )

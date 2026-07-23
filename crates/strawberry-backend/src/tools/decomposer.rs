@@ -46,7 +46,7 @@ impl ToolBackend for Decomposer {
                 input.len()
             );
             self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                FrontendMessage::UserFeedback(error_msg.clone()),
+                FrontendMessage::error(error_msg.clone()),
             ))?;
             return Err(anyhow::anyhow!(error_msg));
         }
@@ -54,7 +54,7 @@ impl ToolBackend for Decomposer {
         let first_image = input.first().ok_or_else(|| {
             let error_msg = "No input image provided to decomposer".to_string();
             let _ = self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                FrontendMessage::UserFeedback(error_msg.clone()),
+                FrontendMessage::error(error_msg.clone()),
             ));
             anyhow::anyhow!(error_msg)
         })?;
@@ -63,7 +63,7 @@ impl ToolBackend for Decomposer {
             Ok(result) => result,
             Err(e) => {
                 self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::UserFeedback(format!("Decomposer error: {e}")),
+                    FrontendMessage::error(format!("Decomposer error: {e}")),
                 ))?;
                 return Err(e);
             }
@@ -86,7 +86,7 @@ impl ToolBackend for Decomposer {
             Ok(image) => image,
             Err(e) => {
                 self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::UserFeedback(format!("Decomposer compositor error: {e}")),
+                    FrontendMessage::error(format!("Decomposer compositor error: {e}")),
                 ))?;
                 return Err(e);
             }
@@ -123,7 +123,7 @@ impl ToolBackend for Decomposer {
                                     mutated.len()
                                 );
                                 self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::UserFeedback(error_msg.clone()),
+                                    FrontendMessage::error(error_msg.clone()),
                                 ))?;
                                 return Err(anyhow::anyhow!(error_msg));
                             }

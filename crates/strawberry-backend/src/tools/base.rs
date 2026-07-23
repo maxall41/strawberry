@@ -77,10 +77,6 @@ macro_rules! impl_tool_backend_basics {
             self.base.frontend_senders.clear();
         }
 
-        fn get_index(&self) -> usize {
-            self.base.index
-        }
-
         fn set_index(&mut self, index: usize) {
             self.base.index = index;
         }

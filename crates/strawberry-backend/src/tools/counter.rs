@@ -372,14 +372,14 @@ impl ToolBackend for Counter {
                             // Use the utils::io module to export to XML
                             if let Err(e) = export_counter_to_xml_file(&self.state, &file).await {
                                 self.global_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::UserFeedback(
+                                    FrontendMessage::error(
                                         "Error saving counts: XML export failed".to_string(),
                                     ),
                                 ))?;
                                 return Err(anyhow::anyhow!("Error saving counts to file: {}", e));
                             }
                             self.global_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::UserFeedback(
+                                FrontendMessage::success(
                                     "Counts saved successfully!".to_string(),
                                 ),
                             ))?;
@@ -403,7 +403,7 @@ impl ToolBackend for Counter {
                                     }
 
                                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                                        FrontendMessage::UserFeedback(
+                                        FrontendMessage::success(
                                             "Counts loaded successfully!".to_string(),
                                         ),
                                     ))?;
@@ -411,7 +411,7 @@ impl ToolBackend for Counter {
                                 }
                                 Err(e) => {
                                     self.global_sender.send(PipelineCommand::FrontendMessage(
-                                        FrontendMessage::UserFeedback(
+                                        FrontendMessage::error(
                                             "Error loading counts: XML import failed".to_string(),
                                         ),
                                     ))?;
@@ -550,10 +550,6 @@ impl ToolBackend for Counter {
         BackendToolType::Counter
     }
 
-    fn get_index(&self) -> usize {
-        self.index
-    }
-
     fn set_index(&mut self, index: usize) {
         self.index = index;
     }
@@ -615,9 +611,9 @@ impl ToolBackend for Counter {
                 elements.push(OverlayElement::Circle {
                     x: count.position.0 as f32,
                     y: count.position.1 as f32,
-                    radius: 10.0,
+                    radius: 10.0 / 3.0,
                     color: circle_color,
-                    style: CircleStyle::Border { width: 2.0 },
+                    style: CircleStyle::Border { width: 0.7 },
                 });
             }
         }
@@ -629,9 +625,9 @@ impl ToolBackend for Counter {
                 elements.push(OverlayElement::Circle {
                     x: count.position.0 as f32,
                     y: count.position.1 as f32,
-                    radius: 10.0,
+                    radius: 10.0 / 3.0,
                     color,
-                    style: CircleStyle::Border { width: 2.0 },
+                    style: CircleStyle::Border { width: 0.7 },
                 });
             }
         }

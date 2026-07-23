@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use gpui::{Context, Window, WindowOptions};
+use gpui::{Context, Window};
 
 pub mod base;
 #[macro_use]

@@ -5,6 +5,7 @@ use strawberry_types::{BackendToolType, PipelineCommand};
 /// Common infrastructure shared by all frontend tools
 pub struct ToolBase {
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub backend_type: BackendToolType,
     pub backend_tool_indicies: Vec<u16>,
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
@@ -20,6 +21,7 @@ impl ToolBase {
     ) -> Self {
         Self {
             command_sender: command_sender.clone(),
+            backend_type: backend_type.clone(),
             backend_tool_indicies: vec![],
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
@@ -27,6 +29,30 @@ impl ToolBase {
             focus_handle: None,
             cleanup_guard: crate::tools::CleanupGuard::new(command_sender, backend_type),
         }
+    }
+
+    /// Set up the backend connection: allocate the message channel and announce
+    /// ourselves so the pipeline hands back per-tool channels (answered via
+    /// `ReturnBackendTools`). Returns false if the pipeline is unreachable.
+    pub fn connect(&mut self, focus_handle: FocusHandle) -> bool {
+        let (sender, receiver) = flume::unbounded();
+        self.receive_channel = Some(receiver);
+        self.focus_handle = Some(focus_handle);
+        if let Err(e) = self
+            .command_sender
+            .send(PipelineCommand::DiscoverBackend(
+                self.backend_type.clone(),
+                sender,
+            ))
+        {
+            eprintln!("Failed to send backend discovery request: {e}");
+            return false;
+        }
+        println!(
+            "Sent discovery request to backend | {:?}",
+            self.backend_type
+        );
+        true
     }
 
     /// Get current backend tool index - 100% identical across all tools
