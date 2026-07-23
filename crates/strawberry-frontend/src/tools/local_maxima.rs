@@ -286,6 +286,17 @@ impl LocalMaximaView {
                     } else {
                         theme::DANGER
                     })
+                    .cursor_pointer()
+                    .hover({
+                        let exclude_border = state.exclude_border;
+                        move |style| {
+                            style.bg(if exclude_border {
+                                theme::SUCCESS_HOVER
+                            } else {
+                                theme::DANGER_HOVER
+                            })
+                        }
+                    })
                     .text_sm()
                     .child(if state.exclude_border { "Yes" } else { "No" })
                     .on_mouse_down(gpui::MouseButton::Left, {

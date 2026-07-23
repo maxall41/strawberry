@@ -27,18 +27,25 @@ impl Icon {
         self
     }
 
-    pub fn eye_open() -> Self {
+    // Icons live in the workspace-root assets dir, two levels above this
+    // crate's manifest dir.
+    fn from_asset(name: &str) -> Self {
         Self::new(format!(
-            "{}/assets/icons/eye_open.svg",
+            "{}/../../assets/icons/{name}",
             env!("CARGO_MANIFEST_DIR")
         ))
     }
 
+    pub fn eye_open() -> Self {
+        Self::from_asset("eye_open.svg")
+    }
+
     pub fn eye_closed() -> Self {
-        Self::new(format!(
-            "{}/assets/icons/eye_closed.svg",
-            env!("CARGO_MANIFEST_DIR")
-        ))
+        Self::from_asset("eye_closed.svg")
+    }
+
+    pub fn x() -> Self {
+        Self::from_asset("x.svg")
     }
 }
 

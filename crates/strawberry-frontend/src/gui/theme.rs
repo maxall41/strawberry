@@ -47,3 +47,14 @@ pub const SUCCESS_ACTIVE: Rgba = hex(0x358753);
 pub const DANGER: Rgba = hex(0xc25049);
 pub const DANGER_HOVER: Rgba = hex(0xd05e57);
 pub const DANGER_ACTIVE: Rgba = hex(0xa8443e);
+
+/// Blend a color toward white. For hover/feedback states derived from dynamic
+/// colors (e.g. count type colors) that have no fixed *_HOVER constant.
+pub fn lighten(color: Rgba, amount: f32) -> Rgba {
+    Rgba {
+        r: color.r + (1.0 - color.r) * amount,
+        g: color.g + (1.0 - color.g) * amount,
+        b: color.b + (1.0 - color.b) * amount,
+        a: color.a,
+    }
+}

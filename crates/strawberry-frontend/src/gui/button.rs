@@ -92,29 +92,36 @@ impl<V: 'static> ToggleButton<V> {
                             .child(state_text),
                     )
                     .child(
+                        // Padding + negative margin extend the click region past
+                        // the visible pill without shifting layout.
                         div()
-                            .w(px(34.))
-                            .h(px(20.))
-                            .rounded_full()
-                            .p(px(2.))
-                            .bg(if is_enabled {
-                                theme::ACCENT
-                            } else {
-                                theme::CONTROL
-                            })
+                            .p_1()
+                            .m_neg_1()
                             .cursor_pointer()
-                            .hover(|style| {
-                                style.bg(if is_enabled {
-                                    theme::ACCENT_HOVER
-                                } else {
-                                    theme::CONTROL_HOVER
-                                })
-                            })
-                            .flex()
-                            .items_center()
-                            .when(is_enabled, |this| this.justify_end())
-                            .child(div().size(px(16.)).rounded_full().bg(theme::TEXT))
-                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(self.on_click)),
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(self.on_click))
+                            .child(
+                                div()
+                                    .w(px(34.))
+                                    .h(px(20.))
+                                    .rounded_full()
+                                    .p(px(2.))
+                                    .bg(if is_enabled {
+                                        theme::ACCENT
+                                    } else {
+                                        theme::CONTROL
+                                    })
+                                    .hover(|style| {
+                                        style.bg(if is_enabled {
+                                            theme::ACCENT_HOVER
+                                        } else {
+                                            theme::CONTROL_HOVER
+                                        })
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .when(is_enabled, |this| this.justify_end())
+                                    .child(div().size(px(16.)).rounded_full().bg(theme::TEXT)),
+                            ),
                     ),
             )
     }

@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    actions, div, prelude::*, px, size, App, Bounds, Context, ElementId, FocusHandle,
-    Focusable, KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window,
-    WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, size, App, Bounds, Context, ElementId, FocusHandle, Focusable,
+    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 use rfd::FileDialog;
 
@@ -239,14 +239,18 @@ impl CounterView {
         if let Ok(state) = self.state.read() {
             if state.active_count_type == Some(count_type_id) {
                 if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
-                    // Set active count type to None by finding another type or clearing
-                    let remaining_types: Vec<u16> = state
+                    let mut remaining_types: Vec<u16> = state
                         .manual_counts
                         .keys()
                         .filter(|&&id| id != count_type_id)
                         .copied()
                         .collect();
-                    let new_active = remaining_types.first().copied();
+                    remaining_types.sort_unstable();
+                    let new_active = remaining_types
+                        .iter()
+                        .find(|&&id| id > count_type_id)
+                        .or_else(|| remaining_types.iter().rev().find(|&&id| id < count_type_id))
+                        .copied();
 
                     if let Some(new_active_id) = new_active {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
@@ -717,16 +721,12 @@ impl CounterView {
             .mb_3()
             .child("Mode:")
             .child(
+                // Padding + negative margin extend the click region past the
+                // visible button without shifting layout.
                 div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(theme::CONTROL)
-                    .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
-                    .child(match state.mode {
-                        CounterMode::Manual => "Manual",
-                        CounterMode::Auto => "Auto",
-                    })
+                    .p_1()
+                    .m_neg_1()
+                    .cursor_pointer()
                     .on_mouse_down(gpui::MouseButton::Left, {
                         cx.listener(
                             move |this: &mut CounterView,
@@ -736,7 +736,19 @@ impl CounterView {
                                 this.toggle_mode(window, cx);
                             },
                         )
-                    }),
+                    })
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(theme::CONTROL)
+                            .hover(|style| style.bg(theme::CONTROL_HOVER))
+                            .child(match state.mode {
+                                CounterMode::Manual => "Manual",
+                                CounterMode::Auto => "Auto",
+                            }),
+                    ),
             )
     }
 
@@ -768,14 +780,13 @@ impl CounterView {
                     .w_5()
                     .h_5()
                     .bg(theme::DANGER)
-                    .cursor_pointer().hover(|style| style.bg(theme::DANGER_HOVER))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::DANGER_HOVER))
                     .rounded_sm()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_xs()
-                    .text_color(theme::TEXT)
-                    .child("×")
+                    .child(Icon::x().size(12.0))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
@@ -789,11 +800,16 @@ impl CounterView {
                     ),
             )
             .child(
-                // Eye toggle button
+                // Eye toggle button. Padding traded against the margin keeps the
+                // icon in place while the click region extends past the visual.
                 div()
-                    .m_2()
-                    .w_5()
-                    .h_5()
+                    .m_1()
+                    .p_1()
+                    .w_7()
+                    .h_7()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::CONTROL_HOVER))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -841,8 +857,15 @@ impl CounterView {
                         })
                     })
                     .rounded_full()
-                    .bg(if is_selected { color } else { theme::CONTROL })
-                    .when(!is_selected, |el| el.cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER)))
+                    .bg(if is_selected {
+                        color
+                    } else {
+                        theme::CONTROL_HOVER
+                    })
+                    .when(!is_selected, |el| {
+                        el.cursor_pointer()
+                            .hover(|style| style.bg(theme::lighten(theme::CONTROL_HOVER, 0.15)))
+                    })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
@@ -905,7 +928,8 @@ impl CounterView {
             .p_2()
             .mt_2()
             .bg(theme::CONTROL)
-            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .flex()
             .items_center()
@@ -948,6 +972,7 @@ impl CounterView {
             ))))
             .flex_1()
             .p_2()
+            .cursor_pointer()
             .bg(if is_active {
                 theme::ACCENT
             } else {
@@ -957,7 +982,7 @@ impl CounterView {
                 style.bg(if is_active {
                     theme::ACCENT_HOVER
                 } else {
-                    theme::CONTROL
+                    theme::CONTROL_HOVER
                 })
             })
             .text_center()
@@ -1054,7 +1079,8 @@ impl CounterView {
                     .px_4()
                     .py_2()
                     .bg(theme::SUCCESS)
-                    .cursor_pointer().hover(|style| style.bg(theme::SUCCESS_HOVER))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::SUCCESS_HOVER))
                     .rounded_md()
                     .text_sm()
                     .child("Save")
@@ -1082,7 +1108,8 @@ impl CounterView {
                     .px_4()
                     .py_2()
                     .bg(theme::ACCENT)
-                    .cursor_pointer().hover(|style| style.bg(theme::ACCENT_HOVER))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::ACCENT_HOVER))
                     .rounded_md()
                     .text_sm()
                     .child("Load")
@@ -1270,6 +1297,7 @@ impl CounterView {
                             .text_color(theme::TEXT_MUTED)
                             .child("Click to toggle"),
                     )
+                    .cursor_pointer()
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
@@ -1499,7 +1527,8 @@ impl CounterView {
                         div()
                             .px_3()
                             .py_1()
-                            .bg(theme::DANGER_HOVER)
+                            .bg(theme::DANGER)
+                            .cursor_pointer()
                             .hover(|style| style.bg(theme::DANGER_HOVER))
                             .rounded_md()
                             .text_sm()

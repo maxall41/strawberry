@@ -279,11 +279,12 @@ impl NerveTracerView {
                             } else {
                                 theme::CONTROL
                             })
-                            .hover(|style| {
+                            .cursor_pointer()
+                            .hover(move |style| {
                                 style.bg(if is_selected {
                                     theme::ACCENT_HOVER
                                 } else {
-                                    theme::CONTROL
+                                    theme::CONTROL_HOVER
                                 })
                             })
                             .rounded_md()

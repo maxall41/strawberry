@@ -82,17 +82,17 @@ impl Render for FeedbackModal {
                         .border_1()
                         .border_color(theme::BORDER_MUTED)
                         .child(
-                            // Progress bar
                             div()
-                                .w_full()
-                                .h(gpui::px(2.))
+                                .mt_2()
+                                .mx_2()
+                                .h(gpui::px(4.))
                                 .bg(theme::SURFACE_DEEP)
-                                .rounded_t_lg()
+                                .rounded_full()
                                 .child(
                                     div()
                                         .h_full()
                                         .bg(bar_color)
-                                        .rounded_t_lg()
+                                        .rounded_full()
                                         .w(gpui::relative(self.progress))
                                 )
                         )
