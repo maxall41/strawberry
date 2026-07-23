@@ -231,7 +231,7 @@ impl Pipeline {
                     }
                     if let Err(e) = self.process_from(*index).await {
                         self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::UserFeedback(format!(
+                            FrontendMessage::error(format!(
                                 "Pipeline processing failed at stage {index}: {e}"
                             )),
                         ))?;
@@ -245,11 +245,11 @@ impl Pipeline {
                             .await?;
                         out_img.save(file)?;
                         self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::UserFeedback("Image saved successfully!".to_string()),
+                            FrontendMessage::success("Image saved successfully!".to_string()),
                         ))?;
                     } else {
                         self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::UserFeedback(
+                            FrontendMessage::error(
                                 "No image in output buffer to save!".to_string(),
                             ),
                         ))?;
@@ -271,7 +271,7 @@ impl Pipeline {
                                 Err(e) => {
                                     eprintln!("Error decoding image: {}", e);
                                     self.output_sender.send(PipelineCommand::FrontendMessage(
-                                        FrontendMessage::UserFeedback(
+                                        FrontendMessage::error(
                                             "Failed to decode image!".to_string(),
                                         ),
                                     ))?;
@@ -281,7 +281,7 @@ impl Pipeline {
                             Err(e) => {
                                 eprintln!("Error loading image: {}", e);
                                 self.output_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::UserFeedback(
+                                    FrontendMessage::error(
                                         "Failed to load image!".to_string(),
                                     ),
                                 ))?;
@@ -294,7 +294,7 @@ impl Pipeline {
                         let first_size = sizes[0];
                         if !sizes.iter().all(|&size| size == first_size) {
                             self.output_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::UserFeedback(
+                                FrontendMessage::error(
                                     "Error: All images must have the same dimensions".to_string(),
                                 ),
                             ))?;
@@ -320,7 +320,7 @@ impl Pipeline {
 
                     if let Err(e) = self.process_from(0).await {
                         let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::UserFeedback(format!("Failed to process images: {e}")),
+                            FrontendMessage::error(format!("Failed to process images: {e}")),
                         ));
                     }
                 }
@@ -337,7 +337,7 @@ impl Pipeline {
                         );
                         if let Err(e) = sender.send(PipelineCommand::FrontendMessage(r)) {
                             let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::UserFeedback(format!(
+                                FrontendMessage::error(format!(
                                     "Communication error with frontend: {e}"
                                 )),
                             ));
@@ -361,7 +361,7 @@ impl Pipeline {
 
                     if let Err(e) = sender.send(PipelineCommand::FrontendMessage(r)) {
                         let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::UserFeedback(format!(
+                            FrontendMessage::error(format!(
                                 "Communication error with frontend: {e}"
                             )),
                         ));
@@ -394,7 +394,7 @@ impl Pipeline {
                     println!("CLI Pipeline load");
                     if let Err(e) = self.process_from(0).await {
                         let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::UserFeedback(format!(
+                            FrontendMessage::error(format!(
                                 "Failed to process loaded pipeline: {e}"
                             )),
                         ));
@@ -409,7 +409,7 @@ impl Pipeline {
                             recv.send(PipelineCommand::HandleClick(*image_pixel_x, *image_pixel_y))
                         {
                             let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::UserFeedback(format!(
+                                FrontendMessage::error(format!(
                                     "Failed to process click event: {e}"
                                 )),
                             ));
@@ -453,13 +453,13 @@ impl Pipeline {
             .map(|tool| tool.receive_messages());
         if let Err(e) = try_join_all(futures).await {
             let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                FrontendMessage::UserFeedback(format!("Error processing tool messages: {e}")),
+                FrontendMessage::error(format!("Error processing tool messages: {e}")),
             ));
         }
 
         if let Err(e) = self.tool_manager.receive_messages().await {
             let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                FrontendMessage::UserFeedback(format!("Tool manager communication error: {e}")),
+                FrontendMessage::error(format!("Tool manager communication error: {e}")),
             ));
         }
 

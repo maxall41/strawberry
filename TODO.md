@@ -28,9 +28,9 @@
 - [X] Make sure CMD+Q quit app shortcut works
 - [X] Color bar got removed from counter GUI somehow?
 - [X] Nerve tracer w/A*
-- [ ] If toast is error make time bar red and if sucessfull make it green
-- [ ] Refactor frontend message handling
-- [ ] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
+- [X] If toast is error make time bar red and if sucessfull make it green
+- [X] Refactor frontend message handling
+- [X] Cleanup BackendTool trait so tool manager does not need to have a bunch of stuff it doesn't need
 
 
 - [X] If tokio backend panics handle it properly
@@ -45,7 +45,7 @@
 - [X] Strawberry does not respect type name in XML counts format in frontend GUI
 - [X] Counter should be enabled when counts are loaded
 - [X] Default folder when clicking "Save" in counter should be the folder the counts were loaded from if applicable
-- [ ] Movement of the "Camera" is jerky
+- [X] Movement of the "Camera" is jerky
 - [ ] Turning a layer or adjusting contrast (or anything that pushes new image to viewer) on and off snaps the viewport back to the current review index.
 - [ ] Build actual macos .app
 - [ ] Turning on and off compositor does not actually enable/disable on backend

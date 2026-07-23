@@ -16,8 +16,9 @@ use std::{fs, panic};
 use strawberry_backend::Pipeline;
 use strawberry_types::{
     overlay::{CircleStyle, OverlayCollection, OverlayElement},
-    FrontendMessage, PipelineCommand, ToolFrontend,
+    FeedbackLevel, FrontendMessage, PipelineCommand, ToolFrontend,
 };
+use tokio::sync::broadcast;
 use tools::compositor::CompositorView;
 use tools::contrast::ContrastView;
 use tools::counter::CounterView;
@@ -88,102 +89,88 @@ struct PrimaryViewer {
 
 impl PrimaryViewer {
     pub fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut receiver_ref = self.command_receiver.resubscribe();
+        let mut receiver = self.command_receiver.resubscribe();
 
         // Request initial overlays
         if let Err(e) = self.command_sender.send(PipelineCommand::RequestOverlays) {
             eprintln!("Failed to request overlays: {e}");
         }
 
-        cx.spawn_in(window, async move |this, cx| {
-            loop {
-                if let Ok(command) = receiver_ref.try_recv() {
-                    match command {
-                        PipelineCommand::Output(output) => {
-                            let frame = Frame::new(output);
-                            let img_frames = vec![frame];
-                            let img_data = Arc::new(RenderImage::new(img_frames));
+        cx.spawn_in(window, async move |this, cx| loop {
+            let command = match receiver.recv().await {
+                Ok(command) => command,
+                // Lagging only means we missed some broadcasts (e.g. bursts of
+                // our own outgoing commands); newer messages are still coming.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
 
-                            if let Err(e) = this.update(cx, |this, cx| {
-                                let new_width = img_data.size(0).width.0 as u32;
-                                let new_height = img_data.size(0).height.0 as u32;
-
-                                if new_width != this.original_width
-                                    || new_height != this.original_height
-                                {
-                                    if let Some(viewport) = this.last_viewport_size {
-                                        let viewport_width = viewport.width;
-                                        let viewport_height = viewport.height;
-                                        let zoom = this.zoom_level;
-
-                                        this.pan_x = (viewport_width.to_f64() as f32 / 2.0)
-                                            - ((new_width as f32 / 2.0) * zoom);
-                                        this.pan_y = (viewport_height.to_f64() as f32 / 2.0)
-                                            - ((new_height as f32 / 2.0) * zoom);
-                                    }
-                                }
-
-                                this.original_width = new_width;
-                                this.original_height = new_height;
-                                this.display_image = ImageSource::Render(img_data);
-                                this.image_loaded = true;
-                                cx.notify();
-                            }) {
-                                eprintln!("Failed to update display image: {e}");
-                            }
-
-                            // Request overlays after image update
-                            let _ = this.update(cx, |this, _| {
-                                let _ = this.command_sender.send(PipelineCommand::RequestOverlays);
-                            });
-
-                            println!("Image updated");
-                        }
-                        PipelineCommand::FrontendMessage(msg) => match msg {
-                            FrontendMessage::UserFeedback(text) => {
-                                println!("Toast added {}", text);
-                                let raw_modal = FeedbackModal::new(text);
-                                let modal = cx.new(|cx| {
-                                    raw_modal.enable_auto_close(cx);
-                                    raw_modal
-                                });
-                                if let Err(e) = this.update(cx, |this, cx| {
-                                    this.toasts
-                                        .retain(|toast| !toast.read(cx).marked_for_deletion);
-                                    this.toasts.push(
-                                        modal.expect("Modal entity should be created successfully"),
-                                    );
-                                    cx.notify();
-                                }) {
-                                    eprintln!("Failed to add toast: {e}");
-                                }
-                            }
-                            FrontendMessage::ReturnOverlays(overlays) => {
-                                if let Err(e) = this.update(cx, |this, cx| {
-                                    this.overlays = overlays;
-                                    cx.notify();
-                                }) {
-                                    eprintln!("Failed to update overlays: {e}");
-                                }
-                            }
-                            FrontendMessage::SnapToPosition(x, y) => {
-                                if let Err(e) = this.update(cx, |this, _cx| {
-                                    this.snap_target = Some((x, y));
-                                }) {
-                                    eprintln!("Failed to set snap target: {e}");
-                                }
-                            }
-                            _ => {}
-                        },
-                        _ => {}
-                    }
+            let result = match command {
+                PipelineCommand::Output(image) => {
+                    this.update(cx, |this, cx| this.show_output(image, cx))
                 }
-                cx.background_executor()
-                    .timer(Duration::from_millis(33))
-                    .await; // 30 FPS
+                PipelineCommand::FrontendMessage(msg) => match msg {
+                    FrontendMessage::UserFeedback(text, level) => {
+                        this.update(cx, |this, cx| this.add_toast(text, level, cx))
+                    }
+                    FrontendMessage::ReturnOverlays(overlays) => this.update(cx, |this, cx| {
+                        this.overlays = overlays;
+                        cx.notify();
+                    }),
+                    FrontendMessage::SnapToPosition(x, y) => this.update(cx, |this, _cx| {
+                        this.snap_target = Some((x, y));
+                    }),
+                    _ => Ok(()),
+                },
+                _ => Ok(()),
+            };
+
+            // The only update failure is the viewer being gone (window closed).
+            if result.is_err() {
+                break;
             }
         })
         .detach();
+    }
+
+    fn show_output(&mut self, image: RgbaImage, cx: &mut Context<Self>) {
+        let img_data = Arc::new(RenderImage::new(vec![Frame::new(image)]));
+        let new_width = img_data.size(0).width.0 as u32;
+        let new_height = img_data.size(0).height.0 as u32;
+
+        // Center the viewport on the new image unless its dimensions match the
+        // current one (then it's just a reprocessed frame; keep the camera put).
+        if new_width != self.original_width || new_height != self.original_height {
+            if let Some(viewport) = self.last_viewport_size {
+                self.pan_x = (viewport.width.to_f64() as f32 / 2.0)
+                    - ((new_width as f32 / 2.0) * self.zoom_level);
+                self.pan_y = (viewport.height.to_f64() as f32 / 2.0)
+                    - ((new_height as f32 / 2.0) * self.zoom_level);
+            }
+        }
+
+        self.original_width = new_width;
+        self.original_height = new_height;
+        self.display_image = ImageSource::Render(img_data);
+        self.image_loaded = true;
+        cx.notify();
+
+        if let Err(e) = self.command_sender.send(PipelineCommand::RequestOverlays) {
+            eprintln!("Failed to request overlays after image update: {e}");
+        }
+    }
+
+    fn add_toast(&mut self, text: String, level: FeedbackLevel, cx: &mut Context<Self>) {
+        println!("Toast added {}", text);
+        let modal = cx.new(|cx| {
+            let modal = FeedbackModal::new(text, level);
+            modal.enable_auto_close(cx);
+            modal
+        });
+        self.toasts
+            .retain(|toast| !toast.read(cx).marked_for_deletion);
+        self.toasts.push(modal);
+        cx.notify();
     }
 
     fn handle_open_file(&mut self, _: &OpenFile, _window: &mut Window, cx: &mut Context<Self>) {

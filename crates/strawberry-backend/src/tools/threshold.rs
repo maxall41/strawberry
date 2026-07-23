@@ -46,7 +46,7 @@ impl ToolBackend for Threshold {
                 Ok(img) => img,
                 Err(e) => {
                     self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Threshold error: {e}")),
+                        FrontendMessage::error(format!("Threshold error: {e}")),
                     ))?;
                     return Err(e);
                 }

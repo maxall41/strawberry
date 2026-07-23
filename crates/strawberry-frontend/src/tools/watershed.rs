@@ -13,8 +13,7 @@ use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
 use crate::tools::{spawn_message_processor, FrontendMessageHandler};
 use strawberry_types::{
-    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolState,
-    WatershedMessage, WatershedState,
+    PipelineCommand, PipelineObjectMessage, ToolState, WatershedMessage, WatershedState,
 };
 
 use strawberry_types::ToolFrontend;
@@ -316,21 +315,9 @@ impl ToolFrontend for WatershedView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.base.receive_channel = Some(receiver);
-        self.base.focus_handle = Some(cx.focus_handle());
-        if let Err(e) = self
-            .base
-            .command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Watershed,
-                sender,
-            ))
-        {
-            eprintln!("Failed to send backend discovery request: {e}");
+        if !self.base.connect(cx.focus_handle()) {
             return;
         }
-        println!("Sent discovery request to backend | Watershed");
 
         cx.bind_keys([KeyBinding::new("cmd-t", WatershedToggleActivity, None)]);
 

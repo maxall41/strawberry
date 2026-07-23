@@ -13,8 +13,7 @@ use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
-    BackendToolType, ContrastMessage, ContrastState, FrontendMessage, PipelineCommand,
-    PipelineObjectMessage, ToolState,
+    ContrastMessage, ContrastState, PipelineCommand, PipelineObjectMessage, ToolState,
 };
 
 use strawberry_types::ToolFrontend;
@@ -49,79 +48,6 @@ impl ContrastView {
                 strawberry_types::BackendToolType::Contrast,
             ),
         }
-    }
-
-    pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.base.receive_channel = Some(receiver);
-        if let Err(e) = self
-            .base
-            .command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Contrast,
-                sender,
-            ))
-        {
-            eprintln!("Failed to send backend discovery request: {e}");
-            return;
-        }
-        println!("Sent discovery request to backend | Contrast");
-
-        // Create and initialize ValueControl components
-        let state = self
-            .state
-            .read()
-            .expect("State lock should not be poisoned")
-            .clone();
-        let min_control = cx.new(|cx| {
-            ValueControl::new(
-                format!("{:.3}", state.min),
-                state.min,
-                "Min".to_string(),
-                0.01,
-                "min".to_string(),
-                0.0,
-                1.0,
-            )
-        });
-
-        let max_control = cx.new(|cx| {
-            ValueControl::new(
-                format!("{:.3}", state.max),
-                state.max,
-                "Max".to_string(),
-                0.01,
-                "max".to_string(),
-                0.0,
-                1.0,
-            )
-        });
-
-        // Handle ValueControl events
-        cx.subscribe(
-            &min_control,
-            |this, _control, event: &ValueControlEvent, _cx| {
-                if event.id == "min" {
-                    this.adjust_min_value(event.value);
-                }
-            },
-        )
-        .detach();
-
-        cx.subscribe(
-            &max_control,
-            |this, _control, event: &ValueControlEvent, _cx| {
-                if event.id == "max" {
-                    this.adjust_max_value(event.value);
-                }
-            },
-        )
-        .detach();
-
-        self.min_control = Some(min_control);
-        self.max_control = Some(max_control);
-
-        self.process_messages(window, cx);
     }
 
     fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -397,21 +323,9 @@ impl ToolFrontend for ContrastView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.base.receive_channel = Some(receiver);
-        self.base.focus_handle = Some(cx.focus_handle());
-        if let Err(e) = self
-            .base
-            .command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Contrast,
-                sender,
-            ))
-        {
-            eprintln!("Failed to send backend discovery request: {e}");
+        if !self.base.connect(cx.focus_handle()) {
             return;
         }
-        println!("Sent discovery request to backend | Contrast");
 
         cx.bind_keys([KeyBinding::new("cmd-t", ContrastToggleActivity, None)]);
 

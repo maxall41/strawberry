@@ -54,7 +54,7 @@ impl ToolBackend for LocalMaxima {
                 Ok(img) => img,
                 Err(e) => {
                     self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Local Maxima error: {e}")),
+                        FrontendMessage::error(format!("Local Maxima error: {e}")),
                     ))?;
                     return Err(e);
                 }

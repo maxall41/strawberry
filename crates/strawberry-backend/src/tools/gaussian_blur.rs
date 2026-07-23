@@ -42,7 +42,7 @@ impl ToolBackend for GaussianBlur {
                 Ok(img) => img,
                 Err(e) => {
                     self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Gaussian Blur error: {e}")),
+                        FrontendMessage::error(format!("Gaussian Blur error: {e}")),
                     ))?;
                     return Err(e);
                 }

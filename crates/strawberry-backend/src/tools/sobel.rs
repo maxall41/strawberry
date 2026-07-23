@@ -48,7 +48,7 @@ impl ToolBackend for Sobel {
                 Ok(img) => img,
                 Err(e) => {
                     self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Sobel error: {e}")),
+                        FrontendMessage::error(format!("Sobel error: {e}")),
                     ))?;
                     return Err(e);
                 }

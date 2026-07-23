@@ -14,8 +14,7 @@ use crate::gui::ToggleButton;
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_processing::morphology::MorphologyOperation;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, MorphologyMessage, MorphologyState, PipelineCommand,
-    PipelineObjectMessage, ToolState,
+    MorphologyMessage, MorphologyState, PipelineCommand, PipelineObjectMessage, ToolState,
 };
 
 use strawberry_types::ToolFrontend;
@@ -457,21 +456,9 @@ impl ToolFrontend for MorphologyView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (sender, receiver) = flume::unbounded();
-        self.base.receive_channel = Some(receiver);
-        self.base.focus_handle = Some(cx.focus_handle());
-        if let Err(e) = self
-            .base
-            .command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                BackendToolType::Morphology,
-                sender,
-            ))
-        {
-            eprintln!("Failed to send backend discovery request: {e}");
+        if !self.base.connect(cx.focus_handle()) {
             return;
         }
-        println!("Sent discovery request to backend | Morphology");
 
         cx.bind_keys([KeyBinding::new("cmd-t", MorphologyToggleActivity, None)]);
 

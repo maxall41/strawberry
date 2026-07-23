@@ -42,7 +42,7 @@ impl ToolBackend for Grayscale {
                 Ok(img) => img,
                 Err(e) => {
                     self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Grayscale error: {e}")),
+                        FrontendMessage::error(format!("Grayscale error: {e}")),
                     ))?;
                     return Err(e);
                 }

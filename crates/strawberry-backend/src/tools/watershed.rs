@@ -46,7 +46,7 @@ impl ToolBackend for Watershed {
                 Ok(img) => img,
                 Err(e) => {
                     self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::UserFeedback(format!("Watershed error: {e}")),
+                        FrontendMessage::error(format!("Watershed error: {e}")),
                     ))?;
                     return Err(e);
                 }
