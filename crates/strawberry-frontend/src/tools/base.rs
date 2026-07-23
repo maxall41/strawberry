@@ -12,6 +12,10 @@ pub struct ToolBase {
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     pub focus_handle: Option<FocusHandle>,
     pub cleanup_guard: crate::tools::CleanupGuard,
+    // Exactly one message-processor task may consume receive_channel: flume is
+    // MPMC, so a second consumer steals messages and states get applied out of
+    // order, leaving the view showing stale backend state.
+    pub processor_spawned: bool,
 }
 
 impl ToolBase {
@@ -28,6 +32,7 @@ impl ToolBase {
             receive_channel: None,
             focus_handle: None,
             cleanup_guard: crate::tools::CleanupGuard::new(command_sender, backend_type),
+            processor_spawned: false,
         }
     }
 

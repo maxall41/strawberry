@@ -192,8 +192,10 @@ impl ToolBackend for Counter {
                     ))?;
                 }
                 PipelineCommand::HandleClick(x, y) => {
+                    // `continue`, not `return`: bailing out of the whole batch
+                    // would silently drop every command drained after this one.
                     if !self.state.is_enabled {
-                        return Ok(());
+                        continue;
                     }
                     if let Some(id) = self.state.active_count_type {
                         match self.state.active_tool {
@@ -247,7 +249,7 @@ impl ToolBackend for Counter {
                 }
                 PipelineCommand::InteractionStart(x, y) => {
                     if !self.state.is_enabled {
-                        return Ok(());
+                        continue;
                     }
                     if self.state.active_tool == Some(CounterTool::LassoDelete) {
                         self.is_lasso_dragging = true;
@@ -333,6 +335,9 @@ impl ToolBackend for Counter {
                         }
                         CountMessage::SetActiveCountType(id) => {
                             self.state.active_count_type = Some(id);
+                            // The review cursor is per-tool, not per-type; reset it so
+                            // it can't dangle past the end of a shorter list.
+                            self.state.review_current_index = 0;
                         }
                         CountMessage::SetActiveTool(tool) => {
                             self.state.active_tool = tool;
@@ -341,6 +346,12 @@ impl ToolBackend for Counter {
                             self.state.manual_counts.remove(&id);
                             self.state.count_type_visibility.remove(&id);
                             self.state.count_type_names.remove(&id);
+                            // Never let active_count_type dangle
+                            if self.state.active_count_type == Some(id) {
+                                self.state.active_count_type =
+                                    self.state.manual_counts.keys().min().copied();
+                                self.state.review_current_index = 0;
+                            }
                         }
                         CountMessage::ToggleCountTypeVisibility(id) => {
                             let current_visibility =
@@ -379,9 +390,7 @@ impl ToolBackend for Counter {
                                 return Err(anyhow::anyhow!("Error saving counts to file: {}", e));
                             }
                             self.global_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::success(
-                                    "Counts saved successfully!".to_string(),
-                                ),
+                                FrontendMessage::success("Counts saved successfully!".to_string()),
                             ))?;
                         }
                         CountMessage::LoadCounts(file) => {
@@ -423,7 +432,11 @@ impl ToolBackend for Counter {
                             }
                         }
                         CountMessage::CopyToManual => {
-                            let new_key = self.state.manual_counts.len() as u16;
+                            // `len()` collides with existing ids once types have
+                            // been deleted; pick the first genuinely free id.
+                            let new_key = (0..)
+                                .find(|k| !self.state.manual_counts.contains_key(k))
+                                .expect("fewer than u16::MAX count types");
                             self.state
                                 .manual_counts
                                 .insert(new_key, self.state.auto_counts.clone());
@@ -432,17 +445,21 @@ impl ToolBackend for Counter {
                                 .count_type_names
                                 .insert(new_key, format!("Type {}", new_key));
                             self.state.mode = CounterMode::Manual;
-                            self.state.active_count_type = Some(0)
+                            self.state.active_count_type = Some(new_key);
+                            self.state.review_current_index = 0;
                         }
                         CountMessage::ReviewNavigatePrevious => {
                             if let Some(active_count_type) = self.state.active_count_type {
                                 if let Some(counts) =
                                     self.state.manual_counts.get(&active_count_type)
                                 {
-                                    let current_index = self.state.review_current_index;
                                     let counts_len = counts.len();
 
                                     if counts_len > 0 {
+                                        // Clamp: the cursor can be stale when counts were
+                                        // trimmed outside review (Delete tool, lasso).
+                                        let current_index =
+                                            self.state.review_current_index.min(counts_len - 1);
                                         let new_index = if current_index == 0 {
                                             counts_len - 1
                                         } else {
@@ -470,10 +487,13 @@ impl ToolBackend for Counter {
                                 if let Some(counts) =
                                     self.state.manual_counts.get(&active_count_type)
                                 {
-                                    let current_index = self.state.review_current_index;
                                     let counts_len = counts.len();
 
                                     if counts_len > 0 {
+                                        // Clamp: the cursor can be stale when counts were
+                                        // trimmed outside review (Delete tool, lasso).
+                                        let current_index =
+                                            self.state.review_current_index.min(counts_len - 1);
                                         let new_index = (current_index + 1) % counts_len;
                                         self.state.review_current_index = new_index;
 
@@ -497,26 +517,32 @@ impl ToolBackend for Counter {
                                 if let Some(counts) =
                                     self.state.manual_counts.get_mut(&active_count_type)
                                 {
-                                    let current_index = self.state.review_current_index;
-
-                                    if current_index < counts.len() {
+                                    if !counts.is_empty() {
+                                        // Clamp instead of the old `index < len` guard: a
+                                        // stale cursor (counts trimmed outside review) must
+                                        // still delete something, not silently no-op.
+                                        let current_index =
+                                            self.state.review_current_index.min(counts.len() - 1);
                                         counts.remove(current_index);
 
-                                        // Adjust review index if necessary
-                                        if counts.is_empty() {
-                                            self.state.review_current_index = 0;
-                                        } else if current_index >= counts.len() {
-                                            self.state.review_current_index = counts.len() - 1;
-                                        }
-                                        let count = &counts[self.state.review_current_index];
-                                        let _ = self.global_sender.send(
-                                            PipelineCommand::FrontendMessage(
-                                                FrontendMessage::SnapToPosition(
-                                                    count.position.0 as f32,
-                                                    count.position.1 as f32,
+                                        self.state.review_current_index = if counts.is_empty() {
+                                            0
+                                        } else {
+                                            current_index.min(counts.len() - 1)
+                                        };
+                                        // Deleting the last count leaves nothing to snap to.
+                                        if let Some(count) =
+                                            counts.get(self.state.review_current_index)
+                                        {
+                                            let _ = self.global_sender.send(
+                                                PipelineCommand::FrontendMessage(
+                                                    FrontendMessage::SnapToPosition(
+                                                        count.position.0 as f32,
+                                                        count.position.1 as f32,
+                                                    ),
                                                 ),
-                                            ),
-                                        );
+                                            );
+                                        }
                                     }
                                 }
                             }

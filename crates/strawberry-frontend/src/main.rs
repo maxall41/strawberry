@@ -96,38 +96,75 @@ impl PrimaryViewer {
             eprintln!("Failed to request overlays: {e}");
         }
 
-        cx.spawn_in(window, async move |this, cx| loop {
-            let command = match receiver.recv().await {
-                Ok(command) => command,
-                // Lagging only means we missed some broadcasts (e.g. bursts of
-                // our own outgoing commands); newer messages are still coming.
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
-            };
+        cx.spawn_in(window, async move |this, cx| {
+            let mut closed = false;
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(33))
+                    .await;
 
-            let result = match command {
-                PipelineCommand::Output(image) => {
-                    this.update(cx, |this, cx| this.show_output(image, cx))
-                }
-                PipelineCommand::FrontendMessage(msg) => match msg {
-                    FrontendMessage::UserFeedback(text, level) => {
-                        this.update(cx, |this, cx| this.add_toast(text, level, cx))
+                let mut latest_output = None;
+                let mut latest_overlays = None;
+                let mut latest_snap = None;
+                let mut toasts = Vec::new();
+
+                loop {
+                    match receiver.try_recv() {
+                        Ok(PipelineCommand::Output(image)) => latest_output = Some(image),
+                        Ok(PipelineCommand::FrontendMessage(msg)) => match msg {
+                            FrontendMessage::UserFeedback(text, level) => {
+                                toasts.push((text, level))
+                            }
+                            FrontendMessage::ReturnOverlays(overlays) => {
+                                latest_overlays = Some(overlays)
+                            }
+                            FrontendMessage::SnapToPosition(x, y) => latest_snap = Some((x, y)),
+                            _ => {}
+                        },
+                        Ok(_) => {}
+                        // Lagging only means we missed some broadcasts (e.g.
+                        // bursts of our own outgoing commands); keep draining.
+                        Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::TryRecvError::Empty) => break,
+                        Err(broadcast::error::TryRecvError::Closed) => {
+                            closed = true;
+                            break;
+                        }
                     }
-                    FrontendMessage::ReturnOverlays(overlays) => this.update(cx, |this, cx| {
-                        this.overlays = overlays;
-                        cx.notify();
-                    }),
-                    FrontendMessage::SnapToPosition(x, y) => this.update(cx, |this, _cx| {
-                        this.snap_target = Some((x, y));
-                    }),
-                    _ => Ok(()),
-                },
-                _ => Ok(()),
-            };
+                }
 
-            // The only update failure is the viewer being gone (window closed).
-            if result.is_err() {
-                break;
+                if latest_output.is_none()
+                    && latest_overlays.is_none()
+                    && latest_snap.is_none()
+                    && toasts.is_empty()
+                {
+                    if closed {
+                        break;
+                    }
+                    continue;
+                }
+
+                let result = this.update(cx, |this, cx| {
+                    for (text, level) in toasts {
+                        this.add_toast(text, level, cx);
+                    }
+                    if let Some(image) = latest_output {
+                        this.show_output(image, cx);
+                    }
+                    if let Some(overlays) = latest_overlays {
+                        this.overlays = overlays;
+                    }
+                    if let Some((x, y)) = latest_snap {
+                        this.snap_target = Some((x, y));
+                    }
+                    cx.notify();
+                });
+
+                // The only update failure is the viewer being gone (window
+                // closed).
+                if result.is_err() || closed {
+                    break;
+                }
             }
         })
         .detach();
