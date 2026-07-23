@@ -83,10 +83,18 @@ pub trait FrontendMessageHandler: Sized + 'static {
 }
 
 pub fn spawn_message_processor<V: FrontendMessageHandler>(
-    view: &V,
+    view: &mut V,
     window: &mut Window,
     cx: &mut Context<V>,
 ) {
+    // The receive channel is flume (MPMC): a second consumer task would steal
+    // messages and race state application out of order, so the view could end
+    // up displaying stale backend state forever. Spawn exactly once per view.
+    if view.base().processor_spawned {
+        return;
+    }
+    view.base_mut().processor_spawned = true;
+
     let state = view.state_arc();
     let receiver = view
         .base()

@@ -716,8 +716,6 @@ impl FrontendMessageHandler for NerveTracerView {
 
 impl Render for NerveTracerView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.process_messages(_window, cx);
-
         let state = match self.state.read() {
             Ok(state) => state,
             Err(e) => {

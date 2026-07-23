@@ -32,13 +32,22 @@ enum DedupKey {
     Watershed(Discriminant<WatershedMessage>),
 }
 
-fn dedup_key(command: &PipelineCommand) -> DedupKey {
+/// `None` means the command must never be deduplicated. Debouncing is only
+/// valid for messages that set an absolute value (last write wins); imperative
+/// messages like "delete the current count" or "navigate once" are relative,
+/// so each occurrence in a batch (e.g. from key-repeat) must be applied.
+fn dedup_key(command: &PipelineCommand) -> Option<DedupKey> {
     let PipelineCommand::PipelineObject(message) = command else {
-        return DedupKey::Command(discriminant(command));
+        return Some(DedupKey::Command(discriminant(command)));
     };
-    match message {
+    Some(match message {
         PipelineObjectMessage::CompositorMessage(m) => DedupKey::Compositor(discriminant(m)),
         PipelineObjectMessage::ContrastMessage(m) => DedupKey::Contrast(discriminant(m)),
+        PipelineObjectMessage::CountMessage(
+            CountMessage::DeleteCurrentCount
+            | CountMessage::ReviewNavigateNext
+            | CountMessage::ReviewNavigatePrevious,
+        ) => return None,
         PipelineObjectMessage::CountMessage(m) => DedupKey::Count(discriminant(m)),
         PipelineObjectMessage::DecomposerMessage(m) => DedupKey::Decomposer(discriminant(m)),
         PipelineObjectMessage::GaussianBlurMessage(m) => DedupKey::GaussianBlur(discriminant(m)),
@@ -51,7 +60,7 @@ fn dedup_key(command: &PipelineCommand) -> DedupKey {
         PipelineObjectMessage::ThresholdMessage(m) => DedupKey::Threshold(discriminant(m)),
         PipelineObjectMessage::WatershedMessage(m) => DedupKey::Watershed(discriminant(m)),
         PipelineObjectMessage::ToggleActive(_) => DedupKey::Object(discriminant(message)),
-    }
+    })
 }
 
 /// Collects and deduplicates commands from a *flume* receiver, keeping only
@@ -66,7 +75,11 @@ pub fn collect_and_deduplicate_commands(
         let mut deduplicated = Vec::new();
 
         for command in commands.into_iter().rev() {
-            if seen_keys.insert(dedup_key(&command)) {
+            let keep = match dedup_key(&command) {
+                Some(key) => seen_keys.insert(key),
+                None => true,
+            };
+            if keep {
                 deduplicated.push(command);
             }
         }

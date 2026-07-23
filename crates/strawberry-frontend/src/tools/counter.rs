@@ -1419,14 +1419,11 @@ impl CounterView {
     fn render_review_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement {
         let current_index = state.review_current_index;
 
-        let review_counts = if let Some(active_count_type) = state.active_count_type {
-            state
-                .manual_counts
-                .get(&active_count_type)
-                .expect("active_count_type should exist in manual_counts")
-        } else {
-            &vec![]
-        };
+        static EMPTY: Vec<CountData> = Vec::new();
+        let review_counts = state
+            .active_count_type
+            .and_then(|id| state.manual_counts.get(&id))
+            .unwrap_or(&EMPTY);
 
         if review_counts.is_empty() {
             return div().p_3().bg(theme::SURFACE).rounded_md().child(
@@ -1705,8 +1702,6 @@ impl FrontendMessageHandler for CounterView {
 
 impl Render for CounterView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.process_messages(_window, cx);
-
         let state = match self.state.read() {
             Ok(state) => state,
             Err(e) => {
