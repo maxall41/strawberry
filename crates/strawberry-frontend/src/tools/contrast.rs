@@ -141,6 +141,8 @@ impl ContrastView {
             .py_1()
             .rounded_md()
             .bg(theme::CONTROL)
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::CONTROL_HOVER))
             .text_sm()
             .text_center()
             .child(label)

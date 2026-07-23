@@ -439,7 +439,6 @@ impl ToolBackend for Counter {
                                 if let Some(counts) =
                                     self.state.manual_counts.get(&active_count_type)
                                 {
-                                    let current_index = self.state.review_current_index;
                                     let counts_len = counts.len();
 
                                     if counts_len > 0 {
@@ -470,7 +469,6 @@ impl ToolBackend for Counter {
                                 if let Some(counts) =
                                     self.state.manual_counts.get(&active_count_type)
                                 {
-                                    let current_index = self.state.review_current_index;
                                     let counts_len = counts.len();
 
                                     if counts_len > 0 {

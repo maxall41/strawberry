@@ -231,6 +231,14 @@ impl MorphologyView {
             } else {
                 theme::CONTROL
             })
+            .cursor_pointer()
+            .hover(move |style| {
+                style.bg(if is_selected {
+                    theme::ACCENT_HOVER
+                } else {
+                    theme::CONTROL_HOVER
+                })
+            })
             .text_sm()
             .text_center()
             .child(label)
@@ -280,6 +288,8 @@ impl MorphologyView {
             .py_1()
             .rounded_md()
             .bg(theme::CONTROL)
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::CONTROL_HOVER))
             .text_sm()
             .text_center()
             .child(label)
