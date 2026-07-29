@@ -7,6 +7,10 @@ use strawberry_types::{
     PipelineObjectMessage, RollingBallMessage, SobelMessage, ThresholdMessage, WatershedMessage,
 };
 
+/// Deduplication is currently disabled, as it is a font of bugs, and should not have signfigant performance implications in almost all cases.
+/// As of now, new deduplication keys should not be added for new tools unless it is considered nessecary.
+const DEDUPLICATE_COMMANDS: bool = false;
+
 /// Debounce key for a command. Keying on the `PipelineCommand` discriminant
 /// alone would collapse every `PipelineObject` message into one bucket, so
 /// unrelated messages sent in the same batch would swallow each other (e.g. a
@@ -63,14 +67,15 @@ fn dedup_key(command: &PipelineCommand) -> Option<DedupKey> {
     })
 }
 
-/// Collects and deduplicates commands from a *flume* receiver, keeping only
-/// the last occurrence of each message variant (see [`DedupKey`]).
+/// Drains all pending commands from a *flume* receiver in order. When
+/// [`DEDUPLICATE_COMMANDS`] is enabled, keeps only the last occurrence of
+/// each message variant (see [`DedupKey`]).
 pub fn collect_and_deduplicate_commands(
     receiver: &flume::Receiver<PipelineCommand>,
 ) -> Vec<PipelineCommand> {
     let commands: Vec<_> = std::iter::from_fn(|| receiver.try_recv().ok()).collect();
 
-    if commands.len() > 1 {
+    if DEDUPLICATE_COMMANDS && commands.len() > 1 {
         let mut seen_keys = HashSet::new();
         let mut deduplicated = Vec::new();
 
