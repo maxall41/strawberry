@@ -288,7 +288,7 @@ impl Render for SobelView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<SobelView>| {
-                        this.focus_handle(cx).focus(window);
+                        this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })

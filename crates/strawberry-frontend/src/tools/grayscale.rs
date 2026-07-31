@@ -152,7 +152,7 @@ impl Render for GrayscaleView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<GrayscaleView>| {
-                        this.focus_handle(cx).focus(window);
+                        this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })

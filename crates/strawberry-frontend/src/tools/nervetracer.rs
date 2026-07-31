@@ -751,7 +751,7 @@ impl Render for NerveTracerView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<NerveTracerView>| {
-                        this.focus_handle(cx).focus(window);
+                        this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })

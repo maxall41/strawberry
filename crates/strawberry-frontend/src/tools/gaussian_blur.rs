@@ -245,7 +245,7 @@ impl Render for GaussianBlurView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<GaussianBlurView>| {
-                        this.focus_handle(cx).focus(window);
+                        this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })

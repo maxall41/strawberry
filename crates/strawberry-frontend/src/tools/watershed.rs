@@ -284,7 +284,7 @@ impl Render for WatershedView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<WatershedView>| {
-                        this.focus_handle(cx).focus(window);
+                        this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })

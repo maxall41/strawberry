@@ -1,6 +1,6 @@
 use anyhow::Result;
 use gpui::{
-    actions, div, img, prelude::*, px, rgb, size, App, AppContext, Application, AssetSource,
+    actions, div, img, prelude::*, px, rgb, size, App, AppContext, AssetSource,
     Bounds, Context, Entity, ExternalPaths, FocusHandle, Focusable, ImageSource, KeyBinding,
     KeyDownEvent, KeyUpEvent, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     Point, RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
@@ -551,7 +551,7 @@ impl Render for PrimaryViewer {
         }
 
         // Ensure this element is always focused
-        window.focus(&self.focus_handle(cx));
+        window.focus(&self.focus_handle(cx), cx);
 
         let mut _img = img(self.display_image.clone())
             .use_nearest_filter(true)
@@ -779,7 +779,7 @@ async fn main() -> Result<()> {
 
     let image_directory: Arc<RwLock<Option<PathBuf>>> = Arc::new(RwLock::new(None));
 
-    Application::new()
+    gpui_platform::application()
         .with_assets(Assets {
             base: manifest_dir.join("examples"),
         })
@@ -915,21 +915,12 @@ async fn main() -> Result<()> {
             ]);
 
             cx.set_menus(vec![
-                Menu {
-                    name: "Strawberry".into(),
-                    items: vec![MenuItem::action("Quit", Quit)],
-                },
-                Menu {
-                    name: "File".into(),
-                    items: vec![
-                        MenuItem::action("Load Images...", OpenFile),
-                        MenuItem::action("Save Image", SaveImage),
-                    ],
-                },
-                Menu {
-                    name: "Tools".into(),
-                    items: tool_menu_items,
-                },
+                Menu::new("Strawberry").items([MenuItem::action("Quit", Quit)]),
+                Menu::new("File").items([
+                    MenuItem::action("Load Images...", OpenFile),
+                    MenuItem::action("Save Image", SaveImage),
+                ]),
+                Menu::new("Tools").items(tool_menu_items),
             ]);
 
             let window_options = WindowOptions {
@@ -999,7 +990,7 @@ async fn main() -> Result<()> {
                 ]);
 
                 // Focus the viewer so it can receive key events
-                window.focus(&viewer.read(cx).focus_handle(cx));
+                window.focus(&viewer.read(cx).focus_handle(cx), cx);
 
                 viewer
             }) {

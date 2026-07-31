@@ -328,7 +328,7 @@ impl Render for DecomposerView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<DecomposerView>| {
-                        this.focus_handle(cx).focus(window);
+                        this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })

@@ -416,7 +416,7 @@ impl Render for ManagerView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<ManagerView>| {
-                        this.focus_handle(cx).focus(window);
+                        this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })

@@ -257,7 +257,7 @@ impl Render for ThresholdView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<ThresholdView>| {
-                        this.focus_handle(cx).focus(window);
+                        this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })
