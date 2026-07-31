@@ -46,7 +46,7 @@
 - [X] Counter should be enabled when counts are loaded
 - [X] Default folder when clicking "Save" in counter should be the folder the counts were loaded from if applicable
 - [X] Movement of the "Camera" is jerky
-- [ ] Turning a layer or adjusting contrast (or anything that pushes new image to viewer) on and off snaps the viewport back to the current review index.
+- [X] Turning a layer or adjusting contrast (or anything that pushes new image to viewer) on and off snaps the viewport back to the current review index.
 - [ ] Build actual macos .app
 - [ ] Turning on and off compositor does not actually enable/disable on backend
 - [ ] Reset counter on new image load: Loading a new image for the second time and then loading the second set of counts causes a panic.
@@ -78,7 +78,8 @@
 - [ ] Size/length/height/area measurement tools (Depends on general selection tools)
 - [ ] Fluorescence intensity measurement tool (Use general selection tools)
 - [ ] Submit feedback/feature request/bug report button
-- [ ] Abstract drop menu in tools/manager.rs into GUI component & Use proper GPUI drag system to improve UX
+- [ ] Abstract drop menu in tools/manager.
+- [ ] rs into GUI component & Use proper GPUI drag system to improve UX
 - [ ] Difference of Guassians
 - [ ] Run Lutz on GPU
 - [ ] Themes
