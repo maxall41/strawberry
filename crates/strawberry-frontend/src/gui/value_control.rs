@@ -290,7 +290,7 @@ impl Render for ValueControl {
                                           window: &mut Window,
                                           cx: &mut Context<ValueControl>| {
                                         cx.stop_propagation();
-                                        this.focus_handle(cx).focus(window);
+                                        this.focus_handle(cx).focus(window, cx);
                                         this.text = format!("{:.precision$}", this.value, precision = 2);
                                         this.highlight = true;
                                         this.mouse_down = true;

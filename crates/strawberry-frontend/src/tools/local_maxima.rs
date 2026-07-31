@@ -488,7 +488,7 @@ impl Render for LocalMaximaView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<LocalMaximaView>| {
-                        this.focus_handle(cx).focus(window);
+                        this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })

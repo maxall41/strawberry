@@ -433,7 +433,7 @@ impl Render for MorphologyView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<MorphologyView>| {
-                        this.focus_handle(cx).focus(window);
+                        this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })

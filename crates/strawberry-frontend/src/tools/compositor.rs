@@ -334,7 +334,7 @@ impl Render for CompositorView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<CompositorView>| {
-                        this.focus_handle(cx).focus(window);
+                        this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })
