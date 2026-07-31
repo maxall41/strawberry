@@ -1,9 +1,9 @@
 use anyhow::Result;
 use gpui::{
-    actions, div, img, prelude::*, px, rgb, size, App, AppContext, AssetSource,
-    Bounds, Context, Entity, ExternalPaths, FocusHandle, Focusable, ImageSource, KeyBinding,
-    KeyDownEvent, KeyUpEvent, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
+    actions, div, img, prelude::*, px, rgb, size, App, AppContext, AssetSource, Bounds, Context,
+    Entity, ExternalPaths, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent,
+    KeyUpEvent, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
     WindowOptions,
 };
 use gui::feedback::FeedbackModal;
@@ -956,7 +956,7 @@ async fn main() -> Result<()> {
             let img_data = Arc::new(RenderImage::new(img_frames));
 
             let primary_viewer_image_dir = image_directory.clone();
-            if let Err(e) = cx.open_window(window_options, |window, cx| {
+            let main_window = cx.open_window(window_options, |window, cx| {
                 let mut raw_primary_viewer = PrimaryViewer {
                     focus_handle: cx.focus_handle(),
                     zoom_level: 1.0,
@@ -993,10 +993,23 @@ async fn main() -> Result<()> {
                 window.focus(&viewer.read(cx).focus_handle(cx), cx);
 
                 viewer
-            }) {
-                eprintln!("Failed to open main window: {e}");
-                return;
-            }
+            });
+
+            let main_window = match main_window {
+                Ok(window) => window,
+                Err(e) => {
+                    eprintln!("Failed to open main window: {e}");
+                    return;
+                }
+            };
+
+            let main_window_id = main_window.window_id();
+            cx.on_window_closed(move |cx, window_id| {
+                if window_id == main_window_id {
+                    cx.quit();
+                }
+            })
+            .detach();
 
             // Activate the app after window creation
             cx.activate(true);
