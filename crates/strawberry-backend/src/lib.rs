@@ -78,7 +78,8 @@ impl Pipeline {
                 create_gpu_tool!(Decomposer, command_tx, output_tx, gpu_image_processor),
                 create_gpu_tool!(Sobel, command_tx, output_tx, gpu_image_processor),
                 create_gpu_tool!(Grayscale, command_tx, output_tx, gpu_image_processor),
-                Box::new(NerveTracer::new(command_tx.clone(), output_tx.clone())?) as Box<dyn ToolBackend>,
+                Box::new(NerveTracer::new(command_tx.clone(), output_tx.clone())?)
+                    as Box<dyn ToolBackend>,
             ],
             command_tx.clone(),
             output_tx.clone(),
@@ -160,6 +161,15 @@ impl Pipeline {
             tool.invalidate_cache();
         }
 
+        let total_stages = self
+            .tool_manager
+            .tools
+            .iter()
+            .skip(earliest_processing_index)
+            .filter(|tool| tool.is_enabled() && tool.supports_processing())
+            .count();
+        let mut stage = 0;
+
         for tool in self
             .tool_manager
             .tools
@@ -167,6 +177,14 @@ impl Pipeline {
             .skip(earliest_processing_index)
         {
             if tool.is_enabled() && tool.supports_processing() {
+                let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                    FrontendMessage::PipelineProgress(PipelineProgress {
+                        stage,
+                        total: total_stages,
+                        name: format!("{:?}", tool.iam()),
+                    }),
+                ));
+                stage += 1;
                 tool.process(&mut images).await?;
                 tool.set_cached_output(images.clone());
             }
@@ -194,6 +212,20 @@ impl Pipeline {
         println!("Pipeline processing took: {duration:?}");
 
         Ok(())
+    }
+
+    async fn run_pipeline(&mut self, start_index: usize, error_context: &str) {
+        let result = self.process_from(start_index).await;
+        let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+            FrontendMessage::PipelineFinished,
+        ));
+        if let Err(e) = result {
+            let _ =
+                self.output_sender
+                    .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                        format!("{error_context}: {e}"),
+                    )));
+        }
     }
 
     pub async fn process_commands(&mut self) -> anyhow::Result<()> {
@@ -229,13 +261,11 @@ impl Pipeline {
                     if self.input_images.is_empty() {
                         return Ok(());
                     }
-                    if let Err(e) = self.process_from(*index).await {
-                        self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::error(format!(
-                                "Pipeline processing failed at stage {index}: {e}"
-                            )),
-                        ))?;
-                    }
+                    self.run_pipeline(
+                        *index,
+                        &format!("Pipeline processing failed at stage {index}"),
+                    )
+                    .await;
                 }
                 PipelineCommand::SaveOutput(file) => {
                     if let Some(last_output) = self.last_output.clone() {
@@ -260,6 +290,13 @@ impl Pipeline {
                     let mut sizes = vec![];
                     //TODO: Maybe we should do this in a separate thread?
                     println!("Loading images: {:?}", files);
+                    let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                        FrontendMessage::PipelineProgress(PipelineProgress {
+                            stage: 0,
+                            total: 1,
+                            name: "Loading images".to_string(),
+                        }),
+                    ));
                     for file in files {
                         match ImageReader::open(file) {
                             Ok(reader) => match reader.decode() {
@@ -270,6 +307,10 @@ impl Pipeline {
                                 }
                                 Err(e) => {
                                     eprintln!("Error decoding image: {}", e);
+                                    let _ =
+                                        self.output_sender.send(PipelineCommand::FrontendMessage(
+                                            FrontendMessage::PipelineFinished,
+                                        ));
                                     self.output_sender.send(PipelineCommand::FrontendMessage(
                                         FrontendMessage::error(
                                             "Failed to decode image!".to_string(),
@@ -280,10 +321,11 @@ impl Pipeline {
                             },
                             Err(e) => {
                                 eprintln!("Error loading image: {}", e);
+                                let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                                    FrontendMessage::PipelineFinished,
+                                ));
                                 self.output_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::error(
-                                        "Failed to load image!".to_string(),
-                                    ),
+                                    FrontendMessage::error("Failed to load image!".to_string()),
                                 ))?;
                                 return Ok(());
                             }
@@ -293,6 +335,9 @@ impl Pipeline {
                     if !sizes.is_empty() {
                         let first_size = sizes[0];
                         if !sizes.iter().all(|&size| size == first_size) {
+                            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                                FrontendMessage::PipelineFinished,
+                            ));
                             self.output_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::error(
                                     "Error: All images must have the same dimensions".to_string(),
@@ -318,11 +363,7 @@ impl Pipeline {
 
                     println!("Images loaded");
 
-                    if let Err(e) = self.process_from(0).await {
-                        let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::error(format!("Failed to process images: {e}")),
-                        ));
-                    }
+                    self.run_pipeline(0, "Failed to process images").await;
                 }
                 PipelineCommand::DiscoverBackend(backend_tool_type, sender) => {
                     let mut discovered = vec![];
@@ -392,13 +433,8 @@ impl Pipeline {
                         }
                     }
                     println!("CLI Pipeline load");
-                    if let Err(e) = self.process_from(0).await {
-                        let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::error(format!(
-                                "Failed to process loaded pipeline: {e}"
-                            )),
-                        ));
-                    }
+                    self.run_pipeline(0, "Failed to process loaded pipeline")
+                        .await;
                 }
                 PipelineCommand::RegisterClickReceiver(click_sender) => {
                     self.click_receivers.push(click_sender.clone()); //TODO: Ehhhhh
@@ -452,15 +488,19 @@ impl Pipeline {
             .iter_mut()
             .map(|tool| tool.receive_messages());
         if let Err(e) = try_join_all(futures).await {
-            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                FrontendMessage::error(format!("Error processing tool messages: {e}")),
-            ));
+            let _ =
+                self.output_sender
+                    .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                        format!("Error processing tool messages: {e}"),
+                    )));
         }
 
         if let Err(e) = self.tool_manager.receive_messages().await {
-            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                FrontendMessage::error(format!("Tool manager communication error: {e}")),
-            ));
+            let _ =
+                self.output_sender
+                    .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                        format!("Tool manager communication error: {e}"),
+                    )));
         }
 
         Ok(())

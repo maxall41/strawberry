@@ -129,12 +129,25 @@ pub enum FeedbackLevel {
 }
 
 #[derive(Debug, Clone)]
+pub struct PipelineProgress {
+    /// 0-based index of the stage about to run (display code adds 1).
+    pub stage: usize,
+    /// Number of stages this run will execute in total.
+    pub total: usize,
+    /// Display name
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum FrontendMessage {
     ReturnState(ToolState),
     ReturnBackendTools(Vec<u16>, Vec<flume::Sender<PipelineCommand>>),
     UserFeedback(String, FeedbackLevel),
     ReturnOverlays(crate::overlay::OverlayCollection),
     SnapToPosition(f32, f32),
+    /// Sent just before each stage of a pipeline run executes.
+    PipelineProgress(PipelineProgress),
+    PipelineFinished,
 }
 
 impl FrontendMessage {

@@ -2,6 +2,10 @@ use gpui::{div, prelude::*, px, svg, IntoElement, Rgba, SharedString};
 
 use super::theme;
 
+pub(crate) fn asset_path(name: &str) -> String {
+    format!("{}/../../assets/icons/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
 pub struct Icon {
     path: SharedString,
     size: f32,
@@ -27,13 +31,8 @@ impl Icon {
         self
     }
 
-    // Icons live in the workspace-root assets dir, two levels above this
-    // crate's manifest dir.
     fn from_asset(name: &str) -> Self {
-        Self::new(format!(
-            "{}/../../assets/icons/{name}",
-            env!("CARGO_MANIFEST_DIR")
-        ))
+        Self::new(asset_path(name))
     }
 
     pub fn eye_open() -> Self {
