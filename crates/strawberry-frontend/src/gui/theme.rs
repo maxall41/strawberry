@@ -1,9 +1,6 @@
-// Single source of truth for the app's palette. Every color in the frontend
-// should come from here so windows and widgets stay visually consistent.
-
+// Single source of truth for the app's palette.
 use gpui::Rgba;
 
-// gpui's `rgb()` is not const, so build Rgba at compile time ourselves.
 const fn hex(hex: u32) -> Rgba {
     let [_, r, g, b] = hex.to_be_bytes();
     Rgba {
@@ -48,8 +45,7 @@ pub const DANGER: Rgba = hex(0xc25049);
 pub const DANGER_HOVER: Rgba = hex(0xd05e57);
 pub const DANGER_ACTIVE: Rgba = hex(0xa8443e);
 
-/// Blend a color toward white. For hover/feedback states derived from dynamic
-/// colors (e.g. count type colors) that have no fixed *_HOVER constant.
+/// Blend a color toward white. Used for hover/feedback states.
 pub fn lighten(color: Rgba, amount: f32) -> Rgba {
     Rgba {
         r: color.r + (1.0 - color.r) * amount,

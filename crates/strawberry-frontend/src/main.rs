@@ -1,11 +1,12 @@
 use anyhow::Result;
 use gpui::{
-    actions, div, img, prelude::*, px, rgb, size, App, AppContext, AssetSource, Bounds, Context,
-    Entity, ExternalPaths, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent,
-    KeyUpEvent, Menu, MenuItem, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions,
+    actions, div, img, prelude::*, px, rgb, size, Animation, AnimationExt, App, AppContext,
+    AssetSource, Bounds, Context, Entity, ExternalPaths, FocusHandle, Focusable, ImageSource,
+    KeyBinding, KeyDownEvent, KeyUpEvent, Menu, MenuItem, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions,
+    Window, WindowBounds, WindowOptions,
 };
+use gui::busy::{set_pipeline_busy, BusyOverlay};
 use gui::feedback::FeedbackModal;
 use image::{Frame, RgbaImage};
 use rfd::FileDialog;
@@ -42,6 +43,21 @@ mod gui;
 mod tools;
 
 const MOVEMENT_SPEED: f32 = 800.0;
+
+const ACTIVITY_SHOW_DELAY: Duration = Duration::from_millis(300);
+const ACTIVITY_LINGER: Duration = Duration::from_millis(250);
+
+/// Busy-indicator state for one pipeline run.
+struct PipelineActivity {
+    label: String,
+    stage: usize,
+    total: usize,
+    /// Flips once the run outlasts ACTIVITY_SHOW_DELAY.
+    shown: bool,
+    /// The run ended but the indicator is lingering; a new run's progress
+    /// message clears this and takes the indicator over seamlessly.
+    finishing: bool,
+}
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
@@ -85,6 +101,11 @@ struct PrimaryViewer {
     image_directory: Arc<RwLock<Option<PathBuf>>>,
     image_loaded: bool,
     pan_loop_running: bool,
+    activity: Option<PipelineActivity>,
+    /// Bumped whenever `activity` is replaced or cleared, so pending
+    /// show/clear timers from a superseded run become no-ops.
+    activity_epoch: u64,
+    busy_overlay: Entity<BusyOverlay>,
 }
 
 impl PrimaryViewer {
@@ -107,6 +128,7 @@ impl PrimaryViewer {
                 let mut latest_overlays = None;
                 let mut latest_snap = None;
                 let mut toasts = Vec::new();
+                let mut activity_events = Vec::new();
 
                 loop {
                     match receiver.try_recv() {
@@ -119,11 +141,13 @@ impl PrimaryViewer {
                                 latest_overlays = Some(overlays)
                             }
                             FrontendMessage::SnapToPosition(x, y) => latest_snap = Some((x, y)),
+                            FrontendMessage::PipelineProgress(progress) => {
+                                activity_events.push(Some(progress))
+                            }
+                            FrontendMessage::PipelineFinished => activity_events.push(None),
                             _ => {}
                         },
                         Ok(_) => {}
-                        // Lagging only means we missed some broadcasts (e.g.
-                        // bursts of our own outgoing commands); keep draining.
                         Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
                         Err(broadcast::error::TryRecvError::Empty) => break,
                         Err(broadcast::error::TryRecvError::Closed) => {
@@ -137,6 +161,7 @@ impl PrimaryViewer {
                     && latest_overlays.is_none()
                     && latest_snap.is_none()
                     && toasts.is_empty()
+                    && activity_events.is_empty()
                 {
                     if closed {
                         break;
@@ -147,6 +172,12 @@ impl PrimaryViewer {
                 let result = this.update(cx, |this, cx| {
                     for (text, level) in toasts {
                         this.add_toast(text, level, cx);
+                    }
+                    for event in activity_events {
+                        match event {
+                            Some(progress) => this.pipeline_progress(progress, cx),
+                            None => this.pipeline_finished(cx),
+                        }
                     }
                     if let Some(image) = latest_output {
                         this.show_output(image, cx);
@@ -195,6 +226,74 @@ impl PrimaryViewer {
         if let Err(e) = self.command_sender.send(PipelineCommand::RequestOverlays) {
             eprintln!("Failed to request overlays after image update: {e}");
         }
+    }
+
+    fn pipeline_progress(
+        &mut self,
+        progress: strawberry_types::PipelineProgress,
+        cx: &mut Context<Self>,
+    ) {
+        let label = humanize_tool_name(&progress.name);
+        if let Some(activity) = &mut self.activity {
+            activity.label = label;
+            activity.stage = progress.stage;
+            activity.total = progress.total;
+            activity.finishing = false;
+            return;
+        }
+
+        self.activity = Some(PipelineActivity {
+            label,
+            stage: progress.stage,
+            total: progress.total,
+            shown: false,
+            finishing: false,
+        });
+        self.activity_epoch += 1;
+        let epoch = self.activity_epoch;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(ACTIVITY_SHOW_DELAY).await;
+            this.update(cx, |this, cx| {
+                if this.activity_epoch != epoch {
+                    return;
+                }
+                if let Some(activity) = &mut this.activity {
+                    activity.shown = true;
+                    set_pipeline_busy(cx, true);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn pipeline_finished(&mut self, cx: &mut Context<Self>) {
+        let Some(activity) = &mut self.activity else {
+            return;
+        };
+        if !activity.shown {
+            self.activity = None;
+            self.activity_epoch += 1;
+            return;
+        }
+
+        activity.finishing = true;
+        let epoch = self.activity_epoch;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(ACTIVITY_LINGER).await;
+            this.update(cx, |this, cx| {
+                let still_finishing = this.activity.as_ref().is_some_and(|a| a.finishing);
+                if this.activity_epoch == epoch && still_finishing {
+                    this.activity = None;
+                    this.activity_epoch += 1;
+                    set_pipeline_busy(cx, false);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn add_toast(&mut self, text: String, level: FeedbackLevel, cx: &mut Context<Self>) {
@@ -553,6 +652,14 @@ impl Render for PrimaryViewer {
         // Ensure this element is always focused
         window.focus(&self.focus_handle(cx), cx);
 
+        let activity_status = self.activity.as_ref().filter(|a| a.shown).map(|a| {
+            if a.total > 1 {
+                format!("{} · {}/{}", a.label, a.stage + 1, a.total)
+            } else {
+                format!("{}…", a.label)
+            }
+        });
+
         let mut _img = img(self.display_image.clone())
             .use_nearest_filter(true)
             .w(px(self.original_width as f32 * self.zoom_level))
@@ -695,10 +802,99 @@ impl Render for PrimaryViewer {
                     .map(|element| self.render_overlay_element(element))
                     .collect::<Vec<_>>(),
             )
+            .child(self.busy_overlay.clone())
+            .when_some(activity_status, |el, status| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w_full()
+                        .h(px(3.))
+                        .bg(gpui::Rgba {
+                            a: 0.5,
+                            ..gui::theme::SURFACE_DEEP
+                        })
+                        .child(
+                            div().size_full().bg(gui::theme::ACCENT).with_animation(
+                                "pipeline-busy-pulse",
+                                Animation::new(Duration::from_millis(1500))
+                                    .repeat()
+                                    .with_easing(gpui::pulsating_between(0.3, 1.0)),
+                                |el, delta| el.opacity(delta),
+                            ),
+                        ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(9.))
+                        .right(px(10.))
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(gpui::Rgba {
+                            a: 0.85,
+                            ..gui::theme::CANVAS
+                        })
+                        .text_xs()
+                        .text_color(gui::theme::TEXT_MUTED)
+                        .child(status),
+                )
+            })
     }
 }
 
+/// "RollingBall" (a `BackendToolType` debug name) -> "Rolling Ball".
+fn humanize_tool_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len() + 4);
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() && i != 0 {
+            result.push(' ');
+        }
+        result.push(c);
+    }
+    result
+}
+
 actions!([Quit, ZoomIn, ZoomOut, OpenFile, SaveImage,]);
+
+/// Hosts a tool view plus the blocking busy overlay that locks the window's
+/// controls while a slow pipeline run is in flight, so no further processing
+/// can be queued behind it. Wrapping here covers every tool window without
+/// touching the individual views.
+struct ToolWindowRoot<T> {
+    tool: Entity<T>,
+    busy_overlay: Entity<BusyOverlay>,
+}
+
+impl<T: gpui::Render> Render for ToolWindowRoot<T> {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .child(self.tool.clone())
+            .child(self.busy_overlay.clone())
+    }
+}
+
+fn open_tool_window<T: ToolFrontend + gpui::Render + Focusable + 'static>(
+    mut tool: T,
+    cx: &mut App,
+) {
+    if let Err(e) = cx.open_window(tool.get_window_options(), |window, cx| {
+        let tool = cx.new(|cx| {
+            tool.initialize(window, cx);
+            tool
+        });
+        window.focus(&tool.read(cx).focus_handle(cx), cx);
+        cx.new(|cx| ToolWindowRoot {
+            tool,
+            busy_overlay: cx.new(|cx| BusyOverlay::new(true, cx)),
+        })
+    }) {
+        eprintln!("Failed to open tool window: {e}");
+    }
+}
 
 // Generic tool window creation function
 fn create_tool_window<T, A>(
@@ -711,23 +907,15 @@ fn create_tool_window<T, A>(
         ) -> T
         + 'static,
 ) where
-    T: ToolFrontend + gpui::Render + 'static,
+    T: ToolFrontend + gpui::Render + Focusable + 'static,
     A: gpui::Action + 'static,
 {
     let view_sender_clone = view_sender.clone();
     let view_recv_clone = view_receiver.resubscribe();
 
     cx.on_action(move |_: &A, cx| {
-        let mut tool = constructor(view_recv_clone.resubscribe(), view_sender_clone.clone());
-
-        if let Err(e) = cx.open_window(tool.get_window_options(), |window, cx| {
-            cx.new(|cx| {
-                tool.initialize(window, cx);
-                tool
-            })
-        }) {
-            eprintln!("Failed to open tool window: {e}");
-        }
+        let tool = constructor(view_recv_clone.resubscribe(), view_sender_clone.clone());
+        open_tool_window(tool, cx);
     });
 }
 
@@ -804,19 +992,12 @@ async fn main() -> Result<()> {
                 let counter_recv = view_recv.resubscribe();
                 let counter_image_dir = image_directory.clone();
                 cx.on_action(move |_: &CounterSettings, cx| {
-                    let mut tool = CounterView::new(
+                    let tool = CounterView::new(
                         counter_recv.resubscribe(),
                         counter_sender.clone(),
                         counter_image_dir.clone(),
                     );
-                    if let Err(e) = cx.open_window(tool.get_window_options(), |window, cx| {
-                        cx.new(|cx| {
-                            tool.initialize(window, cx);
-                            tool
-                        })
-                    }) {
-                        eprintln!("Failed to open CounterView window: {e}");
-                    }
+                    open_tool_window(tool, cx);
                 });
             }
             create_tool_window::<GaussianBlurView, GaussianBlurSettings>(
@@ -976,6 +1157,9 @@ async fn main() -> Result<()> {
                     image_directory: primary_viewer_image_dir,
                     image_loaded: false,
                     pan_loop_running: false,
+                    activity: None,
+                    activity_epoch: 0,
+                    busy_overlay: cx.new(|cx| BusyOverlay::new(false, cx)),
                 };
 
                 let viewer = cx.new(|cx| {

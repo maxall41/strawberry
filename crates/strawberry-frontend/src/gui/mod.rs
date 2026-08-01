@@ -1,3 +1,4 @@
+pub mod busy;
 pub mod button;
 pub mod feedback;
 pub mod icon;
