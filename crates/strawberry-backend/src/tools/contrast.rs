@@ -36,14 +36,14 @@ impl ToolBackend for Contrast {
         BackendToolType::Contrast
     }
 
-    async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
+    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = match self
                 .contrast
                 .apply_contrast(image, self.state.min, self.state.max)
                 .await
             {
-                Ok(img) => img,
+                Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base.global_sender.send(PipelineCommand::FrontendMessage(
                         FrontendMessage::error(format!("Contrast error: {e}")),

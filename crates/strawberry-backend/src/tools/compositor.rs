@@ -36,7 +36,7 @@ impl ToolBackend for Compositor {
         BackendToolType::Compositor
     }
 
-    async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
+    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         self.state.real_layers_len = input.len();
 
         if input.len() == 1 {
@@ -46,7 +46,7 @@ impl ToolBackend for Compositor {
             return Ok(());
         }
 
-        let images: Vec<image::RgbaImage> = input
+        let images: Vec<Arc<image::RgbaImage>> = input
             .clone()
             .into_iter()
             .enumerate()
@@ -69,7 +69,7 @@ impl ToolBackend for Compositor {
             }
         };
 
-        *input = vec![composited];
+        *input = vec![Arc::new(composited)];
 
         if self.cache.frontend_latest_state.is_some() {
             println!(

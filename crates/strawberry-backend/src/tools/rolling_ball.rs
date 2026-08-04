@@ -36,14 +36,14 @@ impl ToolBackend for RollingBall {
         BackendToolType::RollingBall
     }
 
-    async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
+    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = match self
                 .rolling_ball
                 .apply_rolling_ball(image, self.state.ball_radius)
                 .await
             {
-                Ok(img) => img,
+                Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base.global_sender.send(PipelineCommand::FrontendMessage(
                         FrontendMessage::error(format!("Rolling Ball error: {e}")),

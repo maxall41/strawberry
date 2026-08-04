@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use image::RgbaImage;
+use std::sync::Arc;
 
 use crate::{overlay::ToolOverlay, BackendToolType, PipelineCommand, ToolState};
 
@@ -7,8 +8,7 @@ use crate::{overlay::ToolOverlay, BackendToolType, PipelineCommand, ToolState};
 #[async_trait]
 pub trait ToolBackend: Send + Sync {
     /// Process input images and return modified images
-    /// If the tool is disabled, it should return the input unchanged
-    async fn process(&mut self, output_images: &mut Vec<RgbaImage>) -> anyhow::Result<()>;
+    async fn process(&mut self, output_images: &mut Vec<Arc<RgbaImage>>) -> anyhow::Result<()>;
 
     /// Check if this tool is currently enabled
     fn is_enabled(&self) -> bool;
@@ -45,18 +45,13 @@ pub trait ToolBackend: Send + Sync {
     /// Set the tool's index in the pipeline
     fn set_index(&mut self, index: usize);
 
-    /// Check if cached output is valid (based on tool state)
-    fn has_valid_cache(&self) -> bool {
-        false
-    }
-
-    /// Get cached output if available
-    fn get_cached_output(&self) -> Option<Vec<RgbaImage>> {
+    /// Return the cached output only if it is still valid for the tool's current state.
+    fn valid_cached_output(&self) -> Option<Vec<Arc<RgbaImage>>> {
         None
     }
 
     /// Cache the output
-    fn set_cached_output(&mut self, _output: Vec<RgbaImage>) {}
+    fn set_cached_output(&mut self, _output: Vec<Arc<RgbaImage>>) {}
 
     /// Invalidate the cache
     fn invalidate_cache(&mut self) {}

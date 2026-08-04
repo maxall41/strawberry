@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Instant};
 
 use futures::future::try_join_all;
 use image::{ImageReader, RgbaImage};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use anyhow::anyhow;
 use strawberry_processing::{colorspace::GpuColorspaceConverter, GpuImageProcessor};
@@ -41,12 +41,16 @@ pub struct Pipeline {
     command_receiver: broadcast::Receiver<PipelineCommand>,
     /// Channel for sending output results
     output_sender: broadcast::Sender<PipelineCommand>,
+    /// Latest-only channel for output frames, so the broadcast ring never pins full-resolution images
+    output_frame_sender: watch::Sender<Option<OutputFrame>>,
+    /// Bumped per Load command; published with each frame so consumers can match results to the load that produced them
+    load_generation: u64,
     /// Input images to process
-    input_images: Vec<RgbaImage>,
+    input_images: Vec<Arc<RgbaImage>>,
     /// Click receivers
     click_receivers: Vec<flume::Sender<PipelineCommand>>,
     /// Last output images
-    last_output: Option<RgbaImage>,
+    last_output: Option<Arc<RgbaImage>>,
     /// Colorspace conversions
     colorspace_converter: GpuColorspaceConverter,
 }
@@ -57,9 +61,11 @@ impl Pipeline {
         Self,
         broadcast::Sender<PipelineCommand>,
         broadcast::Receiver<PipelineCommand>,
+        watch::Receiver<Option<OutputFrame>>,
     )> {
         let (command_tx, command_rx) = broadcast::channel(1000);
         let (output_tx, output_rx) = broadcast::channel(1000);
+        let (frame_tx, frame_rx) = watch::channel(None);
 
         let gpu_image_processor = Arc::new(GpuImageProcessor::new().await?);
 
@@ -88,13 +94,15 @@ impl Pipeline {
             tool_manager,
             command_receiver: command_rx,
             output_sender: output_tx,
+            output_frame_sender: frame_tx,
+            load_generation: 0,
             input_images: vec![],
             click_receivers: vec![],
             last_output: None,
             colorspace_converter: GpuColorspaceConverter::new(gpu_image_processor.clone()).await,
         };
 
-        Ok((pipeline, command_tx, output_rx))
+        Ok((pipeline, command_tx, output_rx, frame_rx))
     }
 
     /// Collect overlays from all tools
@@ -117,37 +125,28 @@ impl Pipeline {
         }
 
         let mut earliest_processing_index = start_index;
-        let mut last_valid_cache_index = None;
-        let mut images = vec![];
+        let mut resume_images = None;
 
         let now = Instant::now();
 
-        // First pass: find the earliest index where we need to start processing
+        // First pass: find the earliest index where we need to start processing.
         for (i, tool) in self.tool_manager.tools.iter().enumerate() {
             if i >= start_index {
                 break;
             }
 
             if tool.is_enabled() && tool.supports_processing() {
-                if tool.has_valid_cache() {
-                    last_valid_cache_index = Some(i);
-                } else {
-                    earliest_processing_index = i;
-                    break;
+                match tool.valid_cached_output() {
+                    Some(cached_output) => resume_images = Some(cached_output),
+                    None => {
+                        earliest_processing_index = i;
+                        break;
+                    }
                 }
             }
         }
 
-        // Get the cached output from the last valid cache
-        if let Some(cache_index) = last_valid_cache_index {
-            if let Some(cached_output) = self.tool_manager.tools[cache_index].get_cached_output() {
-                images = cached_output;
-            } else {
-                images = self.input_images.clone();
-            }
-        } else {
-            images = self.input_images.clone();
-        }
+        let mut images = resume_images.unwrap_or_else(|| self.input_images.clone());
 
         let elapsed = now.elapsed();
         println!("Catching up on cache: {elapsed:.2?}");
@@ -202,15 +201,31 @@ impl Pipeline {
             .first()
             .ok_or_else(|| anyhow::anyhow!("No output image available from pipeline"))?;
 
-        self.output_sender
-            .send(PipelineCommand::Output(output_image.clone()))
-            .map_err(|e| anyhow::anyhow!("Failed to send output image: {}", e))?;
+        self.output_frame_sender.send_replace(Some(OutputFrame {
+            load_generation: self.load_generation,
+            image: output_image.clone(),
+        }));
 
         self.last_output = Some(output_image.clone());
 
         let duration = start_time.elapsed();
         println!("Pipeline processing took: {duration:?}");
 
+        Ok(())
+    }
+
+    /// Convert the last output back out of the internal BGRA representation and
+    /// write it to `file`.
+    async fn save_output(&self, file: &std::path::Path) -> anyhow::Result<()> {
+        let last_output = self
+            .last_output
+            .as_ref()
+            .ok_or_else(|| anyhow!("no image in the output buffer"))?;
+        let out_img = self
+            .colorspace_converter
+            .convert_bgra_to_rgba(last_output)
+            .await?;
+        out_img.save(file)?;
         Ok(())
     }
 
@@ -253,13 +268,12 @@ impl Pipeline {
             commands
         };
 
-        // Process all commands
-        for cmd in commands {
+        'commands: for cmd in commands {
             match &cmd {
                 PipelineCommand::Refresh(index) => {
                     println!("Refreshing!");
                     if self.input_images.is_empty() {
-                        return Ok(());
+                        continue 'commands;
                     }
                     self.run_pipeline(
                         *index,
@@ -268,22 +282,13 @@ impl Pipeline {
                     .await;
                 }
                 PipelineCommand::SaveOutput(file) => {
-                    if let Some(last_output) = self.last_output.clone() {
-                        let out_img = self
-                            .colorspace_converter
-                            .convert_bgra_to_rgba(&last_output)
-                            .await?;
-                        out_img.save(file)?;
-                        self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::success("Image saved successfully!".to_string()),
-                        ))?;
-                    } else {
-                        self.output_sender.send(PipelineCommand::FrontendMessage(
-                            FrontendMessage::error(
-                                "No image in output buffer to save!".to_string(),
-                            ),
-                        ))?;
-                    }
+                    let message = match self.save_output(file).await {
+                        Ok(()) => FrontendMessage::success("Image saved successfully!".to_string()),
+                        Err(e) => FrontendMessage::error(format!("Failed to save image: {e}")),
+                    };
+                    let _ = self
+                        .output_sender
+                        .send(PipelineCommand::FrontendMessage(message));
                 }
                 PipelineCommand::Load(files) => {
                     let mut loaded_images = vec![];
@@ -311,12 +316,14 @@ impl Pipeline {
                                         self.output_sender.send(PipelineCommand::FrontendMessage(
                                             FrontendMessage::PipelineFinished,
                                         ));
-                                    self.output_sender.send(PipelineCommand::FrontendMessage(
-                                        FrontendMessage::error(
-                                            "Failed to decode image!".to_string(),
-                                        ),
-                                    ))?;
-                                    return Ok(());
+                                    let _ =
+                                        self.output_sender.send(PipelineCommand::FrontendMessage(
+                                            FrontendMessage::error(format!(
+                                                "Failed to decode image {}: {e}",
+                                                file.display()
+                                            )),
+                                        ));
+                                    continue 'commands;
                                 }
                             },
                             Err(e) => {
@@ -324,10 +331,13 @@ impl Pipeline {
                                 let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
                                     FrontendMessage::PipelineFinished,
                                 ));
-                                self.output_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::error("Failed to load image!".to_string()),
-                                ))?;
-                                return Ok(());
+                                let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                                    FrontendMessage::error(format!(
+                                        "Failed to load image {}: {e}",
+                                        file.display()
+                                    )),
+                                ));
+                                continue 'commands;
                             }
                         }
                     }
@@ -338,12 +348,12 @@ impl Pipeline {
                             let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::PipelineFinished,
                             ));
-                            self.output_sender.send(PipelineCommand::FrontendMessage(
+                            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::error(
                                     "Error: All images must have the same dimensions".to_string(),
                                 ),
-                            ))?;
-                            return Ok(());
+                            ));
+                            continue 'commands;
                         }
                     }
                     //
@@ -359,7 +369,8 @@ impl Pipeline {
                         }
                         loaded_images[0] = rgba_image;
                     }
-                    self.input_images = loaded_images;
+                    self.input_images = loaded_images.into_iter().map(Arc::new).collect();
+                    self.load_generation += 1;
 
                     println!("Images loaded");
 
@@ -383,7 +394,7 @@ impl Pipeline {
                                 )),
                             ));
                         }
-                        return Ok(());
+                        continue 'commands;
                     }
 
                     for tool in self.tool_manager.tools.iter_mut() {
@@ -411,7 +422,7 @@ impl Pipeline {
                 PipelineCommand::DisconnectFrontend(backend_tool_type) => {
                     if *backend_tool_type == BackendToolType::Manager {
                         self.tool_manager.disconnect();
-                        return Ok(());
+                        continue 'commands;
                     }
                     for tool in self.tool_manager.tools.iter_mut() {
                         if tool.iam() == *backend_tool_type {
@@ -420,10 +431,22 @@ impl Pipeline {
                     }
                 }
                 PipelineCommand::CLILoadPipeline(path) => {
-                    let toml_content = std::fs::read_to_string(path)
-                        .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
-                    let pipeline_config: PipelineConfig = toml::from_str(&toml_content)
-                        .map_err(|e| anyhow::anyhow!("Failed to parse TOML: {}", e))?;
+                    let config = std::fs::read_to_string(path)
+                        .map_err(|e| anyhow!("Failed to read pipeline file: {e}"))
+                        .and_then(|toml_content| {
+                            toml::from_str::<PipelineConfig>(&toml_content)
+                                .map_err(|e| anyhow!("Failed to parse pipeline TOML: {e}"))
+                        });
+
+                    let pipeline_config = match config {
+                        Ok(pipeline_config) => pipeline_config,
+                        Err(e) => {
+                            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                                FrontendMessage::error(e.to_string()),
+                            ));
+                            continue 'commands;
+                        }
+                    };
 
                     // Apply the loaded configurations to the tools
                     for tool in self.tool_manager.tools.iter_mut() {
@@ -433,6 +456,11 @@ impl Pipeline {
                         }
                     }
                     println!("CLI Pipeline load");
+                    // The config normally arrives before any images do; running
+                    // then would only raise a spurious "no input images" error.
+                    if self.input_images.is_empty() {
+                        continue 'commands;
+                    }
                     self.run_pipeline(0, "Failed to process loaded pipeline")
                         .await;
                 }
