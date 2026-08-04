@@ -39,7 +39,7 @@ impl ToolBackend for LocalMaxima {
         BackendToolType::LocalMaxima
     }
 
-    async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
+    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = match self
                 .local_maxima
@@ -51,7 +51,7 @@ impl ToolBackend for LocalMaxima {
                 )
                 .await
             {
-                Ok(img) => img,
+                Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base.global_sender.send(PipelineCommand::FrontendMessage(
                         FrontendMessage::error(format!("Local Maxima error: {e}")),

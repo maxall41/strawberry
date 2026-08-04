@@ -81,15 +81,15 @@ macro_rules! impl_tool_backend_basics {
             self.base.index = index;
         }
 
-        fn has_valid_cache(&self) -> bool {
-            self.cache.cached_state.as_ref() == Some(&self.state)
+        fn valid_cached_output(&self) -> Option<Vec<std::sync::Arc<image::RgbaImage>>> {
+            if self.cache.cached_state.as_ref() == Some(&self.state) {
+                self.cache.cached_output.clone()
+            } else {
+                None
+            }
         }
 
-        fn get_cached_output(&self) -> Option<Vec<image::RgbaImage>> {
-            self.cache.cached_output.clone()
-        }
-
-        fn set_cached_output(&mut self, output: Vec<image::RgbaImage>) {
+        fn set_cached_output(&mut self, output: Vec<std::sync::Arc<image::RgbaImage>>) {
             self.cache.cached_output = Some(output);
             self.cache.cached_state = Some(self.state.clone());
         }

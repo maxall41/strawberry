@@ -92,6 +92,7 @@ struct PrimaryViewer {
     pressed_keys: std::collections::HashSet<String>,
     command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
     command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    output_frame_receiver: tokio::sync::watch::Receiver<Option<strawberry_types::OutputFrame>>,
     display_image: ImageSource,
     img_coords: Arc<RwLock<Option<Bounds<Pixels>>>>,
     overlays: OverlayCollection,
@@ -111,6 +112,7 @@ struct PrimaryViewer {
 impl PrimaryViewer {
     pub fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut receiver = self.command_receiver.resubscribe();
+        let mut output_frames = self.output_frame_receiver.clone();
 
         // Request initial overlays
         if let Err(e) = self.command_sender.send(PipelineCommand::RequestOverlays) {
@@ -132,7 +134,6 @@ impl PrimaryViewer {
 
                 loop {
                     match receiver.try_recv() {
-                        Ok(PipelineCommand::Output(image)) => latest_output = Some(image),
                         Ok(PipelineCommand::FrontendMessage(msg)) => match msg {
                             FrontendMessage::UserFeedback(text, level) => {
                                 toasts.push((text, level))
@@ -155,6 +156,13 @@ impl PrimaryViewer {
                             break;
                         }
                     }
+                }
+
+                if output_frames.has_changed().unwrap_or(false) {
+                    latest_output = output_frames
+                        .borrow_and_update()
+                        .as_ref()
+                        .map(|frame| frame.image.clone());
                 }
 
                 if latest_output.is_none()
@@ -201,8 +209,10 @@ impl PrimaryViewer {
         .detach();
     }
 
-    fn show_output(&mut self, image: RgbaImage, cx: &mut Context<Self>) {
-        let img_data = Arc::new(RenderImage::new(vec![Frame::new(image)]));
+    fn show_output(&mut self, image: Arc<RgbaImage>, cx: &mut Context<Self>) {
+        let img_data = Arc::new(RenderImage::new(vec![Frame::new(Arc::unwrap_or_clone(
+            image,
+        ))]));
         let new_width = img_data.size(0).width.0 as u32;
         let new_height = img_data.size(0).height.0 as u32;
 
@@ -943,7 +953,7 @@ async fn main() -> Result<()> {
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    let (mut pipeline, view_sender, view_recv) = Pipeline::new().await?;
+    let (mut pipeline, view_sender, view_recv, output_frames) = Pipeline::new().await?;
 
     let pipeline_handle = tokio::spawn(async move {
         loop {
@@ -1148,6 +1158,7 @@ async fn main() -> Result<()> {
                     pressed_keys: std::collections::HashSet::new(),
                     command_receiver: view_recv.resubscribe(),
                     command_sender: view_sender.clone(),
+                    output_frame_receiver: output_frames.clone(),
                     display_image: ImageSource::Render(img_data),
                     img_coords: Arc::new(RwLock::new(None)),
                     overlays: OverlayCollection::new(),

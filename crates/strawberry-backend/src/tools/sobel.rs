@@ -36,7 +36,7 @@ impl ToolBackend for Sobel {
         BackendToolType::Sobel
     }
 
-    async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
+    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         let threshold = if self.state.use_threshold {
             Some(self.state.threshold_value)
         } else {
@@ -45,7 +45,7 @@ impl ToolBackend for Sobel {
 
         for image in input {
             *image = match self.sobel.apply_sobel(image, threshold).await {
-                Ok(img) => img,
+                Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base.global_sender.send(PipelineCommand::FrontendMessage(
                         FrontendMessage::error(format!("Sobel error: {e}")),

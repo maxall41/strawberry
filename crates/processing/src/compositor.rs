@@ -1,4 +1,7 @@
-use std::{borrow::Cow, sync::Arc};
+use std::{
+    borrow::{Borrow, Cow},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use image::RgbaImage;
@@ -48,7 +51,8 @@ impl GpuCompositor {
             gpu,
         }
     }
-    pub async fn composite_images(&self, images: &[RgbaImage]) -> Result<RgbaImage> {
+
+    pub async fn composite_images<T: Borrow<RgbaImage>>(&self, images: &[T]) -> Result<RgbaImage> {
         if images.is_empty() {
             return Err(anyhow::anyhow!("Cannot composite empty image list"));
         }
@@ -62,7 +66,10 @@ impl GpuCompositor {
         self.composite_images_direct(images).await
     }
 
-    async fn composite_images_batched(&self, images: &[RgbaImage]) -> Result<RgbaImage> {
+    async fn composite_images_batched<T: Borrow<RgbaImage>>(
+        &self,
+        images: &[T],
+    ) -> Result<RgbaImage> {
         let mut batched_results = Vec::new();
 
         // Process images in batches of 7
@@ -75,7 +82,10 @@ impl GpuCompositor {
         self.composite_images_direct(&batched_results).await
     }
 
-    async fn composite_images_direct(&self, images: &[RgbaImage]) -> Result<RgbaImage> {
+    async fn composite_images_direct<T: Borrow<RgbaImage>>(
+        &self,
+        images: &[T],
+    ) -> Result<RgbaImage> {
         if images.is_empty() {
             return Err(anyhow::anyhow!("Cannot composite empty image list"));
         }
@@ -84,13 +94,13 @@ impl GpuCompositor {
             return Err(anyhow::anyhow!("Direct compositing supports max 7 images"));
         }
 
-        let (width, height) = images[0].dimensions();
+        let (width, height) = images[0].borrow().dimensions();
         let pixel_count = (width * height) as usize;
 
         // Create separate buffers for each input image
         let mut image_buffers = Vec::new();
         for img in images {
-            let buffer = self.gpu.create_input_buffer(img);
+            let buffer = self.gpu.create_input_buffer(img.borrow());
             image_buffers.push(buffer);
         }
 

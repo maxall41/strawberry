@@ -1,5 +1,6 @@
 use crate::nervetracer::io::{export_nervetracer_to_xml_file, import_nervetracer_from_xml_file};
 use crate::utils::commands::collect_and_deduplicate_commands;
+use std::sync::Arc;
 use strawberry_processing::nervetracer::create_path;
 
 use async_trait::async_trait;
@@ -17,10 +18,10 @@ pub struct NerveTracer {
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub index: usize,
-    pub cached_output: Option<Vec<image::RgbaImage>>,
+    pub cached_output: Option<Vec<Arc<image::RgbaImage>>>,
     pub cached_state: Option<NerveTracerState>,
     pub frontend_latest_state: Option<NerveTracerState>,
-    pub cached_input: Option<image::RgbaImage>,
+    pub cached_input: Option<Arc<image::RgbaImage>>,
 }
 
 #[async_trait]
@@ -48,7 +49,7 @@ impl ToolBackend for NerveTracer {
     fn disconnect(&mut self) {
         self.frontend_senders.clear();
     }
-    async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
+    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         self.state.total_images = input.len();
 
         // Clamp selected_image_index if it's out of bounds
@@ -217,11 +218,11 @@ impl ToolBackend for NerveTracer {
         self.index = index;
     }
 
-    fn has_valid_cache(&self) -> bool {
-        if let Some(cached_state) = &self.cached_state {
-            cached_state == &self.state
+    fn valid_cached_output(&self) -> Option<Vec<Arc<image::RgbaImage>>> {
+        if self.cached_state.as_ref() == Some(&self.state) {
+            self.cached_output.clone()
         } else {
-            false
+            None
         }
     }
 
@@ -296,11 +297,7 @@ impl ToolBackend for NerveTracer {
         }
     }
 
-    fn get_cached_output(&self) -> Option<Vec<image::RgbaImage>> {
-        self.cached_output.clone()
-    }
-
-    fn set_cached_output(&mut self, output: Vec<image::RgbaImage>) {
+    fn set_cached_output(&mut self, output: Vec<Arc<image::RgbaImage>>) {
         self.cached_output = Some(output);
         self.cached_state = Some(self.state.clone());
     }

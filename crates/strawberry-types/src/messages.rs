@@ -1,8 +1,15 @@
 use image::RgbaImage;
 use std::path::PathBuf;
+use std::sync::Arc;
 use strawberry_processing::local_maxima::ThresholdType;
 
 use super::*;
+
+#[derive(Debug, Clone)]
+pub struct OutputFrame {
+    pub load_generation: u64,
+    pub image: Arc<RgbaImage>,
+}
 
 #[derive(Debug, Clone)]
 pub enum CompositorMessage {
@@ -167,8 +174,6 @@ pub enum PipelineCommand {
     Refresh(usize),
     /// Load input images into the pipeline
     Load(Vec<PathBuf>),
-    /// Return output image from the pipeline
-    Output(RgbaImage),
     /// Message to pipeline object
     PipelineObject(PipelineObjectMessage),
     /// Message to frontend

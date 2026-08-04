@@ -39,7 +39,7 @@ impl ToolBackend for Decomposer {
         BackendToolType::Decomposer
     }
 
-    async fn process(&mut self, input: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
+    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         if input.len() > 1 {
             let error_msg = format!(
                 "Decomposer can only process one image, received {}",
@@ -70,7 +70,6 @@ impl ToolBackend for Decomposer {
         };
 
         let images: Vec<image::RgbaImage> = decomposed
-            .clone()
             .into_iter()
             .enumerate()
             .filter_map(|(i, image)| {
@@ -92,7 +91,7 @@ impl ToolBackend for Decomposer {
             }
         };
 
-        *input = vec![composited];
+        *input = vec![Arc::new(composited)];
 
         Ok(())
     }

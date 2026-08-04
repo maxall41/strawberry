@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::counter::fitting::{find_counts_within_polygon, ramer_douglas_peucker_closed};
 
@@ -115,7 +116,7 @@ pub struct Counter {
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub filters: Vec<Box<dyn Filter>>,
     pub index: usize,
-    pub cached_output: Option<Vec<image::RgbaImage>>,
+    pub cached_output: Option<Vec<Arc<image::RgbaImage>>>,
     pub cached_state: Option<CounterState>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub frontend_latest_state: Option<CounterState>,
@@ -144,7 +145,7 @@ impl ToolBackend for Counter {
     fn disconnect(&mut self) {
         self.frontend_senders.clear();
     }
-    async fn process(&mut self, output_images: &mut Vec<image::RgbaImage>) -> anyhow::Result<()> {
+    async fn process(&mut self, output_images: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         if self.state.mode == CounterMode::Auto {
             self.state.auto_counts.clear();
 
@@ -580,19 +581,15 @@ impl ToolBackend for Counter {
         self.index = index;
     }
 
-    fn has_valid_cache(&self) -> bool {
-        if let Some(cached_state) = &self.cached_state {
-            cached_state == &self.state
+    fn valid_cached_output(&self) -> Option<Vec<Arc<image::RgbaImage>>> {
+        if self.cached_state.as_ref() == Some(&self.state) {
+            self.cached_output.clone()
         } else {
-            false
+            None
         }
     }
 
-    fn get_cached_output(&self) -> Option<Vec<image::RgbaImage>> {
-        self.cached_output.clone()
-    }
-
-    fn set_cached_output(&mut self, output: Vec<image::RgbaImage>) {
+    fn set_cached_output(&mut self, output: Vec<Arc<image::RgbaImage>>) {
         self.cached_output = Some(output);
         self.cached_state = Some(self.state.clone());
     }
