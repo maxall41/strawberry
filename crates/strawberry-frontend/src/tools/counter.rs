@@ -15,8 +15,8 @@ use crate::gui::{icon::Icon, value_control::ValueControl, ToggleButton};
 use crate::tools::{spawn_message_processor, FrontendMessageHandler};
 use strawberry_types::{
     consts::{image_rgba_to_gpui_rgba, CIRCLE_COLORS},
-    CountData, CountMessage, CounterMode, CounterState, CounterTool, FilterMessage, FilterProxy,
-    PipelineCommand, PipelineObjectMessage, ToolState,
+    CountData, CountMessage, CounterMode, CounterState, CounterTool, FilterProxy, PipelineCommand,
+    PipelineObjectMessage, ToolState,
 };
 
 use strawberry_types::ToolFrontend;
@@ -65,21 +65,9 @@ impl CounterView {
             return;
         };
 
-        let last_directory = self.last_directory.clone();
         let image_directory = self.image_directory.clone();
 
         cx.spawn_in(_window, async move |this, cx| {
-            // let default_dir = last_directory
-            //     .read()
-            //     .ok()
-            //     .and_then(|guard| guard.as_ref().map(|p| p.to_string_lossy().to_string()))
-            //     .or_else(|| {
-            //         image_directory
-            //             .read()
-            //             .ok()
-            //             .and_then(|guard| guard.as_ref().map(|p| p.to_string_lossy().to_string()))
-            //     })
-            //     .unwrap_or_else(|| "~/".to_string());
             let default_dir = image_directory
                 .read()
                 .ok()
@@ -94,7 +82,7 @@ impl CounterView {
                 .save_file();
 
             if let Some(file) = file {
-                if let Err(e) = this.update(cx, |this, cx| {
+                if let Err(e) = this.update(cx, |this, _cx| {
                     if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::CountMessage(CountMessage::SaveCounts(file)),
@@ -146,7 +134,7 @@ impl CounterView {
                     }
                 }
 
-                if let Err(e) = this.update(cx, |this, cx| {
+                if let Err(e) = this.update(cx, |this, _cx| {
                     if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::CountMessage(CountMessage::LoadCounts(file)),
@@ -1318,7 +1306,7 @@ impl CounterView {
                     .unwrap_or(10.0);
 
                 // Create a ValueControl for this filter
-                let control = cx.new(|cx| {
+                let control = cx.new(|_cx| {
                     ValueControl::new(
                         format!("{current_value:.0}"),
                         current_value,
@@ -1366,50 +1354,6 @@ impl CounterView {
                 )),
             )) {
                 eprintln!("Failed to send toggle filter command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
-        }
-    }
-
-    fn adjust_size_filter(&mut self, delta: i16) {
-        let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
-            let current_value = {
-                let state = self
-                    .state
-                    .read()
-                    .expect("State lock should not be poisoned");
-                state
-                    .filter_proxys
-                    .iter()
-                    .find(|f| f.name == "Filter by Size")
-                    .and_then(|f| f.values.first())
-                    .copied()
-                    .unwrap_or(10.0)
-            };
-
-            let new_min_size = ((current_value as i16) + delta).max(1) as u16;
-
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::FilterMessage(
-                    FilterMessage::ConfigureSizeFilter(new_min_size),
-                )),
-            )) {
-                eprintln!("Failed to send size filter configuration: {e}");
             }
         } else {
             eprintln!("Invalid tool index: {current_tool_index}");

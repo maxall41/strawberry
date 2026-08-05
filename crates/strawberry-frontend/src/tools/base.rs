@@ -11,6 +11,7 @@ pub struct ToolBase {
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     pub focus_handle: Option<FocusHandle>,
+    #[allow(dead_code)]
     pub cleanup_guard: crate::tools::CleanupGuard,
     // Exactly one message-processor task may consume receive_channel: flume is
     // MPMC, so a second consumer steals messages and states get applied out of
@@ -43,13 +44,10 @@ impl ToolBase {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver);
         self.focus_handle = Some(focus_handle);
-        if let Err(e) = self
-            .command_sender
-            .send(PipelineCommand::DiscoverBackend(
-                self.backend_type.clone(),
-                sender,
-            ))
-        {
+        if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
+            self.backend_type.clone(),
+            sender,
+        )) {
             eprintln!("Failed to send backend discovery request: {e}");
             return false;
         }

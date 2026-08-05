@@ -154,9 +154,7 @@ impl GpuImageProcessor {
         let buffer_slice = staging_buffer.slice(..);
         let (sender, receiver) = flume::unbounded();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            if let Err(e) = sender.send(result) {
-                // GPU buffer mapping errors are handled at higher levels
-            }
+            let _ = sender.send(result);
         });
 
         self.device.poll(wgpu::PollType::wait_indefinitely())?;

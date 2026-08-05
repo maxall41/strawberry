@@ -69,7 +69,7 @@ impl NerveTracerView {
                 .save_file();
 
             if let Some(file) = file {
-                if let Err(e) = this.update(cx, |this, cx| {
+                if let Err(e) = this.update(cx, |this, _cx| {
                     if let Err(e) = this.base.send_to_backend(PipelineCommand::PipelineObject(
                         PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::SaveTraces(
                             file,
@@ -108,7 +108,7 @@ impl NerveTracerView {
                     }
                 }
 
-                if let Err(e) = this.update(cx, |this, cx| {
+                if let Err(e) = this.update(cx, |this, _cx| {
                     if let Err(e) = this.base.send_to_backend(PipelineCommand::PipelineObject(
                         PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::LoadTraces(
                             file,

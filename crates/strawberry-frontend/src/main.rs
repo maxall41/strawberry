@@ -407,7 +407,7 @@ impl PrimaryViewer {
     fn on_scroll_wheel(
         &mut self,
         event: &ScrollWheelEvent,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let delta_y = match event.delta {
