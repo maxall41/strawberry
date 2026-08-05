@@ -4,8 +4,8 @@ use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, FocusHandle, Focusable, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
+    div, prelude::*, px, size, App, Bounds, Context, Div, DragMoveEvent, FocusHandle, Focusable,
+    MouseDownEvent, Pixels, Point, SharedString, TitlebarOptions, Window, WindowBounds,
     WindowOptions,
 };
 use rfd::FileDialog;
@@ -17,18 +17,97 @@ use strawberry_types::{
 
 use strawberry_types::ToolFrontend;
 
+/// Vertical space reserved between rows for the insertion marker.
+const SLOT_HEIGHT: f32 = 8.0;
+
 #[derive(Clone)]
-pub struct DragState {
-    pub dragging_tool_position: u16,
-    pub drag_start_position: Point<f32>,
-    pub current_position: Point<f32>,
-    pub original_position: u16,
+pub struct DraggedTool {
+    row: usize,
+    name: SharedString,
+    order_label: SharedString,
+}
+
+/// Element that follows the cursor while dragging.
+pub struct ToolDragPreview {
+    tool: DraggedTool,
+    width: Pixels,
+}
+
+impl Render for ToolDragPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        row_frame(self.tool.name.clone(), self.tool.order_label.clone())
+            .w(self.width)
+            .bg(theme::CONTROL_HOVER)
+            .border_color(theme::ACCENT)
+            .text_color(theme::TEXT)
+            .shadow_lg()
+    }
+}
+
+fn drag_grip() -> impl IntoElement {
+    div()
+        .flex()
+        .flex_none()
+        .gap(px(2.))
+        .children((0..2).map(|_| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .children((0..3).map(|_| div().size(px(2.)).rounded_full().bg(theme::TEXT_MUTED)))
+        }))
+}
+
+fn row_frame(name: SharedString, order_label: SharedString) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .border_1()
+        .text_sm()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(drag_grip())
+                .child(div().font_weight(gpui::FontWeight::MEDIUM).child(name)),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::TEXT_MUTED)
+                .child(order_label),
+        )
+}
+
+fn drop_slot(active: bool) -> impl IntoElement {
+    div()
+        .h(px(SLOT_HEIGHT))
+        .flex()
+        .flex_none()
+        .items_center()
+        .child(
+            div()
+                .h(px(2.))
+                .w_full()
+                .mx_1()
+                .rounded_full()
+                .when(active, |this| this.bg(theme::ACCENT)),
+        )
 }
 
 pub struct ManagerView {
     pub state: Arc<RwLock<ManagerState>>,
-    pub drag_state: Option<DragState>,
-    pub tool_positions: Vec<(f32, u16)>,
+    /// Row being dragged, rendered ghosted in place.
+    drag_row: Option<usize>,
+    /// Slot a drop would insert into, in `0..=row_count` of the pre-drop order.
+    drop_slot: Option<usize>,
     pub base: crate::tools::base::ToolBase,
 }
 
@@ -48,8 +127,8 @@ impl ManagerView {
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(ManagerState::default())),
-            drag_state: None,
-            tool_positions: vec![],
+            drag_row: None,
+            drop_slot: None,
             base: crate::tools::base::ToolBase::new(
                 command_sender.clone(),
                 strawberry_types::BackendToolType::Manager,
@@ -61,186 +140,203 @@ impl ManagerView {
         spawn_message_processor(self, window, cx);
     }
 
-    fn render_tool(
+    fn render_row(
         &self,
+        row: usize,
+        row_count: usize,
         tool: &ToolProxy,
-        index: usize,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let is_dragging = self
-            .drag_state
-            .as_ref()
-            .map(|drag| drag.dragging_tool_position == tool.position)
-            .unwrap_or(false);
-
-        let opacity = if is_dragging { 0.5 } else { 1.0 };
-        let bg_color = if is_dragging {
-            theme::CONTROL_HOVER
-        } else {
-            theme::CONTROL
+        let name = SharedString::from(tool.name.clone());
+        let order_label = SharedString::from(format!("#{row}"));
+        let is_source = self.drag_row == Some(row);
+        let payload = DraggedTool {
+            row,
+            name: name.clone(),
+            order_label: order_label.clone(),
         };
-
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .p_3()
-            .bg(bg_color)
-            .opacity(opacity)
-            .rounded_md()
-            .border_1()
-            .border_color(theme::BORDER)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::TEXT_MUTED)
-                            .cursor_pointer()
-                            .child("⋮⋮")
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener({
-                                    let tool_position = tool.position;
-                                    move |this: &mut ManagerView, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<ManagerView>| {
-                                        cx.stop_propagation();
-                                        this.start_drag(tool_position, Point::new(event.position.x.into(), event.position.y.into()));
-                                        cx.notify();
-                                    }
-                                }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(tool.name.clone()),
-                    ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::TEXT_MUTED)
-                    .child(format!("#{index}")),
-            )
-    }
-
-    // Tools list component
-    fn render_tools(
-        &mut self,
-        sorted_tools: &mut Vec<ToolProxy>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        sorted_tools.sort_by_key(|tool| tool.position);
-
-        // Estimate tool positions based on layout
-        self.tool_positions.clear();
-        let header_height = 40.0; // "Tools" header height
-        let tool_height = 58.0; // p_3 (12px) + content + gap
-        for (i, tool) in sorted_tools.iter().enumerate() {
-            let estimated_y = header_height + (i as f32 * tool_height);
-            self.tool_positions.push((estimated_y, tool.position));
-        }
+        let entity = cx.entity();
 
         div()
             .flex()
             .flex_col()
-            .gap_2()
+            .child(drop_slot(self.drop_slot == Some(row)))
+            .child(
+                row_frame(name, order_label)
+                    .id(("tool-row", row))
+                    .cursor_grab()
+                    .bg(if is_source {
+                        theme::SURFACE_DEEP
+                    } else {
+                        theme::CONTROL
+                    })
+                    .border_color(if is_source {
+                        theme::BORDER_MUTED
+                    } else {
+                        theme::BORDER
+                    })
+                    .when(is_source, |this| this.opacity(0.4))
+                    .when(!is_source, |this| {
+                        this.hover(|style| style.bg(theme::CONTROL_HOVER))
+                    })
+                    .on_drag(
+                        payload,
+                        move |dragged: &DraggedTool, _offset, window, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.drag_row = Some(dragged.row);
+                                this.drop_slot = Some(dragged.row);
+                                cx.notify();
+                            });
+                            let available = window.viewport_size().width - px(32.);
+                            let tool = dragged.clone();
+                            cx.new(move |_| ToolDragPreview {
+                                tool,
+                                width: if available < px(120.) {
+                                    px(120.)
+                                } else {
+                                    available
+                                },
+                            })
+                        },
+                    )
+                    .on_drag_move(cx.listener(
+                        move |this: &mut ManagerView,
+                              event: &DragMoveEvent<DraggedTool>,
+                              _window: &mut Window,
+                              cx: &mut Context<ManagerView>| {
+                            this.track_drag(row, row_count, event.bounds, event.event.position, cx);
+                        },
+                    )),
+            )
+    }
+
+    fn track_drag(
+        &mut self,
+        row: usize,
+        row_count: usize,
+        bounds: Bounds<Pixels>,
+        pointer: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let half_slot = px(SLOT_HEIGHT / 2.0);
+        let below_top = row == 0 || pointer.y >= bounds.top() - half_slot;
+        let above_bottom = row + 1 == row_count || pointer.y < bounds.bottom() + half_slot;
+        if !(below_top && above_bottom) {
+            return;
+        }
+
+        let slot = if pointer.y < bounds.center().y {
+            row
+        } else {
+            row + 1
+        };
+        if self.drop_slot != Some(slot) {
+            self.drop_slot = Some(slot);
+            cx.notify();
+        }
+    }
+
+    fn commit_drop(&mut self, cx: &mut Context<Self>) {
+        let from = self.drag_row.take();
+        let slot = self.drop_slot.take();
+        cx.notify();
+
+        let (Some(from), Some(slot)) = (from, slot) else {
+            return;
+        };
+        // Both slots bordering the dragged row leave the order unchanged.
+        if slot == from || slot == from + 1 {
+            return;
+        }
+
+        let sorted = match self.state.read() {
+            Ok(state) => {
+                let mut sorted = state.proxy_tools.clone();
+                sorted.sort_by_key(|tool| tool.position);
+                sorted
+            }
+            Err(e) => {
+                eprintln!("Failed to read manager state while reordering: {e}");
+                return;
+            }
+        };
+        if from >= sorted.len() || slot > sorted.len() {
+            return;
+        }
+
+        let start_index = sorted[from].position;
+        let new_index = if slot < from {
+            sorted[slot].position
+        } else {
+            sorted[slot - 1].position
+        };
+
+        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
+            PipelineObjectMessage::ManagerMessage(ManagerMessage::ReorderTool(
+                start_index,
+                new_index,
+            )),
+        )) {
+            eprintln!("Failed to send reorder command: {e}");
+        }
+    }
+
+    // Tools list component
+    fn render_tools(&self, tools: &[ToolProxy], cx: &mut Context<Self>) -> impl IntoElement {
+        let row_count = tools.len();
+        let rows: Vec<_> = tools
+            .iter()
+            .enumerate()
+            .map(|(row, tool)| self.render_row(row, row_count, tool, cx))
+            .collect();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .flex_1()
+            .min_h_0()
             .child(
                 div()
-                    .text_lg()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .mb_3()
-                    .child("Tools"),
+                    .flex()
+                    .items_baseline()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child("Tools"),
+                    )
+                    .when(row_count > 1, |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::TEXT_MUTED)
+                                .child("drag to reorder"),
+                        )
+                    }),
             )
-            .children(
-                sorted_tools
-                    .iter()
-                    .enumerate()
-                    .map(|(index, tool)| self.render_tool(tool, index, cx)),
+            .child(
+                div()
+                    .id("tool-list")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .when(row_count == 0, |this| {
+                        this.child(
+                            div()
+                                .pt_2()
+                                .text_xs()
+                                .text_color(theme::TEXT_MUTED)
+                                .child("No tools enabled."),
+                        )
+                    })
+                    .children(rows)
+                    .child(drop_slot(self.drop_slot == Some(row_count))),
             )
-    }
-
-    fn start_drag(&mut self, tool_position: u16, position: Point<f32>) {
-        self.drag_state = Some(DragState {
-            dragging_tool_position: tool_position,
-            drag_start_position: position,
-            current_position: position,
-            original_position: tool_position,
-        });
-        println!("Started dragging tool from position {tool_position}");
-    }
-
-    fn update_drag(&mut self, position: Point<f32>) {
-        if let Some(ref mut drag_state) = self.drag_state {
-            drag_state.current_position = position;
-        }
-    }
-
-    fn end_drag(&mut self, position: Point<f32>) {
-        if let Some(drag_state) = self.drag_state.take() {
-            let Some(current_tool_index) = self.get_current_tool_index() else {
-                return;
-            };
-
-            // Calculate new position based on closest tool element position
-            let (original_index, drop_index) = if let Ok(state) = self.state.read() {
-                let mut sorted_tools = state.proxy_tools.clone();
-                sorted_tools.sort_by_key(|tool| tool.position);
-
-                // Find the original index in the enabled tools vector
-                let original_index = self.tool_positions[sorted_tools
-                    .iter()
-                    .position(|tool| tool.position == drag_state.original_position)
-                    .unwrap_or(0)]
-                .1;
-
-                // Get mouse Y position relative to the drop location
-                let drop_y = position.y;
-                let going_up = drop_y < drag_state.drag_start_position.y;
-
-                // Find the closest tool element position
-                let mut closest_index = original_index;
-                let mut closest_distance = f32::INFINITY;
-
-                for &(tool_y, pos_index) in self.tool_positions.iter() {
-                    let distance = (drop_y - tool_y).abs();
-                    if distance < closest_distance {
-                        closest_distance = distance;
-                        closest_index = pos_index;
-                    }
-                }
-
-                // Apply the logic: if going up get min(index-1, 0), if going down get index+1
-                let target_index = if going_up {
-                    closest_index.saturating_sub(1)
-                } else {
-                    // Going down
-                    closest_index + 1
-                };
-
-                (original_index, target_index)
-            } else {
-                eprintln!("Failed to read state!");
-                (0, 0)
-            };
-
-            let manager_message = ManagerMessage::ReorderTool(original_index, drop_index);
-            println!(
-                "=== REORDER TOOL ===\nOriginal index: {}\nDrop index: {}\nPipeline position: #{} -> moving to position near index {}",
-                original_index, drop_index, drag_state.original_position, drop_index
-            );
-            if let Err(e) = self.base.send_channels[current_tool_index as usize].send(
-                PipelineCommand::PipelineObject(PipelineObjectMessage::ManagerMessage(
-                    manager_message,
-                )),
-            ) {
-                eprintln!("Failed to send manager message: {e}");
-            }
-        }
     }
 
     fn save_pipeline(&self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -316,7 +412,8 @@ impl ManagerView {
                     .px_4()
                     .py_2()
                     .bg(theme::SUCCESS)
-                    .cursor_pointer().hover(|style| style.bg(theme::SUCCESS_HOVER))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::SUCCESS_HOVER))
                     .rounded_md()
                     .text_sm()
                     .child("Save")
@@ -337,7 +434,8 @@ impl ManagerView {
                     .px_4()
                     .py_2()
                     .bg(theme::ACCENT)
-                    .cursor_pointer().hover(|style| style.bg(theme::ACCENT_HOVER))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::ACCENT_HOVER))
                     .rounded_md()
                     .text_sm()
                     .child("Load")
@@ -381,8 +479,17 @@ impl FrontendMessageHandler for ManagerView {
 
 impl Render for ManagerView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = match self.state.read() {
-            Ok(state) => state,
+        if self.drag_row.is_some() && !cx.has_active_drag() {
+            self.drag_row = None;
+            self.drop_slot = None;
+        }
+
+        let tools = match self.state.read() {
+            Ok(state) => {
+                let mut tools = state.proxy_tools.clone();
+                tools.sort_by_key(|tool| tool.position);
+                tools
+            }
             Err(e) => {
                 eprintln!("Failed to read state for rendering: {e}");
                 return div()
@@ -420,49 +527,21 @@ impl Render for ManagerView {
                     },
                 )
             })
+            .on_drop(cx.listener(
+                |this: &mut ManagerView,
+                 _dragged: &DraggedTool,
+                 _window: &mut Window,
+                 cx: &mut Context<ManagerView>| {
+                    this.commit_drop(cx);
+                },
+            ))
             .child(self.render_header())
-            .child({
-                let mut tools_clone = state.proxy_tools.clone();
-                drop(state); // Explicitly drop the guard
-                self.render_tools(&mut tools_clone, cx)
-            })
+            .child(self.render_tools(&tools, cx))
             .child(
                 div()
                     .flex()
                     .justify_between()
-                    .mt_auto()
                     .child(self.render_storage_buttons(cx)),
-            )
-            .on_mouse_move(cx.listener(
-                |this: &mut ManagerView,
-                 event: &MouseMoveEvent,
-                 _window: &mut Window,
-                 cx: &mut Context<ManagerView>| {
-                    if this.drag_state.is_some() {
-                        this.update_drag(Point::new(
-                            event.position.x.into(),
-                            event.position.y.into(),
-                        ));
-                        cx.notify();
-                    }
-                },
-            ))
-            .on_mouse_up(
-                gpui::MouseButton::Left,
-                cx.listener(
-                    |this: &mut ManagerView,
-                     event: &MouseUpEvent,
-                     _window: &mut Window,
-                     cx: &mut Context<ManagerView>| {
-                        if this.drag_state.is_some() {
-                            this.end_drag(Point::new(
-                                event.position.x.into(),
-                                event.position.y.into(),
-                            ));
-                            cx.notify();
-                        }
-                    },
-                ),
             )
     }
 }

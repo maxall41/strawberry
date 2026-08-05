@@ -23,7 +23,9 @@ impl Default for TileConfig {
 impl TileConfig {
     pub fn from_limits(limits: &wgpu::Limits) -> Self {
         const BYTES_PER_PIXEL_WORST_CASE: u64 = 8; // vec2<i32> in watershed
-        let max_buffer_size = limits.max_storage_buffer_binding_size as u64;
+        let max_buffer_size = limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size);
         let max_pixels = (max_buffer_size / BYTES_PER_PIXEL_WORST_CASE) as usize;
 
         Self {

@@ -136,8 +136,8 @@ impl GpuWatershed {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Distance Transform Pipeline Layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
             });
 
         let create_pipeline = |entry_point: &str, label: &str| {
@@ -399,7 +399,7 @@ impl GpuWatershed {
         }
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
-        self.gpu.device.poll(wgpu::MaintainBase::Wait)?;
+        self.gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
         Ok(())
     }
 
@@ -432,14 +432,14 @@ impl GpuWatershed {
             let _ = sender.send(result);
         });
 
-        self.gpu.device.poll(wgpu::MaintainBase::Wait)?;
+        self.gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
         let map_result = receiver
             .recv_async()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {}", e))?;
         map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {:?}", e))?;
 
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice.get_mapped_range()?;
         let distances: &[f32] = bytemuck::cast_slice(&data);
 
         Ok(distances.to_vec())
@@ -554,14 +554,14 @@ impl GpuWatershed {
             let _ = sender.send(result);
         });
 
-        self.gpu.device.poll(wgpu::MaintainBase::Wait)?;
+        self.gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
         let map_result = receiver
             .recv_async()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {}", e))?;
         map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {:?}", e))?;
 
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice.get_mapped_range()?;
         let markers: &[u32] = bytemuck::cast_slice(&data);
 
         Ok(markers.to_vec())

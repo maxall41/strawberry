@@ -177,7 +177,7 @@ impl PrimaryViewer {
                     continue;
                 }
 
-                let result = this.update(cx, |this, cx| {
+                let result = this.update_in(cx, |this, window, cx| {
                     for (text, level) in toasts {
                         this.add_toast(text, level, cx);
                     }
@@ -188,7 +188,7 @@ impl PrimaryViewer {
                         }
                     }
                     if let Some(image) = latest_output {
-                        this.show_output(image, cx);
+                        this.show_output(image, window, cx);
                     }
                     if let Some(overlays) = latest_overlays {
                         this.overlays = overlays;
@@ -209,7 +209,7 @@ impl PrimaryViewer {
         .detach();
     }
 
-    fn show_output(&mut self, image: Arc<RgbaImage>, cx: &mut Context<Self>) {
+    fn show_output(&mut self, image: Arc<RgbaImage>, window: &mut Window, cx: &mut Context<Self>) {
         let img_data = Arc::new(RenderImage::new(vec![Frame::new(Arc::unwrap_or_clone(
             image,
         ))]));
@@ -229,8 +229,15 @@ impl PrimaryViewer {
 
         self.original_width = new_width;
         self.original_height = new_height;
-        self.display_image = ImageSource::Render(img_data);
         self.image_loaded = true;
+        let previous = std::mem::replace(&mut self.display_image, ImageSource::Render(img_data));
+
+        if let ImageSource::Render(previous) = previous {
+            if let Err(e) = window.drop_image(previous) {
+                eprintln!("Failed to release previous frame from the sprite atlas: {e}");
+            }
+        }
+
         cx.notify();
 
         if let Err(e) = self.command_sender.send(PipelineCommand::RequestOverlays) {

@@ -135,14 +135,11 @@ impl ToolBackend for NerveTracer {
                                 }
                                 Err(e) => {
                                     eprintln!("Failed to load traces from {:?}: {}", path, e);
-                                    if let Err(send_err) =
-                                        self.global_sender.send(PipelineCommand::FrontendMessage(
-                                            FrontendMessage::error(format!(
-                                                "Failed to load traces: {}",
-                                                e
-                                            )),
-                                        ))
-                                    {
+                                    if let Err(send_err) = self.global_sender.send(
+                                        PipelineCommand::FrontendMessage(FrontendMessage::error(
+                                            format!("Failed to load traces: {}", e),
+                                        )),
+                                    ) {
                                         eprintln!("Failed to send error feedback: {}", send_err);
                                     }
                                 }
@@ -305,6 +302,7 @@ impl ToolBackend for NerveTracer {
     fn invalidate_cache(&mut self) {
         self.cached_output = None;
         self.cached_state = None;
+        self.cached_input = None;
     }
 }
 
