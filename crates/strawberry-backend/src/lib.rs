@@ -291,9 +291,14 @@ impl Pipeline {
                         .send(PipelineCommand::FrontendMessage(message));
                 }
                 PipelineCommand::Load(files) => {
+                    // Cache is cleared later during process_from anyways, but clearing here first reduces peak memory.
+                    for tool in self.tool_manager.tools.iter_mut() {
+                        tool.invalidate_cache();
+                    }
+
                     let mut loaded_images = vec![];
                     let mut sizes = vec![];
-                    //TODO: Maybe we should do this in a separate thread?
+
                     println!("Loading images: {:?}", files);
                     let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
                         FrontendMessage::PipelineProgress(PipelineProgress {
@@ -306,7 +311,7 @@ impl Pipeline {
                         match ImageReader::open(file) {
                             Ok(reader) => match reader.decode() {
                                 Ok(decoded) => {
-                                    let data = decoded.to_rgba8();
+                                    let data = decoded.into_rgba8();
                                     sizes.push(data.dimensions());
                                     loaded_images.push(data);
                                 }
@@ -359,15 +364,10 @@ impl Pipeline {
                     //
                     if loaded_images.len() > 1 {
                         self.tool_manager.tools[0].set_enabled(true);
-                    } else if !loaded_images.is_empty() {
-                        let mut rgba_image = loaded_images[0].clone();
-                        // Convert RGBA to BGRA by swapping R and B channels
-                        for pixel in rgba_image.pixels_mut() {
-                            let temp = pixel[0]; // Store R
-                            pixel[0] = pixel[2]; // R = B
-                            pixel[2] = temp; // B = R
+                    } else if let Some(image) = loaded_images.first_mut() {
+                        for pixel in image.pixels_mut() {
+                            pixel.0.swap(0, 2);
                         }
-                        loaded_images[0] = rgba_image;
                     }
                     self.input_images = loaded_images.into_iter().map(Arc::new).collect();
                     self.load_generation += 1;

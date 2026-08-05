@@ -24,23 +24,22 @@ pub struct GpuImageProcessor {
 
 impl GpuImageProcessor {
     pub async fn new() -> Result<Self> {
-        // Initialize wgpu
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
+                ..Default::default()
             })
             .await
             .map_err(|e| anyhow!("Failed to find suitable GPU adapter: {}", e))?;
 
         let required_limits = wgpu::Limits {
             max_storage_buffer_binding_size: adapter.limits().max_storage_buffer_binding_size,
+            max_buffer_size: adapter.limits().max_buffer_size,
             ..wgpu::Limits::default()
         };
 
@@ -49,6 +48,7 @@ impl GpuImageProcessor {
                 label: None,
                 required_features: wgpu::Features::empty(),
                 required_limits,
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::default(),
                 trace: Trace::Off,
             })
@@ -159,14 +159,14 @@ impl GpuImageProcessor {
             }
         });
 
-        self.device.poll(wgpu::MaintainBase::Wait)?;
+        self.device.poll(wgpu::PollType::wait_indefinitely())?;
         let map_result = receiver
             .recv_async()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {}", e))?;
         map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {:?}", e))?;
 
-        let data = buffer_slice.get_mapped_range();
+        let data = buffer_slice.get_mapped_range()?;
         let result_bytes: &[u8] = &data;
 
         // Create result image from the GPU buffer data
