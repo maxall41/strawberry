@@ -1,44 +1,36 @@
 use anyhow::Result;
+use commands::{
+    OpenFile, PalettePaste, PalleteCommand, Quit, SaveImage, ToggleCommandPalette, ZoomIn, ZoomOut,
+};
 use gpui::{
-    actions, div, img, prelude::*, px, rgb, size, Animation, AnimationExt, App, AppContext,
-    AssetSource, Bounds, Context, Entity, ExternalPaths, FocusHandle, Focusable, ImageSource,
-    KeyBinding, KeyDownEvent, KeyUpEvent, Menu, MenuItem, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions,
-    Window, WindowBounds, WindowOptions,
+    div, img, prelude::*, px, rgb, size, Animation, AnimationExt, App, AppContext, AssetSource,
+    Bounds, Context, Entity, ExternalPaths, FocusHandle, Focusable, ImageSource, KeyBinding,
+    KeyDownEvent, KeyUpEvent, Menu, MenuItem, ModifiersChangedEvent, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString,
+    TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use gui::busy::{set_pipeline_busy, BusyOverlay};
 use gui::feedback::FeedbackModal;
+use gui::palette::{CommandPalette, PaletteDismissed};
 use image::{Frame, RgbaImage};
 use rfd::FileDialog;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::{fs, panic};
 use strawberry_backend::Pipeline;
 use strawberry_types::{
     overlay::{CircleStyle, OverlayCollection, OverlayElement},
-    FeedbackLevel, FrontendMessage, PipelineCommand, ToolFrontend,
+    FeedbackLevel, FrontendMessage, PipelineCommand,
 };
 use tokio::sync::broadcast;
-use tools::compositor::CompositorView;
-use tools::contrast::ContrastView;
-use tools::counter::CounterView;
-use tools::decomposer::DecomposerView;
-use tools::gaussian_blur::GaussianBlurView;
-use tools::grayscale::GrayscaleView;
-use tools::local_maxima::LocalMaximaView;
-use tools::manager::ManagerView;
-use tools::morphology::MorphologyView;
-use tools::nervetracer::NerveTracerView;
-use tools::rolling_ball::RollingBallView;
-use tools::sobel::SobelView;
-use tools::threshold::ThresholdView;
-use tools::watershed::WatershedView;
 
 struct Assets {
     base: PathBuf,
 }
 
+mod commands;
 mod gui;
 mod tools;
 
@@ -103,10 +95,10 @@ struct PrimaryViewer {
     image_loaded: bool,
     pan_loop_running: bool,
     activity: Option<PipelineActivity>,
-    /// Bumped whenever `activity` is replaced or cleared, so pending
-    /// show/clear timers from a superseded run become no-ops.
     activity_epoch: u64,
     busy_overlay: Entity<BusyOverlay>,
+    palette: Option<Entity<CommandPalette>>,
+    commands: Rc<[PalleteCommand]>,
 }
 
 impl PrimaryViewer {
@@ -500,11 +492,49 @@ impl PrimaryViewer {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Don't handle keys as panning when pallete is open.
+        if self.palette.is_some() {
+            return;
+        }
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
         let key = &event.keystroke.key;
         if matches!(key.as_str(), "w" | "a" | "s" | "d") {
             self.pressed_keys.insert(key.clone());
             self.start_pan_loop(window, cx);
         }
+    }
+
+    fn on_modifiers_changed(
+        &mut self,
+        event: &ModifiersChangedEvent,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        if event.modifiers.modified() {
+            self.pressed_keys.clear();
+        }
+    }
+
+    fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.take().is_some() {
+            cx.notify();
+            return;
+        }
+        self.pressed_keys.clear();
+
+        let commands = self.commands.clone();
+        let palette = cx.new(|cx| CommandPalette::new(commands, cx));
+        cx.subscribe(&palette, |viewer, _palette, _: &PaletteDismissed, cx| {
+            viewer.palette = None;
+            cx.notify();
+        })
+        .detach();
+
+        window.focus(&palette.read(cx).focus_handle(cx), cx);
+        self.palette = Some(palette);
+        cx.notify();
     }
 
     fn on_key_up(&mut self, event: &KeyUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
@@ -666,8 +696,10 @@ impl Render for PrimaryViewer {
             self.pan_y = viewport_center_y.to_f64() as f32 - (y * self.zoom_level);
         }
 
-        // Ensure this element is always focused
-        window.focus(&self.focus_handle(cx), cx);
+        // Keep the canvas focused for pan/zoom keys as long as command palette is not open.
+        if self.palette.is_none() {
+            window.focus(&self.focus_handle(cx), cx);
+        }
 
         let activity_status = self.activity.as_ref().filter(|a| a.shown).map(|a| {
             if a.total > 1 {
@@ -764,6 +796,7 @@ impl Render for PrimaryViewer {
             .on_action(cx.listener(Self::handle_save_image))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
+            .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
             .on_drop(cx.listener(
                 |this: &mut PrimaryViewer,
                  paths: &ExternalPaths,
@@ -859,6 +892,8 @@ impl Render for PrimaryViewer {
                         .child(status),
                 )
             })
+            // Pallete added as last child to ensure that it paints above other elements.
+            .when_some(self.palette.clone(), |el, palette| el.child(palette))
     }
 }
 
@@ -873,86 +908,6 @@ fn humanize_tool_name(name: &str) -> String {
     }
     result
 }
-
-actions!([Quit, ZoomIn, ZoomOut, OpenFile, SaveImage,]);
-
-/// Hosts a tool view plus the blocking busy overlay that locks the window's
-/// controls while a slow pipeline run is in flight, so no further processing
-/// can be queued behind it. Wrapping here covers every tool window without
-/// touching the individual views.
-struct ToolWindowRoot<T> {
-    tool: Entity<T>,
-    busy_overlay: Entity<BusyOverlay>,
-}
-
-impl<T: gpui::Render> Render for ToolWindowRoot<T> {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .child(self.tool.clone())
-            .child(self.busy_overlay.clone())
-    }
-}
-
-fn open_tool_window<T: ToolFrontend + gpui::Render + Focusable + 'static>(
-    mut tool: T,
-    cx: &mut App,
-) {
-    if let Err(e) = cx.open_window(tool.get_window_options(), |window, cx| {
-        let tool = cx.new(|cx| {
-            tool.initialize(window, cx);
-            tool
-        });
-        window.focus(&tool.read(cx).focus_handle(cx), cx);
-        cx.new(|cx| ToolWindowRoot {
-            tool,
-            busy_overlay: cx.new(|cx| BusyOverlay::new(true, cx)),
-        })
-    }) {
-        eprintln!("Failed to open tool window: {e}");
-    }
-}
-
-// Generic tool window creation function
-fn create_tool_window<T, A>(
-    cx: &mut App,
-    view_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    view_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-    constructor: impl Fn(
-            tokio::sync::broadcast::Receiver<PipelineCommand>,
-            tokio::sync::broadcast::Sender<PipelineCommand>,
-        ) -> T
-        + 'static,
-) where
-    T: ToolFrontend + gpui::Render + Focusable + 'static,
-    A: gpui::Action + 'static,
-{
-    let view_sender_clone = view_sender.clone();
-    let view_recv_clone = view_receiver.resubscribe();
-
-    cx.on_action(move |_: &A, cx| {
-        let tool = constructor(view_recv_clone.resubscribe(), view_sender_clone.clone());
-        open_tool_window(tool, cx);
-    });
-}
-
-// Generate tool action declarations
-actions!([
-    CompositorSettings,
-    ContrastSettings,
-    CounterSettings,
-    GaussianBlurSettings,
-    GrayscaleSettings,
-    ThresholdSettings,
-    LocalMaximaSettings,
-    MorphologySettings,
-    RollingBallSettings,
-    WatershedSettings,
-    ManagerSettings,
-    DecomposerSettings,
-    SobelSettings,
-    NerveTracerSettings,
-]);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -989,118 +944,12 @@ async fn main() -> Result<()> {
             base: manifest_dir.join("examples"),
         })
         .run(move |cx: &mut App| {
-            // Register all tool windows
-            create_tool_window::<CompositorView, CompositorSettings>(
+            let commands = commands::install(
                 cx,
                 view_sender.clone(),
                 view_recv.resubscribe(),
-                CompositorView::new,
+                image_directory.clone(),
             );
-            create_tool_window::<ContrastView, ContrastSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                ContrastView::new,
-            );
-
-            // CounterView needs image_directory for file dialogs
-            {
-                let counter_sender = view_sender.clone();
-                let counter_recv = view_recv.resubscribe();
-                let counter_image_dir = image_directory.clone();
-                cx.on_action(move |_: &CounterSettings, cx| {
-                    let tool = CounterView::new(
-                        counter_recv.resubscribe(),
-                        counter_sender.clone(),
-                        counter_image_dir.clone(),
-                    );
-                    open_tool_window(tool, cx);
-                });
-            }
-            create_tool_window::<GaussianBlurView, GaussianBlurSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                GaussianBlurView::new,
-            );
-            create_tool_window::<GrayscaleView, GrayscaleSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                GrayscaleView::new,
-            );
-            create_tool_window::<ThresholdView, ThresholdSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                ThresholdView::new,
-            );
-            create_tool_window::<LocalMaximaView, LocalMaximaSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                LocalMaximaView::new,
-            );
-            create_tool_window::<MorphologyView, MorphologySettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                MorphologyView::new,
-            );
-            create_tool_window::<RollingBallView, RollingBallSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                RollingBallView::new,
-            );
-            create_tool_window::<WatershedView, WatershedSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                WatershedView::new,
-            );
-            create_tool_window::<ManagerView, ManagerSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                ManagerView::new,
-            );
-            create_tool_window::<DecomposerView, DecomposerSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                DecomposerView::new,
-            );
-            create_tool_window::<SobelView, SobelSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                SobelView::new,
-            );
-            create_tool_window::<NerveTracerView, NerveTracerSettings>(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                NerveTracerView::new,
-            );
-
-            // Generate menu items for tools
-            let tool_menu_items = vec![
-                MenuItem::action("Compositor", CompositorSettings),
-                MenuItem::action("Contrast", ContrastSettings),
-                MenuItem::action("Counter", CounterSettings),
-                MenuItem::action("Gaussian Blur", GaussianBlurSettings),
-                MenuItem::action("Grayscale", GrayscaleSettings),
-                MenuItem::action("Threshold", ThresholdSettings),
-                MenuItem::action("Local Maxima", LocalMaximaSettings),
-                MenuItem::action("Morphology", MorphologySettings),
-                MenuItem::action("Rolling Ball", RollingBallSettings),
-                MenuItem::action("Watershed", WatershedSettings),
-                MenuItem::action("Pipeline", ManagerSettings),
-                MenuItem::action("Decomposer", DecomposerSettings),
-                MenuItem::action("Sobel", SobelSettings),
-                MenuItem::action("Nerve Tracer", NerveTracerSettings),
-            ];
 
             cx.on_action(|_: &Quit, cx| cx.quit());
 
@@ -1108,17 +957,22 @@ async fn main() -> Result<()> {
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-l", OpenFile, None),
                 KeyBinding::new("cmd-s", SaveImage, None),
-                KeyBinding::new("+", ZoomIn, None),
-                KeyBinding::new("-", ZoomOut, None),
+                KeyBinding::new("secondary-p", ToggleCommandPalette, None),
+                KeyBinding::new("secondary-v", PalettePaste, Some("CommandPalette")),
+                KeyBinding::new("+", ZoomIn, Some("PrimaryViewer && !CommandPalette")),
+                KeyBinding::new("-", ZoomOut, Some("PrimaryViewer && !CommandPalette")),
             ]);
 
             cx.set_menus(vec![
-                Menu::new("Strawberry").items([MenuItem::action("Quit", Quit)]),
+                Menu::new("Strawberry").items([
+                    MenuItem::action("Command Palette…", ToggleCommandPalette),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit", Quit),
+                ]),
                 Menu::new("File").items([
                     MenuItem::action("Load Images...", OpenFile),
                     MenuItem::action("Save Image", SaveImage),
                 ]),
-                Menu::new("Tools").items(tool_menu_items),
             ]);
 
             let window_options = WindowOptions {
@@ -1178,6 +1032,8 @@ async fn main() -> Result<()> {
                     activity: None,
                     activity_epoch: 0,
                     busy_overlay: cx.new(|cx| BusyOverlay::new(false, cx)),
+                    palette: None,
+                    commands,
                 };
 
                 let viewer = cx.new(|cx| {
@@ -1187,8 +1043,8 @@ async fn main() -> Result<()> {
 
                 // Bind keys locally to the viewer
                 cx.bind_keys([
-                    KeyBinding::new("=", ZoomIn, Some("PrimaryViewer")),
-                    KeyBinding::new("-", ZoomOut, Some("PrimaryViewer")),
+                    KeyBinding::new("=", ZoomIn, Some("PrimaryViewer && !CommandPalette")),
+                    KeyBinding::new("-", ZoomOut, Some("PrimaryViewer && !CommandPalette")),
                 ]);
 
                 // Focus the viewer so it can receive key events
@@ -1204,6 +1060,17 @@ async fn main() -> Result<()> {
                     return;
                 }
             };
+
+            cx.on_action(move |_: &ToggleCommandPalette, cx| {
+                cx.defer(move |cx| {
+                    if let Err(e) = main_window.update(cx, |viewer, window, cx| {
+                        window.activate_window();
+                        viewer.toggle_palette(window, cx);
+                    }) {
+                        eprintln!("Failed to toggle command palette: {e}");
+                    }
+                });
+            });
 
             let main_window_id = main_window.window_id();
             cx.on_window_closed(move |cx, window_id| {
