@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
 use strawberry_types::{
-    FrontendMessage, ManagerMessage, PipelineCommand, PipelineObjectMessage, ToolBackend,
-    ToolState, ManagerState, ToolProxy, PipelineConfig,
+    FrontendMessage, ManagerMessage, ManagerState, PipelineCommand, PipelineConfig,
+    PipelineObjectMessage, ToolBackend, ToolProxy, ToolState,
 };
-use crate::utils::commands::collect_and_deduplicate_commands;
 
 /// Orchestrates the pipeline's tools. Note that unlike the tools it manages,
 /// the manager itself is NOT a `ToolBackend`: it never appears in the pipeline
@@ -78,7 +77,8 @@ impl ToolManager {
     }
 
     pub async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = collect_and_deduplicate_commands(&self.receiver);
+        let commands: Vec<PipelineCommand> =
+            std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
 
         for message in commands {
             match message {

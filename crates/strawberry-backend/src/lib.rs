@@ -18,7 +18,6 @@ use crate::tools::nervetracer::NerveTracer;
 pub mod counter;
 pub mod nervetracer;
 pub mod tools;
-pub mod utils;
 
 /// Helper macros for tool registration
 macro_rules! create_gpu_tool {
