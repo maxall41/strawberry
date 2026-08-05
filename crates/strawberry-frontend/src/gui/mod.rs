@@ -1,7 +1,9 @@
 pub mod busy;
 pub mod button;
 pub mod feedback;
+pub mod fuzzy;
 pub mod icon;
+pub mod palette;
 pub mod polyline;
 pub mod theme;
 pub mod value_control;

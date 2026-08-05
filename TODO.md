@@ -55,7 +55,6 @@
 ## Alpha 0.2 (Rebar)
 - [ ] Make UI nice
 - [ ] Color Deconvolution
-- [ ] Replace Arc with Rc's. Most of them can be replaced with Rc's as they single threaded.
 - [ ] Command pallete
 - [ ] Instead of using PipelineCommand for all channels break it up so only nessecary commands need to be handled in match
 - [ ] Add mode toggle to "Threshold" that in addition to manual thresholding it supports Otsu thresholding, Local thresholding, and maybe one or two other thresholding methods.
@@ -104,6 +103,10 @@
 - [ ] Non local means denoise
 
 ## Known issues:
+
+Each tool's `initialize()` calls `cx.bind_keys([...])`, and `App::bind_keys` appends rather
+than replaces. Reopening a tool window N times registers N duplicate bindings for that tool's
+shortcuts. Harmless in practice today, but the bindings accumulate for the life of the process.
 
 This does not happen in release mode, nothing bad seems to happen so it is probably fine... : Crashes when trying to load CH2_weka_prepped.tif: assertion failed: self.table.is_full() ||
         (self.code_buffer.code_size() == 2 && self.next_code == 4) ||

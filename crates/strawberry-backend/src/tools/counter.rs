@@ -15,6 +15,11 @@ use strawberry_types::{
     ToolBackend, ToolState,
 };
 
+/// Check if state change requires reporcessing
+fn counter_output_differs(a: &CounterState, b: &CounterState) -> bool {
+    a.is_enabled != b.is_enabled || a.mode != b.mode || a.filter_proxys != b.filter_proxys
+}
+
 pub struct SizeFilter {
     pub is_enabled: bool,
     pub min_size: u16,
@@ -145,7 +150,10 @@ impl ToolBackend for Counter {
     fn disconnect(&mut self) {
         self.frontend_senders.clear();
     }
-    async fn process(&mut self, output_images: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        output_images: &mut Vec<Arc<image::RgbaImage>>,
+    ) -> anyhow::Result<()> {
         if self.state.mode == CounterMode::Auto {
             self.state.auto_counts.clear();
 
@@ -560,14 +568,20 @@ impl ToolBackend for Counter {
             self.state.filter_proxys = new_filter_proxys;
         }
 
-        if self.frontend_latest_state.is_none()
-            || self
-                .frontend_latest_state
-                .as_ref()
-                .expect("Just checked that frontend_latest_state is some")
-                != &self.state
-        {
-            self.update_state()?;
+        let (changed, affects_output) = match self.frontend_latest_state.as_ref() {
+            Some(previous) => (
+                previous != &self.state,
+                counter_output_differs(previous, &self.state),
+            ),
+            None => (true, true),
+        };
+
+        if changed {
+            if affects_output {
+                self.update_state()?;
+            } else {
+                self.sync_frontend()?;
+            }
         }
 
         Ok(())
@@ -715,12 +729,22 @@ impl Counter {
             is_lasso_dragging: false,
         })
     }
-    fn update_state(&mut self) -> anyhow::Result<()> {
-        self.invalidate_cache();
+
+    /// Push state to the frontend without discarding the cached image.
+    fn sync_frontend(&mut self) -> anyhow::Result<()> {
         let message =
             PipelineCommand::FrontendMessage(FrontendMessage::ReturnState(self.get_state()));
         self.send_to_frontend(message)?;
         self.frontend_latest_state = Some(self.state.clone());
+        self.command_sender
+            .send(PipelineCommand::RequestOverlays)
+            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {}", e))?;
+        Ok(())
+    }
+
+    fn update_state(&mut self) -> anyhow::Result<()> {
+        self.invalidate_cache();
+        self.sync_frontend()?;
         self.command_sender
             .send(PipelineCommand::Refresh(self.index))
             .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;

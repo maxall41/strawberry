@@ -10,6 +10,11 @@ use strawberry_types::{
     PipelineObjectMessage, ToolBackend, ToolState,
 };
 
+/// Check if statechange requires reprocess.
+fn nervetracer_output_differs(a: &NerveTracerState, b: &NerveTracerState) -> bool {
+    a.is_enabled != b.is_enabled || a.selected_image_index != b.selected_image_index
+}
+
 pub struct NerveTracer {
     pub state: NerveTracerState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -194,14 +199,20 @@ impl ToolBackend for NerveTracer {
             }
         }
 
-        if self.frontend_latest_state.is_none()
-            || self
-                .frontend_latest_state
-                .as_ref()
-                .expect("Just checked that frontend_latest_state is some")
-                != &self.state
-        {
-            self.update_state()?;
+        let (changed, affects_output) = match self.frontend_latest_state.as_ref() {
+            Some(previous) => (
+                previous != &self.state,
+                nervetracer_output_differs(previous, &self.state),
+            ),
+            None => (true, true),
+        };
+
+        if changed {
+            if affects_output {
+                self.update_state()?;
+            } else {
+                self.sync_frontend()?;
+            }
         }
 
         Ok(())
@@ -337,12 +348,21 @@ impl NerveTracer {
         })
     }
 
-    fn update_state(&mut self) -> anyhow::Result<()> {
-        self.invalidate_cache();
+    /// Push state to the frontend without discarding the cached image.
+    fn sync_frontend(&mut self) -> anyhow::Result<()> {
         self.send_to_frontend(PipelineCommand::FrontendMessage(
             FrontendMessage::ReturnState(self.get_state()),
         ))?;
         self.frontend_latest_state = Some(self.state.clone());
+        self.command_sender
+            .send(PipelineCommand::RequestOverlays)
+            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {}", e))?;
+        Ok(())
+    }
+
+    fn update_state(&mut self) -> anyhow::Result<()> {
+        self.invalidate_cache();
+        self.sync_frontend()?;
         self.command_sender
             .send(PipelineCommand::Refresh(self.index))
             .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;

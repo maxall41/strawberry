@@ -53,4 +53,4 @@ Touch all of these, mirroring an existing simple tool (e.g. Sobel):
 1. `processing/src/<tool>.rs` + `processing/src/shaders/<tool>.wgsl` (GPU kernel).
 2. `strawberry-types`: message enum in `messages.rs`, a `PipelineObjectMessage` variant, a `BackendToolType` variant, state in `state.rs`.
 3. `strawberry-backend/src/tools/<tool>.rs` implementing `ToolBackend`; register it in `Pipeline::new` (backend `lib.rs`).
-4. `strawberry-frontend/src/tools/<tool>.rs` implementing `ToolFrontend`; in frontend `main.rs` add the action to the `actions!` list, a `create_tool_window` call, and a `MenuItem` in the Tools menu.
+4. `strawberry-frontend/src/tools/<tool>.rs` implementing `ToolFrontend`; in frontend `commands.rs` add the action to the tool `actions!` list and a `register_tool` call in `install`. That one call registers the action handler and creates the command-palette entry — there is no menu to update.
