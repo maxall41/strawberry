@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Single source of truth for the app's palette.
 use gpui::Rgba;
 

@@ -9,7 +9,7 @@ use gpui::{
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
-use crate::tools::{FrontendMessageHandler, spawn_message_processor};
+use crate::tools::{spawn_message_processor, FrontendMessageHandler};
 use strawberry_types::{
     PipelineCommand, PipelineObjectMessage, RollingBallMessage, RollingBallState, ToolState,
 };
@@ -111,7 +111,7 @@ impl RollingBallView {
 
     fn render_ball_radius_control(
         &self,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
         self.ball_radius_control
@@ -129,7 +129,8 @@ impl RollingBallView {
             .px_3()
             .py_2()
             .bg(theme::CONTROL)
-            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .text_sm()
             .child(label)
@@ -231,8 +232,6 @@ impl Render for RollingBallView {
             }
         };
 
-        let is_enabled = state.is_enabled;
-
         div()
             .track_focus(&self.base.focus_handle.clone().expect("initialized"))
             .flex()
@@ -295,7 +294,7 @@ impl ToolFrontend for RollingBallView {
             .read()
             .expect("State lock should not be poisoned")
             .clone();
-        let ball_radius_control = cx.new(|cx| {
+        let ball_radius_control = cx.new(|_cx| {
             ValueControl::new(
                 format!("{}", state.ball_radius),
                 state.ball_radius as f32,

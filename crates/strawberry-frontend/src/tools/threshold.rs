@@ -11,7 +11,7 @@ use gpui::{
 
 use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
-use crate::tools::{FrontendMessageHandler, spawn_message_processor};
+use crate::tools::{spawn_message_processor, FrontendMessageHandler};
 use strawberry_types::{
     PipelineCommand, PipelineObjectMessage, ThresholdMessage, ThresholdState, ToolState,
 };
@@ -115,7 +115,7 @@ impl ThresholdView {
     // Threshold value control component
     fn render_threshold_control(
         &self,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
         self.threshold_control
@@ -134,7 +134,8 @@ impl ThresholdView {
             .px_3()
             .py_2()
             .bg(theme::CONTROL)
-            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .text_sm()
             .child(label)
@@ -238,8 +239,6 @@ impl Render for ThresholdView {
             }
         };
 
-        let is_enabled = state.is_enabled;
-
         div()
             .track_focus(&self.base.focus_handle.clone().expect("initialized"))
             .flex()
@@ -302,7 +301,7 @@ impl ToolFrontend for ThresholdView {
             .read()
             .expect("State lock should not be poisoned")
             .clone();
-        let threshold_control = cx.new(|cx| {
+        let threshold_control = cx.new(|_cx| {
             ValueControl::new(
                 format!("{:.3}", state.threshold_value),
                 state.threshold_value,

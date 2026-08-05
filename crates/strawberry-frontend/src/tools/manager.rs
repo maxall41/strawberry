@@ -351,7 +351,7 @@ impl ManagerView {
                 .save_file();
 
             if let Some(file) = file {
-                if let Err(e) = this.update(cx, |this, cx| {
+                if let Err(e) = this.update(cx, |this, _cx| {
                     if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::ManagerMessage(ManagerMessage::SavePipeline(
@@ -383,7 +383,7 @@ impl ManagerView {
                 .pick_file();
 
             if let Some(file) = file {
-                if let Err(e) = this.update(cx, |this, cx| {
+                if let Err(e) = this.update(cx, |this, _cx| {
                     if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::ManagerMessage(ManagerMessage::LoadPipeline(

@@ -26,6 +26,7 @@ impl Icon {
         self
     }
 
+    #[allow(dead_code)]
     pub fn color(mut self, color: Rgba) -> Self {
         self.color = color;
         self

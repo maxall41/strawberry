@@ -124,18 +124,6 @@ impl MorphologyView {
         }
     }
 
-    fn adjust_element_size(&mut self, delta: i32, _window: &mut Window, _cx: &mut Context<Self>) {
-        let (operation, element_size) = match self.state.read() {
-            Ok(state) => (state.operation, state.element_size),
-            Err(e) => {
-                eprintln!("Failed to read state for element size adjustment: {e}");
-                return;
-            }
-        };
-        let new_element_size = ((element_size as i32) + delta).max(1) as u32;
-        self.update_operation_and_size(operation, new_element_size, _window, _cx);
-    }
-
     fn toggle_activity_action(
         &mut self,
         _: &MorphologyToggleActivity,
@@ -258,21 +246,12 @@ impl MorphologyView {
     // Element size control component
     fn render_element_size_control(
         &self,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
         self.element_size_control
             .clone()
             .expect("element_size_control should be initialized before use")
-    }
-
-    fn adjust_element_size_wrapper(
-        &mut self,
-        delta: f32,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.adjust_element_size(delta as i32, window, cx);
     }
 
     // Preset button component
@@ -414,8 +393,6 @@ impl Render for MorphologyView {
             }
         };
 
-        let is_enabled = state.is_enabled;
-
         div()
             .track_focus(&self.base.focus_handle.clone().expect("initialized"))
             .flex()
@@ -478,7 +455,7 @@ impl ToolFrontend for MorphologyView {
             .read()
             .expect("State lock should not be poisoned")
             .clone();
-        let element_size_control = cx.new(|cx| {
+        let element_size_control = cx.new(|_cx| {
             ValueControl::new(
                 format!("{:.0}", state.element_size),
                 state.element_size as f32,

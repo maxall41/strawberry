@@ -121,7 +121,7 @@ impl WatershedView {
     // Sigma control component
     fn render_sigma_control(
         &self,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
         self.sigma_control
@@ -132,7 +132,7 @@ impl WatershedView {
     // Min Distance control component
     fn render_min_distance_control(
         &self,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
         self.min_distance_control
@@ -152,7 +152,8 @@ impl WatershedView {
             .px_3()
             .py_2()
             .bg(theme::CONTROL)
-            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .text_sm()
             .child(label)
@@ -265,8 +266,6 @@ impl Render for WatershedView {
             }
         };
 
-        let is_enabled = state.is_enabled;
-
         div()
             .track_focus(&self.base.focus_handle.clone().expect("initialized"))
             .flex()
@@ -327,7 +326,7 @@ impl ToolFrontend for WatershedView {
             .read()
             .expect("State lock should not be poisoned")
             .clone();
-        let sigma_control = cx.new(|cx| {
+        let sigma_control = cx.new(|_cx| {
             ValueControl::new(
                 format!("{:.2}", state.sigma),
                 state.sigma,
@@ -339,7 +338,7 @@ impl ToolFrontend for WatershedView {
             )
         });
 
-        let min_distance_control = cx.new(|cx| {
+        let min_distance_control = cx.new(|_cx| {
             ValueControl::new(
                 format!("{:.0}", state.min_distance),
                 state.min_distance as f32,

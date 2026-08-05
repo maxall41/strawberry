@@ -198,7 +198,7 @@ impl LocalMaximaView {
     // Min distance control component
     fn render_min_distance_control(
         &self,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
         _window: &mut Window,
     ) -> impl IntoElement {
         self.min_distance_control
@@ -469,8 +469,6 @@ impl Render for LocalMaximaView {
             }
         };
 
-        let is_enabled = state.is_enabled;
-
         div()
             .track_focus(&self.base.focus_handle.clone().expect("initialized"))
             .flex()
@@ -531,7 +529,7 @@ impl ToolFrontend for LocalMaximaView {
             .read()
             .expect("State lock should not be poisoned")
             .clone();
-        let min_distance_control = cx.new(|cx| {
+        let min_distance_control = cx.new(|_cx| {
             ValueControl::new(
                 format!("{:.0}", state.min_distance),
                 state.min_distance as f32,
@@ -549,7 +547,7 @@ impl ToolFrontend for LocalMaximaView {
             ThresholdType::None => 0.0,
         };
 
-        let threshold_control = cx.new(|cx| {
+        let threshold_control = cx.new(|_cx| {
             ValueControl::new(
                 format!("{threshold_value:.3}"),
                 threshold_value,
@@ -564,7 +562,7 @@ impl ToolFrontend for LocalMaximaView {
         // Handle ValueControl events
         cx.subscribe(
             &min_distance_control,
-            |this, _control, event: &ValueControlEvent, cx| {
+            |this, _control, event: &ValueControlEvent, _cx| {
                 if event.id == "min_distance" {
                     this.adjust_min_distance_value(event.value as u32);
                 }
@@ -574,7 +572,7 @@ impl ToolFrontend for LocalMaximaView {
 
         cx.subscribe(
             &threshold_control,
-            |this, _control, event: &ValueControlEvent, cx| {
+            |this, _control, event: &ValueControlEvent, _cx| {
                 if event.id == "threshold" {
                     this.adjust_threshold_value(event.value);
                 }

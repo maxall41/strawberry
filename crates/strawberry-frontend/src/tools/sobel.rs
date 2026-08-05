@@ -333,7 +333,7 @@ impl ToolFrontend for SobelView {
             .read()
             .expect("State lock should not be poisoned")
             .clone();
-        let threshold_control = cx.new(|cx| {
+        let threshold_control = cx.new(|_cx| {
             ValueControl::new(
                 format!("{:.3}", state.threshold_value),
                 state.threshold_value,
