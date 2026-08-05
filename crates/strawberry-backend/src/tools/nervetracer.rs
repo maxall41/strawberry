@@ -1,5 +1,4 @@
 use crate::nervetracer::io::{export_nervetracer_to_xml_file, import_nervetracer_from_xml_file};
-use crate::utils::commands::collect_and_deduplicate_commands;
 use std::sync::Arc;
 use strawberry_processing::nervetracer::create_path;
 
@@ -73,7 +72,8 @@ impl ToolBackend for NerveTracer {
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = collect_and_deduplicate_commands(&self.receiver);
+        let commands: Vec<PipelineCommand> =
+            std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
 
         for message in commands {
             match message {

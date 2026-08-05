@@ -1,4 +1,3 @@
-use crate::utils::commands::collect_and_deduplicate_commands;
 use strawberry_types::PipelineCommand;
 
 /// Common infrastructure shared by all tools
@@ -38,7 +37,7 @@ impl ToolBase {
     }
 
     pub fn collect_commands(&self) -> Vec<PipelineCommand> {
-        collect_and_deduplicate_commands(&self.receiver)
+        std::iter::from_fn(|| self.receiver.try_recv().ok()).collect()
     }
 
     pub fn trigger_refresh(&self) -> anyhow::Result<()> {

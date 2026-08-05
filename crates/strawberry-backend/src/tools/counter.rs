@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::counter::fitting::{find_counts_within_polygon, ramer_douglas_peucker_closed};
 
 use crate::counter::io::export_counter_to_xml_file;
-use crate::utils::commands::collect_and_deduplicate_commands;
+
 use async_trait::async_trait;
 use lutz::{lutz, Image as LutzImage, Pixel};
 use strawberry_types::consts::CIRCLE_COLORS;
@@ -191,7 +191,8 @@ impl ToolBackend for Counter {
     }
 
     async fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = collect_and_deduplicate_commands(&self.receiver);
+        let commands: Vec<PipelineCommand> =
+            std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
 
         for message in commands {
             match message {
