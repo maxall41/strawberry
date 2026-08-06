@@ -146,7 +146,7 @@ impl ManagerView {
         row_count: usize,
         tool: &ToolProxy,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         let name = SharedString::from(tool.name.clone());
         let order_label = SharedString::from(format!("#{row}"));
         let is_source = self.drag_row == Some(row);
@@ -282,7 +282,7 @@ impl ManagerView {
     }
 
     // Tools list component
-    fn render_tools(&self, tools: &[ToolProxy], cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tools(&self, tools: &[ToolProxy], cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let row_count = tools.len();
         let rows: Vec<_> = tools
             .iter()
@@ -403,7 +403,7 @@ impl ManagerView {
         .detach();
     }
 
-    fn render_storage_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_storage_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .gap_2()

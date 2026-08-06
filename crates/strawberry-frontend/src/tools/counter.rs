@@ -550,7 +550,7 @@ impl CounterView {
         let mut sorted_counts: Vec<_> = state.manual_counts.iter().collect();
         sorted_counts.sort_by_key(|(id, _)| **id);
 
-        if let Some((&count_type_id, _)) = sorted_counts.get(position) {
+        if let Some(&(&count_type_id, _)) = sorted_counts.get(position) {
             drop(state); // Release the read lock before calling select_count_type
             self.select_count_type(count_type_id, window, cx);
         }
@@ -675,7 +675,7 @@ impl CounterView {
     }
 
     // Subheader component
-    fn render_subheader(&self) -> impl IntoElement {
+    fn render_subheader(&self) -> impl IntoElement + use<> {
         div()
             .text_lg()
             .font_weight(gpui::FontWeight::BOLD)
@@ -684,7 +684,7 @@ impl CounterView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
@@ -701,7 +701,7 @@ impl CounterView {
     }
 
     // Mode toggle component
-    fn render_mode_toggle(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_mode_toggle(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .items_center()
@@ -750,7 +750,7 @@ impl CounterView {
         is_visible: bool,
         position: Option<usize>,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         let ii = count_type_id as usize % CIRCLE_COLORS.len();
         let color = image_rgba_to_gpui_rgba(CIRCLE_COLORS[ii]);
         div()
@@ -869,7 +869,7 @@ impl CounterView {
     }
 
     // Count types list component
-    fn render_count_types_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_count_types_list(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let state = match self.state.read() {
             Ok(state) => state,
             Err(_) => {
@@ -910,7 +910,7 @@ impl CounterView {
     }
 
     // Plus button component
-    fn render_add_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_add_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .w_full()
             .p_2()
@@ -952,7 +952,7 @@ impl CounterView {
         is_active: bool,
         keyboard_shortcut: &str,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .id(ElementId::Name(SharedString::from(format!(
                 "tool-button-{:?}",
@@ -1003,7 +1003,7 @@ impl CounterView {
     }
 
     // Tools subheader component
-    fn render_tools_subheader(&self) -> impl IntoElement {
+    fn render_tools_subheader(&self) -> impl IntoElement + use<> {
         div()
             .text_lg()
             .font_weight(gpui::FontWeight::BOLD)
@@ -1012,7 +1012,7 @@ impl CounterView {
     }
 
     // Tools bar component
-    fn render_tools_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tools_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let state = match self.state.read() {
             Ok(state) => state,
             Err(_) => {
@@ -1058,7 +1058,7 @@ impl CounterView {
     }
 
     // Save button component
-    fn render_storage_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_storage_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .gap_2()
@@ -1123,7 +1123,7 @@ impl CounterView {
     }
 
     // Manual UI rendering
-    fn render_manual_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_manual_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let mut ui = div()
             .flex()
             .flex_col()
@@ -1143,7 +1143,7 @@ impl CounterView {
     }
 
     // Auto UI rendering (placeholder)
-    fn render_auto_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_auto_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -1177,7 +1177,7 @@ impl CounterView {
         &self,
         state: &CounterState,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -1219,7 +1219,7 @@ impl CounterView {
         filter_proxy: &FilterProxy,
         index: usize,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         let is_enabled = filter_proxy.is_enabled;
         let filter_index = index as u16;
 
@@ -1360,7 +1360,7 @@ impl CounterView {
         }
     }
 
-    fn render_review_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_review_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let current_index = state.review_current_index;
 
         static EMPTY: Vec<CountData> = Vec::new();

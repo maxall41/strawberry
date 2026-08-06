@@ -89,7 +89,7 @@ impl GaussianBlurView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(&self, state: &GaussianBlurState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status(&self, state: &GaussianBlurState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
@@ -110,7 +110,7 @@ impl GaussianBlurView {
         &self,
         _cx: &mut Context<Self>,
         _window: &mut Window,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         self.sigma_control
             .clone()
             .expect("sigma_control should be initialized before use")
@@ -121,7 +121,7 @@ impl GaussianBlurView {
         label: String,
         sigma: f32,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .px_3()
             .py_2()
@@ -143,7 +143,7 @@ impl GaussianBlurView {
             )
     }
 
-    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -165,7 +165,7 @@ impl GaussianBlurView {
         &self,
         cx: &mut Context<Self>,
         _window: &mut Window,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()

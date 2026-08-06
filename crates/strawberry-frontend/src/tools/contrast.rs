@@ -98,7 +98,7 @@ impl ContrastView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(&self, state: &ContrastState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status(&self, state: &ContrastState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
@@ -119,7 +119,7 @@ impl ContrastView {
         &self,
         _cx: &mut Context<Self>,
         _window: &mut Window,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         self.min_control
             .clone()
             .expect("min_control should be initialized before use")
@@ -130,7 +130,7 @@ impl ContrastView {
         &self,
         _cx: &mut Context<Self>,
         _window: &mut Window,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         self.max_control
             .clone()
             .expect("max_control should be initialized before use")
@@ -143,7 +143,7 @@ impl ContrastView {
         min: f32,
         max: f32,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .px_2()
             .py_1()
@@ -168,7 +168,7 @@ impl ContrastView {
     }
 
     // Presets section component
-    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -213,7 +213,7 @@ impl ContrastView {
         &self,
         cx: &mut Context<Self>,
         _window: &mut Window,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()

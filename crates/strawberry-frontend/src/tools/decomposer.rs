@@ -193,7 +193,7 @@ impl DecomposerView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(&self, state: &DecomposerState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status(&self, state: &DecomposerState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
@@ -215,7 +215,7 @@ impl DecomposerView {
         index: usize,
         is_enabled: bool,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         ToggleButton::new(
             format!("Layer {}", index + 1),
             is_enabled,
@@ -237,7 +237,7 @@ impl DecomposerView {
         &self,
         state: &DecomposerState,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()

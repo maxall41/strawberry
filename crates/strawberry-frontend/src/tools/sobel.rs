@@ -97,7 +97,7 @@ impl SobelView {
         self.update_threshold_value(clamped_threshold);
     }
 
-    fn render_status(&self, state: &SobelState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status(&self, state: &SobelState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
@@ -117,7 +117,7 @@ impl SobelView {
         &self,
         state: &SobelState,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         let threshold_enabled = state.use_threshold;
         ToggleButton::new(
             "Use Threshold".to_string(),
@@ -137,7 +137,7 @@ impl SobelView {
         state: &SobelState,
         _cx: &mut Context<Self>,
         _window: &mut Window,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         if state.use_threshold {
             div().child(
                 self.threshold_control
@@ -154,7 +154,7 @@ impl SobelView {
         label: String,
         threshold_value: f32,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .px_3()
             .py_2()
@@ -180,7 +180,7 @@ impl SobelView {
         &self,
         state: &SobelState,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         if state.use_threshold {
             div()
                 .flex()
@@ -207,7 +207,7 @@ impl SobelView {
         state: &SobelState,
         cx: &mut Context<Self>,
         _window: &mut Window,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()

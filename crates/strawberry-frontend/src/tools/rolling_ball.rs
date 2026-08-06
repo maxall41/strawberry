@@ -93,7 +93,7 @@ impl RollingBallView {
         self.update_ball_radius(clamped_radius);
     }
 
-    fn render_status(&self, state: &RollingBallState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status(&self, state: &RollingBallState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
@@ -113,7 +113,7 @@ impl RollingBallView {
         &self,
         _cx: &mut Context<Self>,
         _window: &mut Window,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         self.ball_radius_control
             .clone()
             .expect("ball_radius_control should be initialized before use")
@@ -124,7 +124,7 @@ impl RollingBallView {
         label: String,
         ball_radius: u32,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .px_3()
             .py_2()
@@ -147,7 +147,7 @@ impl RollingBallView {
             )
     }
 
-    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -169,7 +169,7 @@ impl RollingBallView {
         &self,
         cx: &mut Context<Self>,
         _window: &mut Window,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()

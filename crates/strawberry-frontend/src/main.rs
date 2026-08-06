@@ -546,11 +546,11 @@ impl PrimaryViewer {
 
     // Helper method to convert screen coordinates to image coordinates
     fn screen_to_image_coords(&self, screen_x: f32, screen_y: f32) -> Option<(u64, u64)> {
-        if let Some(coords) = *self
+        match *self
             .img_coords
             .read()
             .expect("Image coordinates lock should not be poisoned")
-        {
+        { Some(coords) => {
             let relative_x =
                 (screen_x - coords.origin.x.to_f64() as f32) / coords.size.width.to_f64() as f32;
             let relative_y =
@@ -563,9 +563,9 @@ impl PrimaryViewer {
             } else {
                 None
             }
-        } else {
+        } _ => {
             None
-        }
+        }}
     }
 
     // Helper to convert image coords to screen coords
@@ -577,7 +577,7 @@ impl PrimaryViewer {
     }
 
     // Render a single overlay element
-    fn render_overlay_element(&self, element: &OverlayElement) -> impl IntoElement {
+    fn render_overlay_element(&self, element: &OverlayElement) -> impl IntoElement + use<> {
         match element {
             OverlayElement::Circle {
                 x,
