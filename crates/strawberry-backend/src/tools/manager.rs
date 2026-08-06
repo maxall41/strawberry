@@ -18,6 +18,8 @@ pub struct ToolManager {
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub frontend_latest_state: Option<ManagerState>,
+    previous_enabled: Vec<bool>,
+    ever_enabled: Vec<bool>,
 }
 
 fn update_proxy_tools(input: &Vec<Box<dyn ToolBackend>>) -> Vec<ToolProxy> {
@@ -44,6 +46,9 @@ impl ToolManager {
         for (index, tool) in input.iter_mut().enumerate() {
             tool.set_index(index);
         }
+        let previous_enabled: Vec<bool> =
+            input.iter().map(|tool| tool.is_enabled()).collect();
+        let ever_enabled = previous_enabled.clone();
 
         ToolManager {
             state: ManagerState {
@@ -57,6 +62,53 @@ impl ToolManager {
             sender,
             receiver,
             frontend_latest_state: None,
+            previous_enabled,
+            ever_enabled,
+        }
+    }
+
+    fn reindex_tools(&mut self) {
+        for (index, tool) in self.tools.iter_mut().enumerate() {
+            tool.set_index(index);
+        }
+    }
+
+    /// Move tools that became enabled during this cycle to the end of the pipeline.
+    fn move_newly_enabled_tools_to_end(&mut self) {
+        let mut retained_tools = Vec::with_capacity(self.tools.len());
+        let mut retained_enabled = Vec::with_capacity(self.previous_enabled.len());
+        let mut retained_ever_enabled = Vec::with_capacity(self.ever_enabled.len());
+        let mut newly_enabled_tools = Vec::new();
+        let mut newly_enabled_states = Vec::new();
+        let mut newly_enabled_ever_states = Vec::new();
+
+        for ((tool, was_enabled), was_ever_enabled) in self
+            .tools
+            .drain(..)
+            .zip(self.previous_enabled.drain(..))
+            .zip(self.ever_enabled.drain(..))
+        {
+            if tool.is_enabled() && !was_enabled && !was_ever_enabled {
+                newly_enabled_states.push(true);
+                newly_enabled_ever_states.push(true);
+                newly_enabled_tools.push(tool);
+            } else {
+                retained_enabled.push(tool.is_enabled());
+                retained_ever_enabled.push(was_ever_enabled || tool.is_enabled());
+                retained_tools.push(tool);
+            }
+        }
+
+        let order_changed = !newly_enabled_tools.is_empty();
+        retained_tools.append(&mut newly_enabled_tools);
+        retained_enabled.append(&mut newly_enabled_states);
+        retained_ever_enabled.append(&mut newly_enabled_ever_states);
+        self.tools = retained_tools;
+        self.previous_enabled = retained_enabled;
+        self.ever_enabled = retained_ever_enabled;
+
+        if order_changed {
+            self.reindex_tools();
         }
     }
 
@@ -191,13 +243,15 @@ impl ToolManager {
                             }
 
                             let tool = self.tools.remove(start_idx);
+                            let was_enabled = self.previous_enabled.remove(start_idx);
+                            let was_ever_enabled = self.ever_enabled.remove(start_idx);
                             let insert_idx = std::cmp::min(new_idx, self.tools.len());
                             self.tools.insert(insert_idx, tool);
+                            self.previous_enabled.insert(insert_idx, was_enabled);
+                            self.ever_enabled.insert(insert_idx, was_ever_enabled);
 
                             // Reassign indices to all tools after reordering
-                            for (index, tool) in self.tools.iter_mut().enumerate() {
-                                tool.set_index(index);
-                            }
+                            self.reindex_tools();
 
                             self.command_sender
                                 .send(PipelineCommand::Refresh(0))
@@ -211,6 +265,8 @@ impl ToolManager {
                 _ => {}
             }
         }
+
+        self.move_newly_enabled_tools_to_end();
 
         let new_proxy_tools = update_proxy_tools(&self.tools);
         if new_proxy_tools != self.state.proxy_tools {

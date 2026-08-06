@@ -5,11 +5,11 @@ use crate::tools::base::ToolBase;
 use crate::tools::cache::ToolCache;
 use strawberry_processing::{sobel::GpuSobel, GpuImageProcessor};
 
+use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, SobelMessage,
-    ToolBackend, ToolState, SobelState,
+    SobelState, ToolBackend, ToolState,
 };
-use async_trait::async_trait;
 
 pub struct Sobel {
     pub state: SobelState,
@@ -47,9 +47,11 @@ impl ToolBackend for Sobel {
             *image = match self.sobel.apply_sobel(image, threshold).await {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
-                    self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::error(format!("Sobel error: {e}")),
-                    ))?;
+                    self.base
+                        .global_sender
+                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                            format!("Sobel error: {e}"),
+                        )))?;
                     return Err(e);
                 }
             };
@@ -63,9 +65,10 @@ impl ToolBackend for Sobel {
         for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
-                    self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(self.get_state()),
-                    ))?;
+                    self.base
+                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                            FrontendMessage::ReturnState(self.get_state()),
+                        ))?;
                 }
                 PipelineCommand::PipelineObject(message) => match message {
                     PipelineObjectMessage::ToggleActive(value) => {
@@ -88,9 +91,10 @@ impl ToolBackend for Sobel {
         if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
-            self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                FrontendMessage::ReturnState(self.get_state()),
-            ))?;
+            self.base
+                .send_to_frontend(PipelineCommand::FrontendMessage(
+                    FrontendMessage::ReturnState(self.get_state()),
+                ))?;
             self.base.trigger_refresh()?;
             self.cache.frontend_latest_state = Some(self.state.clone());
         }

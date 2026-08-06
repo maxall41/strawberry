@@ -5,11 +5,11 @@ use crate::tools::base::ToolBase;
 use crate::tools::cache::ToolCache;
 use strawberry_processing::{grayscale::GpuGrayscale, GpuImageProcessor};
 
-use strawberry_types::{
-    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolBackend,
-    ToolState, GrayscaleState,
-};
 use async_trait::async_trait;
+use strawberry_types::{
+    BackendToolType, FrontendMessage, GrayscaleState, PipelineCommand, PipelineObjectMessage,
+    ToolBackend, ToolState,
+};
 
 pub struct Grayscale {
     pub state: GrayscaleState,
@@ -41,9 +41,11 @@ impl ToolBackend for Grayscale {
             *image = match self.grayscale.apply_grayscale(image).await {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
-                    self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::error(format!("Grayscale error: {e}")),
-                    ))?;
+                    self.base
+                        .global_sender
+                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                            format!("Grayscale error: {e}"),
+                        )))?;
                     return Err(e);
                 }
             };
@@ -57,9 +59,10 @@ impl ToolBackend for Grayscale {
         for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
-                    self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(self.get_state()),
-                    ))?;
+                    self.base
+                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                            FrontendMessage::ReturnState(self.get_state()),
+                        ))?;
                 }
                 PipelineCommand::PipelineObject(message) => {
                     if let PipelineObjectMessage::ToggleActive(value) = message {
@@ -73,9 +76,10 @@ impl ToolBackend for Grayscale {
         if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
-            self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                FrontendMessage::ReturnState(self.get_state()),
-            ))?;
+            self.base
+                .send_to_frontend(PipelineCommand::FrontendMessage(
+                    FrontendMessage::ReturnState(self.get_state()),
+                ))?;
             self.base.trigger_refresh()?;
             self.cache.frontend_latest_state = Some(self.state.clone());
         }

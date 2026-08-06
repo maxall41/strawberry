@@ -153,27 +153,21 @@ impl ToolBackend for NerveTracer {
                         NerveTracerMessage::SaveTraces(path) => {
                             match export_nervetracer_to_xml_file(&self.state, &path, None, None) {
                                 Ok(_) => {
-                                    if let Err(e) =
-                                        self.global_sender.send(PipelineCommand::FrontendMessage(
-                                            FrontendMessage::success(format!(
-                                                "Traces saved to {:?}",
-                                                path
-                                            )),
-                                        ))
-                                    {
+                                    if let Err(e) = self.global_sender.send(
+                                        PipelineCommand::FrontendMessage(FrontendMessage::success(
+                                            format!("Traces saved to {:?}", path),
+                                        )),
+                                    ) {
                                         eprintln!("Failed to send save feedback: {}", e);
                                     }
                                 }
                                 Err(e) => {
                                     eprintln!("Failed to save traces to {:?}: {}", path, e);
-                                    if let Err(send_err) =
-                                        self.global_sender.send(PipelineCommand::FrontendMessage(
-                                            FrontendMessage::error(format!(
-                                                "Failed to save traces: {}",
-                                                e
-                                            )),
-                                        ))
-                                    {
+                                    if let Err(send_err) = self.global_sender.send(
+                                        PipelineCommand::FrontendMessage(FrontendMessage::error(
+                                            format!("Failed to save traces: {}", e),
+                                        )),
+                                    ) {
                                         eprintln!("Failed to send error feedback: {}", send_err);
                                     }
                                 }
