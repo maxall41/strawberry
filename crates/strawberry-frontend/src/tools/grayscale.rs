@@ -93,7 +93,7 @@ impl GrayscaleView {
         self.toggle_enabled(current_enabled, window, cx);
     }
 
-    fn render_status(&self, state: &GrayscaleState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status(&self, state: &GrayscaleState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),

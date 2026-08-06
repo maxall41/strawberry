@@ -247,7 +247,7 @@ impl CommandPalette {
         }
     }
 
-    fn render_query(&self, window: &mut Window) -> impl IntoElement {
+    fn render_query(&self, window: &mut Window) -> impl IntoElement + use<> {
         let style = window.text_style();
         let font_size = QUERY_FONT_SIZE.to_pixels(window.rem_size());
         let shaped = window.text_system().shape_line(
@@ -307,7 +307,7 @@ impl CommandPalette {
             )
     }
 
-    fn render_row(&self, row: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_row(&self, row: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let candidate = &self.matches[row];
         let command = &self.commands[candidate.index];
         let selected = row == self.selected;

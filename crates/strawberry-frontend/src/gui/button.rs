@@ -49,7 +49,7 @@ impl<V: 'static> ToggleButton<V> {
         self
     }
 
-    pub fn render(self, cx: &mut Context<V>) -> impl IntoElement {
+    pub fn render(self, cx: &mut Context<V>) -> impl IntoElement + use<V> {
         let label = self.label;
         let is_enabled = self.is_enabled;
         let state_text = if is_enabled {

@@ -140,7 +140,7 @@ impl MorphologyView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(&self, state: &MorphologyState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status(&self, state: &MorphologyState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
@@ -157,7 +157,7 @@ impl MorphologyView {
     }
 
     // Operation selection component
-    fn render_operation_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_operation_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let state = self
             .state
             .read()
@@ -209,7 +209,7 @@ impl MorphologyView {
         operation: MorphologyOperation,
         is_selected: bool,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .px_2()
             .py_1()
@@ -248,7 +248,7 @@ impl MorphologyView {
         &self,
         _cx: &mut Context<Self>,
         _window: &mut Window,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         self.element_size_control
             .clone()
             .expect("element_size_control should be initialized before use")
@@ -261,7 +261,7 @@ impl MorphologyView {
         operation: MorphologyOperation,
         element_size: u32,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .px_2()
             .py_1()
@@ -286,7 +286,7 @@ impl MorphologyView {
     }
 
     // Presets section component
-    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -329,7 +329,7 @@ impl MorphologyView {
         &self,
         cx: &mut Context<Self>,
         _window: &mut Window,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()

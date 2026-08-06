@@ -228,7 +228,7 @@ impl NerveTracerView {
         self.load_traces(window, cx);
     }
     // Status component showing enabled/disabled state
-    fn render_status(&self, state: &NerveTracerState, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status(&self, state: &NerveTracerState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
@@ -249,7 +249,7 @@ impl NerveTracerView {
         &self,
         state: &NerveTracerState,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         if state.total_images <= 1 {
             return div();
         }
@@ -311,7 +311,7 @@ impl NerveTracerView {
         &self,
         state: &NerveTracerState,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -362,7 +362,7 @@ impl NerveTracerView {
         segment_id: usize,
         point_count: usize,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .items_center()
@@ -408,7 +408,7 @@ impl NerveTracerView {
         &self,
         state: &NerveTracerState,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         let has_segments = !state.current_path_segments.is_empty();
 
         if has_segments {
@@ -458,7 +458,7 @@ impl NerveTracerView {
         &self,
         state: &NerveTracerState,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -507,7 +507,7 @@ impl NerveTracerView {
         path_id: usize,
         path: &Vec<Vec<(u64, u64)>>,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -575,7 +575,7 @@ impl NerveTracerView {
         segment_id: usize,
         point_count: usize,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .items_center()
@@ -617,7 +617,7 @@ impl NerveTracerView {
     }
 
     // Storage buttons (Save/Load)
-    fn render_storage_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_storage_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .gap_2()

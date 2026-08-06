@@ -167,7 +167,7 @@ impl ValueControl {
         symbol: &'static str,
         direction: f32,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .id(ElementId::Name(SharedString::from(id)))
             .px_2()

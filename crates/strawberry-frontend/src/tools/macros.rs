@@ -2,9 +2,9 @@
 /// Similar to backend's impl_tool_backend_basics!
 #[macro_export]
 macro_rules! impl_tool_view_basics {
-    ($type:ty, $tool_name:expr) => {
+    ($type:ty, $tool_name:expr_2021) => {
         impl $type {
-            fn render_header(&self) -> impl gpui::IntoElement {
+            fn render_header(&self) -> impl gpui::IntoElement + use<> {
                 use gpui::prelude::*;
                 gpui::div()
                     .text_lg()
