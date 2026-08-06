@@ -443,12 +443,12 @@ impl Pipeline {
                     let config = std::fs::read_to_string(path)
                         .map_err(|e| anyhow!("Failed to read pipeline file: {e}"))
                         .and_then(|toml_content| {
-                            toml::from_str::<PipelineConfig>(&toml_content)
+                            tools::manager::deserialize_pipeline_config(&toml_content)
                                 .map_err(|e| anyhow!("Failed to parse pipeline TOML: {e}"))
                         });
 
-                    let pipeline_config = match config {
-                        Ok(pipeline_config) => pipeline_config,
+                    let (pipeline_config, indices) = match config {
+                        Ok(config) => config,
                         Err(e) => {
                             let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::error(e.to_string()),
@@ -457,13 +457,18 @@ impl Pipeline {
                         }
                     };
 
-                    // Apply the loaded configurations to the tools
+                    // A loaded pipeline replaces the active configuration.
+                    for tool in self.tool_manager.tools.iter_mut() {
+                        tool.set_enabled(false);
+                    }
                     for tool in self.tool_manager.tools.iter_mut() {
                         let tool_name = format!("{:?}", tool.iam());
                         if let Some(config) = pipeline_config.tools.get(&tool_name) {
                             tool.apply_state(config.clone());
                         }
                     }
+                    self.tool_manager.restore_tool_indices(&indices);
+                    self.tool_manager.synchronize_enabled_history();
                     println!("CLI Pipeline load");
                     // The config normally arrives before any images do; running
                     // then would only raise a spurious "no input images" error.

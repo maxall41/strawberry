@@ -5,6 +5,52 @@ use strawberry_types::{
     PipelineObjectMessage, ToolBackend, ToolProxy, ToolState,
 };
 
+pub(crate) fn serialize_pipeline_config(
+    config: &PipelineConfig,
+    indices: &HashMap<String, u16>,
+) -> anyhow::Result<String> {
+    let mut value = toml::Value::try_from(config)?;
+    if let Some(tools) = value.get_mut("tools").and_then(toml::Value::as_table_mut) {
+        for (name, tool) in tools {
+            let Some(index) = indices.get(name) else {
+                continue;
+            };
+            let Some(state) = tool
+                .as_table_mut()
+                .and_then(|variants| variants.iter_mut().next().map(|(_, value)| value))
+                .and_then(toml::Value::as_table_mut)
+            else {
+                continue;
+            };
+            state.insert("index".to_string(), toml::Value::Integer((*index).into()));
+        }
+    }
+    Ok(toml::to_string(&value)?)
+}
+
+pub(crate) fn deserialize_pipeline_config(
+    content: &str,
+) -> anyhow::Result<(PipelineConfig, HashMap<String, u16>)> {
+    let value: toml::Value = toml::from_str(content)?;
+    let indices = value
+        .get("tools")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, tool)| {
+            let index = tool
+                .as_table()?
+                .values()
+                .next()?
+                .as_table()?
+                .get("index")?
+                .as_integer()?;
+            u16::try_from(index).ok().map(|index| (name.clone(), index))
+        })
+        .collect();
+    Ok((value.try_into()?, indices))
+}
+
 /// Orchestrates the pipeline's tools. Note that unlike the tools it manages,
 /// the manager itself is NOT a `ToolBackend`: it never appears in the pipeline
 /// tool list, doesn't process images, and has no cache. The `Pipeline`
@@ -46,8 +92,7 @@ impl ToolManager {
         for (index, tool) in input.iter_mut().enumerate() {
             tool.set_index(index);
         }
-        let previous_enabled: Vec<bool> =
-            input.iter().map(|tool| tool.is_enabled()).collect();
+        let previous_enabled: Vec<bool> = input.iter().map(|tool| tool.is_enabled()).collect();
         let ever_enabled = previous_enabled.clone();
 
         ToolManager {
@@ -71,6 +116,42 @@ impl ToolManager {
         for (index, tool) in self.tools.iter_mut().enumerate() {
             tool.set_index(index);
         }
+    }
+
+    pub(crate) fn restore_tool_indices(&mut self, indices: &HashMap<String, u16>) {
+        if indices.is_empty() {
+            return;
+        }
+
+        let mut ordered: Vec<_> = self
+            .tools
+            .drain(..)
+            .zip(self.previous_enabled.drain(..))
+            .zip(self.ever_enabled.drain(..))
+            .enumerate()
+            .collect();
+        ordered.sort_by_key(|(current_index, ((tool, _), _))| {
+            indices
+                .get(&format!("{:?}", tool.iam()))
+                .copied()
+                .map(|index| (0, index as usize))
+                .unwrap_or((1, *current_index))
+        });
+
+        for (_, ((tool, was_enabled), was_ever_enabled)) in ordered {
+            self.tools.push(tool);
+            self.previous_enabled.push(was_enabled);
+            self.ever_enabled.push(was_ever_enabled);
+        }
+        self.reindex_tools();
+    }
+
+    pub(crate) fn synchronize_enabled_history(&mut self) {
+        self.previous_enabled = self.tools.iter().map(|tool| tool.is_enabled()).collect();
+        self.ever_enabled
+            .iter_mut()
+            .zip(&self.previous_enabled)
+            .for_each(|(ever_enabled, enabled)| *ever_enabled |= *enabled);
     }
 
     /// Move tools that became enabled during this cycle to the end of the pipeline.
@@ -146,25 +227,32 @@ impl ToolManager {
                     PipelineObjectMessage::ManagerMessage(message) => match message {
                         ManagerMessage::SavePipeline(path) => {
                             let mut configs: HashMap<String, ToolState> = HashMap::new();
+                            let mut indices = HashMap::new();
+                            let mut enabled_index = 0;
                             for tool in &self.tools {
                                 if !tool.is_enabled() {
                                     continue;
                                 }
                                 let tool_name = format!("{:?}", tool.iam());
+                                indices.insert(tool_name.clone(), enabled_index);
                                 configs.insert(tool_name, tool.get_state());
+                                enabled_index += 1;
                             }
                             let pipeline_config = PipelineConfig { tools: configs };
-                            let toml_string = match toml::to_string(&pipeline_config) {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    self.global_sender.send(PipelineCommand::FrontendMessage(
-                                        FrontendMessage::error(format!(
-                                            "Failed to serialize pipeline: {e}"
-                                        )),
-                                    ))?;
-                                    return Err(anyhow::anyhow!(e));
-                                }
-                            };
+                            let toml_string =
+                                match serialize_pipeline_config(&pipeline_config, &indices) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        self.global_sender.send(
+                                            PipelineCommand::FrontendMessage(
+                                                FrontendMessage::error(format!(
+                                                    "Failed to serialize pipeline: {e}"
+                                                )),
+                                            ),
+                                        )?;
+                                        return Err(anyhow::anyhow!(e));
+                                    }
+                                };
                             if let Err(e) = std::fs::write(&path, toml_string) {
                                 self.global_sender.send(PipelineCommand::FrontendMessage(
                                     FrontendMessage::error(format!(
@@ -191,8 +279,8 @@ impl ToolManager {
                                     return Err(anyhow::anyhow!("Failed to read file: {}", e));
                                 }
                             };
-                            let pipeline_config: PipelineConfig =
-                                match toml::from_str(&toml_content) {
+                            let (pipeline_config, indices) =
+                                match deserialize_pipeline_config(&toml_content) {
                                     Ok(config) => config,
                                     Err(e) => {
                                         self.global_sender.send(
@@ -206,13 +294,18 @@ impl ToolManager {
                                     }
                                 };
 
-                            // Apply the loaded configurations to the tools
+                            // A loaded pipeline replaces the active configuration.
+                            for tool in self.tools.iter_mut() {
+                                tool.set_enabled(false);
+                            }
                             for tool in self.tools.iter_mut() {
                                 let tool_name = format!("{:?}", tool.iam());
                                 if let Some(config) = pipeline_config.tools.get(&tool_name) {
                                     tool.apply_state(config.clone());
                                 }
                             }
+                            self.restore_tool_indices(&indices);
+                            self.synchronize_enabled_history();
 
                             self.command_sender
                                 .send(PipelineCommand::Refresh(0))
