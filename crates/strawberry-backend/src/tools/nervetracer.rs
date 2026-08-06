@@ -71,7 +71,7 @@ impl ToolBackend for NerveTracer {
         Ok(())
     }
 
-    async fn receive_messages(&mut self) -> anyhow::Result<()> {
+    fn receive_messages(&mut self) -> anyhow::Result<()> {
         let commands: Vec<PipelineCommand> =
             std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
 
@@ -129,7 +129,7 @@ impl ToolBackend for NerveTracer {
                             self.state.current_path_segments.remove(id);
                         }
                         NerveTracerMessage::LoadTraces(path) => {
-                            match import_nervetracer_from_xml_file(&path).await {
+                            match import_nervetracer_from_xml_file(&path) {
                                 Ok(loaded_state) => {
                                     self.state = loaded_state;
                                     self.global_sender.send(PipelineCommand::FrontendMessage(
@@ -151,43 +151,33 @@ impl ToolBackend for NerveTracer {
                             }
                         }
                         NerveTracerMessage::SaveTraces(path) => {
-                            let state = self.state.clone();
-                            let global_sender = self.global_sender.clone();
-                            let path = path.clone();
-                            tokio::spawn(async move {
-                                match export_nervetracer_to_xml_file(&state, &path, None, None)
-                                    .await
-                                {
-                                    Ok(_) => {
-                                        if let Err(e) =
-                                            global_sender.send(PipelineCommand::FrontendMessage(
-                                                FrontendMessage::success(format!(
-                                                    "Traces saved to {:?}",
-                                                    path
-                                                )),
-                                            ))
-                                        {
-                                            eprintln!("Failed to send save feedback: {}", e);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Failed to save traces to {:?}: {}", path, e);
-                                        if let Err(send_err) =
-                                            global_sender.send(PipelineCommand::FrontendMessage(
-                                                FrontendMessage::error(format!(
-                                                    "Failed to save traces: {}",
-                                                    e
-                                                )),
-                                            ))
-                                        {
-                                            eprintln!(
-                                                "Failed to send error feedback: {}",
-                                                send_err
-                                            );
-                                        }
+                            match export_nervetracer_to_xml_file(&self.state, &path, None, None) {
+                                Ok(_) => {
+                                    if let Err(e) =
+                                        self.global_sender.send(PipelineCommand::FrontendMessage(
+                                            FrontendMessage::success(format!(
+                                                "Traces saved to {:?}",
+                                                path
+                                            )),
+                                        ))
+                                    {
+                                        eprintln!("Failed to send save feedback: {}", e);
                                     }
                                 }
-                            });
+                                Err(e) => {
+                                    eprintln!("Failed to save traces to {:?}: {}", path, e);
+                                    if let Err(send_err) =
+                                        self.global_sender.send(PipelineCommand::FrontendMessage(
+                                            FrontendMessage::error(format!(
+                                                "Failed to save traces: {}",
+                                                e
+                                            )),
+                                        ))
+                                    {
+                                        eprintln!("Failed to send error feedback: {}", send_err);
+                                    }
+                                }
+                            }
                         }
                         NerveTracerMessage::SetSelectedImageIndex(index) => {
                             self.state.selected_image_index = index;

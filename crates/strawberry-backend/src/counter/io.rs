@@ -4,7 +4,7 @@ use std::path::Path;
 use quick_xml::de::from_str;
 use quick_xml::se::to_string;
 use serde::{Deserialize, Serialize};
-use tokio::fs;
+use std::fs;
 
 use strawberry_types::{CountData, CounterMode, CounterState};
 
@@ -212,7 +212,7 @@ pub fn export_counter_to_xml(
 }
 
 /// Export counter data to CellCounter XML format and save to file
-pub async fn export_counter_to_xml_file(
+pub fn export_counter_to_xml_file(
     state: &CounterState,
     file_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -222,7 +222,7 @@ pub async fn export_counter_to_xml_file(
         .map(|s| s.to_string());
 
     let xml = export_counter_to_xml(state, filename)?;
-    fs::write(file_path, xml).await?;
+    fs::write(file_path, xml)?;
     Ok(())
 }
 
@@ -233,9 +233,9 @@ pub fn import_counter_from_xml(xml: &str) -> Result<CounterState, Box<dyn std::e
 }
 
 /// Import counter data from CellCounter XML file
-pub async fn import_counter_from_xml_file(
+pub fn import_counter_from_xml_file(
     file_path: &Path,
 ) -> Result<CounterState, Box<dyn std::error::Error>> {
-    let xml = fs::read_to_string(file_path).await?;
+    let xml = fs::read_to_string(file_path)?;
     import_counter_from_xml(&xml)
 }
