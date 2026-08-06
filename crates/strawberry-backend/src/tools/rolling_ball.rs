@@ -45,9 +45,11 @@ impl ToolBackend for RollingBall {
             {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
-                    self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::error(format!("Rolling Ball error: {e}")),
-                    ))?;
+                    self.base
+                        .global_sender
+                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                            format!("Rolling Ball error: {e}"),
+                        )))?;
                     return Err(e);
                 }
             };
@@ -61,9 +63,10 @@ impl ToolBackend for RollingBall {
         for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
-                    self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(self.get_state()),
-                    ))?;
+                    self.base
+                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                            FrontendMessage::ReturnState(self.get_state()),
+                        ))?;
                 }
                 PipelineCommand::PipelineObject(message) => match message {
                     PipelineObjectMessage::ToggleActive(value) => {
@@ -83,9 +86,10 @@ impl ToolBackend for RollingBall {
         if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
-            self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                FrontendMessage::ReturnState(self.get_state()),
-            ))?;
+            self.base
+                .send_to_frontend(PipelineCommand::FrontendMessage(
+                    FrontendMessage::ReturnState(self.get_state()),
+                ))?;
             self.base.trigger_refresh()?;
             self.cache.frontend_latest_state = Some(self.state.clone());
         }

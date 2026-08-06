@@ -189,8 +189,12 @@ impl Pipeline {
 
         if images.len() > 1 {
             println!("OUTPUT CONTAINS >1 IMAGE");
-            if let Some(compositor_tool) = self.tool_manager.tools.get_mut(0) {
-                //TODO: Very dangerous. Assumes compositor at index 0.
+            if let Some(compositor_tool) = self
+                .tool_manager
+                .tools
+                .iter_mut()
+                .find(|tool| tool.iam() == BackendToolType::Compositor)
+            {
                 compositor_tool.process(&mut images).await?;
             }
         }
@@ -361,7 +365,14 @@ impl Pipeline {
                     }
                     //
                     if loaded_images.len() > 1 {
-                        self.tool_manager.tools[0].set_enabled(true);
+                        if let Some(compositor_tool) = self
+                            .tool_manager
+                            .tools
+                            .iter_mut()
+                            .find(|tool| tool.iam() == BackendToolType::Compositor)
+                        {
+                            compositor_tool.set_enabled(true);
+                        }
                     } else if let Some(image) = loaded_images.first_mut() {
                         for pixel in image.pixels_mut() {
                             pixel.0.swap(0, 2);

@@ -7,11 +7,11 @@ use strawberry_processing::{
     compositor::GpuCompositor, decomposer::GpuDecomposer, GpuImageProcessor,
 };
 
+use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, DecomposerMessage, DecomposerState, FrontendMessage, PipelineCommand,
     PipelineObjectMessage, ToolBackend, ToolState,
 };
-use async_trait::async_trait;
 
 pub struct Decomposer {
     pub state: DecomposerState,
@@ -45,26 +45,33 @@ impl ToolBackend for Decomposer {
                 "Decomposer can only process one image, received {}",
                 input.len()
             );
-            self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                FrontendMessage::error(error_msg.clone()),
-            ))?;
+            self.base
+                .global_sender
+                .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                    error_msg.clone(),
+                )))?;
             return Err(anyhow::anyhow!(error_msg));
         }
 
         let first_image = input.first().ok_or_else(|| {
             let error_msg = "No input image provided to decomposer".to_string();
-            let _ = self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                FrontendMessage::error(error_msg.clone()),
-            ));
+            let _ = self
+                .base
+                .global_sender
+                .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                    error_msg.clone(),
+                )));
             anyhow::anyhow!(error_msg)
         })?;
 
         let decomposed = match self.gpu_decomposer.apply_decomposition(first_image).await {
             Ok(result) => result,
             Err(e) => {
-                self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::error(format!("Decomposer error: {e}")),
-                ))?;
+                self.base
+                    .global_sender
+                    .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                        format!("Decomposer error: {e}"),
+                    )))?;
                 return Err(e);
             }
         };
@@ -84,9 +91,11 @@ impl ToolBackend for Decomposer {
         let composited = match self.compositer.composite_images(&images).await {
             Ok(image) => image,
             Err(e) => {
-                self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::error(format!("Decomposer compositor error: {e}")),
-                ))?;
+                self.base
+                    .global_sender
+                    .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                        format!("Decomposer compositor error: {e}"),
+                    )))?;
                 return Err(e);
             }
         };
@@ -102,9 +111,10 @@ impl ToolBackend for Decomposer {
         for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
-                    self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(self.get_state()),
-                    ))?;
+                    self.base
+                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                            FrontendMessage::ReturnState(self.get_state()),
+                        ))?;
                 }
                 PipelineCommand::PipelineObject(message) => match message {
                     PipelineObjectMessage::ToggleActive(value) => {
@@ -121,9 +131,11 @@ impl ToolBackend for Decomposer {
                                     index,
                                     mutated.len()
                                 );
-                                self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::error(error_msg.clone()),
-                                ))?;
+                                self.base
+                                    .global_sender
+                                    .send(PipelineCommand::FrontendMessage(
+                                        FrontendMessage::error(error_msg.clone()),
+                                    ))?;
                                 return Err(anyhow::anyhow!(error_msg));
                             }
 
@@ -140,9 +152,10 @@ impl ToolBackend for Decomposer {
         if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
-            self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                FrontendMessage::ReturnState(self.get_state()),
-            ))?;
+            self.base
+                .send_to_frontend(PipelineCommand::FrontendMessage(
+                    FrontendMessage::ReturnState(self.get_state()),
+                ))?;
             self.base.trigger_refresh()?;
             self.cache.frontend_latest_state = Some(self.state.clone());
         }

@@ -5,11 +5,11 @@ use crate::tools::base::ToolBase;
 use crate::tools::cache::ToolCache;
 use strawberry_processing::{compositor::GpuCompositor, GpuImageProcessor};
 
+use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, CompositorMessage, CompositorState, FrontendMessage, PipelineCommand,
     PipelineObjectMessage, ToolBackend, ToolState,
 };
-use async_trait::async_trait;
 
 pub struct Compositor {
     pub state: CompositorState,
@@ -40,9 +40,10 @@ impl ToolBackend for Compositor {
         self.state.real_layers_len = input.len();
 
         if input.len() == 1 {
-            self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                FrontendMessage::ReturnState(self.get_state()),
-            ))?;
+            self.base
+                .send_to_frontend(PipelineCommand::FrontendMessage(
+                    FrontendMessage::ReturnState(self.get_state()),
+                ))?;
             return Ok(());
         }
 
@@ -62,9 +63,11 @@ impl ToolBackend for Compositor {
         let composited = match self.compositer.composite_images(&images).await {
             Ok(image) => image,
             Err(e) => {
-                self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                    FrontendMessage::error(format!("Compositor error: {e}")),
-                ))?;
+                self.base
+                    .global_sender
+                    .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                        format!("Compositor error: {e}"),
+                    )))?;
                 return Err(e);
             }
         };
@@ -74,14 +77,19 @@ impl ToolBackend for Compositor {
         if self.cache.frontend_latest_state.is_some() {
             println!(
                 "State Status {}",
-                self.cache.frontend_latest_state
+                self.cache
+                    .frontend_latest_state
                     .as_ref()
                     .expect("Just checked that frontend_latest_state is some")
                     == &self.state
             );
             println!(
                 "Real Layers Length Comparison | Frontend: {} Backend: {}",
-                self.cache.frontend_latest_state.as_ref().unwrap().real_layers_len,
+                self.cache
+                    .frontend_latest_state
+                    .as_ref()
+                    .unwrap()
+                    .real_layers_len,
                 self.state.real_layers_len
             )
         } else {
@@ -97,9 +105,10 @@ impl ToolBackend for Compositor {
         for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
-                    self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(self.get_state()),
-                    ))?;
+                    self.base
+                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                            FrontendMessage::ReturnState(self.get_state()),
+                        ))?;
                 }
                 PipelineCommand::PipelineObject(message) => match message {
                     PipelineObjectMessage::ToggleActive(value) => {
@@ -116,9 +125,11 @@ impl ToolBackend for Compositor {
                                     index,
                                     mutated.len()
                                 );
-                                self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::error(error_msg.clone()),
-                                ))?;
+                                self.base
+                                    .global_sender
+                                    .send(PipelineCommand::FrontendMessage(
+                                        FrontendMessage::error(error_msg.clone()),
+                                    ))?;
                                 return Err(anyhow::anyhow!(error_msg));
                             }
 
@@ -146,9 +157,10 @@ impl ToolBackend for Compositor {
         if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
-            self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                FrontendMessage::ReturnState(self.get_state()),
-            ))?;
+            self.base
+                .send_to_frontend(PipelineCommand::FrontendMessage(
+                    FrontendMessage::ReturnState(self.get_state()),
+                ))?;
             self.base.trigger_refresh()?;
             self.cache.frontend_latest_state = Some(self.state.clone());
         }

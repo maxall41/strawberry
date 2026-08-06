@@ -3,16 +3,13 @@ use std::sync::Arc;
 use crate::impl_tool_backend_basics;
 use crate::tools::base::ToolBase;
 use crate::tools::cache::ToolCache;
-use strawberry_processing::{
-    local_maxima::GpuLocalMaxima,
-    GpuImageProcessor,
-};
+use strawberry_processing::{local_maxima::GpuLocalMaxima, GpuImageProcessor};
 
-use strawberry_types::{
-    BackendToolType, FrontendMessage, LocalMaximaMessage, PipelineCommand, PipelineObjectMessage,
-    ToolBackend, ToolState, LocalMaximaState,
-};
 use async_trait::async_trait;
+use strawberry_types::{
+    BackendToolType, FrontendMessage, LocalMaximaMessage, LocalMaximaState, PipelineCommand,
+    PipelineObjectMessage, ToolBackend, ToolState,
+};
 
 pub struct LocalMaxima {
     pub state: LocalMaximaState,
@@ -53,9 +50,11 @@ impl ToolBackend for LocalMaxima {
             {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
-                    self.base.global_sender.send(PipelineCommand::FrontendMessage(
-                        FrontendMessage::error(format!("Local Maxima error: {e}")),
-                    ))?;
+                    self.base
+                        .global_sender
+                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                            format!("Local Maxima error: {e}"),
+                        )))?;
                     return Err(e);
                 }
             };
@@ -69,9 +68,10 @@ impl ToolBackend for LocalMaxima {
         for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
-                    self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(self.get_state()),
-                    ))?;
+                    self.base
+                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                            FrontendMessage::ReturnState(self.get_state()),
+                        ))?;
                 }
                 PipelineCommand::PipelineObject(message) => match message {
                     PipelineObjectMessage::ToggleActive(value) => {
@@ -97,9 +97,10 @@ impl ToolBackend for LocalMaxima {
         if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
-            self.base.send_to_frontend(PipelineCommand::FrontendMessage(
-                FrontendMessage::ReturnState(self.get_state()),
-            ))?;
+            self.base
+                .send_to_frontend(PipelineCommand::FrontendMessage(
+                    FrontendMessage::ReturnState(self.get_state()),
+                ))?;
             self.base.trigger_refresh()?;
             self.cache.frontend_latest_state = Some(self.state.clone());
         }
