@@ -14,7 +14,7 @@ pub trait ToolBackend: Send + Sync {
     fn is_enabled(&self) -> bool;
 
     /// Receive messages from the pipeline
-    async fn receive_messages(&mut self) -> anyhow::Result<()>;
+    fn receive_messages(&mut self) -> anyhow::Result<()>;
 
     /// Enable or disable this tool
     fn set_enabled(&mut self, enabled: bool);

@@ -3,7 +3,7 @@ use std::path::Path;
 use quick_xml::de::from_str;
 use quick_xml::se::to_string;
 use serde::{Deserialize, Serialize};
-use tokio::fs;
+use std::fs;
 
 use strawberry_types::NerveTracerState;
 
@@ -244,14 +244,14 @@ pub fn export_nervetracer_to_xml(
 }
 
 /// Export nerve tracer data to XML file
-pub async fn export_nervetracer_to_xml_file(
+pub fn export_nervetracer_to_xml_file(
     state: &NerveTracerState,
     file_path: &Path,
     samplespacing: Option<SampleSpacing>,
     imagesize: Option<ImageSize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let xml = export_nervetracer_to_xml(state, samplespacing, imagesize)?;
-    fs::write(file_path, xml).await?;
+    fs::write(file_path, xml)?;
     Ok(())
 }
 
@@ -264,9 +264,9 @@ pub fn import_nervetracer_from_xml(
 }
 
 /// Import nerve tracer data from XML file
-pub async fn import_nervetracer_from_xml_file(
+pub fn import_nervetracer_from_xml_file(
     file_path: &Path,
 ) -> Result<NerveTracerState, Box<dyn std::error::Error>> {
-    let xml = fs::read_to_string(file_path).await?;
+    let xml = fs::read_to_string(file_path)?;
     import_nervetracer_from_xml(&xml)
 }

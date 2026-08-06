@@ -63,7 +63,7 @@ impl ToolBackend for LocalMaxima {
         Ok(())
     }
 
-    async fn receive_messages(&mut self) -> anyhow::Result<()> {
+    fn receive_messages(&mut self) -> anyhow::Result<()> {
         let commands = self.base.collect_commands();
 
         for message in commands {

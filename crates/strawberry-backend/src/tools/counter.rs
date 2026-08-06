@@ -190,7 +190,7 @@ impl ToolBackend for Counter {
         Ok(())
     }
 
-    async fn receive_messages(&mut self) -> anyhow::Result<()> {
+    fn receive_messages(&mut self) -> anyhow::Result<()> {
         let commands: Vec<PipelineCommand> =
             std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
 
@@ -391,7 +391,7 @@ impl ToolBackend for Counter {
                         }
                         CountMessage::SaveCounts(file) => {
                             // Use the utils::io module to export to XML
-                            if let Err(e) = export_counter_to_xml_file(&self.state, &file).await {
+                            if let Err(e) = export_counter_to_xml_file(&self.state, &file) {
                                 self.global_sender.send(PipelineCommand::FrontendMessage(
                                     FrontendMessage::error(
                                         "Error saving counts: XML export failed".to_string(),
@@ -404,7 +404,7 @@ impl ToolBackend for Counter {
                             ))?;
                         }
                         CountMessage::LoadCounts(file) => {
-                            match crate::counter::io::import_counter_from_xml_file(&file).await {
+                            match crate::counter::io::import_counter_from_xml_file(&file) {
                                 Ok(loaded_state) => {
                                     self.state.manual_counts = loaded_state.manual_counts;
                                     self.state.auto_counts = loaded_state.auto_counts;

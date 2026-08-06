@@ -76,7 +76,7 @@ impl ToolManager {
         self.frontend_senders.clear();
     }
 
-    pub async fn receive_messages(&mut self) -> anyhow::Result<()> {
+    pub fn receive_messages(&mut self) -> anyhow::Result<()> {
         let commands: Vec<PipelineCommand> =
             std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
 

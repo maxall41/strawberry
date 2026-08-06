@@ -1,6 +1,5 @@
 use std::{sync::Arc, time::Instant};
 
-use futures::future::try_join_all;
 use image::{ImageReader, RgbaImage};
 use tokio::sync::{broadcast, watch};
 
@@ -509,12 +508,12 @@ impl Pipeline {
             };
         }
 
-        let futures = self
+        let result = self
             .tool_manager
             .tools
             .iter_mut()
-            .map(|tool| tool.receive_messages());
-        if let Err(e) = try_join_all(futures).await {
+            .try_for_each(|tool| tool.receive_messages());
+        if let Err(e) = result {
             let _ =
                 self.output_sender
                     .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
@@ -522,7 +521,7 @@ impl Pipeline {
                     )));
         }
 
-        if let Err(e) = self.tool_manager.receive_messages().await {
+        if let Err(e) = self.tool_manager.receive_messages() {
             let _ =
                 self.output_sender
                     .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
