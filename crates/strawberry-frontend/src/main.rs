@@ -3,13 +3,13 @@ use commands::{
     OpenFile, PalettePaste, PalleteCommand, Quit, SaveImage, ToggleCommandPalette, ZoomIn, ZoomOut,
 };
 use gpui::{
-    div, img, prelude::*, px, rgb, size, Animation, AnimationExt, App, AppContext, AssetSource,
-    Bounds, Context, Entity, ExternalPaths, FocusHandle, Focusable, ImageSource, KeyBinding,
-    KeyDownEvent, KeyUpEvent, Menu, MenuItem, ModifiersChangedEvent, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    Animation, AnimationExt, App, AppContext, AssetSource, Bounds, Context, Entity, ExternalPaths,
+    FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent, Menu, MenuItem,
+    ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions, div, img, prelude::*, px, rgb, size,
 };
-use gui::busy::{set_pipeline_busy, BusyOverlay};
+use gui::busy::{BusyOverlay, set_pipeline_busy};
 use gui::feedback::FeedbackModal;
 use gui::palette::{CommandPalette, PaletteDismissed};
 use image::{Frame, RgbaImage};
@@ -21,8 +21,8 @@ use std::time::Duration;
 use std::{fs, panic};
 use strawberry_backend::Pipeline;
 use strawberry_types::{
-    overlay::{CircleStyle, OverlayCollection, OverlayElement},
     FeedbackLevel, FrontendMessage, PipelineCommand,
+    overlay::{CircleStyle, OverlayCollection, OverlayElement},
 };
 use tokio::sync::broadcast;
 
@@ -550,22 +550,23 @@ impl PrimaryViewer {
             .img_coords
             .read()
             .expect("Image coordinates lock should not be poisoned")
-        { Some(coords) => {
-            let relative_x =
-                (screen_x - coords.origin.x.to_f64() as f32) / coords.size.width.to_f64() as f32;
-            let relative_y =
-                (screen_y - coords.origin.y.to_f64() as f32) / coords.size.height.to_f64() as f32;
+        {
+            Some(coords) => {
+                let relative_x = (screen_x - coords.origin.x.to_f64() as f32)
+                    / coords.size.width.to_f64() as f32;
+                let relative_y = (screen_y - coords.origin.y.to_f64() as f32)
+                    / coords.size.height.to_f64() as f32;
 
-            if (0.0..=1.0).contains(&relative_x) && (0.0..=1.0).contains(&relative_y) {
-                let image_pixel_x = (relative_x * self.original_width as f32) as u64;
-                let image_pixel_y = (relative_y * self.original_height as f32) as u64;
-                Some((image_pixel_x, image_pixel_y))
-            } else {
-                None
+                if (0.0..=1.0).contains(&relative_x) && (0.0..=1.0).contains(&relative_y) {
+                    let image_pixel_x = (relative_x * self.original_width as f32) as u64;
+                    let image_pixel_y = (relative_y * self.original_height as f32) as u64;
+                    Some((image_pixel_x, image_pixel_y))
+                } else {
+                    None
+                }
             }
-        } _ => {
-            None
-        }}
+            _ => None,
+        }
     }
 
     // Helper to convert image coords to screen coords
@@ -929,11 +930,10 @@ async fn main() -> Result<()> {
 
     // Spawn a task to monitor the pipeline and propagate panics
     tokio::spawn(async move {
-        if let Err(e) = pipeline_handle.await {
-            if e.is_panic() {
-                eprintln!("Pipeline task panicked, shutting down application");
-                panic::resume_unwind(e.into_panic());
-            }
+        let Err(e) = pipeline_handle.await;
+        if e.is_panic() {
+            eprintln!("Pipeline task panicked, shutting down application");
+            panic::resume_unwind(e.into_panic());
         }
     });
 
