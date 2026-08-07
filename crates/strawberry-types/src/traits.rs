@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use image::RgbaImage;
 use std::sync::Arc;
 
-use crate::{overlay::ToolOverlay, BackendToolType, PipelineCommand, ToolState};
+use crate::{BackendToolType, PipelineCommand, ToolState, overlay::ToolOverlay};
 
 /// Trait for image processing tools (backend)
 #[async_trait]

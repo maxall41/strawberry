@@ -5,8 +5,8 @@ use image::RgbaImage;
 use wgpu::PipelineCompilationOptions;
 
 use super::{
-    tiling::{extract_rgba_tile, merge_rgba_tiles, TileConfig, TileGrid},
     GpuImageProcessor,
+    tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
 #[repr(C)]
@@ -58,9 +58,7 @@ impl GpuDecomposer {
 
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
-            println!(
-                "Image {width}x{height} requires tile-based processing for GPU limits"
-            );
+            println!("Image {width}x{height} requires tile-based processing for GPU limits");
             self.apply_decomposition_tiled(image, &tile_config).await
         } else {
             // Process as single tile for smaller images
@@ -184,9 +182,7 @@ impl GpuDecomposer {
 
         let result_images = vec![red_image, green_image, blue_image];
 
-        println!(
-            "Applied GPU decomposition to {width}x{height} image in single dispatch"
-        );
+        println!("Applied GPU decomposition to {width}x{height} image in single dispatch");
 
         // Verify we have exactly 3 channel images
         assert_eq!(result_images.len(), 3);

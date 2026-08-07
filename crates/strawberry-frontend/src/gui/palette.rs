@@ -3,9 +3,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, uniform_list, Animation, AnimationExt, App, Context, EventEmitter,
-    FocusHandle, Focusable, FontWeight, HighlightStyle, KeyDownEvent, MouseDownEvent, Render,
-    ScrollStrategy, StyledText, UniformListScrollHandle, Window,
+    Animation, AnimationExt, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight,
+    HighlightStyle, KeyDownEvent, MouseDownEvent, Render, ScrollStrategy, StyledText,
+    UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
 
 use super::fuzzy::CommandMatcher;

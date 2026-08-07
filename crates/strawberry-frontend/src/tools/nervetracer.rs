@@ -5,9 +5,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    actions, div, prelude::*, px, size, App, Bounds, Context, FocusHandle, Focusable,
-    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions,
+    App, Bounds, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point, SharedString,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
 };
 use rfd::FileDialog;
 
@@ -228,7 +227,11 @@ impl NerveTracerView {
         self.load_traces(window, cx);
     }
     // Status component showing enabled/disabled state
-    fn render_status(&self, state: &NerveTracerState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_status(
+        &self,
+        state: &NerveTracerState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
@@ -369,7 +372,8 @@ impl NerveTracerView {
             .justify_between()
             .p_2()
             .bg(theme::CONTROL)
-            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .child(div().flex_1().child(format!(
                 "Segment {:03} ({} points)",
@@ -381,7 +385,8 @@ impl NerveTracerView {
                     .w_6()
                     .h_6()
                     .bg(theme::DANGER)
-                    .cursor_pointer().hover(|style| style.bg(theme::DANGER_HOVER))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::DANGER_HOVER))
                     .rounded_sm()
                     .flex()
                     .items_center()
@@ -418,7 +423,8 @@ impl NerveTracerView {
                 .py_2()
                 .my_2()
                 .bg(theme::ACCENT)
-                .cursor_pointer().hover(|style| style.bg(theme::ACCENT_HOVER))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::ACCENT_HOVER))
                 .rounded_md()
                 .flex()
                 .items_center()
@@ -582,7 +588,8 @@ impl NerveTracerView {
             .justify_between()
             .p_2()
             .bg(theme::CONTROL)
-            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .child(div().flex_1().child(format!(
                 "Segment {:03} ({} points)",
@@ -594,7 +601,8 @@ impl NerveTracerView {
                     .w_5()
                     .h_5()
                     .bg(theme::DANGER)
-                    .cursor_pointer().hover(|style| style.bg(theme::DANGER_HOVER))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::DANGER_HOVER))
                     .rounded_sm()
                     .flex()
                     .items_center()
@@ -627,7 +635,8 @@ impl NerveTracerView {
                     .px_4()
                     .py_2()
                     .bg(theme::SUCCESS)
-                    .cursor_pointer().hover(|style| style.bg(theme::SUCCESS_HOVER))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::SUCCESS_HOVER))
                     .rounded_md()
                     .text_sm()
                     .text_center()
@@ -657,7 +666,8 @@ impl NerveTracerView {
                     .px_4()
                     .py_2()
                     .bg(theme::ACCENT)
-                    .cursor_pointer().hover(|style| style.bg(theme::ACCENT_HOVER))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme::ACCENT_HOVER))
                     .rounded_md()
                     .text_sm()
                     .text_center()

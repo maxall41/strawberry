@@ -5,8 +5,8 @@ use image::RgbaImage;
 use wgpu::PipelineCompilationOptions;
 
 use super::{
-    tiling::{extract_rgba_tile, merge_rgba_tiles, TileConfig, TileGrid},
     GpuImageProcessor,
+    tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
 #[repr(C)]

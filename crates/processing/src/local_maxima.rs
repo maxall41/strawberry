@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use wgpu::PipelineCompilationOptions;
 
 use super::{
-    tiling::{extract_rgba_tile, merge_rgba_tiles, TileConfig, TileGrid},
     GpuImageProcessor,
+    tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,9 +76,7 @@ impl GpuLocalMaxima {
 
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
-            println!(
-                "Image {width}x{height} requires tile-based processing for GPU limits"
-            );
+            println!("Image {width}x{height} requires tile-based processing for GPU limits");
             self.apply_local_maxima_tiled(
                 image,
                 min_distance,

@@ -1,4 +1,4 @@
-use gpui::{div, prelude::*, px, svg, IntoElement, Rgba, SharedString};
+use gpui::{IntoElement, Rgba, SharedString, div, prelude::*, px, svg};
 
 use super::theme;
 

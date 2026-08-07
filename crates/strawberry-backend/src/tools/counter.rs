@@ -6,7 +6,7 @@ use crate::counter::fitting::{find_counts_within_polygon, ramer_douglas_peucker_
 use crate::counter::io::export_counter_to_xml_file;
 
 use async_trait::async_trait;
-use lutz::{lutz, Image as LutzImage, Pixel};
+use lutz::{Image as LutzImage, Pixel, lutz};
 use strawberry_types::consts::CIRCLE_COLORS;
 use strawberry_types::overlay::{CircleStyle, OverlayElement, ToolOverlay};
 use strawberry_types::{
@@ -159,7 +159,7 @@ impl ToolBackend for Counter {
 
             for image in output_images.iter() {
                 let binary_wrapper = BinaryImageWrapper::new(image, 128); // Use threshold of 128
-                                                                          //TODO: move to gpu
+                //TODO: move to gpu
                 for blob_pixels in lutz::<BinaryImageWrapper, Vec<Pixel>>(binary_wrapper) {
                     if !blob_pixels.is_empty() {
                         // Calculate centroid of this blob
@@ -426,7 +426,9 @@ impl ToolBackend for Counter {
                                             "Counts loaded successfully!".to_string(),
                                         ),
                                     ))?;
-                                    println!("Sent count loaded user feedback over command_sender broadcast channel");
+                                    println!(
+                                        "Sent count loaded user feedback over command_sender broadcast channel"
+                                    );
                                 }
                                 Err(e) => {
                                     self.global_sender.send(PipelineCommand::FrontendMessage(

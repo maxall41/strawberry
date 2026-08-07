@@ -5,8 +5,8 @@ use image::RgbaImage;
 use wgpu::PipelineCompilationOptions;
 
 use super::{
-    tiling::{extract_rgba_tile, merge_rgba_tiles, TileConfig, TileGrid},
     GpuImageProcessor,
+    tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
 pub struct GpuRollingBall {
@@ -74,9 +74,7 @@ impl GpuRollingBall {
         let tile_config = TileConfig::from_limits(&self.gpu.device.limits());
 
         if TileGrid::needs_tiling(width, height, &tile_config) {
-            println!(
-                "Image {width}x{height} requires tile-based processing for GPU limits"
-            );
+            println!("Image {width}x{height} requires tile-based processing for GPU limits");
             self.apply_rolling_ball_tiled(image, ball_radius, &tile_config)
                 .await
         } else {
@@ -150,9 +148,7 @@ impl GpuRollingBall {
             .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)
             .await?;
 
-        println!(
-            "Applied rolling ball background subtraction with ball radius: {ball_radius}"
-        );
+        println!("Applied rolling ball background subtraction with ball radius: {ball_radius}");
         Ok(result_image)
     }
 

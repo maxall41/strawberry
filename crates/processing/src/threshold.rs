@@ -5,8 +5,8 @@ use image::RgbaImage;
 use wgpu::PipelineCompilationOptions;
 
 use super::{
-    tiling::{extract_rgba_tile, merge_rgba_tiles, TileConfig, TileGrid},
     GpuImageProcessor,
+    tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
 #[repr(C)]
@@ -58,9 +58,7 @@ impl GpuThreshold {
 
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
-            println!(
-                "Image {width}x{height} requires tile-based processing for GPU limits"
-            );
+            println!("Image {width}x{height} requires tile-based processing for GPU limits");
             self.apply_threshold_tiled(image, threshold, &tile_config)
                 .await
         } else {

@@ -5,8 +5,8 @@ use image::RgbaImage;
 use wgpu::PipelineCompilationOptions;
 
 use super::{
-    tiling::{extract_rgba_tile, merge_rgba_tiles, TileConfig, TileGrid},
     GpuImageProcessor,
+    tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
 #[repr(C)]
@@ -63,9 +63,7 @@ impl GpuContrast {
 
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
-            println!(
-                "Image {width}x{height} requires tile-based processing for GPU limits"
-            );
+            println!("Image {width}x{height} requires tile-based processing for GPU limits");
             self.apply_contrast_tiled(image, min_value, max_value, &tile_config)
                 .await
         } else {
@@ -148,9 +146,7 @@ impl GpuContrast {
             .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)
             .await?;
 
-        println!(
-            "Applied contrast remapping with min: {min_value}, max: {max_value}"
-        );
+        println!("Applied contrast remapping with min: {min_value}, max: {max_value}");
         Ok(result_image)
     }
 

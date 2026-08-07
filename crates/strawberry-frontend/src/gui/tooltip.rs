@@ -1,4 +1,4 @@
-use gpui::{div, prelude::*, Context, IntoElement};
+use gpui::{Context, IntoElement, div, prelude::*};
 
 use super::theme;
 

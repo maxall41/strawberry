@@ -5,18 +5,18 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    actions, div, prelude::*, px, size, App, Bounds, Context, ElementId, FocusHandle, Focusable,
-    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions,
+    App, Bounds, Context, ElementId, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
+    px, size,
 };
 use rfd::FileDialog;
 
-use crate::gui::{icon::Icon, value_control::ValueControl, ToggleButton};
-use crate::tools::{spawn_message_processor, FrontendMessageHandler};
+use crate::gui::{ToggleButton, icon::Icon, value_control::ValueControl};
+use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
-    consts::{image_rgba_to_gpui_rgba, CIRCLE_COLORS},
     CountData, CountMessage, CounterMode, CounterState, CounterTool, FilterProxy, PipelineCommand,
     PipelineObjectMessage, ToolState,
+    consts::{CIRCLE_COLORS, image_rgba_to_gpui_rgba},
 };
 
 use strawberry_types::ToolFrontend;
@@ -684,7 +684,11 @@ impl CounterView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_status(
+        &self,
+        state: &CounterState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
@@ -701,7 +705,11 @@ impl CounterView {
     }
 
     // Mode toggle component
-    fn render_mode_toggle(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_mode_toggle(
+        &self,
+        state: &CounterState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .items_center()
@@ -1123,7 +1131,11 @@ impl CounterView {
     }
 
     // Manual UI rendering
-    fn render_manual_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_manual_ui(
+        &self,
+        state: &CounterState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let mut ui = div()
             .flex()
             .flex_col()
@@ -1143,7 +1155,11 @@ impl CounterView {
     }
 
     // Auto UI rendering (placeholder)
-    fn render_auto_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_auto_ui(
+        &self,
+        state: &CounterState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -1360,7 +1376,11 @@ impl CounterView {
         }
     }
 
-    fn render_review_ui(&self, state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_review_ui(
+        &self,
+        state: &CounterState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let current_index = state.review_current_index;
 
         static EMPTY: Vec<CountData> = Vec::new();

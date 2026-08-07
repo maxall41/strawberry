@@ -4,13 +4,13 @@ use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    div, prelude::*, px, size, App, Bounds, Context, Div, DragMoveEvent, FocusHandle, Focusable,
-    MouseDownEvent, Pixels, Point, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions,
+    App, Bounds, Context, Div, DragMoveEvent, FocusHandle, Focusable, MouseDownEvent, Pixels,
+    Point, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    size,
 };
 use rfd::FileDialog;
 
-use crate::tools::{spawn_message_processor, FrontendMessageHandler};
+use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     ManagerMessage, ManagerState, PipelineCommand, PipelineObjectMessage, ToolProxy, ToolState,
 };
@@ -282,7 +282,11 @@ impl ManagerView {
     }
 
     // Tools list component
-    fn render_tools(&self, tools: &[ToolProxy], cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_tools(
+        &self,
+        tools: &[ToolProxy],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let row_count = tools.len();
         let rows: Vec<_> = tools
             .iter()

@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, Context, InteractiveElement, IntoElement, MouseDownEvent, ParentElement, Render, Styled,
-    Window,
+    Context, InteractiveElement, IntoElement, MouseDownEvent, ParentElement, Render, Styled,
+    Window, div,
 };
 use strawberry_types::FeedbackLevel;
 

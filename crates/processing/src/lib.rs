@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use image::RgbaImage;
-use wgpu::{util::DeviceExt, Trace};
+use wgpu::{Trace, util::DeviceExt};
 
 pub mod colorspace;
 pub mod compositor;

@@ -3,11 +3,11 @@ use image::RgbaImage;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use std::{borrow::Cow, collections::BinaryHeap};
-use wgpu::{util::DeviceExt, PipelineCompilationOptions};
+use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
 use super::{
-    tiling::{extract_rgba_tile, merge_rgba_tiles, TileConfig, TileGrid},
     GpuImageProcessor,
+    tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
 const WORKGROUP_SIZE: u32 = 8;

@@ -2,13 +2,12 @@ use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    actions, div, prelude::*, px, size, App, Bounds, Context, FocusHandle, Focusable,
-    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions,
+    App, Bounds, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point, SharedString,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
 };
 
 use crate::gui::ToggleButton;
-use crate::tools::{spawn_message_processor, FrontendMessageHandler, ToolBase};
+use crate::tools::{FrontendMessageHandler, ToolBase, spawn_message_processor};
 use strawberry_types::{GrayscaleState, PipelineCommand, PipelineObjectMessage, ToolState};
 
 use strawberry_types::ToolFrontend;
@@ -93,7 +92,11 @@ impl GrayscaleView {
         self.toggle_enabled(current_enabled, window, cx);
     }
 
-    fn render_status(&self, state: &GrayscaleState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_status(
+        &self,
+        state: &GrayscaleState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),

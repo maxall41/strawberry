@@ -1,4 +1,6 @@
-use gpui::{canvas, div, point, prelude::*, px, Background, IntoElement, PathBuilder, Pixels, Rgba, Window};
+use gpui::{
+    Background, IntoElement, PathBuilder, Pixels, Rgba, Window, canvas, div, point, prelude::*, px,
+};
 
 pub struct Polyline {
     points: Vec<(f32, f32)>,

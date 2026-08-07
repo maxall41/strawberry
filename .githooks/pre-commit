@@ -1,5 +1,5 @@
 #!/bin/sh
 set -eu
 
-echo "Checking Rust formatting..."
+echo "Formatting Rust code..."
 cargo fmt --all

@@ -4,13 +4,13 @@ use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    actions, div, prelude::*, px, size, App, Bounds, Context, Entity, FocusHandle, Focusable,
-    KeyBinding, MouseDownEvent, Point, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions,
+    App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
+    px, size,
 };
 
-use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::gui::ToggleButton;
+use crate::gui::value_control::{ValueControl, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_processing::morphology::MorphologyOperation;
 use strawberry_types::{
@@ -140,7 +140,11 @@ impl MorphologyView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(&self, state: &MorphologyState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_status(
+        &self,
+        state: &MorphologyState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),

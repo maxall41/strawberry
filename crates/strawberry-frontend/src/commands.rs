@@ -4,13 +4,14 @@ use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    actions, div, prelude::*, Action, AnyWindowHandle, App, Context, Entity, Focusable, Global,
-    Render, Window,
+    Action, AnyWindowHandle, App, Context, Entity, Focusable, Global, Render, Window, actions, div,
+    prelude::*,
 };
 use strawberry_types::{BackendToolType, PipelineCommand, ToolFrontend};
 use tokio::sync::broadcast;
 
 use crate::gui::busy::BusyOverlay;
+use crate::tools::FrontendMessageHandler;
 use crate::tools::compositor::CompositorView;
 use crate::tools::contrast::ContrastView;
 use crate::tools::counter::CounterView;
@@ -25,7 +26,6 @@ use crate::tools::rolling_ball::RollingBallView;
 use crate::tools::sobel::SobelView;
 use crate::tools::threshold::ThresholdView;
 use crate::tools::watershed::WatershedView;
-use crate::tools::FrontendMessageHandler;
 
 actions!([
     Quit,
@@ -165,7 +165,7 @@ fn register_tool<T, A>(
     view_sender: broadcast::Sender<PipelineCommand>,
     view_receiver: broadcast::Receiver<PipelineCommand>,
     constructor: impl Fn(broadcast::Receiver<PipelineCommand>, broadcast::Sender<PipelineCommand>) -> T
-        + 'static,
+    + 'static,
 ) -> PalleteCommand
 where
     T: ToolFrontend + FrontendMessageHandler + Render + Focusable + 'static,
