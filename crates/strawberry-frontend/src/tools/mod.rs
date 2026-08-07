@@ -102,47 +102,49 @@ pub fn spawn_message_processor<V: FrontendMessageHandler>(
         .clone()
         .expect("receive_channel should be initialized");
 
-    cx.spawn_in(window, async move |this, cx| loop {
-        let Ok(command) = receiver.recv_async().await else {
-            break;
-        };
-        let PipelineCommand::FrontendMessage(message) = command else {
-            continue;
-        };
+    cx.spawn_in(window, async move |this, cx| {
+        loop {
+            let Ok(command) = receiver.recv_async().await else {
+                break;
+            };
+            let PipelineCommand::FrontendMessage(message) = command else {
+                continue;
+            };
 
-        match message {
-            FrontendMessage::ReturnState(tool_state) => {
-                let Some(new_state) = V::extract_state(tool_state) else {
-                    continue;
-                };
-                let Ok(mut locked) = state.write() else {
-                    eprintln!("Failed to acquire write lock on state");
-                    continue;
-                };
-                if *locked != new_state {
-                    *locked = new_state.clone();
-                    drop(locked);
-                    let _ = this.update(cx, |view, cx| {
-                        view.on_state_changed(&new_state, cx);
-                        cx.notify();
+            match message {
+                FrontendMessage::ReturnState(tool_state) => {
+                    let Some(new_state) = V::extract_state(tool_state) else {
+                        continue;
+                    };
+                    let Ok(mut locked) = state.write() else {
+                        eprintln!("Failed to acquire write lock on state");
+                        continue;
+                    };
+                    if *locked != new_state {
+                        *locked = new_state.clone();
+                        drop(locked);
+                        let _ = this.update(cx, |view, cx| {
+                            view.on_state_changed(&new_state, cx);
+                            cx.notify();
+                        });
+                    }
+                }
+                FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
+                    let _ = this.update(cx, |view, _cx| {
+                        let base = view.base_mut();
+                        if let Ok(mut idx) = base.current_tool_index.write() {
+                            *idx = backend_ids.first().copied();
+                        }
+                        base.backend_tool_indicies = backend_ids;
+                        base.send_channels = senders;
+
+                        if let Some(sender) = base.send_channels.first() {
+                            let _ = sender.send(PipelineCommand::RequestState());
+                        }
                     });
                 }
+                _ => {}
             }
-            FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                let _ = this.update(cx, |view, _cx| {
-                    let base = view.base_mut();
-                    if let Ok(mut idx) = base.current_tool_index.write() {
-                        *idx = backend_ids.first().copied();
-                    }
-                    base.backend_tool_indicies = backend_ids;
-                    base.send_channels = senders;
-
-                    if let Some(sender) = base.send_channels.first() {
-                        let _ = sender.send(PipelineCommand::RequestState());
-                    }
-                });
-            }
-            _ => {}
         }
     })
     .detach();

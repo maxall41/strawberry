@@ -4,9 +4,9 @@ use strawberry_processing::nervetracer::create_path;
 
 use async_trait::async_trait;
 use strawberry_types::{
-    overlay::{OverlayElement, ToolOverlay},
     BackendToolType, FrontendMessage, NerveTracerMessage, NerveTracerState, PipelineCommand,
     PipelineObjectMessage, ToolBackend, ToolState,
+    overlay::{OverlayElement, ToolOverlay},
 };
 
 /// Check if statechange requires reprocess.

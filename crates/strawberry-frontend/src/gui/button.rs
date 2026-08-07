@@ -1,6 +1,4 @@
-use gpui::{
-    div, prelude::*, px, Context, ElementId, IntoElement, MouseDownEvent, SharedString,
-};
+use gpui::{Context, ElementId, IntoElement, MouseDownEvent, SharedString, div, prelude::*, px};
 
 use super::theme;
 use super::tooltip::TooltipView;

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, radians, svg, Animation, AnimationExt, App, Context, Global,
-    MouseMoveEvent, Pixels, Point, Render, Transformation, Window,
+    Animation, AnimationExt, App, Context, Global, MouseMoveEvent, Pixels, Point, Render,
+    Transformation, Window, div, prelude::*, px, radians, svg,
 };
 
 use super::{icon, theme};

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::impl_tool_backend_basics;
 use crate::tools::base::ToolBase;
 use crate::tools::cache::ToolCache;
-use strawberry_processing::{contrast::GpuContrast, GpuImageProcessor};
+use strawberry_processing::{GpuImageProcessor, contrast::GpuContrast};
 
 use async_trait::async_trait;
 use strawberry_types::{

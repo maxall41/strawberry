@@ -4,7 +4,7 @@ use crate::impl_tool_backend_basics;
 use crate::tools::base::ToolBase;
 use crate::tools::cache::ToolCache;
 use strawberry_processing::{
-    compositor::GpuCompositor, decomposer::GpuDecomposer, GpuImageProcessor,
+    GpuImageProcessor, compositor::GpuCompositor, decomposer::GpuDecomposer,
 };
 
 use async_trait::async_trait;

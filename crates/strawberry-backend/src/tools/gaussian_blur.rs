@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::impl_tool_backend_basics;
 use crate::tools::base::ToolBase;
 use crate::tools::cache::ToolCache;
-use strawberry_processing::{gaussian_blur::GpuGaussianBlur, GpuImageProcessor};
+use strawberry_processing::{GpuImageProcessor, gaussian_blur::GpuGaussianBlur};
 
 use async_trait::async_trait;
 use strawberry_types::{

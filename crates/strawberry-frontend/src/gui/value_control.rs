@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, App, Context, CursorStyle, DragMoveEvent, ElementId, EventEmitter,
-    FocusHandle, Focusable, Keystroke, MouseDownEvent, Pixels, Point, SharedString, Window,
+    App, Context, CursorStyle, DragMoveEvent, ElementId, EventEmitter, FocusHandle, Focusable,
+    Keystroke, MouseDownEvent, Pixels, Point, SharedString, Window, div, prelude::*, px,
 };
 use tokio::time::Instant;
 

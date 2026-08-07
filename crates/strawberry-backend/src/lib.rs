@@ -4,7 +4,7 @@ use image::{ImageReader, RgbaImage};
 use tokio::sync::{broadcast, watch};
 
 use anyhow::anyhow;
-use strawberry_processing::{colorspace::GpuColorspaceConverter, GpuImageProcessor};
+use strawberry_processing::{GpuImageProcessor, colorspace::GpuColorspaceConverter};
 
 // Import all types from strawberry-types
 use strawberry_types::*;

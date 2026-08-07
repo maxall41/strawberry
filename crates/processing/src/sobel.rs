@@ -5,8 +5,8 @@ use image::RgbaImage;
 use wgpu::PipelineCompilationOptions;
 
 use super::{
-    tiling::{extract_rgba_tile, merge_rgba_tiles, TileConfig, TileGrid},
     GpuImageProcessor,
+    tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
 #[repr(C)]
@@ -58,9 +58,7 @@ impl GpuSobel {
         let tile_config = TileConfig::from_limits(&self.gpu.device.limits());
 
         if TileGrid::needs_tiling(width, height, &tile_config) {
-            println!(
-                "Image {width}x{height} requires tile-based processing for GPU limits"
-            );
+            println!("Image {width}x{height} requires tile-based processing for GPU limits");
             self.apply_sobel_tiled(image, threshold, &tile_config).await
         } else {
             self.apply_sobel_single(image, threshold).await
