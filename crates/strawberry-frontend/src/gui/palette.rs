@@ -262,6 +262,7 @@ impl CommandPalette {
     fn render_query(&self, window: &Window) -> impl IntoElement + use<> {
         let style = window.text_style();
         let font_size = QUERY_FONT_SIZE.to_pixels(window.rem_size());
+        let line_height = (font_size * 1.3).round();
         let shaped = window.text_system().shape_line(
             self.query.clone().into(),
             font_size,
@@ -280,7 +281,7 @@ impl CommandPalette {
             .left(shaped.x_for_index(self.cursor))
             .top_0()
             .w(px(1.5))
-            .h(px(f32::from(font_size) * 1.3))
+            .h(line_height)
             .bg(theme::ACCENT)
             .with_animation(
                 "palette-caret",
@@ -303,13 +304,14 @@ impl CommandPalette {
             .border_color(theme::ACCENT)
             .overflow_hidden()
             .text_size(QUERY_FONT_SIZE)
+            .line_height(line_height)
             .child(div().flex_none().text_color(theme::TEXT_MUTED).child("›"))
             .child(
                 div()
                     .relative()
                     .flex_1()
                     .min_w_0()
-                    .h(px(f32::from(font_size) * 1.3))
+                    .h(line_height)
                     .child(if self.query.is_empty() {
                         div().text_color(theme::TEXT_MUTED).child("Type a command…")
                     } else {
