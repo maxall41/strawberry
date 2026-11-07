@@ -1,3 +1,6 @@
+use crate::gui::actions::actions;
+use num_traits::ToPrimitive;
+
 use crate::gui::theme;
 // Implements UI for counter tool
 
@@ -6,12 +9,15 @@ use std::sync::{Arc, RwLock};
 
 use gpui::{
     App, Bounds, Context, ElementId, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
-    px, size,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use rfd::FileDialog;
 
-use crate::gui::{ToggleButton, icon::Icon, value_control::ValueControl};
+use crate::gui::{
+    ToggleButton,
+    icon::Icon,
+    value_control::{ValueControl, ValueControlConfig},
+};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     CountData, CountMessage, CounterMode, CounterState, CounterTool, FilterProxy, PipelineCommand,
@@ -23,7 +29,7 @@ use strawberry_types::ToolFrontend;
 
 pub struct CounterView {
     pub state: Arc<RwLock<CounterState>>,
-    pub next_count_type_id: Arc<RwLock<u16>>,
+    pub next_count_type_id: Arc<RwLock<u32>>,
     pub last_directory: Arc<RwLock<Option<PathBuf>>>,
     pub image_directory: Arc<RwLock<Option<PathBuf>>>,
     pub base: crate::tools::base::ToolBase,
@@ -31,10 +37,7 @@ pub struct CounterView {
 
 impl Focusable for CounterView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.base
-            .focus_handle
-            .clone()
-            .expect("focus_handle should be initialized before use")
+        self.base.focus_handle.clone()
     }
 }
 
@@ -43,6 +46,7 @@ impl CounterView {
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         image_directory: Arc<RwLock<Option<PathBuf>>>,
+        cx: &App,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(CounterState::default())),
@@ -50,31 +54,32 @@ impl CounterView {
             last_directory: Arc::new(RwLock::new(None)),
             image_directory,
             base: crate::tools::base::ToolBase::new(
-                command_sender.clone(),
+                command_sender,
                 strawberry_types::BackendToolType::Counter,
+                cx.focus_handle(),
             ),
         }
     }
 
-    fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
-    fn save_counts(&self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn save_counts(&self, window: &Window, cx: &Context<Self>) {
         let Some(current_tool_index) = self.base.get_current_tool_index() else {
             return;
         };
 
         let image_directory = self.image_directory.clone();
 
-        cx.spawn_in(_window, async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let default_dir = image_directory
                 .read()
                 .ok()
                 .and_then(|guard| guard.as_ref().map(|p| p.to_string_lossy().to_string()))
                 .unwrap_or_else(|| "~/".to_string());
 
-            println!("default_dir {:?}", default_dir);
+            println!("default_dir {default_dir:?}");
 
             let file = FileDialog::new()
                 .add_filter("xml", &["xml"])
@@ -83,7 +88,9 @@ impl CounterView {
 
             if let Some(file) = file
                 && let Err(e) = this.update(cx, |this, _cx| {
-                    if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
+                    if let Some(sender) =
+                        this.base.send_channels.get(usize::from(current_tool_index))
+                    {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::CountMessage(CountMessage::SaveCounts(file)),
                         )) {
@@ -100,7 +107,7 @@ impl CounterView {
         .detach();
     }
 
-    fn load_counts(&self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn load_counts(&self, window: &Window, cx: &Context<Self>) {
         let Some(current_tool_index) = self.base.get_current_tool_index() else {
             return;
         };
@@ -108,7 +115,7 @@ impl CounterView {
         let last_directory = self.last_directory.clone();
         let image_directory = self.image_directory.clone();
 
-        cx.spawn_in(_window, async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let default_dir = last_directory
                 .read()
                 .ok()
@@ -135,7 +142,9 @@ impl CounterView {
                 }
 
                 if let Err(e) = this.update(cx, |this, _cx| {
-                    if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
+                    if let Some(sender) =
+                        this.base.send_channels.get(usize::from(current_tool_index))
+                    {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::CountMessage(CountMessage::LoadCounts(file)),
                         )) {
@@ -152,37 +161,48 @@ impl CounterView {
         .detach();
     }
 
-    fn add_count_type(&mut self) {
-        let new_id = match self.next_count_type_id.read() {
-            Ok(guard) => *guard,
-            Err(e) => {
-                eprintln!("Failed to read next count type ID: {e}");
-                return;
-            }
+    fn add_count_type(&self) {
+        let Ok(hint) = self.next_count_type_id.read() else {
+            return;
         };
+        let Ok(state) = self.state.read() else {
+            return;
+        };
+        let Ok(first_id) = u16::try_from(*hint) else {
+            eprintln!("No count type IDs available");
+            return;
+        };
+        let Some(new_id) = (first_id..=u16::MAX).find(|id| !state.manual_counts.contains_key(id))
+        else {
+            eprintln!("No count type IDs available");
+            return;
+        };
+        drop(state);
+        drop(hint);
 
         let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
+            Ok(guard) => {
+                if let Some(index) = *guard {
+                    index
+                } else {
                     eprintln!("No current tool index available");
                     return;
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::NewCountType(new_id)),
             )) {
                 eprintln!("Failed to send new count type command: {e}");
                 return;
             }
-            println!("Sent new count type message!")
+            println!("Sent new count type message!");
         } else {
             eprintln!(
                 "Failed to send new count type message. Invalid tool index: {current_tool_index}"
@@ -190,30 +210,31 @@ impl CounterView {
             return;
         }
 
-        // Increment the next ID
+        // Reserve the ID until the next backend state arrives.
         if let Ok(mut next_id) = self.next_count_type_id.write() {
-            *next_id += 1;
+            *next_id = u32::from(new_id).saturating_add(1);
         }
 
         println!("Added count type {new_id}");
     }
 
-    fn delete_count_type(&mut self, count_type_id: u16) {
+    fn delete_count_type(&self, count_type_id: u16) {
         let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
+            Ok(guard) => {
+                if let Some(index) = *guard {
+                    index
+                } else {
                     eprintln!("No current tool index available");
                     return;
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::DeleteCountType(count_type_id)),
             )) {
@@ -226,7 +247,7 @@ impl CounterView {
         // Clear selection if this was the selected type
         if let Ok(state) = self.state.read()
             && state.active_count_type == Some(count_type_id)
-            && let Some(sender) = self.base.send_channels.get(current_tool_index as usize)
+            && let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index))
         {
             let mut remaining_types: Vec<u16> = state
                 .manual_counts
@@ -253,27 +274,23 @@ impl CounterView {
         }
     }
 
-    fn select_count_type(
-        &mut self,
-        count_type_id: u16,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn select_count_type(&self, count_type_id: u16, _window: &Window, _cx: &Context<Self>) {
         let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
+            Ok(guard) => {
+                if let Some(index) = *guard {
+                    index
+                } else {
                     eprintln!("No current tool index available");
                     return;
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::SetActiveCountType(
                     count_type_id,
@@ -287,15 +304,12 @@ impl CounterView {
     }
 
     fn copy_to_manual(&self) {
-        let current_tool_index = match self.base.get_current_tool_index() {
-            Some(index) => index,
-            None => {
-                eprintln!("No current tool index available for copy to manual");
-                return;
-            }
+        let Some(current_tool_index) = self.base.get_current_tool_index() else {
+            eprintln!("No current tool index available for copy to manual");
+            return;
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::CopyToManual),
             )) {
@@ -307,15 +321,12 @@ impl CounterView {
     }
 
     fn toggle_count_type_visibility(&self, count_type_id: u16) {
-        let current_tool_index = match self.base.get_current_tool_index() {
-            Some(index) => index,
-            None => {
-                eprintln!("No current tool index available for toggle count type visibility");
-                return;
-            }
+        let Some(current_tool_index) = self.base.get_current_tool_index() else {
+            eprintln!("No current tool index available for toggle count type visibility");
+            return;
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::ToggleCountTypeVisibility(
                     count_type_id,
@@ -328,27 +339,23 @@ impl CounterView {
         }
     }
 
-    fn set_tool(
-        &mut self,
-        tool: Option<CounterTool>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn set_tool(&self, tool: Option<CounterTool>, _window: &Window, _cx: &Context<Self>) {
         let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
+            Ok(guard) => {
+                if let Some(index) = *guard {
+                    index
+                } else {
                     eprintln!("No current tool index available");
                     return;
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::SetActiveTool(tool)),
             )) {
@@ -359,27 +366,23 @@ impl CounterView {
         }
     }
 
-    fn toggle_enabled(
-        &mut self,
-        current_value: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &Context<Self>) {
         let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
+            Ok(guard) => {
+                if let Some(index) = *guard {
+                    index
+                } else {
                     eprintln!("No current tool index available");
                     return;
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::ToggleActive(!current_value),
             )) {
@@ -399,7 +402,7 @@ impl CounterView {
         let current_enabled = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
 
         self.toggle_enabled(current_enabled, window, cx);
@@ -535,15 +538,9 @@ impl CounterView {
         cx.notify();
     }
 
-    fn select_count_type_by_position(
-        &mut self,
-        position: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let state = match self.state.read() {
-            Ok(state) => state,
-            Err(_) => return,
+    fn select_count_type_by_position(&self, position: usize, window: &Window, cx: &Context<Self>) {
+        let Ok(state) = self.state.read() else {
+            return;
         };
 
         let mut sorted_counts: Vec<_> = state.manual_counts.iter().collect();
@@ -636,15 +633,16 @@ impl CounterView {
         self.select_count_type_by_position(8, window, cx);
     }
 
-    fn toggle_mode(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn toggle_mode(&self, _window: &Window, _cx: &Context<Self>) {
         let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
+            Ok(guard) => {
+                if let Some(index) = *guard {
+                    index
+                } else {
                     eprintln!("No current tool index available");
                     return;
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to read current tool index: {e}");
                 return;
@@ -662,7 +660,7 @@ impl CounterView {
             }
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::SetMode(new_mode)),
             )) {
@@ -674,7 +672,7 @@ impl CounterView {
     }
 
     // Subheader component
-    fn render_subheader(&self) -> impl IntoElement + use<> {
+    fn render_subheader() -> impl IntoElement + use<> {
         div()
             .text_lg()
             .font_weight(gpui::FontWeight::BOLD)
@@ -683,19 +681,15 @@ impl CounterView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(
-        &self,
-        state: &CounterState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_status(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
             is_enabled,
-            move |this: &mut CounterView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
-                  cx: &mut Context<CounterView>| {
+                  cx: &mut Context<Self>| {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
@@ -704,11 +698,7 @@ impl CounterView {
     }
 
     // Mode toggle component
-    fn render_mode_toggle(
-        &self,
-        state: &CounterState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_mode_toggle(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .items_center()
@@ -724,10 +714,10 @@ impl CounterView {
                     .cursor_pointer()
                     .on_mouse_down(gpui::MouseButton::Left, {
                         cx.listener(
-                            move |this: &mut CounterView,
+                            move |this: &mut Self,
                                   _event: &MouseDownEvent,
                                   window: &mut Window,
-                                  cx: &mut Context<CounterView>| {
+                                  cx: &mut Context<Self>| {
                                 this.toggle_mode(window, cx);
                             },
                         )
@@ -748,17 +738,24 @@ impl CounterView {
     }
 
     // Individual count type item component
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep declarative GPUI layout and its event bindings together"
+    )]
     fn render_count_type_item(
         count_type_id: u16,
-        name: String,
+        name: &str,
         count_data: &[CountData],
         is_selected: bool,
         is_visible: bool,
         position: Option<usize>,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        let ii = count_type_id as usize % CIRCLE_COLORS.len();
-        let color = image_rgba_to_gpui_rgba(CIRCLE_COLORS[ii]);
+        let ii = usize::from(count_type_id)
+            .checked_rem(CIRCLE_COLORS.len())
+            .unwrap_or_default();
+        let color =
+            image_rgba_to_gpui_rgba(CIRCLE_COLORS.get(ii).copied().unwrap_or(CIRCLE_COLORS[0]));
         div()
             .flex()
             .items_center()
@@ -784,10 +781,10 @@ impl CounterView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            move |this: &mut CounterView,
+                            move |this: &mut Self,
                                   _event: &MouseDownEvent,
                                   _window: &mut Window,
-                                  _cx: &mut Context<CounterView>| {
+                                  _cx: &mut Context<Self>| {
                                 this.delete_count_type(count_type_id);
                             },
                         ),
@@ -815,10 +812,10 @@ impl CounterView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            move |this: &mut CounterView,
+                            move |this: &mut Self,
                                   _event: &MouseDownEvent,
                                   _window: &mut Window,
-                                  _cx: &mut Context<CounterView>| {
+                                  _cx: &mut Context<Self>| {
                                 this.toggle_count_type_visibility(count_type_id);
                             },
                         ),
@@ -838,14 +835,13 @@ impl CounterView {
                     .w_4()
                     .h_4()
                     .id(ElementId::Name(SharedString::from(format!(
-                        "count-type-{}-selection-circle",
-                        count_type_id
+                        "count-type-{count_type_id}-selection-circle"
                     ))))
-                    .when(position.is_some() && position.unwrap() <= 8, |this| {
-                        let pos = position.unwrap() + 1;
+                    .when_some(position.filter(|&pos| pos <= 8), |this, position| {
+                        let pos = position.saturating_add(1);
                         this.tooltip(move |_window, cx| {
                             let tooltip_view = crate::gui::tooltip::TooltipView {
-                                text: format!("⌘{}", pos),
+                                text: format!("⌘{pos}"),
                             };
                             cx.new(|_cx| tooltip_view).into()
                         })
@@ -863,10 +859,10 @@ impl CounterView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            move |this: &mut CounterView,
+                            move |this: &mut Self,
                                   _event: &MouseDownEvent,
                                   window: &mut Window,
-                                  cx: &mut Context<CounterView>| {
+                                  cx: &mut Context<Self>| {
                                 this.select_count_type(count_type_id, window, cx);
                             },
                         ),
@@ -875,12 +871,9 @@ impl CounterView {
     }
 
     // Count types list component
-    fn render_count_types_list(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let state = match self.state.read() {
-            Ok(state) => state,
-            Err(_) => {
-                return div().child("Error reading state");
-            }
+    fn render_count_types_list(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let Ok(state) = self.state.read().map(|state| state.clone()) else {
+            return div().child("Error reading state");
         };
 
         let selected_type = state.active_count_type;
@@ -901,10 +894,10 @@ impl CounterView {
                         .count_type_names
                         .get(&count_type_id)
                         .cloned()
-                        .unwrap_or_else(|| format!("Type {}", position + 1));
+                        .unwrap_or_else(|| format!("Type {}", position.saturating_add(1)));
                     Self::render_count_type_item(
                         count_type_id,
-                        name,
+                        &name,
                         count_data,
                         is_selected,
                         *is_visible,
@@ -916,7 +909,7 @@ impl CounterView {
     }
 
     // Plus button component
-    fn render_add_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_add_button(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .w_full()
             .p_2()
@@ -940,10 +933,10 @@ impl CounterView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(
-                    |this: &mut CounterView,
+                    |this: &mut Self,
                      _event: &MouseDownEvent,
                      _window: &mut Window,
-                     _cx: &mut Context<CounterView>| {
+                     _cx: &mut Context<Self>| {
                         this.add_count_type();
                     },
                 ),
@@ -952,17 +945,15 @@ impl CounterView {
 
     // Tool button component
     fn render_tool_button(
-        &self,
         tool: CounterTool,
         label: String,
         is_active: bool,
         keyboard_shortcut: &str,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .id(ElementId::Name(SharedString::from(format!(
-                "tool-button-{:?}",
-                tool
+                "tool-button-{tool:?}"
             ))))
             .flex_1()
             .p_2()
@@ -994,10 +985,10 @@ impl CounterView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(
-                    move |this: &mut CounterView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<CounterView>| {
+                          cx: &mut Context<Self>| {
                         if is_active {
                             this.set_tool(None, window, cx);
                         } else {
@@ -1009,7 +1000,7 @@ impl CounterView {
     }
 
     // Tools subheader component
-    fn render_tools_subheader(&self) -> impl IntoElement + use<> {
+    fn render_tools_subheader() -> impl IntoElement + use<> {
         div()
             .text_lg()
             .font_weight(gpui::FontWeight::BOLD)
@@ -1018,14 +1009,11 @@ impl CounterView {
     }
 
     // Tools bar component
-    fn render_tools_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let state = match self.state.read() {
-            Ok(state) => state,
-            Err(_) => {
-                return div().child("Error reading state");
-            }
+    fn render_tools_bar(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let Ok(state) = self.state.read().map(|state| state.clone()) else {
+            return div().child("Error reading state");
         };
-        let current_tool = &state.active_tool;
+        let current_tool = state.active_tool;
 
         div()
             .flex()
@@ -1033,38 +1021,38 @@ impl CounterView {
             .rounded_md()
             .overflow_hidden()
             .mb_4()
-            .child(self.render_tool_button(
+            .child(Self::render_tool_button(
                 CounterTool::Place,
                 "Place".to_string(),
-                *current_tool == Some(CounterTool::Place),
+                current_tool == Some(CounterTool::Place),
                 "⌘W",
                 cx,
             ))
-            .child(self.render_tool_button(
+            .child(Self::render_tool_button(
                 CounterTool::Delete,
                 "Delete".to_string(),
-                *current_tool == Some(CounterTool::Delete),
+                current_tool == Some(CounterTool::Delete),
                 "⌘E",
                 cx,
             ))
-            .child(self.render_tool_button(
+            .child(Self::render_tool_button(
                 CounterTool::LassoDelete,
                 "Lasso | Delete".to_string(),
-                *current_tool == Some(CounterTool::LassoDelete),
+                current_tool == Some(CounterTool::LassoDelete),
                 "⌘A",
                 cx,
             ))
-            .child(self.render_tool_button(
+            .child(Self::render_tool_button(
                 CounterTool::Review,
                 "Review".to_string(),
-                *current_tool == Some(CounterTool::Review),
+                current_tool == Some(CounterTool::Review),
                 "⌘R",
                 cx,
             ))
     }
 
     // Save button component
-    fn render_storage_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_storage_buttons(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .gap_2()
@@ -1088,11 +1076,11 @@ impl CounterView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            |_this: &mut CounterView,
+                            |this: &mut Self,
                              _event: &MouseDownEvent,
-                             _window: &mut Window,
-                             _cx: &mut Context<CounterView>| {
-                                _this.save_counts(_window, _cx);
+                             window: &mut Window,
+                             cx: &mut Context<Self>| {
+                                this.save_counts(window, cx);
                             },
                         ),
                     ),
@@ -1117,11 +1105,11 @@ impl CounterView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            |_this: &mut CounterView,
+                            |this: &mut Self,
                              _event: &MouseDownEvent,
-                             _window: &mut Window,
-                             _cx: &mut Context<CounterView>| {
-                                _this.load_counts(_window, _cx);
+                             window: &mut Window,
+                             cx: &mut Context<Self>| {
+                                this.load_counts(window, cx);
                             },
                         ),
                     ),
@@ -1132,32 +1120,28 @@ impl CounterView {
     fn render_manual_ui(
         &self,
         state: &CounterState,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let mut ui = div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_subheader())
+            .child(Self::render_subheader())
             .child(self.render_count_types_list(cx))
-            .child(self.render_add_button(cx))
-            .child(self.render_tools_subheader())
+            .child(Self::render_add_button(cx))
+            .child(Self::render_tools_subheader())
             .child(self.render_tools_bar(cx));
 
         // Add review UI when Review tool is active
         if state.active_tool == Some(CounterTool::Review) {
-            ui = ui.child(self.render_review_ui(state, cx));
+            ui = ui.child(Self::render_review_ui(state, cx));
         }
 
         ui
     }
 
     // Auto UI rendering (placeholder)
-    fn render_auto_ui(
-        &self,
-        state: &CounterState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_auto_ui(state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -1184,11 +1168,10 @@ impl CounterView {
                             .child(format!("{}", state.auto_counts.len())),
                     ),
             )
-            .child(self.render_filters_section(state, cx))
+            .child(Self::render_filters_section(state, cx))
     }
 
     fn render_filters_section(
-        &self,
         state: &CounterState,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -1221,21 +1204,26 @@ impl CounterView {
                             .iter()
                             .enumerate()
                             .map(|(index, filter_proxy)| {
-                                self.render_filter_item(filter_proxy, index, cx)
+                                Self::render_filter_item(filter_proxy, index, cx)
                             }),
                     ),
                 )
             })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep declarative GPUI layout and its event bindings together"
+    )]
     fn render_filter_item(
-        &self,
         filter_proxy: &FilterProxy,
         index: usize,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> gpui::AnyElement {
         let is_enabled = filter_proxy.is_enabled;
-        let filter_index = index as u16;
+        let Ok(filter_index) = u16::try_from(index) else {
+            return div().into_any_element();
+        };
 
         let is_size_filter = filter_proxy.name == "Filter by Size";
 
@@ -1303,32 +1291,35 @@ impl CounterView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            move |this: &mut CounterView,
+                            move |this: &mut Self,
                                   _event: &MouseDownEvent,
                                   _window: &mut Window,
-                                  _cx: &mut Context<CounterView>| {
+                                  _cx: &mut Context<Self>| {
                                 this.toggle_filter(filter_index, !is_enabled);
                             },
                         ),
                     ),
             )
             .when(is_size_filter, |el| {
-                let current_value = filter_proxy
-                    .values
-                    .first()
-                    .map(|v| *v as f32)
-                    .unwrap_or(10.0);
+                let Some(current_value) = filter_proxy.values.first().map_or(Some(10.0), |value| {
+                    value.to_f32().filter(|value| value.is_finite())
+                }) else {
+                    return el.child("Minimum object size cannot be displayed");
+                };
 
                 // Create a ValueControl for this filter
-                let control = cx.new(|_cx| {
+                let control = cx.new(|cx| {
                     ValueControl::new(
                         format!("{current_value:.0}"),
                         current_value,
-                        "Minimum Object Size".to_string(),
-                        1.0,
-                        format!("size_filter_{filter_index}"),
-                        1.0,
-                        10000.0,
+                        ValueControlConfig {
+                            label: "Minimum Object Size".to_string(),
+                            step: 1.0,
+                            id: format!("size_filter_{filter_index}"),
+                            min: 1.0,
+                            max: 10000.0,
+                        },
+                        cx,
                     )
                 });
 
@@ -1343,24 +1334,26 @@ impl CounterView {
                         .child(control),
                 )
             })
+            .into_any_element()
     }
 
-    fn toggle_filter(&mut self, filter_index: u16, enabled: bool) {
+    fn toggle_filter(&self, filter_index: u16, enabled: bool) {
         let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
+            Ok(guard) => {
+                if let Some(index) = *guard {
+                    index
+                } else {
                     eprintln!("No current tool index available");
                     return;
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::ToggleFilter(
                     filter_index,
@@ -1374,18 +1367,17 @@ impl CounterView {
         }
     }
 
-    fn render_review_ui(
-        &self,
-        state: &CounterState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep declarative GPUI layout and its event bindings together"
+    )]
+    fn render_review_ui(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let current_index = state.review_current_index;
 
-        static EMPTY: Vec<CountData> = Vec::new();
         let review_counts = state
             .active_count_type
             .and_then(|id| state.manual_counts.get(&id))
-            .unwrap_or(&EMPTY);
+            .map_or(&[][..], Vec::as_slice);
 
         if review_counts.is_empty() {
             return div().p_3().bg(theme::SURFACE).rounded_md().child(
@@ -1414,11 +1406,11 @@ impl CounterView {
                             .text_sm()
                             .child("Review Mode"),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .child(format!("{} / {}", current_index + 1, review_counts.len())),
-                    ),
+                    .child(div().text_sm().child(format!(
+                        "{} / {}",
+                        current_index.saturating_add(1),
+                        review_counts.len()
+                    ))),
             )
             .child(
                 div()
@@ -1430,7 +1422,8 @@ impl CounterView {
                             .px_3()
                             .py_1()
                             .bg(theme::CONTROL)
-                            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme::CONTROL_HOVER))
                             .rounded_md()
                             .text_sm()
                             .child("← Prev")
@@ -1443,12 +1436,12 @@ impl CounterView {
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(
-                                    |this: &mut CounterView,
+                                    |this: &mut Self,
                                      _event: &MouseDownEvent,
                                      _window: &mut Window,
-                                     _cx: &mut Context<CounterView>| {
+                                     cx: &mut Context<Self>| {
                                         this.send_review_navigate_previous();
-                                        _cx.notify();
+                                        cx.notify();
                                     },
                                 ),
                             ),
@@ -1459,7 +1452,8 @@ impl CounterView {
                             .px_3()
                             .py_1()
                             .bg(theme::CONTROL)
-                            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme::CONTROL_HOVER))
                             .rounded_md()
                             .text_sm()
                             .child("Next →")
@@ -1472,12 +1466,12 @@ impl CounterView {
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(
-                                    |this: &mut CounterView,
+                                    |this: &mut Self,
                                      _event: &MouseDownEvent,
                                      _window: &mut Window,
-                                     _cx: &mut Context<CounterView>| {
+                                     cx: &mut Context<Self>| {
                                         this.send_review_navigate_next();
-                                        _cx.notify();
+                                        cx.notify();
                                     },
                                 ),
                             ),
@@ -1502,46 +1496,44 @@ impl CounterView {
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(
-                                    |this: &mut CounterView,
+                                    |this: &mut Self,
                                      _event: &MouseDownEvent,
                                      _window: &mut Window,
-                                     _cx: &mut Context<CounterView>| {
+                                     cx: &mut Context<Self>| {
                                         this.send_delete_current_count();
-                                        _cx.notify();
+                                        cx.notify();
                                     },
                                 ),
                             ),
                     )
-                    .child(if current_index < review_counts.len() {
-                        let count = &review_counts[current_index];
+                    .child(review_counts.get(current_index).map_or_else(div, |count| {
                         div()
                             .flex_1()
                             .text_right()
                             .text_sm()
                             .child(format!("({}, {})", count.position.0, count.position.1))
-                    } else {
-                        div()
-                    }),
+                    })),
             )
     }
 
     // Review functionality methods - now sends messages to backend
     fn send_review_navigate_previous(&self) {
         let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
+            Ok(guard) => {
+                if let Some(index) = *guard {
+                    index
+                } else {
                     eprintln!("No current tool index available");
                     return;
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::ReviewNavigatePrevious),
             )) {
@@ -1554,20 +1546,21 @@ impl CounterView {
 
     fn send_review_navigate_next(&self) {
         let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
+            Ok(guard) => {
+                if let Some(index) = *guard {
+                    index
+                } else {
                     eprintln!("No current tool index available");
                     return;
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::ReviewNavigateNext),
             )) {
@@ -1580,20 +1573,21 @@ impl CounterView {
 
     fn send_delete_current_count(&self) {
         let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => index,
-                None => {
+            Ok(guard) => {
+                if let Some(index) = *guard {
+                    index
+                } else {
                     eprintln!("No current tool index available");
                     return;
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to read current tool index: {e}");
                 return;
             }
         };
 
-        if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
+        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
             if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                 PipelineObjectMessage::CountMessage(CountMessage::DeleteCurrentCount),
             )) {
@@ -1656,8 +1650,7 @@ impl FrontendMessageHandler for CounterView {
                 .manual_counts
                 .keys()
                 .max()
-                .map(|&k| k + 1)
-                .unwrap_or(0);
+                .map_or(0, |&k| u32::from(k).saturating_add(1));
         }
     }
 }
@@ -1695,10 +1688,10 @@ impl Render for CounterView {
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
-                    move |this: &mut CounterView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<CounterView>| {
+                          cx: &mut Context<Self>| {
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
@@ -1724,18 +1717,18 @@ impl Render for CounterView {
             .on_action(cx.listener(Self::select_count_type_8_action))
             .on_action(cx.listener(Self::select_count_type_9_action))
             .child(self.render_header())
-            .child(self.render_status(&state, cx))
-            .child(self.render_mode_toggle(&state, cx))
+            .child(Self::render_status(&state, cx))
+            .child(Self::render_mode_toggle(&state, cx))
             .child(match state.mode {
                 CounterMode::Manual => div().child(self.render_manual_ui(&state, cx)),
-                CounterMode::Auto => div().child(self.render_auto_ui(&state, cx)),
+                CounterMode::Auto => div().child(Self::render_auto_ui(&state, cx)),
             })
             .child(
                 div()
                     .flex()
                     .justify_between()
                     .mt_auto()
-                    .child(self.render_storage_buttons(cx))
+                    .child(Self::render_storage_buttons(cx))
                     .when(state.mode == CounterMode::Auto, |this| {
                         this.child(
                             div()
@@ -1749,10 +1742,10 @@ impl Render for CounterView {
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
                                     cx.listener(
-                                        |this: &mut CounterView,
+                                        |this: &mut Self,
                                          _event: &MouseDownEvent,
                                          _window: &mut Window,
-                                         _cx: &mut Context<CounterView>| {
+                                         _cx: &mut Context<Self>| {
                                             this.copy_to_manual();
                                         },
                                     ),
@@ -1784,7 +1777,7 @@ impl ToolFrontend for CounterView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.base.connect(cx.focus_handle()) {
+        if !self.base.connect() {
             return;
         }
 

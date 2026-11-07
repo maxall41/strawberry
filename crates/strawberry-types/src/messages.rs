@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use strawberry_processing::local_maxima::ThresholdType;
 
-use super::*;
+use super::{BackendToolType, ToolState};
 
 #[derive(Debug, Clone)]
 pub struct OutputFrame {
@@ -181,13 +181,13 @@ pub enum PipelineCommand {
     /// Request state from pipeline object
     RequestState(),
     /// Discover
-    DiscoverBackend(BackendToolType, flume::Sender<PipelineCommand>),
+    DiscoverBackend(BackendToolType, flume::Sender<Self>),
     /// Disconnect frontend tool
     DisconnectFrontend(BackendToolType),
     /// Handle click at x and y image pixels
     HandleClick(u64, u64),
     /// Register click receiver
-    RegisterClickReceiver(flume::Sender<PipelineCommand>),
+    RegisterClickReceiver(flume::Sender<Self>),
     /// Command used by CLI to avoid discovery negoitation
     CLILoadPipeline(PathBuf),
     /// Save output image to file

@@ -24,7 +24,8 @@ pub struct GpuCompositor {
 }
 
 impl GpuCompositor {
-    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    #[must_use]
+    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         // Compute shader for additive blending
         let shader = gpu
             .device
@@ -52,7 +53,12 @@ impl GpuCompositor {
         }
     }
 
-    pub async fn composite_images<T: Borrow<RgbaImage>>(&self, images: &[T]) -> Result<RgbaImage> {
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
+    pub async fn composite_images<T: Borrow<RgbaImage> + Sync>(
+        &self,
+        images: &[T],
+    ) -> Result<RgbaImage> {
         if images.is_empty() {
             return Err(anyhow::anyhow!("Cannot composite empty image list"));
         }
@@ -66,7 +72,7 @@ impl GpuCompositor {
         self.composite_images_direct(images).await
     }
 
-    async fn composite_images_batched<T: Borrow<RgbaImage>>(
+    async fn composite_images_batched<T: Borrow<RgbaImage> + Sync>(
         &self,
         images: &[T],
     ) -> Result<RgbaImage> {
@@ -82,7 +88,7 @@ impl GpuCompositor {
         self.composite_images_direct(&batched_results).await
     }
 
-    async fn composite_images_direct<T: Borrow<RgbaImage>>(
+    async fn composite_images_direct<T: Borrow<RgbaImage> + Sync>(
         &self,
         images: &[T],
     ) -> Result<RgbaImage> {
@@ -94,8 +100,12 @@ impl GpuCompositor {
             return Err(anyhow::anyhow!("Direct compositing supports max 7 images"));
         }
 
-        let (width, height) = images[0].borrow().dimensions();
-        let pixel_count = (width * height) as usize;
+        let (width, height) = images
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("Cannot composite empty image list"))?
+            .borrow()
+            .dimensions();
+        let pixel_count = crate::pixel_count(width, height)?;
 
         // Create separate buffers for each input image
         let mut image_buffers = Vec::new();
@@ -105,14 +115,14 @@ impl GpuCompositor {
         }
 
         // Create buffers using helper methods
-        let output_buffer = self.gpu.create_output_buffer(pixel_count);
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count);
+        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
 
         // Uniform buffer for dimensions and layer count
         let uniforms = CompositeUniforms {
             width,
             height,
-            layer_count: images.len() as u32,
+            layer_count: u32::try_from(images.len())?,
             _padding: 0,
         };
 
@@ -133,7 +143,9 @@ impl GpuCompositor {
         // Add input image buffers
         for (i, buffer) in image_buffers.iter().enumerate() {
             entries.push(wgpu::BindGroupEntry {
-                binding: (i + 2) as u32,
+                binding: u32::try_from(i)?
+                    .checked_add(2)
+                    .ok_or_else(|| anyhow::anyhow!("Binding index overflow"))?,
                 resource: buffer.as_entire_binding(),
             });
         }
@@ -148,7 +160,9 @@ impl GpuCompositor {
 
         for i in image_buffers.len()..7 {
             entries.push(wgpu::BindGroupEntry {
-                binding: (i + 2) as u32,
+                binding: u32::try_from(i)?
+                    .checked_add(2)
+                    .ok_or_else(|| anyhow::anyhow!("Binding index overflow"))?,
                 resource: dummy_buffer.as_entire_binding(),
             });
         }

@@ -24,7 +24,8 @@ pub struct GpuThreshold {
 }
 
 impl GpuThreshold {
-    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    #[must_use]
+    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         // Compute shader for threshold operation
         let shader = gpu
             .device
@@ -52,6 +53,8 @@ impl GpuThreshold {
         }
     }
 
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn apply_threshold(&self, image: &RgbaImage, threshold: f32) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
         let tile_config = TileConfig::from_limits(&self.gpu.device.limits());
@@ -70,12 +73,12 @@ impl GpuThreshold {
     /// Apply threshold operation to a single image (no tiling needed)
     async fn apply_threshold_single(&self, image: &RgbaImage, threshold: f32) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
-        let pixel_count = (width * height) as usize;
+        let pixel_count = crate::pixel_count(width, height)?;
 
         // Create buffers using helper methods
         let input_buffer = self.gpu.create_input_buffer(image);
-        let output_buffer = self.gpu.create_output_buffer(pixel_count);
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count);
+        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
 
         // Uniform buffer for dimensions and threshold value
         let uniforms = ThresholdUniforms {
@@ -146,7 +149,7 @@ impl GpuThreshold {
         tile_config: &TileConfig,
     ) -> Result<RgbaImage> {
         let (full_width, full_height) = image.dimensions();
-        let tile_grid = TileGrid::new(full_width, full_height, tile_config.clone());
+        let tile_grid = TileGrid::new(full_width, full_height, tile_config);
 
         println!(
             "Processing {} tiles for {}x{} image with threshold {}",
@@ -161,7 +164,7 @@ impl GpuThreshold {
         for (i, tile_info) in tile_grid.tiles.iter().enumerate() {
             println!(
                 "Processing tile {}/{}: {}x{} at ({}, {})",
-                i + 1,
+                i.saturating_add(1),
                 tile_grid.tiles.len(),
                 tile_info.width,
                 tile_info.height,
@@ -170,7 +173,7 @@ impl GpuThreshold {
             );
 
             // Extract tile from the full image
-            let tile_image = extract_rgba_tile(image, tile_info);
+            let tile_image = extract_rgba_tile(image, tile_info)?;
 
             // Process the tile
             let processed_tile = self.apply_threshold_single(&tile_image, threshold).await?;

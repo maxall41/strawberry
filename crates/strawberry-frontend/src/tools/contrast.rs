@@ -1,3 +1,4 @@
+use crate::gui::actions::actions;
 use crate::gui::theme;
 // Implements UI for contrast tool
 
@@ -5,12 +6,11 @@ use std::sync::{Arc, RwLock};
 
 use gpui::{
     App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
-    px, size,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
 use crate::gui::ToggleButton;
-use crate::gui::value_control::{ValueControl, ValueControlEvent};
+use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     ContrastMessage, ContrastState, PipelineCommand, PipelineObjectMessage, ToolState,
@@ -27,10 +27,7 @@ pub struct ContrastView {
 
 impl Focusable for ContrastView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.base
-            .focus_handle
-            .clone()
-            .expect("focus_handle should be initialized before use")
+        self.base.focus_handle.clone()
     }
 }
 
@@ -38,28 +35,25 @@ impl ContrastView {
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        cx: &App,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(ContrastState::default())),
             min_control: None,
             max_control: None,
             base: crate::tools::base::ToolBase::new(
-                command_sender.clone(),
+                command_sender,
                 strawberry_types::BackendToolType::Contrast,
+                cx.focus_handle(),
             ),
         }
     }
 
-    fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
-    fn toggle_enabled(
-        &mut self,
-        current_value: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::ToggleActive(!current_value),
         )) {
@@ -67,7 +61,7 @@ impl ContrastView {
         }
     }
 
-    fn update_min_max(&mut self, min: f32, max: f32) {
+    fn update_min_max(&self, min: f32, max: f32) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(min, max)),
         )) {
@@ -75,22 +69,22 @@ impl ContrastView {
         }
     }
 
-    fn adjust_min_value(&mut self, new_min: f32) {
+    fn adjust_min_value(&self, new_min: f32) {
         let current_state = self
             .state
             .read()
-            .expect("State lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let max_val = current_state.max;
         drop(current_state);
 
         self.update_min_max(new_min, max_val);
     }
 
-    fn adjust_max_value(&mut self, new_max: f32) {
+    fn adjust_max_value(&self, new_max: f32) {
         let current_state = self
             .state
             .read()
-            .expect("State lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let min_val = current_state.min;
         drop(current_state);
 
@@ -98,19 +92,15 @@ impl ContrastView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(
-        &self,
-        state: &ContrastState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_status(state: &ContrastState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
             is_enabled,
-            move |this: &mut ContrastView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
-                  cx: &mut Context<ContrastView>| {
+                  cx: &mut Context<Self>| {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
@@ -122,31 +112,32 @@ impl ContrastView {
     fn render_min_control(
         &self,
         _cx: &mut Context<Self>,
-        _window: &mut Window,
+        _window: &Window,
     ) -> impl IntoElement + use<> {
-        self.min_control
-            .clone()
-            .expect("min_control should be initialized before use")
+        self.min_control.clone().map_or_else(
+            || div().into_any_element(),
+            gpui::IntoElement::into_any_element,
+        )
     }
 
     // Max value control component
     fn render_max_control(
         &self,
         _cx: &mut Context<Self>,
-        _window: &mut Window,
+        _window: &Window,
     ) -> impl IntoElement + use<> {
-        self.max_control
-            .clone()
-            .expect("max_control should be initialized before use")
+        self.max_control.clone().map_or_else(
+            || div().into_any_element(),
+            gpui::IntoElement::into_any_element,
+        )
     }
 
     // Preset button component
     fn render_preset_button(
-        &self,
         label: String,
         min: f32,
         max: f32,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .px_2()
@@ -161,10 +152,10 @@ impl ContrastView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(
-                    move |this: &mut ContrastView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           _window: &mut Window,
-                          _cx: &mut Context<ContrastView>| {
+                          _cx: &mut Context<Self>| {
                         this.update_min_max(min, max);
                     },
                 ),
@@ -172,7 +163,7 @@ impl ContrastView {
     }
 
     // Presets section component
-    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -187,8 +178,13 @@ impl ContrastView {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(self.render_preset_button("Reset (0.0 - 1.0)".to_string(), 0.0, 1.0, cx))
-                    .child(self.render_preset_button(
+                    .child(Self::render_preset_button(
+                        "Reset (0.0 - 1.0)".to_string(),
+                        0.0,
+                        1.0,
+                        cx,
+                    ))
+                    .child(Self::render_preset_button(
                         "High Contrast (0.2 - 0.8)".to_string(),
                         0.2,
                         0.8,
@@ -206,7 +202,7 @@ impl ContrastView {
         let current_enabled = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
 
         self.toggle_enabled(current_enabled, window, cx);
@@ -216,14 +212,14 @@ impl ContrastView {
     fn render_controls_section(
         &self,
         cx: &mut Context<Self>,
-        _window: &mut Window,
+        window: &Window,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_min_control(cx, _window))
-            .child(self.render_max_control(cx, _window))
+            .child(self.render_min_control(cx, window))
+            .child(self.render_max_control(cx, window))
     }
 }
 
@@ -270,7 +266,7 @@ impl FrontendMessageHandler for ContrastView {
 actions!([ContrastToggleActivity]);
 
 impl Render for ContrastView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state,
             Err(e) => {
@@ -290,7 +286,7 @@ impl Render for ContrastView {
         };
 
         div()
-            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -302,19 +298,19 @@ impl Render for ContrastView {
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
-                    move |this: &mut ContrastView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<ContrastView>| {
+                          cx: &mut Context<Self>| {
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
-            .child(self.render_status(&state, cx))
-            .child(self.render_controls_section(cx, _window))
-            .child(self.render_presets_section(cx))
+            .child(Self::render_status(&state, cx))
+            .child(self.render_controls_section(cx, window))
+            .child(Self::render_presets_section(cx))
     }
 }
 
@@ -337,7 +333,7 @@ impl ToolFrontend for ContrastView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.base.connect(cx.focus_handle()) {
+        if !self.base.connect() {
             return;
         }
 
@@ -347,29 +343,35 @@ impl ToolFrontend for ContrastView {
         let state = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let min_control = cx.new(|_cx| {
+        let min_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.3}", state.min),
                 state.min,
-                "Min".to_string(),
-                0.01,
-                "min".to_string(),
-                0.0,
-                1.0,
+                ValueControlConfig {
+                    label: "Min".to_string(),
+                    step: 0.01,
+                    id: "min".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                },
+                cx,
             )
         });
 
-        let max_control = cx.new(|_cx| {
+        let max_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.3}", state.max),
                 state.max,
-                "Max".to_string(),
-                0.01,
-                "max".to_string(),
-                0.0,
-                1.0,
+                ValueControlConfig {
+                    label: "Max".to_string(),
+                    step: 0.01,
+                    id: "max".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                },
+                cx,
             )
         });
 

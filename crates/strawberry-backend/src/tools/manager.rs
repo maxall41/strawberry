@@ -51,7 +51,9 @@ pub(crate) fn deserialize_pipeline_config(
     Ok((value.try_into()?, indices))
 }
 
-/// Orchestrates the pipeline's tools. Note that unlike the tools it manages,
+/// Orchestrates the pipeline's tools.
+///
+/// Note that unlike the tools it manages,
 /// the manager itself is NOT a `ToolBackend`: it never appears in the pipeline
 /// tool list, doesn't process images, and has no cache. The `Pipeline`
 /// special-cases it for discovery/disconnect instead.
@@ -73,14 +75,17 @@ fn update_proxy_tools(input: &Vec<Box<dyn ToolBackend>>) -> Vec<ToolProxy> {
         .iter()
         .enumerate()
         .filter(|(_, tool)| tool.is_enabled())
-        .map(|(index, tool)| ToolProxy {
-            name: tool.iam().to_string(),
-            position: index as u16,
+        .filter_map(|(index, tool)| {
+            Some(ToolProxy {
+                name: tool.iam().to_string(),
+                position: u16::try_from(index).ok()?,
+            })
         })
         .collect()
 }
 
 impl ToolManager {
+    #[must_use]
     pub fn new(
         mut input: Vec<Box<dyn ToolBackend>>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -95,7 +100,7 @@ impl ToolManager {
         let previous_enabled: Vec<bool> = input.iter().map(|tool| tool.is_enabled()).collect();
         let ever_enabled = previous_enabled.clone();
 
-        ToolManager {
+        Self {
             state: ManagerState {
                 proxy_tools: update_proxy_tools(&input),
                 is_enabled: true,
@@ -134,8 +139,7 @@ impl ToolManager {
             indices
                 .get(&format!("{:?}", tool.iam()))
                 .copied()
-                .map(|index| (0, index as usize))
-                .unwrap_or((1, *current_index))
+                .map_or((1, *current_index), |index| (0, usize::from(index)))
         });
 
         for (_, ((tool, was_enabled), was_ever_enabled)) in ordered {
@@ -193,6 +197,7 @@ impl ToolManager {
         }
     }
 
+    #[must_use]
     pub fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
     }
@@ -209,6 +214,12 @@ impl ToolManager {
         self.frontend_senders.clear();
     }
 
+    /// # Errors
+    /// Returns an error if a command fails or a communication channel is disconnected.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Command dispatch as one function is cleaner"
+    )]
     pub fn receive_messages(&mut self) -> anyhow::Result<()> {
         let commands: Vec<PipelineCommand> =
             std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
@@ -216,7 +227,7 @@ impl ToolManager {
         for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
-                    self.send_to_frontend(PipelineCommand::FrontendMessage(
+                    self.send_to_frontend(&PipelineCommand::FrontendMessage(
                         FrontendMessage::ReturnState(self.get_state()),
                     ))?;
                 }
@@ -228,7 +239,7 @@ impl ToolManager {
                         ManagerMessage::SavePipeline(path) => {
                             let mut configs: HashMap<String, ToolState> = HashMap::new();
                             let mut indices = HashMap::new();
-                            let mut enabled_index = 0;
+                            let mut enabled_index = 0u16;
                             for tool in &self.tools {
                                 if !tool.is_enabled() {
                                     continue;
@@ -236,7 +247,9 @@ impl ToolManager {
                                 let tool_name = format!("{:?}", tool.iam());
                                 indices.insert(tool_name.clone(), enabled_index);
                                 configs.insert(tool_name, tool.get_state());
-                                enabled_index += 1;
+                                enabled_index = enabled_index
+                                    .checked_add(1)
+                                    .ok_or_else(|| anyhow::anyhow!("Too many pipeline tools"))?;
                             }
                             let pipeline_config = PipelineConfig { tools: configs };
                             let toml_string =
@@ -259,7 +272,7 @@ impl ToolManager {
                                         "Failed to save pipeline to file: {e}"
                                     )),
                                 ))?;
-                                return Err(anyhow::anyhow!("Failed to write to file: {}", e));
+                                return Err(anyhow::anyhow!("Failed to write to file: {e}"));
                             }
                             self.global_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::success(
@@ -276,7 +289,7 @@ impl ToolManager {
                                             "Failed to read pipeline file: {e}"
                                         )),
                                     ))?;
-                                    return Err(anyhow::anyhow!("Failed to read file: {}", e));
+                                    return Err(anyhow::anyhow!("Failed to read file: {e}"));
                                 }
                             };
                             let (pipeline_config, indices) =
@@ -290,15 +303,15 @@ impl ToolManager {
                                                 )),
                                             ),
                                         )?;
-                                        return Err(anyhow::anyhow!("Failed to parse TOML: {}", e));
+                                        return Err(anyhow::anyhow!("Failed to parse TOML: {e}"));
                                     }
                                 };
 
                             // A loaded pipeline replaces the active configuration.
-                            for tool in self.tools.iter_mut() {
+                            for tool in &mut self.tools {
                                 tool.set_enabled(false);
                             }
-                            for tool in self.tools.iter_mut() {
+                            for tool in &mut self.tools {
                                 let tool_name = format!("{:?}", tool.iam());
                                 if let Some(config) = pipeline_config.tools.get(&tool_name) {
                                     tool.apply_state(config.clone());
@@ -310,7 +323,7 @@ impl ToolManager {
                             self.command_sender
                                 .send(PipelineCommand::Refresh(0))
                                 .map_err(|e| {
-                                    anyhow::anyhow!("Failed to send refresh command: {}", e)
+                                    anyhow::anyhow!("Failed to send refresh command: {e}")
                                 })?;
 
                             self.global_sender.send(PipelineCommand::FrontendMessage(
@@ -320,8 +333,8 @@ impl ToolManager {
                             ))?;
                         }
                         ManagerMessage::ReorderTool(start_index, new_index) => {
-                            let start_idx = start_index as usize;
-                            let new_idx = new_index as usize;
+                            let start_idx = usize::from(start_index);
+                            let new_idx = usize::from(new_index);
 
                             if start_idx >= self.tools.len() {
                                 let error_msg = format!(
@@ -349,7 +362,7 @@ impl ToolManager {
                             self.command_sender
                                 .send(PipelineCommand::Refresh(0))
                                 .map_err(|e| {
-                                    anyhow::anyhow!("Failed to send refresh command: {}", e)
+                                    anyhow::anyhow!("Failed to send refresh command: {e}")
                                 })?;
                         }
                     },
@@ -366,13 +379,7 @@ impl ToolManager {
             self.state.proxy_tools = new_proxy_tools;
         }
 
-        if self.frontend_latest_state.is_none()
-            || self
-                .frontend_latest_state
-                .as_ref()
-                .expect("Just checked that frontend_latest_state is some")
-                != &self.state
-        {
+        if self.frontend_latest_state.as_ref() != Some(&self.state) {
             self.update_state()?;
         }
 
@@ -380,18 +387,18 @@ impl ToolManager {
     }
 
     fn update_state(&mut self) -> anyhow::Result<()> {
-        self.send_to_frontend(PipelineCommand::FrontendMessage(
+        self.send_to_frontend(&PipelineCommand::FrontendMessage(
             FrontendMessage::ReturnState(self.get_state()),
         ))?;
         self.frontend_latest_state = Some(self.state.clone());
         Ok(())
     }
 
-    fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {
+    fn send_to_frontend(&self, message: &PipelineCommand) -> anyhow::Result<()> {
         for sender in &self.frontend_senders {
             sender
                 .try_send(message.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to send message to frontend: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to send message to frontend: {e}"))?;
         }
         Ok(())
     }

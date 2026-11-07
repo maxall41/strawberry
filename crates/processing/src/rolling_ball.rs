@@ -25,7 +25,8 @@ struct RollingBallUniforms {
 }
 
 impl GpuRollingBall {
-    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    #[must_use]
+    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         let shader = gpu
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -78,6 +79,8 @@ impl GpuRollingBall {
     ///
     /// A new RGBA image with background subtracted. The output preserves the
     /// alpha channel from the input image.
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn apply_rolling_ball(
         &self,
         image: &RgbaImage,
@@ -101,14 +104,14 @@ impl GpuRollingBall {
         ball_radius: u32,
     ) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
-        let pixel_count = (width * height) as usize;
+        let pixel_count = crate::pixel_count(width, height)?;
 
         let input_buffer = self.gpu.create_input_buffer(image);
-        let output_buffer = self.gpu.create_output_buffer(pixel_count);
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count);
+        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
         let eroded_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Rolling Ball Eroded Luminance Buffer"),
-            size: (pixel_count * std::mem::size_of::<f32>()) as u64,
+            size: crate::buffer_size(pixel_count, 4)?,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -214,11 +217,15 @@ impl GpuRollingBall {
         tile_config: &TileConfig,
     ) -> Result<RgbaImage> {
         let (full_width, full_height) = image.dimensions();
-        let mut tile_config = tile_config.clone();
+        let mut tile_config = *tile_config;
         // Reconstruction samples eroded pixels one radius away, and each of
         // those pixels depends on another radius of the original image.
-        tile_config.overlap = tile_config.overlap.max(2 * ball_radius as usize);
-        let tile_grid = TileGrid::new(full_width, full_height, tile_config);
+        tile_config.overlap = tile_config.overlap.max(
+            usize::try_from(ball_radius)?
+                .checked_mul(2)
+                .ok_or_else(|| anyhow::anyhow!("Tile overlap overflow"))?,
+        );
+        let tile_grid = TileGrid::new(full_width, full_height, &tile_config);
 
         println!(
             "Processing {} tiles for {}x{} image with rolling ball (radius: {})",
@@ -233,7 +240,7 @@ impl GpuRollingBall {
         for (i, tile_info) in tile_grid.tiles.iter().enumerate() {
             println!(
                 "Processing tile {}/{}: {}x{} at ({}, {})",
-                i + 1,
+                i.saturating_add(1),
                 tile_grid.tiles.len(),
                 tile_info.width,
                 tile_info.height,
@@ -241,7 +248,7 @@ impl GpuRollingBall {
                 tile_info.y
             );
 
-            let tile_image = extract_rgba_tile(image, tile_info);
+            let tile_image = extract_rgba_tile(image, tile_info)?;
             let processed_tile = self
                 .apply_rolling_ball_single(&tile_image, ball_radius)
                 .await?;

@@ -10,10 +10,15 @@ use anyhow::anyhow;
 use strawberry_processing::{GpuImageProcessor, colorspace::GpuColorspaceConverter};
 
 // Import all types from strawberry-types
-use strawberry_types::*;
+use strawberry_types::{
+    BackendToolType, FrontendMessage, OutputFrame, PipelineCommand, PipelineProgress, overlay,
+};
 
 // Import tool implementations from tools module
-use tools::*;
+use tools::{
+    Compositor, Contrast, Counter, Decomposer, GaussianBlur, Grayscale, LocalMaxima, Morphology,
+    RollingBall, Sobel, Threshold, ToolManager, Watershed,
+};
 
 use crate::tools::nervetracer::NerveTracer;
 
@@ -24,13 +29,13 @@ pub mod tools;
 /// Helper macros for tool registration
 macro_rules! create_gpu_tool {
     ($tool:ident, $cmd:expr, $out:expr, $gpu:expr) => {
-        Box::new($tool::new($cmd.clone(), $out.clone(), $gpu.clone()).await) as Box<dyn ToolBackend>
+        Box::new($tool::new($cmd.clone(), $out.clone(), $gpu.clone()))
     };
 }
 
 macro_rules! create_cpu_tool {
     ($tool:ident, $cmd:expr, $out:expr) => {
-        Box::new($tool::new($cmd.clone(), $out.clone()).await?) as Box<dyn ToolBackend>
+        Box::new($tool::new($cmd.clone(), $out.clone())?)
     };
 }
 
@@ -58,6 +63,8 @@ pub struct Pipeline {
 
 impl Pipeline {
     /// Create a new pipeline with the given tools
+    /// # Errors
+    /// Returns an error if configuration, image processing, file I/O, or communication fails.
     pub async fn new() -> anyhow::Result<(
         Self,
         broadcast::Sender<PipelineCommand>,
@@ -85,8 +92,7 @@ impl Pipeline {
                 create_gpu_tool!(Decomposer, command_tx, output_tx, gpu_image_processor),
                 create_gpu_tool!(Sobel, command_tx, output_tx, gpu_image_processor),
                 create_gpu_tool!(Grayscale, command_tx, output_tx, gpu_image_processor),
-                Box::new(NerveTracer::new(command_tx.clone(), output_tx.clone())?)
-                    as Box<dyn ToolBackend>,
+                Box::new(NerveTracer::new(command_tx.clone(), output_tx.clone())?),
             ],
             command_tx.clone(),
             output_tx.clone(),
@@ -100,14 +106,14 @@ impl Pipeline {
             input_images: vec![],
             click_receivers: vec![],
             last_output: None,
-            colorspace_converter: GpuColorspaceConverter::new(gpu_image_processor.clone()).await,
+            colorspace_converter: GpuColorspaceConverter::new(gpu_image_processor),
         };
 
         Ok((pipeline, command_tx, output_rx, frame_rx))
     }
 
     /// Collect overlays from all tools
-    fn collect_overlays(&mut self) -> overlay::OverlayCollection {
+    fn collect_overlays(&self) -> overlay::OverlayCollection {
         let mut collection = overlay::OverlayCollection::new();
         for tool in &self.tool_manager.tools {
             if let Some(overlay) = tool.get_overlays() {
@@ -118,6 +124,8 @@ impl Pipeline {
     }
 
     /// Process images through the pipeline starting from the given index
+    /// # Errors
+    /// Returns an error if configuration, image processing, file I/O, or communication fails.
     pub async fn process_from(&mut self, start_index: usize) -> anyhow::Result<()> {
         let start_time = std::time::Instant::now();
         println!("Got process_from command!");
@@ -137,12 +145,11 @@ impl Pipeline {
             }
 
             if tool.is_enabled() && tool.supports_processing() {
-                match tool.valid_cached_output() {
-                    Some(cached_output) => resume_images = Some(cached_output),
-                    None => {
-                        earliest_processing_index = i;
-                        break;
-                    }
+                if let Some(cached_output) = tool.valid_cached_output() {
+                    resume_images = Some(cached_output);
+                } else {
+                    earliest_processing_index = i;
+                    break;
                 }
             }
         }
@@ -168,7 +175,7 @@ impl Pipeline {
             .skip(earliest_processing_index)
             .filter(|tool| tool.is_enabled() && tool.supports_processing())
             .count();
-        let mut stage = 0;
+        let mut stage: usize = 0;
 
         for tool in self
             .tool_manager
@@ -184,7 +191,7 @@ impl Pipeline {
                         name: format!("{:?}", tool.iam()),
                     }),
                 ));
-                stage += 1;
+                stage = stage.saturating_add(1);
                 tool.process(&mut images).await?;
                 tool.set_cached_output(images.clone());
             }
@@ -248,6 +255,12 @@ impl Pipeline {
         }
     }
 
+    /// # Errors
+    /// Returns an error if configuration, image processing, file I/O, or communication fails.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Command dispatch as one function is cleaner"
+    )]
     pub async fn process_commands(&mut self) -> anyhow::Result<()> {
         // Collect all available messages and deduplicate Refresh commands
         let commands: Vec<_> =
@@ -297,14 +310,14 @@ impl Pipeline {
                 }
                 PipelineCommand::Load(files) => {
                     // Cache is cleared later during process_from anyways, but clearing here first reduces peak memory.
-                    for tool in self.tool_manager.tools.iter_mut() {
+                    for tool in &mut self.tool_manager.tools {
                         tool.invalidate_cache();
                     }
 
                     let mut loaded_images = vec![];
                     let mut sizes = vec![];
 
-                    println!("Loading images: {:?}", files);
+                    println!("Loading images: {files:?}");
                     let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
                         FrontendMessage::PipelineProgress(PipelineProgress {
                             stage: 0,
@@ -321,7 +334,7 @@ impl Pipeline {
                                     loaded_images.push(data);
                                 }
                                 Err(e) => {
-                                    eprintln!("Error decoding image: {}", e);
+                                    eprintln!("Error decoding image: {e}");
                                     let _ =
                                         self.output_sender.send(PipelineCommand::FrontendMessage(
                                             FrontendMessage::PipelineFinished,
@@ -337,7 +350,7 @@ impl Pipeline {
                                 }
                             },
                             Err(e) => {
-                                eprintln!("Error loading image: {}", e);
+                                eprintln!("Error loading image: {e}");
                                 let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
                                     FrontendMessage::PipelineFinished,
                                 ));
@@ -353,7 +366,7 @@ impl Pipeline {
                     }
                     // Check that all image dimensions match
                     if !sizes.is_empty() {
-                        let first_size = sizes[0];
+                        let first_size = sizes.first().copied().unwrap_or_default();
                         if !sizes.iter().all(|&size| size == first_size) {
                             let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::PipelineFinished,
@@ -384,7 +397,10 @@ impl Pipeline {
                     }
                     //
                     self.input_images = loaded_images.into_iter().map(Arc::new).collect();
-                    self.load_generation += 1;
+                    self.load_generation = self
+                        .load_generation
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow!("Load generation exhausted"))?;
 
                     println!("Images loaded");
 
@@ -393,7 +409,7 @@ impl Pipeline {
                 PipelineCommand::DiscoverBackend(backend_tool_type, sender) => {
                     let mut discovered = vec![];
                     let mut channels = vec![];
-                    let mut i = 0;
+                    let mut i = 0u16;
 
                     if *backend_tool_type == BackendToolType::Manager {
                         self.tool_manager.add_frontend_sender(sender.clone());
@@ -411,13 +427,15 @@ impl Pipeline {
                         continue 'commands;
                     }
 
-                    for tool in self.tool_manager.tools.iter_mut() {
+                    for tool in &mut self.tool_manager.tools {
                         let iam = tool.iam();
                         if iam == *backend_tool_type {
-                            discovered.push(i as u16);
+                            discovered.push(i);
                             tool.add_frontend_sender(sender.clone());
                             channels.push(tool.get_sender());
-                            i += 1;
+                            i = i
+                                .checked_add(1)
+                                .ok_or_else(|| anyhow!("Too many backend instances"))?;
                         }
                     }
 
@@ -438,7 +456,7 @@ impl Pipeline {
                         self.tool_manager.disconnect();
                         continue 'commands;
                     }
-                    for tool in self.tool_manager.tools.iter_mut() {
+                    for tool in &mut self.tool_manager.tools {
                         if tool.iam() == *backend_tool_type {
                             tool.disconnect();
                         }
@@ -463,10 +481,10 @@ impl Pipeline {
                     };
 
                     // A loaded pipeline replaces the active configuration.
-                    for tool in self.tool_manager.tools.iter_mut() {
+                    for tool in &mut self.tool_manager.tools {
                         tool.set_enabled(false);
                     }
-                    for tool in self.tool_manager.tools.iter_mut() {
+                    for tool in &mut self.tool_manager.tools {
                         let tool_name = format!("{:?}", tool.iam());
                         if let Some(config) = pipeline_config.tools.get(&tool_name) {
                             tool.apply_state(config.clone());
@@ -526,7 +544,7 @@ impl Pipeline {
                     }
                 }
                 _ => {}
-            };
+            }
         }
 
         let result = self

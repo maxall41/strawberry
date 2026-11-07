@@ -1,3 +1,5 @@
+use num_traits::ToPrimitive;
+
 use crate::nervetracer::io::{export_nervetracer_to_xml_file, import_nervetracer_from_xml_file};
 use std::sync::Arc;
 use strawberry_processing::nervetracer::create_path;
@@ -10,7 +12,7 @@ use strawberry_types::{
 };
 
 /// Check if statechange requires reprocess.
-fn nervetracer_output_differs(a: &NerveTracerState, b: &NerveTracerState) -> bool {
+const fn nervetracer_output_differs(a: &NerveTracerState, b: &NerveTracerState) -> bool {
     a.is_enabled != b.is_enabled || a.selected_image_index != b.selected_image_index
 }
 
@@ -58,19 +60,23 @@ impl ToolBackend for NerveTracer {
 
         // Clamp selected_image_index if it's out of bounds
         if self.state.selected_image_index >= input.len() && !input.is_empty() {
-            self.state.selected_image_index = input.len() - 1;
+            self.state.selected_image_index = input.len().saturating_sub(1);
         }
 
         // Cache the selected image
-        if !input.is_empty() {
-            self.cached_input = Some(input[self.state.selected_image_index].clone());
-        } else {
+        if input.is_empty() {
             self.cached_input = None;
+        } else {
+            self.cached_input = input.get(self.state.selected_image_index).cloned();
         }
 
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Command dispatch as one function is cleaner"
+    )]
     fn receive_messages(&mut self) -> anyhow::Result<()> {
         let commands: Vec<PipelineCommand> =
             std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
@@ -101,7 +107,7 @@ impl ToolBackend for NerveTracer {
                     }
                 }
                 PipelineCommand::RequestState() => {
-                    self.send_to_frontend(PipelineCommand::FrontendMessage(
+                    self.send_to_frontend(&PipelineCommand::FrontendMessage(
                         FrontendMessage::ReturnState(self.get_state()),
                     ))?;
                 }
@@ -117,16 +123,24 @@ impl ToolBackend for NerveTracer {
                             self.state.current_path_segments.clear();
                         }
                         NerveTracerMessage::DeletePath(id) => {
-                            self.state.paths.remove(id);
+                            if id < self.state.paths.len() {
+                                self.state.paths.remove(id);
+                            }
                         }
                         NerveTracerMessage::DeletePathSegmentInCommitedPath(
                             path_id,
                             segment_id,
                         ) => {
-                            self.state.paths[path_id].remove(segment_id);
+                            if let Some(path) = self.state.paths.get_mut(path_id)
+                                && segment_id < path.len()
+                            {
+                                path.remove(segment_id);
+                            }
                         }
                         NerveTracerMessage::DeleteUncomittedPathSegment(id) => {
-                            self.state.current_path_segments.remove(id);
+                            if id < self.state.current_path_segments.len() {
+                                self.state.current_path_segments.remove(id);
+                            }
                         }
                         NerveTracerMessage::LoadTraces(path) => {
                             match import_nervetracer_from_xml_file(&path) {
@@ -139,36 +153,36 @@ impl ToolBackend for NerveTracer {
                                     ))?;
                                 }
                                 Err(e) => {
-                                    eprintln!("Failed to load traces from {:?}: {}", path, e);
+                                    eprintln!("Failed to load traces from {}: {e}", path.display());
                                     if let Err(send_err) = self.global_sender.send(
                                         PipelineCommand::FrontendMessage(FrontendMessage::error(
-                                            format!("Failed to load traces: {}", e),
+                                            format!("Failed to load traces: {e}"),
                                         )),
                                     ) {
-                                        eprintln!("Failed to send error feedback: {}", send_err);
+                                        eprintln!("Failed to send error feedback: {send_err}");
                                     }
                                 }
                             }
                         }
                         NerveTracerMessage::SaveTraces(path) => {
                             match export_nervetracer_to_xml_file(&self.state, &path, None, None) {
-                                Ok(_) => {
+                                Ok(()) => {
                                     if let Err(e) = self.global_sender.send(
                                         PipelineCommand::FrontendMessage(FrontendMessage::success(
-                                            format!("Traces saved to {:?}", path),
+                                            format!("Traces saved to {}", path.display()),
                                         )),
                                     ) {
-                                        eprintln!("Failed to send save feedback: {}", e);
+                                        eprintln!("Failed to send save feedback: {e}");
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("Failed to save traces to {:?}: {}", path, e);
+                                    eprintln!("Failed to save traces to {}: {e}", path.display());
                                     if let Err(send_err) = self.global_sender.send(
                                         PipelineCommand::FrontendMessage(FrontendMessage::error(
-                                            format!("Failed to save traces: {}", e),
+                                            format!("Failed to save traces: {e}"),
                                         )),
                                     ) {
-                                        eprintln!("Failed to send error feedback: {}", send_err);
+                                        eprintln!("Failed to send error feedback: {send_err}");
                                     }
                                 }
                             }
@@ -219,6 +233,7 @@ impl ToolBackend for NerveTracer {
     }
 
     fn get_overlays(&self) -> Option<crate::overlay::ToolOverlay> {
+        // Only the overlay is rounded to f32; stored trace positions remain exact integers.
         if !self.state.is_enabled {
             return None;
         }
@@ -237,8 +252,8 @@ impl ToolBackend for NerveTracer {
         // Draw first point if waiting for second click
         if let Some((x, y)) = self.state.first_point {
             elements.push(OverlayElement::Point {
-                x: x as f32,
-                y: y as f32,
+                x: x.to_f32()?,
+                y: y.to_f32()?,
                 radius: point_radius,
                 color: current_point_color,
             });
@@ -248,8 +263,8 @@ impl ToolBackend for NerveTracer {
         for segment in &self.state.current_path_segments {
             let points: Vec<(f32, f32)> = segment
                 .iter()
-                .map(|(x, y)| (*x as f32, *y as f32))
-                .collect();
+                .map(|(x, y)| Some((x.to_f32()?, y.to_f32()?)))
+                .collect::<Option<Vec<_>>>()?;
 
             if points.len() >= 2 {
                 elements.push(OverlayElement::Polyline {
@@ -265,8 +280,8 @@ impl ToolBackend for NerveTracer {
             for segment in path {
                 let points: Vec<(f32, f32)> = segment
                     .iter()
-                    .map(|(x, y)| (*x as f32, *y as f32))
-                    .collect();
+                    .map(|(x, y)| Some((x.to_f32()?, y.to_f32()?)))
+                    .collect::<Option<Vec<_>>>()?;
 
                 if points.len() >= 2 {
                     elements.push(OverlayElement::Polyline {
@@ -302,6 +317,8 @@ impl ToolBackend for NerveTracer {
 }
 
 impl NerveTracer {
+    /// # Errors
+    /// Returns an error if a command fails or a communication channel is disconnected.
     pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -309,7 +326,7 @@ impl NerveTracer {
         let (sender, receiver) = flume::unbounded();
         command_sender
             .send(PipelineCommand::RegisterClickReceiver(sender.clone()))
-            .map_err(|e| anyhow::anyhow!("Failed to register click receiver: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to register click receiver: {e}"))?;
         Ok(Self {
             state: NerveTracerState {
                 is_enabled: false,
@@ -334,13 +351,13 @@ impl NerveTracer {
 
     /// Push state to the frontend without discarding the cached image.
     fn sync_frontend(&mut self) -> anyhow::Result<()> {
-        self.send_to_frontend(PipelineCommand::FrontendMessage(
+        self.send_to_frontend(&PipelineCommand::FrontendMessage(
             FrontendMessage::ReturnState(self.get_state()),
         ))?;
         self.frontend_latest_state = Some(self.state.clone());
         self.command_sender
             .send(PipelineCommand::RequestOverlays)
-            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {e}"))?;
         Ok(())
     }
 
@@ -349,15 +366,15 @@ impl NerveTracer {
         self.sync_frontend()?;
         self.command_sender
             .send(PipelineCommand::Refresh(self.index))
-            .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {e}"))?;
         Ok(())
     }
 
-    fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {
+    fn send_to_frontend(&self, message: &PipelineCommand) -> anyhow::Result<()> {
         for sender in &self.frontend_senders {
             sender
                 .try_send(message.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to send message to frontend: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to send message to frontend: {e}"))?;
         }
         Ok(())
     }

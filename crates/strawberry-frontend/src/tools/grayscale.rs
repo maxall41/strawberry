@@ -1,9 +1,10 @@
+use crate::gui::actions::actions;
 use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
 use crate::gui::ToggleButton;
@@ -19,10 +20,7 @@ pub struct GrayscaleView {
 
 impl Focusable for GrayscaleView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.base
-            .focus_handle
-            .clone()
-            .expect("focus_handle should be initialized before use")
+        self.base.focus_handle.clone()
     }
 }
 
@@ -50,26 +48,23 @@ impl GrayscaleView {
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        cx: &App,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(GrayscaleState::default())),
             base: crate::tools::base::ToolBase::new(
-                command_sender.clone(),
+                command_sender,
                 strawberry_types::BackendToolType::Grayscale,
+                cx.focus_handle(),
             ),
         }
     }
 
-    fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
-    fn toggle_enabled(
-        &mut self,
-        current_value: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn toggle_enabled(&self, current_value: bool, _window: &mut Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::ToggleActive(!current_value),
         )) {
@@ -86,25 +81,21 @@ impl GrayscaleView {
         let current_enabled = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
 
         self.toggle_enabled(current_enabled, window, cx);
     }
 
-    fn render_status(
-        &self,
-        state: &GrayscaleState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_status(state: &GrayscaleState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
             is_enabled,
-            move |this: &mut GrayscaleView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
-                  cx: &mut Context<GrayscaleView>| {
+                  cx: &mut Context<Self>| {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
@@ -151,17 +142,17 @@ impl Render for GrayscaleView {
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
-                    move |this: &mut GrayscaleView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<GrayscaleView>| {
+                          cx: &mut Context<Self>| {
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
-            .child(self.render_status(&state, cx))
+            .child(Self::render_status(&state, cx))
     }
 }
 
@@ -184,7 +175,7 @@ impl ToolFrontend for GrayscaleView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.base.connect(cx.focus_handle()) {
+        if !self.base.connect() {
             return;
         }
 

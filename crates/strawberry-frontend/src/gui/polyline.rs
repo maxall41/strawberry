@@ -9,7 +9,7 @@ pub struct Polyline {
 }
 
 impl Polyline {
-    pub fn new(points: Vec<(f32, f32)>, color: Rgba, stroke_width: Pixels) -> Self {
+    pub const fn new(points: Vec<(f32, f32)>, color: Rgba, stroke_width: Pixels) -> Self {
         Self {
             points,
             color,
@@ -36,7 +36,7 @@ impl IntoElement for Polyline {
                     // Event callback (no-op for static polyline)
                     move |_, _, _| {},
                     // Paint callback
-                    move |_, _, window, _| {
+                    move |_, (), window, _| {
                         if points.len() < 2 {
                             return;
                         }
@@ -45,11 +45,13 @@ impl IntoElement for Polyline {
                         let mut builder = PathBuilder::stroke(stroke_width);
 
                         // Set the first point
-                        let (x0, y0) = points[0];
+                        let Some((&(x0, y0), rest)) = points.split_first() else {
+                            return;
+                        };
                         builder.move_to(point(px(x0), px(y0)));
 
                         // Add remaining points
-                        for &(x, y) in &points[1..] {
+                        for &(x, y) in rest {
                             builder.line_to(point(px(x), px(y)));
                         }
 

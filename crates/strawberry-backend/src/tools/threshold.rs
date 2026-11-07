@@ -15,7 +15,7 @@ pub struct Threshold {
     pub state: ThresholdState,
     pub base: ToolBase,
     pub cache: ToolCache<ThresholdState>,
-    threshold: GpuThreshold,
+    processor: GpuThreshold,
 }
 
 #[async_trait]
@@ -39,7 +39,7 @@ impl ToolBackend for Threshold {
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = match self
-                .threshold
+                .processor
                 .apply_threshold(image, self.state.threshold_value)
                 .await
             {
@@ -64,7 +64,7 @@ impl ToolBackend for Threshold {
             match message {
                 PipelineCommand::RequestState() => {
                     self.base
-                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
@@ -87,7 +87,7 @@ impl ToolBackend for Threshold {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             self.base.trigger_refresh()?;
@@ -99,7 +99,8 @@ impl ToolBackend for Threshold {
 }
 
 impl Threshold {
-    pub async fn new(
+    #[must_use]
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
@@ -111,7 +112,7 @@ impl Threshold {
             },
             base: ToolBase::new(command_sender, global_sender),
             cache: ToolCache::new(),
-            threshold: GpuThreshold::new(gpu_image_processor).await,
+            processor: GpuThreshold::new(gpu_image_processor),
         }
     }
 }

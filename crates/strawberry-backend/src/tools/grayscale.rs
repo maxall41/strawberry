@@ -15,7 +15,7 @@ pub struct Grayscale {
     pub state: GrayscaleState,
     pub base: ToolBase,
     pub cache: ToolCache<GrayscaleState>,
-    grayscale: GpuGrayscale,
+    processor: GpuGrayscale,
 }
 
 #[async_trait]
@@ -38,7 +38,7 @@ impl ToolBackend for Grayscale {
 
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self.grayscale.apply_grayscale(image).await {
+            *image = match self.processor.apply_grayscale(image).await {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
@@ -60,7 +60,7 @@ impl ToolBackend for Grayscale {
             match message {
                 PipelineCommand::RequestState() => {
                     self.base
-                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
@@ -75,7 +75,7 @@ impl ToolBackend for Grayscale {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             self.base.trigger_refresh()?;
@@ -87,7 +87,8 @@ impl ToolBackend for Grayscale {
 }
 
 impl Grayscale {
-    pub async fn new(
+    #[must_use]
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
@@ -96,7 +97,7 @@ impl Grayscale {
             state: GrayscaleState { is_enabled: false },
             base: ToolBase::new(command_sender, global_sender),
             cache: ToolCache::new(),
-            grayscale: GpuGrayscale::new(gpu_image_processor).await,
+            processor: GpuGrayscale::new(gpu_image_processor),
         }
     }
 }

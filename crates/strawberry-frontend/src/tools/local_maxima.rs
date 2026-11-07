@@ -1,3 +1,6 @@
+use crate::gui::actions::actions;
+use num_traits::ToPrimitive;
+
 use crate::gui::theme;
 // Implements UI for local maxima tool
 
@@ -5,12 +8,11 @@ use std::sync::{Arc, RwLock};
 
 use gpui::{
     App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
-    px, size,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
 use crate::gui::ToggleButton;
-use crate::gui::value_control::{ValueControl, ValueControlEvent};
+use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_processing::local_maxima::ThresholdType;
 use strawberry_types::{
@@ -30,10 +32,7 @@ pub struct LocalMaximaView {
 
 impl Focusable for LocalMaximaView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.base
-            .focus_handle
-            .clone()
-            .expect("focus_handle should be initialized before use")
+        self.base.focus_handle.clone()
     }
 }
 
@@ -41,30 +40,27 @@ impl LocalMaximaView {
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        cx: &App,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(LocalMaximaState::default())),
             min_distance_control: None,
             threshold_control: None,
             base: crate::tools::base::ToolBase::new(
-                command_sender.clone(),
+                command_sender,
                 strawberry_types::BackendToolType::LocalMaxima,
+                cx.focus_handle(),
             ),
             last_absolute_value: 0.1,
             last_relative_value: 0.01,
         }
     }
 
-    fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
-    fn toggle_enabled(
-        &mut self,
-        current_value: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::ToggleActive(!current_value),
         )) {
@@ -72,12 +68,7 @@ impl LocalMaximaView {
         }
     }
 
-    fn update_parameters(
-        &mut self,
-        min_distance: u32,
-        threshold: ThresholdType,
-        exclude_border: bool,
-    ) {
+    fn update_parameters(&self, min_distance: u32, threshold: ThresholdType, exclude_border: bool) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::LocalMaximaMessage(LocalMaximaMessage::SetParameters(
                 min_distance,
@@ -89,26 +80,25 @@ impl LocalMaximaView {
         }
     }
 
-    fn adjust_min_distance_value(&mut self, new_value: u32) {
+    fn adjust_min_distance_value(&self, new_value: u32) {
         let current_state = self
             .state
             .read()
-            .expect("State lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let threshold = current_state.threshold.clone();
         let exclude_border = current_state.exclude_border;
         drop(current_state);
         self.update_parameters(new_value, threshold, exclude_border);
     }
 
-    fn adjust_threshold_value(&mut self, new_value: f32) {
+    fn adjust_threshold_value(&self, new_value: f32) {
         let current_state = self
             .state
             .read()
-            .expect("State lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let new_threshold = match current_state.threshold {
-            ThresholdType::Absolute(_) => ThresholdType::Absolute(new_value),
             ThresholdType::Relative(_) => ThresholdType::Relative(new_value),
-            ThresholdType::None => ThresholdType::Absolute(new_value),
+            ThresholdType::Absolute(_) | ThresholdType::None => ThresholdType::Absolute(new_value),
         };
         let min_distance = current_state.min_distance;
         let exclude_border = current_state.exclude_border;
@@ -117,9 +107,9 @@ impl LocalMaximaView {
     }
 
     fn toggle_exclude_border(
-        &mut self,
+        &self,
         current_value: bool,
-        _window: &mut Window,
+        _window: &Window,
         _cx: &mut Context<Self>,
     ) {
         let current_state = match self.state.read() {
@@ -131,12 +121,12 @@ impl LocalMaximaView {
         };
         self.update_parameters(
             current_state.min_distance,
-            current_state.threshold.clone(),
+            current_state.threshold,
             !current_value,
         );
     }
 
-    fn toggle_threshold_mode(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn toggle_threshold_mode(&mut self, _window: &Window, _cx: &mut Context<Self>) {
         let current_state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
@@ -172,26 +162,22 @@ impl LocalMaximaView {
         let current_enabled = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
 
         self.toggle_enabled(current_enabled, window, cx);
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(
-        &self,
-        state: &LocalMaximaState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_status(state: &LocalMaximaState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
             is_enabled,
-            move |this: &mut LocalMaximaView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
-                  cx: &mut Context<LocalMaximaView>| {
+                  cx: &mut Context<Self>| {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
@@ -203,28 +189,30 @@ impl LocalMaximaView {
     fn render_min_distance_control(
         &self,
         _cx: &mut Context<Self>,
-        _window: &mut Window,
+        _window: &Window,
     ) -> impl IntoElement + use<> {
-        self.min_distance_control
-            .clone()
-            .expect("min_distance_control should be initialized before use")
+        self.min_distance_control.clone().map_or_else(
+            || gpui::div().into_any_element(),
+            gpui::IntoElement::into_any_element,
+        )
     }
 
     // Threshold control component with mode toggle
     fn render_threshold_control(
         &self,
-        cx: &mut Context<Self>,
-        _window: &mut Window,
+        cx: &Context<Self>,
+        _window: &Window,
     ) -> impl IntoElement + use<> {
         let state = self
             .state
             .read()
-            .expect("State lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mode_label, is_enabled) = match &state.threshold {
             ThresholdType::Absolute(_) => ("Absolute", true),
             ThresholdType::Relative(_) => ("Relative", true),
             ThresholdType::None => ("None", false),
         };
+        drop(state);
 
         div()
             .flex()
@@ -250,7 +238,7 @@ impl LocalMaximaView {
                             .text_sm()
                             .child(mode_label)
                             .on_mouse_down(gpui::MouseButton::Left, {
-                                cx.listener(move |this: &mut LocalMaximaView, _event: &MouseDownEvent, window: &mut Window, cx: &mut Context<LocalMaximaView>| {
+                                cx.listener(move |this: &mut Self, _event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>| {
                                     this.toggle_threshold_mode(window, cx);
                                 })
                             }),
@@ -260,17 +248,18 @@ impl LocalMaximaView {
                 let tc = self
                     .threshold_control
                     .clone()
-                    .expect("threshold_control should be initialized before use");
+                    .map_or_else(|| gpui::div().into_any_element(), gpui::IntoElement::into_any_element);
                 div.child(tc)
             })
     }
 
     // Exclude border toggle component
-    fn render_exclude_border_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let state = self
+    fn render_exclude_border_control(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let exclude_border = self
             .state
             .read()
-            .expect("State lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .exclude_border;
         div()
             .flex()
             .items_center()
@@ -285,14 +274,13 @@ impl LocalMaximaView {
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .bg(if state.exclude_border {
+                    .bg(if exclude_border {
                         theme::SUCCESS
                     } else {
                         theme::DANGER
                     })
                     .cursor_pointer()
                     .hover({
-                        let exclude_border = state.exclude_border;
                         move |style| {
                             style.bg(if exclude_border {
                                 theme::SUCCESS_HOVER
@@ -302,14 +290,13 @@ impl LocalMaximaView {
                         }
                     })
                     .text_sm()
-                    .child(if state.exclude_border { "Yes" } else { "No" })
+                    .child(if exclude_border { "Yes" } else { "No" })
                     .on_mouse_down(gpui::MouseButton::Left, {
-                        let exclude_border = state.exclude_border;
                         cx.listener(
-                            move |this: &mut LocalMaximaView,
+                            move |this: &mut Self,
                                   _event: &MouseDownEvent,
                                   window: &mut Window,
-                                  cx: &mut Context<LocalMaximaView>| {
+                                  cx: &mut Context<Self>| {
                                 this.toggle_exclude_border(exclude_border, window, cx);
                             },
                         )
@@ -319,12 +306,11 @@ impl LocalMaximaView {
 
     // Preset button component
     fn render_preset_button(
-        &self,
         label: String,
         min_distance: u32,
         threshold: ThresholdType,
         exclude_border: bool,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .px_3()
@@ -338,10 +324,10 @@ impl LocalMaximaView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(
-                    move |this: &mut LocalMaximaView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           _window: &mut Window,
-                          _cx: &mut Context<LocalMaximaView>| {
+                          _cx: &mut Context<Self>| {
                         this.update_parameters(min_distance, threshold.clone(), exclude_border);
                     },
                 ),
@@ -349,7 +335,7 @@ impl LocalMaximaView {
     }
 
     // Presets section component
-    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -360,28 +346,28 @@ impl LocalMaximaView {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(self.render_preset_button(
+                    .child(Self::render_preset_button(
                         "Strict".to_string(),
                         10,
                         ThresholdType::Absolute(0.2),
                         true,
                         cx,
                     ))
-                    .child(self.render_preset_button(
+                    .child(Self::render_preset_button(
                         "Default".to_string(),
                         5,
                         ThresholdType::Relative(0.01),
                         true,
                         cx,
                     ))
-                    .child(self.render_preset_button(
+                    .child(Self::render_preset_button(
                         "Relaxed".to_string(),
                         3,
                         ThresholdType::Relative(0.005),
                         false,
                         cx,
                     ))
-                    .child(self.render_preset_button(
+                    .child(Self::render_preset_button(
                         "Very Relaxed".to_string(),
                         1,
                         ThresholdType::Relative(0.001),
@@ -395,14 +381,14 @@ impl LocalMaximaView {
     fn render_controls_section(
         &self,
         cx: &mut Context<Self>,
-        _window: &mut Window,
+        window: &Window,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_min_distance_control(cx, _window))
-            .child(self.render_threshold_control(cx, _window))
+            .child(self.render_min_distance_control(cx, window))
+            .child(self.render_threshold_control(cx, window))
             .child(self.render_exclude_border_control(cx))
     }
 }
@@ -436,14 +422,18 @@ impl FrontendMessageHandler for LocalMaximaView {
     fn on_state_changed(&mut self, new_state: &LocalMaximaState, cx: &mut Context<Self>) {
         if let Some(ref ctrl) = self.min_distance_control {
             ctrl.update(cx, |c, cx| {
-                c.value = new_state.min_distance as f32;
+                // This approximation is only used to display the integer backend state.
+                let Some(display_value) = new_state.min_distance.to_f32() else {
+                    eprintln!("Cannot display min_distance in the numeric control");
+                    return;
+                };
+                c.value = display_value;
                 cx.notify();
             });
         }
         if let Some(ref ctrl) = self.threshold_control {
             let threshold_value = match &new_state.threshold {
-                ThresholdType::Absolute(val) => *val,
-                ThresholdType::Relative(val) => *val,
+                ThresholdType::Absolute(val) | ThresholdType::Relative(val) => *val,
                 ThresholdType::None => 0.0,
             };
             ctrl.update(cx, |c, cx| {
@@ -455,7 +445,7 @@ impl FrontendMessageHandler for LocalMaximaView {
 }
 
 impl Render for LocalMaximaView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
@@ -475,7 +465,7 @@ impl Render for LocalMaximaView {
         };
 
         div()
-            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -487,19 +477,19 @@ impl Render for LocalMaximaView {
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
-                    move |this: &mut LocalMaximaView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<LocalMaximaView>| {
+                          cx: &mut Context<Self>| {
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
-            .child(self.render_status(&state, cx))
-            .child(self.render_controls_section(cx, _window))
-            .child(self.render_presets_section(cx))
+            .child(Self::render_status(&state, cx))
+            .child(self.render_controls_section(cx, window))
+            .child(Self::render_presets_section(cx))
     }
 }
 
@@ -522,7 +512,7 @@ impl ToolFrontend for LocalMaximaView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.base.connect(cx.focus_handle()) {
+        if !self.base.connect() {
             return;
         }
 
@@ -532,35 +522,44 @@ impl ToolFrontend for LocalMaximaView {
         let state = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let min_distance_control = cx.new(|_cx| {
+        let Some(display_value) = state.min_distance.to_f32() else {
+            eprintln!("Cannot display min_distance in the numeric control");
+            return;
+        };
+        let min_distance_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.0}", state.min_distance),
-                state.min_distance as f32,
-                "Min Distance".to_string(),
-                1.0,
-                "min_distance".to_string(),
-                1.0,
-                100.0,
+                display_value,
+                ValueControlConfig {
+                    label: "Min Distance".to_string(),
+                    step: 1.0,
+                    id: "min_distance".to_string(),
+                    min: 1.0,
+                    max: 100.0,
+                },
+                cx,
             )
         });
 
         let threshold_value = match &state.threshold {
-            ThresholdType::Absolute(val) => *val,
-            ThresholdType::Relative(val) => *val,
+            ThresholdType::Absolute(val) | ThresholdType::Relative(val) => *val,
             ThresholdType::None => 0.0,
         };
 
-        let threshold_control = cx.new(|_cx| {
+        let threshold_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{threshold_value:.3}"),
                 threshold_value,
-                "Threshold".to_string(),
-                0.01,
-                "threshold".to_string(),
-                0.0,
-                1.0,
+                ValueControlConfig {
+                    label: "Threshold".to_string(),
+                    step: 0.01,
+                    id: "threshold".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                },
+                cx,
             )
         });
 
@@ -568,8 +567,12 @@ impl ToolFrontend for LocalMaximaView {
         cx.subscribe(
             &min_distance_control,
             |this, _control, event: &ValueControlEvent, _cx| {
-                if event.id == "min_distance" {
-                    this.adjust_min_distance_value(event.value as u32);
+                if event.id == "min_distance"
+                    && event.value.is_finite()
+                    && event.value >= 0.0
+                    && let Some(value) = event.value.to_u32()
+                {
+                    this.adjust_min_distance_value(value);
                 }
             },
         )

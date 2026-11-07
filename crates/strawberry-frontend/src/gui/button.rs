@@ -44,12 +44,12 @@ impl<V: 'static> ToggleButton<V> {
         self
     }
 
-    pub fn with_no_margin(mut self) -> Self {
+    pub const fn with_no_margin(mut self) -> Self {
         self.disable_margin = true;
         self
     }
 
-    pub fn render(self, cx: &mut Context<V>) -> impl IntoElement + use<V> {
+    pub fn render(self, cx: &Context<V>) -> impl IntoElement + use<V> {
         let label = self.label;
         let is_enabled = self.is_enabled;
         let state_text = if is_enabled {
@@ -60,22 +60,18 @@ impl<V: 'static> ToggleButton<V> {
 
         div()
             .id(ElementId::Name(SharedString::new(format!(
-                "button-{}",
-                label
+                "button-{label}"
             ))))
             .flex()
             .items_center()
             .justify_between()
             .w_full()
-            .when(!self.disable_margin, |this| this.mb_3())
+            .when(!self.disable_margin, gpui::Styled::mb_3)
             .child(label)
-            .when(self.keyboard_shortcut.is_some(), |this| {
+            .when_some(self.keyboard_shortcut, |this, shortcut| {
                 this.tooltip(move |_window, cx| {
                     let tooltip_view = TooltipView {
-                        text: self
-                            .keyboard_shortcut
-                            .clone()
-                            .expect("Should never fire: Checked is some"),
+                        text: shortcut.clone(),
                     };
                     cx.new(|_cx| tooltip_view).into()
                 })
@@ -119,7 +115,7 @@ impl<V: 'static> ToggleButton<V> {
                                     })
                                     .flex()
                                     .items_center()
-                                    .when(is_enabled, |this| this.justify_end())
+                                    .when(is_enabled, gpui::Styled::justify_end)
                                     .child(div().size(px(16.)).rounded_full().bg(theme::TEXT)),
                             ),
                     ),

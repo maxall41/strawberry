@@ -15,7 +15,7 @@ pub struct Contrast {
     pub state: ContrastState,
     pub base: ToolBase,
     pub cache: ToolCache<ContrastState>,
-    contrast: GpuContrast,
+    processor: GpuContrast,
 }
 
 #[async_trait]
@@ -39,7 +39,7 @@ impl ToolBackend for Contrast {
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = match self
-                .contrast
+                .processor
                 .apply_contrast(image, self.state.min, self.state.max)
                 .await
             {
@@ -64,7 +64,7 @@ impl ToolBackend for Contrast {
             match message {
                 PipelineCommand::RequestState() => {
                     self.base
-                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
@@ -88,7 +88,7 @@ impl ToolBackend for Contrast {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             self.base.trigger_refresh()?;
@@ -100,7 +100,8 @@ impl ToolBackend for Contrast {
 }
 
 impl Contrast {
-    pub async fn new(
+    #[must_use]
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
@@ -113,7 +114,7 @@ impl Contrast {
             },
             base: ToolBase::new(command_sender, global_sender),
             cache: ToolCache::new(),
-            contrast: GpuContrast::new(gpu_image_processor).await,
+            processor: GpuContrast::new(gpu_image_processor),
         }
     }
 }

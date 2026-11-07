@@ -12,6 +12,7 @@ pub struct ToolBase {
 }
 
 impl ToolBase {
+    #[must_use]
     pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -27,29 +28,34 @@ impl ToolBase {
         }
     }
 
-    pub fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {
+    /// # Errors
+    /// Returns an error if a command fails or a communication channel is disconnected.
+    pub fn send_to_frontend(&self, message: &PipelineCommand) -> anyhow::Result<()> {
         for sender in &self.frontend_senders {
             sender
                 .try_send(message.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to send to frontend: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to send to frontend: {e}"))?;
         }
         Ok(())
     }
 
+    #[must_use]
     pub fn collect_commands(&self) -> Vec<PipelineCommand> {
         std::iter::from_fn(|| self.receiver.try_recv().ok()).collect()
     }
 
+    /// # Errors
+    /// Returns an error if a command fails or a communication channel is disconnected.
     pub fn trigger_refresh(&self) -> anyhow::Result<()> {
         self.command_sender
             .send(PipelineCommand::Refresh(self.index))
             .map(|_| ())
-            .map_err(|e| anyhow::anyhow!("Failed to send refresh: {}", e))
+            .map_err(|e| anyhow::anyhow!("Failed to send refresh: {e}"))
     }
 }
 
-/// Macro to implement the repetitive parts of ToolBackend trait
-/// Tools only need to implement: process(), receive_messages(), get_state(), apply_state(), iam()
+/// Macro to implement the repetitive parts of `ToolBackend` trait
+/// Tools only need to implement: `process()`, `receive_messages()`, `get_state()`, `apply_state()`, `iam()`
 #[macro_export]
 macro_rules! impl_tool_backend_basics {
     ($tool_type:ty) => {

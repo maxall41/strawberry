@@ -36,7 +36,8 @@ pub struct GpuLocalMaxima {
 }
 
 impl GpuLocalMaxima {
-    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    #[must_use]
+    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         // Compute shader for local maxima detection
         let shader = gpu
             .device
@@ -64,6 +65,8 @@ impl GpuLocalMaxima {
         }
     }
 
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn apply_local_maxima(
         &self,
         image: &RgbaImage,
@@ -101,16 +104,16 @@ impl GpuLocalMaxima {
         exclude_border: bool,
     ) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
-        let pixel_count = (width * height) as usize;
+        let pixel_count = crate::pixel_count(width, height)?;
 
         // Calculate max intensity for threshold_rel
         let max_intensity = image
             .pixels()
             .map(|p| {
-                let r = p[2] as f32 / 255.0;
-                let g = p[1] as f32 / 255.0;
-                let b = p[0] as f32 / 255.0;
-                0.299 * r + 0.587 * g + 0.114 * b
+                let r = f32::from(p[2]) / 255.0;
+                let g = f32::from(p[1]) / 255.0;
+                let b = f32::from(p[0]) / 255.0;
+                0.114f32.mul_add(b, 0.587f32.mul_add(g, 0.299 * r))
             })
             .fold(0.0f32, f32::max);
 
@@ -123,15 +126,15 @@ impl GpuLocalMaxima {
 
         // Create buffers using helper methods
         let input_buffer = self.gpu.create_input_buffer(image);
-        let output_buffer = self.gpu.create_output_buffer(pixel_count);
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count);
+        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
 
         // Uniform buffer for dimensions and local maxima parameters
         let uniforms = LocalMaximaUniforms {
             width,
             height,
             min_distance,
-            exclude_border: if exclude_border { 1 } else { 0 },
+            exclude_border: u32::from(exclude_border),
             threshold_abs: effective_threshold,
             threshold_rel: threshold_rel_value,
             max_intensity,
@@ -204,7 +207,7 @@ impl GpuLocalMaxima {
         tile_config: &TileConfig,
     ) -> Result<RgbaImage> {
         let (full_width, full_height) = image.dimensions();
-        let tile_grid = TileGrid::new(full_width, full_height, tile_config.clone());
+        let tile_grid = TileGrid::new(full_width, full_height, tile_config);
 
         println!(
             "Processing {} tiles for {}x{} image with local maxima detection",
@@ -218,7 +221,7 @@ impl GpuLocalMaxima {
         for (i, tile_info) in tile_grid.tiles.iter().enumerate() {
             println!(
                 "Processing tile {}/{}: {}x{} at ({}, {})",
-                i + 1,
+                i.saturating_add(1),
                 tile_grid.tiles.len(),
                 tile_info.width,
                 tile_info.height,
@@ -227,7 +230,7 @@ impl GpuLocalMaxima {
             );
 
             // Extract tile from the full image
-            let tile_image = extract_rgba_tile(image, tile_info);
+            let tile_image = extract_rgba_tile(image, tile_info)?;
 
             // Process the tile
             let processed_tile = self

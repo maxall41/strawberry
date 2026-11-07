@@ -1,14 +1,14 @@
+use crate::gui::actions::actions;
 use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
     App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
-    px, size,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
 use crate::gui::ToggleButton;
-use crate::gui::value_control::{ValueControl, ValueControlEvent};
+use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     PipelineCommand, PipelineObjectMessage, SobelMessage, SobelState, ToolState,
@@ -24,10 +24,7 @@ pub struct SobelView {
 
 impl Focusable for SobelView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.base
-            .focus_handle
-            .clone()
-            .expect("focus_handle should be initialized before use")
+        self.base.focus_handle.clone()
     }
 }
 
@@ -35,27 +32,24 @@ impl SobelView {
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        cx: &App,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(SobelState::default())),
             threshold_control: None,
             base: crate::tools::base::ToolBase::new(
-                command_sender.clone(),
+                command_sender,
                 strawberry_types::BackendToolType::Sobel,
+                cx.focus_handle(),
             ),
         }
     }
 
-    fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
-    fn toggle_enabled(
-        &mut self,
-        current_value: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::ToggleActive(!current_value),
         )) {
@@ -72,13 +66,13 @@ impl SobelView {
         let current_enabled = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
 
         self.toggle_enabled(current_enabled, window, cx);
     }
 
-    fn toggle_threshold_enabled(&mut self, current_value: bool) {
+    fn toggle_threshold_enabled(&self, current_value: bool) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::SobelMessage(SobelMessage::ToggleThreshold(!current_value)),
         )) {
@@ -86,7 +80,7 @@ impl SobelView {
         }
     }
 
-    fn update_threshold_value(&mut self, threshold_value: f32) {
+    fn update_threshold_value(&self, threshold_value: f32) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::SobelMessage(SobelMessage::SetThreshold(threshold_value)),
         )) {
@@ -94,24 +88,20 @@ impl SobelView {
         }
     }
 
-    fn adjust_threshold(&mut self, new_threshold: f32) {
+    fn adjust_threshold(&self, new_threshold: f32) {
         let clamped_threshold = new_threshold.clamp(0.0, 1.0);
         self.update_threshold_value(clamped_threshold);
     }
 
-    fn render_status(
-        &self,
-        state: &SobelState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_status(state: &SobelState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
             is_enabled,
-            move |this: &mut SobelView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
-                  cx: &mut Context<SobelView>| {
+                  cx: &mut Context<Self>| {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
@@ -119,19 +109,15 @@ impl SobelView {
         .render(cx)
     }
 
-    fn render_threshold_toggle(
-        &self,
-        state: &SobelState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_threshold_toggle(state: &SobelState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let threshold_enabled = state.use_threshold;
         ToggleButton::new(
             "Use Threshold".to_string(),
             threshold_enabled,
-            move |this: &mut SobelView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   _window: &mut Window,
-                  _cx: &mut Context<SobelView>| {
+                  _cx: &mut Context<Self>| {
                 this.toggle_threshold_enabled(threshold_enabled);
             },
         )
@@ -142,24 +128,22 @@ impl SobelView {
         &self,
         state: &SobelState,
         _cx: &mut Context<Self>,
-        _window: &mut Window,
+        _window: &Window,
     ) -> impl IntoElement + use<> {
         if state.use_threshold {
-            div().child(
-                self.threshold_control
-                    .clone()
-                    .expect("threshold_control should be initialized before use"),
-            )
+            div().child(self.threshold_control.clone().map_or_else(
+                || div().into_any_element(),
+                gpui::IntoElement::into_any_element,
+            ))
         } else {
             div()
         }
     }
 
     fn render_preset_button(
-        &self,
         label: String,
         threshold_value: f32,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .px_3()
@@ -173,21 +157,17 @@ impl SobelView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(
-                    move |this: &mut SobelView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           _window: &mut Window,
-                          _cx: &mut Context<SobelView>| {
+                          _cx: &mut Context<Self>| {
                         this.update_threshold_value(threshold_value);
                     },
                 ),
             )
     }
 
-    fn render_presets_section(
-        &self,
-        state: &SobelState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_presets_section(state: &SobelState, cx: &Context<Self>) -> impl IntoElement + use<> {
         if state.use_threshold {
             div()
                 .flex()
@@ -199,10 +179,22 @@ impl SobelView {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .child(self.render_preset_button("Low (0.1)".to_string(), 0.1, cx))
-                        .child(self.render_preset_button("Medium (0.3)".to_string(), 0.3, cx))
-                        .child(self.render_preset_button("High (0.5)".to_string(), 0.5, cx))
-                        .child(self.render_preset_button("Very High (0.7)".to_string(), 0.7, cx)),
+                        .child(Self::render_preset_button("Low (0.1)".to_string(), 0.1, cx))
+                        .child(Self::render_preset_button(
+                            "Medium (0.3)".to_string(),
+                            0.3,
+                            cx,
+                        ))
+                        .child(Self::render_preset_button(
+                            "High (0.5)".to_string(),
+                            0.5,
+                            cx,
+                        ))
+                        .child(Self::render_preset_button(
+                            "Very High (0.7)".to_string(),
+                            0.7,
+                            cx,
+                        )),
                 )
         } else {
             div()
@@ -213,14 +205,14 @@ impl SobelView {
         &self,
         state: &SobelState,
         cx: &mut Context<Self>,
-        _window: &mut Window,
+        window: &Window,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_threshold_toggle(state, cx))
-            .child(self.render_threshold_control(state, cx, _window))
+            .child(Self::render_threshold_toggle(state, cx))
+            .child(self.render_threshold_control(state, cx, window))
     }
 }
 
@@ -259,7 +251,7 @@ impl FrontendMessageHandler for SobelView {
 }
 
 impl Render for SobelView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
@@ -279,7 +271,7 @@ impl Render for SobelView {
         };
 
         div()
-            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -291,19 +283,19 @@ impl Render for SobelView {
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
-                    move |this: &mut SobelView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<SobelView>| {
+                          cx: &mut Context<Self>| {
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
-            .child(self.render_status(&state, cx))
-            .child(self.render_controls_section(&state, cx, _window))
-            .child(self.render_presets_section(&state, cx))
+            .child(Self::render_status(&state, cx))
+            .child(self.render_controls_section(&state, cx, window))
+            .child(Self::render_presets_section(&state, cx))
     }
 }
 
@@ -328,7 +320,7 @@ impl ToolFrontend for SobelView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.base.connect(cx.focus_handle()) {
+        if !self.base.connect() {
             return;
         }
 
@@ -338,17 +330,20 @@ impl ToolFrontend for SobelView {
         let state = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let threshold_control = cx.new(|_cx| {
+        let threshold_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.3}", state.threshold_value),
                 state.threshold_value,
-                "Threshold".to_string(),
-                0.001,
-                "threshold".to_string(),
-                0.0,
-                1.0,
+                ValueControlConfig {
+                    label: "Threshold".to_string(),
+                    step: 0.001,
+                    id: "threshold".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                },
+                cx,
             )
         });
 

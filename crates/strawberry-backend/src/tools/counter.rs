@@ -1,3 +1,6 @@
+use anyhow::Context as _;
+use num_traits::ToPrimitive;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -29,7 +32,7 @@ impl Filter for SizeFilter {
     fn is_enabled(&self) -> bool {
         self.is_enabled
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Filter by Size"
     }
     fn process(&self, counts: &[CountData]) -> Vec<CountData> {
@@ -45,15 +48,16 @@ impl Filter for SizeFilter {
         }
     }
     fn set_enabled(&mut self, enabled: bool) {
-        self.is_enabled = enabled
+        self.is_enabled = enabled;
     }
     fn get_values(&self) -> Vec<f64> {
-        vec![self.min_size as f64]
+        vec![f64::from(self.min_size)]
     }
 }
 
 impl SizeFilter {
-    pub fn new(min_size: u16) -> Self {
+    #[must_use]
+    pub const fn new(min_size: u16) -> Self {
         Self {
             is_enabled: false,
             min_size,
@@ -88,12 +92,12 @@ struct BinaryImageWrapper<'a> {
 }
 
 impl<'a> BinaryImageWrapper<'a> {
-    fn new(image: &'a image::RgbaImage, threshold: u8) -> Self {
+    const fn new(image: &'a image::RgbaImage, threshold: u8) -> Self {
         Self { image, threshold }
     }
 }
 
-impl<'a> LutzImage for BinaryImageWrapper<'a> {
+impl LutzImage for BinaryImageWrapper<'_> {
     fn width(&self) -> u32 {
         self.image.width()
     }
@@ -109,7 +113,12 @@ impl<'a> LutzImage for BinaryImageWrapper<'a> {
         let pixel = self.image.get_pixel(x, y);
         // Consider pixel as foreground if it's not transparent and has sufficient brightness
         pixel[3] > 0
-            && (pixel[0] as u16 + pixel[1] as u16 + pixel[2] as u16) / 3 > self.threshold as u16
+            && u16::from(pixel[0])
+                .saturating_add(u16::from(pixel[1]))
+                .saturating_add(u16::from(pixel[2]))
+                .checked_div(3)
+                .unwrap_or_default()
+                > u16::from(self.threshold)
     }
 }
 
@@ -163,18 +172,21 @@ impl ToolBackend for Counter {
                 for blob_pixels in lutz::<BinaryImageWrapper, Vec<Pixel>>(binary_wrapper) {
                     if !blob_pixels.is_empty() {
                         // Calculate centroid of this blob
-                        let sum_x: u64 = blob_pixels.iter().map(|p| p.x as u64).sum();
-                        let sum_y: u64 = blob_pixels.iter().map(|p| p.y as u64).sum();
-                        let count = blob_pixels.len() as u64;
+                        let sum_x: u64 = blob_pixels.iter().map(|p| u64::from(p.x)).sum();
+                        let sum_y: u64 = blob_pixels.iter().map(|p| u64::from(p.y)).sum();
+                        let count = u64::try_from(blob_pixels.len())?;
 
                         self.state.auto_counts.push(CountData {
-                            position: (sum_x / count, sum_y / count),
-                            size: blob_pixels.len() as u16,
+                            position: (
+                                sum_x.checked_div(count).unwrap_or_default(),
+                                sum_y.checked_div(count).unwrap_or_default(),
+                            ),
+                            size: u16::try_from(blob_pixels.len()).unwrap_or(u16::MAX),
                         });
                     }
                 }
 
-                for filter in self.filters.iter() {
+                for filter in &self.filters {
                     if filter.is_enabled() {
                         self.state.auto_counts = filter.process(&self.state.auto_counts);
                     }
@@ -183,13 +195,17 @@ impl ToolBackend for Counter {
         }
 
         // Push state update to frontend
-        self.send_to_frontend(PipelineCommand::FrontendMessage(
+        self.send_to_frontend(&PipelineCommand::FrontendMessage(
             FrontendMessage::ReturnState(self.get_state()),
         ))?;
 
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Command dispatch as one function is cleaner"
+    )]
     fn receive_messages(&mut self) -> anyhow::Result<()> {
         let commands: Vec<PipelineCommand> =
             std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
@@ -197,7 +213,7 @@ impl ToolBackend for Counter {
         for message in commands {
             match message {
                 PipelineCommand::RequestState() => {
-                    self.send_to_frontend(PipelineCommand::FrontendMessage(
+                    self.send_to_frontend(&PipelineCommand::FrontendMessage(
                         FrontendMessage::ReturnState(self.get_state()),
                     ))?;
                 }
@@ -210,52 +226,33 @@ impl ToolBackend for Counter {
                     if let Some(id) = self.state.active_count_type {
                         match self.state.active_tool {
                             Some(CounterTool::Place) => {
-                                if self.state.manual_counts.contains_key(&id) {
-                                    let mut count_type = self
-                                        .state
-                                        .manual_counts
-                                        .get(&id)
-                                        .expect("Should never fire: Confirmed that key exists")
-                                        .clone();
-                                    count_type.push(CountData {
+                                self.state
+                                    .manual_counts
+                                    .entry(id)
+                                    .or_default()
+                                    .push(CountData {
                                         position: (x, y),
                                         size: 0,
                                     });
-                                    self.state.manual_counts.insert(id, count_type);
-                                } else {
-                                    self.state.manual_counts.insert(
-                                        id,
-                                        vec![CountData {
-                                            position: (x, y),
-                                            size: 0,
-                                        }],
-                                    );
-                                }
                             }
-                            Some(CounterTool::Delete)
-                                if self.state.manual_counts.contains_key(&id) =>
-                            {
-                                let counts = self
-                                    .state
-                                    .manual_counts
-                                    .get(&id)
-                                    .expect("Should never fire: Confirmed that key exists")
-                                    .clone();
-                                let new_counts: Vec<CountData> = counts
-                                    .iter()
-                                    .filter(|count| {
-                                        let dx = (count.position.0 as i64 - x as i64).abs();
-                                        let dy = (count.position.1 as i64 - y as i64).abs();
-                                        let distance = ((dx * dx + dy * dy) as f64).sqrt();
-                                        distance > 6.0
-                                    })
-                                    .cloned()
-                                    .collect();
-                                self.state.manual_counts.insert(id, new_counts);
+                            Some(CounterTool::Delete) => {
+                                if let Some(counts) = self.state.manual_counts.get_mut(&id) {
+                                    counts.retain(|count| {
+                                        let dx = count.position.0.abs_diff(x);
+                                        let dy = count.position.1.abs_diff(y);
+                                        // A six-pixel radius; avoid signed conversion and overflow.
+                                        dx > 6
+                                            || dy > 6
+                                            || dx
+                                                .saturating_mul(dx)
+                                                .saturating_add(dy.saturating_mul(dy))
+                                                > 36
+                                    });
+                                }
                             }
                             _ => {}
                         }
-                    };
+                    }
                 }
                 PipelineCommand::InteractionStart(x, y) => {
                     if !self.state.is_enabled {
@@ -300,7 +297,7 @@ impl ToolBackend for Counter {
                         if let Some(active_count_type) = &self.state.active_count_type {
                             let polygon = ramer_douglas_peucker_closed(self.lasso_points.clone());
                             if let Some(counts) = self.state.manual_counts.get(active_count_type) {
-                                let filtered = find_counts_within_polygon(polygon, counts.clone());
+                                let filtered = find_counts_within_polygon(&polygon, counts.clone());
                                 self.state
                                     .manual_counts
                                     .insert(*active_count_type, filtered);
@@ -318,9 +315,7 @@ impl ToolBackend for Counter {
                         CountMessage::NewCountType(id) => {
                             self.state.manual_counts.insert(id, vec![]);
                             self.state.count_type_visibility.insert(id, true);
-                            self.state
-                                .count_type_names
-                                .insert(id, format!("Type {}", id));
+                            self.state.count_type_names.insert(id, format!("Type {id}"));
                             self.state.active_count_type = Some(id);
                         }
                         CountMessage::DeletionLasso(points) => {
@@ -332,14 +327,13 @@ impl ToolBackend for Counter {
                                     .get(active_count_type)
                                     .ok_or_else(|| {
                                         anyhow::anyhow!(
-                                            "Active count type {} not found",
-                                            active_count_type
+                                            "Active count type {active_count_type} not found"
                                         )
                                     })?
                                     .clone();
                                 self.state.manual_counts.insert(
                                     *active_count_type,
-                                    find_counts_within_polygon(polygon, counts),
+                                    find_counts_within_polygon(&polygon, counts),
                                 );
                             }
                         }
@@ -379,7 +373,7 @@ impl ToolBackend for Counter {
                             }
                         }
                         CountMessage::ToggleFilter(filter_index, enabled) => {
-                            let index = filter_index as usize;
+                            let index = usize::from(filter_index);
                             if index >= self.filters.len() {
                                 return Err(anyhow::anyhow!(
                                     "Filter index {} out of bounds (max: {})",
@@ -387,7 +381,9 @@ impl ToolBackend for Counter {
                                     self.filters.len()
                                 ));
                             }
-                            self.filters[index].set_enabled(enabled);
+                            if let Some(filter) = self.filters.get_mut(index) {
+                                filter.set_enabled(enabled);
+                            }
                         }
                         CountMessage::SaveCounts(file) => {
                             // Use the utils::io module to export to XML
@@ -397,7 +393,7 @@ impl ToolBackend for Counter {
                                         "Error saving counts: XML export failed".to_string(),
                                     ),
                                 ))?;
-                                return Err(anyhow::anyhow!("Error saving counts to file: {}", e));
+                                return Err(anyhow::anyhow!("Error saving counts to file: {e}"));
                             }
                             self.global_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::success("Counts saved successfully!".to_string()),
@@ -437,8 +433,7 @@ impl ToolBackend for Counter {
                                         ),
                                     ))?;
                                     return Err(anyhow::anyhow!(
-                                        "Error loading counts from file: {}",
-                                        e
+                                        "Error loading counts from file: {e}"
                                     ));
                                 }
                             }
@@ -446,16 +441,16 @@ impl ToolBackend for Counter {
                         CountMessage::CopyToManual => {
                             // `len()` collides with existing ids once types have
                             // been deleted; pick the first genuinely free id.
-                            let new_key = (0..)
+                            let new_key = (0..=u16::MAX)
                                 .find(|k| !self.state.manual_counts.contains_key(k))
-                                .expect("fewer than u16::MAX count types");
+                                .ok_or_else(|| anyhow::anyhow!("No count type IDs available"))?;
                             self.state
                                 .manual_counts
                                 .insert(new_key, self.state.auto_counts.clone());
                             self.state.count_type_visibility.insert(new_key, true);
                             self.state
                                 .count_type_names
-                                .insert(new_key, format!("Type {}", new_key));
+                                .insert(new_key, format!("Type {new_key}"));
                             self.state.mode = CounterMode::Manual;
                             self.state.active_count_type = Some(new_key);
                             self.state.review_current_index = 0;
@@ -470,12 +465,14 @@ impl ToolBackend for Counter {
                                 if counts_len > 0 {
                                     // Clamp: the cursor can be stale when counts were
                                     // trimmed outside review (Delete tool, lasso).
-                                    let current_index =
-                                        self.state.review_current_index.min(counts_len - 1);
+                                    let current_index = self
+                                        .state
+                                        .review_current_index
+                                        .min(counts_len.saturating_sub(1));
                                     let new_index = if current_index == 0 {
-                                        counts_len - 1
+                                        counts_len.saturating_sub(1)
                                     } else {
-                                        current_index - 1
+                                        current_index.saturating_sub(1)
                                     };
                                     self.state.review_current_index = new_index;
 
@@ -484,8 +481,12 @@ impl ToolBackend for Counter {
                                         let _ = self.global_sender.send(
                                             PipelineCommand::FrontendMessage(
                                                 FrontendMessage::SnapToPosition(
-                                                    count.position.0 as f32,
-                                                    count.position.1 as f32,
+                                                    count.position.0.to_f32().context(
+                                                        "Count coordinate cannot be displayed",
+                                                    )?,
+                                                    count.position.1.to_f32().context(
+                                                        "Count coordinate cannot be displayed",
+                                                    )?,
                                                 ),
                                             ),
                                         );
@@ -503,9 +504,13 @@ impl ToolBackend for Counter {
                                 if counts_len > 0 {
                                     // Clamp: the cursor can be stale when counts were
                                     // trimmed outside review (Delete tool, lasso).
-                                    let current_index =
-                                        self.state.review_current_index.min(counts_len - 1);
-                                    let new_index = (current_index + 1) % counts_len;
+                                    let current_index = self
+                                        .state
+                                        .review_current_index
+                                        .min(counts_len.saturating_sub(1));
+                                    let new_index = (current_index.saturating_add(1))
+                                        .checked_rem(counts_len)
+                                        .unwrap_or_default();
                                     self.state.review_current_index = new_index;
 
                                     // Emit snap to position
@@ -513,8 +518,12 @@ impl ToolBackend for Counter {
                                         let _ = self.global_sender.send(
                                             PipelineCommand::FrontendMessage(
                                                 FrontendMessage::SnapToPosition(
-                                                    count.position.0 as f32,
-                                                    count.position.1 as f32,
+                                                    count.position.0.to_f32().context(
+                                                        "Count coordinate cannot be displayed",
+                                                    )?,
+                                                    count.position.1.to_f32().context(
+                                                        "Count coordinate cannot be displayed",
+                                                    )?,
                                                 ),
                                             ),
                                         );
@@ -531,22 +540,28 @@ impl ToolBackend for Counter {
                                 // Clamp instead of the old `index < len` guard: a
                                 // stale cursor (counts trimmed outside review) must
                                 // still delete something, not silently no-op.
-                                let current_index =
-                                    self.state.review_current_index.min(counts.len() - 1);
+                                let current_index = self
+                                    .state
+                                    .review_current_index
+                                    .min(counts.len().saturating_sub(1));
                                 counts.remove(current_index);
 
                                 self.state.review_current_index = if counts.is_empty() {
                                     0
                                 } else {
-                                    current_index.min(counts.len() - 1)
+                                    current_index.min(counts.len().saturating_sub(1))
                                 };
                                 // Deleting the last count leaves nothing to snap to.
                                 if let Some(count) = counts.get(self.state.review_current_index) {
                                     let _ =
                                         self.global_sender.send(PipelineCommand::FrontendMessage(
                                             FrontendMessage::SnapToPosition(
-                                                count.position.0 as f32,
-                                                count.position.1 as f32,
+                                                count.position.0.to_f32().context(
+                                                    "Count coordinate cannot be displayed",
+                                                )?,
+                                                count.position.1.to_f32().context(
+                                                    "Count coordinate cannot be displayed",
+                                                )?,
                                             ),
                                         ));
                                 }
@@ -610,6 +625,7 @@ impl ToolBackend for Counter {
     }
 
     fn get_overlays(&self) -> Option<crate::overlay::ToolOverlay> {
+        // Only the overlay is rounded to f32; stored count positions remain exact integers.
         if !self.state.is_enabled {
             return None;
         }
@@ -627,8 +643,14 @@ impl ToolBackend for Counter {
                 continue;
             }
 
-            let color_index = (*count_type_id as usize) % CIRCLE_COLORS.len();
-            let color = CIRCLE_COLORS[color_index].0;
+            let color_index = usize::from(*count_type_id)
+                .checked_rem(CIRCLE_COLORS.len())
+                .unwrap_or_default();
+            let color = CIRCLE_COLORS
+                .get(color_index)
+                .copied()
+                .unwrap_or(CIRCLE_COLORS[0])
+                .0;
 
             for (index, count) in counts.iter().enumerate() {
                 let is_selected = self.state.active_tool == Some(CounterTool::Review)
@@ -642,8 +664,8 @@ impl ToolBackend for Counter {
                 };
 
                 elements.push(OverlayElement::Circle {
-                    x: count.position.0 as f32,
-                    y: count.position.1 as f32,
+                    x: count.position.0.to_f32()?,
+                    y: count.position.1.to_f32()?,
                     radius: 10.0 / 3.0,
                     color: circle_color,
                     style: CircleStyle::Border { width: 0.7 },
@@ -656,8 +678,8 @@ impl ToolBackend for Counter {
             let color = CIRCLE_COLORS[0].0; // Use first color for auto counts
             for count in &self.state.auto_counts {
                 elements.push(OverlayElement::Circle {
-                    x: count.position.0 as f32,
-                    y: count.position.1 as f32,
+                    x: count.position.0.to_f32()?,
+                    y: count.position.1.to_f32()?,
                     radius: 10.0 / 3.0,
                     color,
                     style: CircleStyle::Border { width: 0.7 },
@@ -669,8 +691,8 @@ impl ToolBackend for Counter {
         if self.is_lasso_dragging && self.lasso_points.len() > 1 {
             for point in &self.lasso_points {
                 elements.push(OverlayElement::Point {
-                    x: point.0 as f32,
-                    y: point.1 as f32,
+                    x: point.0.to_f32()?,
+                    y: point.1.to_f32()?,
                     radius: 2.0,
                     color: [255, 0, 0, 255], // Red
                 });
@@ -686,14 +708,16 @@ impl ToolBackend for Counter {
 }
 
 impl Counter {
-    pub async fn new(
+    /// # Errors
+    /// Returns an error if a command fails or a communication channel is disconnected.
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> anyhow::Result<Self> {
         let (sender, receiver) = flume::unbounded();
         command_sender
             .send(PipelineCommand::RegisterClickReceiver(sender.clone()))
-            .map_err(|e| anyhow::anyhow!("Failed to register click receiver: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to register click receiver: {e}"))?;
 
         let filters: Vec<Box<dyn Filter>> = vec![Box::new(SizeFilter::new(10))];
         let filter_proxys = update_filter_proxys(&filters);
@@ -730,11 +754,11 @@ impl Counter {
     fn sync_frontend(&mut self) -> anyhow::Result<()> {
         let message =
             PipelineCommand::FrontendMessage(FrontendMessage::ReturnState(self.get_state()));
-        self.send_to_frontend(message)?;
+        self.send_to_frontend(&message)?;
         self.frontend_latest_state = Some(self.state.clone());
         self.command_sender
             .send(PipelineCommand::RequestOverlays)
-            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {e}"))?;
         Ok(())
     }
 
@@ -743,15 +767,15 @@ impl Counter {
         self.sync_frontend()?;
         self.command_sender
             .send(PipelineCommand::Refresh(self.index))
-            .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {e}"))?;
         Ok(())
     }
 
-    fn send_to_frontend(&self, message: PipelineCommand) -> anyhow::Result<()> {
+    fn send_to_frontend(&self, message: &PipelineCommand) -> anyhow::Result<()> {
         for (i, sender) in self.frontend_senders.iter().enumerate() {
             sender
                 .send(message.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to send message to sender {}: {}", i, e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to send message to sender {i}: {e}"))?;
         }
         Ok(())
     }

@@ -1,3 +1,4 @@
+use crate::gui::actions::actions;
 use crate::gui::theme;
 // Implements UI for nerve tracer tool
 
@@ -6,7 +7,7 @@ use std::sync::{Arc, RwLock};
 
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use rfd::FileDialog;
 
@@ -26,10 +27,7 @@ pub struct NerveTracerView {
 
 impl Focusable for NerveTracerView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.base
-            .focus_handle
-            .clone()
-            .expect("focus_handle should be initialized before use")
+        self.base.focus_handle.clone()
     }
 }
 
@@ -37,25 +35,27 @@ impl NerveTracerView {
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        cx: &App,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(NerveTracerState::default())),
             last_directory: Arc::new(RwLock::new(None)),
             base: crate::tools::base::ToolBase::new(
-                command_sender.clone(),
+                command_sender,
                 strawberry_types::BackendToolType::NerveTracer,
+                cx.focus_handle(),
             ),
         }
     }
 
-    fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
-    fn save_traces(&self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn save_traces(&self, window: &Window, cx: &Context<Self>) {
         let last_directory = self.last_directory.clone();
 
-        cx.spawn_in(_window, async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let default_dir = last_directory
                 .read()
                 .ok()
@@ -84,10 +84,10 @@ impl NerveTracerView {
         .detach();
     }
 
-    fn load_traces(&self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn load_traces(&self, window: &Window, cx: &Context<Self>) {
         let last_directory = self.last_directory.clone();
 
-        cx.spawn_in(_window, async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let default_dir = last_directory
                 .read()
                 .ok()
@@ -123,7 +123,7 @@ impl NerveTracerView {
         .detach();
     }
 
-    fn commit_segments(&mut self) {
+    fn commit_segments(&self) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::NerveTracerMessage(
                 NerveTracerMessage::CommitCurrentPathSegments(),
@@ -133,7 +133,7 @@ impl NerveTracerView {
         }
     }
 
-    fn delete_uncommitted_segment(&mut self, segment_id: usize) {
+    fn delete_uncommitted_segment(&self, segment_id: usize) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::NerveTracerMessage(
                 NerveTracerMessage::DeleteUncomittedPathSegment(segment_id),
@@ -143,7 +143,7 @@ impl NerveTracerView {
         }
     }
 
-    fn delete_path(&mut self, path_id: usize) {
+    fn delete_path(&self, path_id: usize) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::DeletePath(path_id)),
         )) {
@@ -151,7 +151,7 @@ impl NerveTracerView {
         }
     }
 
-    fn delete_path_segment(&mut self, path_id: usize, segment_id: usize) {
+    fn delete_path_segment(&self, path_id: usize, segment_id: usize) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::NerveTracerMessage(
                 NerveTracerMessage::DeletePathSegmentInCommitedPath(path_id, segment_id),
@@ -161,12 +161,7 @@ impl NerveTracerView {
         }
     }
 
-    fn toggle_enabled(
-        &mut self,
-        current_value: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::ToggleActive(!current_value),
         )) {
@@ -174,7 +169,7 @@ impl NerveTracerView {
         }
     }
 
-    fn set_selected_image(&mut self, image_index: usize) {
+    fn set_selected_image(&self, image_index: usize) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::SetSelectedImageIndex(
                 image_index,
@@ -193,7 +188,7 @@ impl NerveTracerView {
         let current_enabled = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
 
         self.toggle_enabled(current_enabled, window, cx);
@@ -227,19 +222,15 @@ impl NerveTracerView {
         self.load_traces(window, cx);
     }
     // Status component showing enabled/disabled state
-    fn render_status(
-        &self,
-        state: &NerveTracerState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_status(state: &NerveTracerState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
             is_enabled,
-            move |this: &mut NerveTracerView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
-                  cx: &mut Context<NerveTracerView>| {
+                  cx: &mut Context<Self>| {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
@@ -249,9 +240,8 @@ impl NerveTracerView {
 
     // Image selector component
     fn render_image_selector(
-        &self,
         state: &NerveTracerState,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         if state.total_images <= 1 {
             return div();
@@ -293,14 +283,14 @@ impl NerveTracerView {
                             .rounded_md()
                             .text_sm()
                             .text_center()
-                            .child(format!("{}", i + 1))
+                            .child(format!("{}", i.saturating_add(1)))
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(
-                                    move |this: &mut NerveTracerView,
+                                    move |this: &mut Self,
                                           _event: &MouseDownEvent,
                                           _window: &mut Window,
-                                          _cx: &mut Context<NerveTracerView>| {
+                                          _cx: &mut Context<Self>| {
                                         this.set_selected_image(i);
                                     },
                                 ),
@@ -311,9 +301,8 @@ impl NerveTracerView {
 
     // Segments section
     fn render_segments_section(
-        &self,
         state: &NerveTracerState,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -346,25 +335,18 @@ impl NerveTracerView {
                         )
                     })
                     .when(!state.current_path_segments.is_empty(), |el| {
-                        el.children(
-                            state
-                                .current_path_segments
-                                .iter()
-                                .enumerate()
-                                .map(|(idx, segment)| {
-                                    self.render_segment_item(idx, segment.len(), cx)
-                                }),
-                        )
+                        el.children(state.current_path_segments.iter().enumerate().map(
+                            |(idx, segment)| Self::render_segment_item(idx, segment.len(), cx),
+                        ))
                     }),
             )
     }
 
     // Individual segment item
     fn render_segment_item(
-        &self,
         segment_id: usize,
         point_count: usize,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -377,7 +359,7 @@ impl NerveTracerView {
             .rounded_md()
             .child(div().flex_1().child(format!(
                 "Segment {:03} ({} points)",
-                segment_id + 1,
+                segment_id.saturating_add(1),
                 point_count
             )))
             .child(
@@ -397,10 +379,10 @@ impl NerveTracerView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            move |this: &mut NerveTracerView,
+                            move |this: &mut Self,
                                   _event: &MouseDownEvent,
                                   _window: &mut Window,
-                                  _cx: &mut Context<NerveTracerView>| {
+                                  _cx: &mut Context<Self>| {
                                 this.delete_uncommitted_segment(segment_id);
                             },
                         ),
@@ -410,9 +392,8 @@ impl NerveTracerView {
 
     // Add to path button
     fn render_add_to_path_button(
-        &self,
         state: &NerveTracerState,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let has_segments = !state.current_path_segments.is_empty();
 
@@ -434,10 +415,10 @@ impl NerveTracerView {
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(
-                        |this: &mut NerveTracerView,
+                        |this: &mut Self,
                          _event: &MouseDownEvent,
                          _window: &mut Window,
-                         _cx: &mut Context<NerveTracerView>| {
+                         _cx: &mut Context<Self>| {
                             this.commit_segments();
                         },
                     ),
@@ -461,9 +442,8 @@ impl NerveTracerView {
 
     // Paths section
     fn render_paths_section(
-        &self,
         state: &NerveTracerState,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -501,7 +481,7 @@ impl NerveTracerView {
                                 .paths
                                 .iter()
                                 .enumerate()
-                                .map(|(path_idx, path)| self.render_path_item(path_idx, path, cx)),
+                                .map(|(path_idx, path)| Self::render_path_item(path_idx, path, cx)),
                         )
                     }),
             )
@@ -509,10 +489,9 @@ impl NerveTracerView {
 
     // Individual path item (tree parent)
     fn render_path_item(
-        &self,
         path_id: usize,
         path: &[Vec<(u64, u64)>],
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -533,7 +512,7 @@ impl NerveTracerView {
                         div()
                             .flex_1()
                             .font_weight(gpui::FontWeight::BOLD)
-                            .child(format!("Path {:03}", path_id + 1)),
+                            .child(format!("Path {:03}", path_id.saturating_add(1))),
                     )
                     .child(
                         div()
@@ -551,10 +530,10 @@ impl NerveTracerView {
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(
-                                    move |this: &mut NerveTracerView,
+                                    move |this: &mut Self,
                                           _event: &MouseDownEvent,
                                           _window: &mut Window,
-                                          _cx: &mut Context<NerveTracerView>| {
+                                          _cx: &mut Context<Self>| {
                                         this.delete_path(path_id);
                                     },
                                 ),
@@ -569,18 +548,17 @@ impl NerveTracerView {
                     .gap_1()
                     .pl_4()
                     .children(path.iter().enumerate().map(|(segment_idx, segment)| {
-                        self.render_path_segment_item(path_id, segment_idx, segment.len(), cx)
+                        Self::render_path_segment_item(path_id, segment_idx, segment.len(), cx)
                     })),
             )
     }
 
     // Individual segment within a path (tree child)
     fn render_path_segment_item(
-        &self,
         path_id: usize,
         segment_id: usize,
         point_count: usize,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -593,7 +571,7 @@ impl NerveTracerView {
             .rounded_md()
             .child(div().flex_1().child(format!(
                 "Segment {:03} ({} points)",
-                segment_id + 1,
+                segment_id.saturating_add(1),
                 point_count
             )))
             .child(
@@ -613,10 +591,10 @@ impl NerveTracerView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            move |this: &mut NerveTracerView,
+                            move |this: &mut Self,
                                   _event: &MouseDownEvent,
                                   _window: &mut Window,
-                                  _cx: &mut Context<NerveTracerView>| {
+                                  _cx: &mut Context<Self>| {
                                 this.delete_path_segment(path_id, segment_id);
                             },
                         ),
@@ -625,7 +603,7 @@ impl NerveTracerView {
     }
 
     // Storage buttons (Save/Load)
-    fn render_storage_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_storage_buttons(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .gap_2()
@@ -651,10 +629,10 @@ impl NerveTracerView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            |this: &mut NerveTracerView,
+                            |this: &mut Self,
                              _event: &MouseDownEvent,
                              window: &mut Window,
-                             cx: &mut Context<NerveTracerView>| {
+                             cx: &mut Context<Self>| {
                                 this.save_traces(window, cx);
                             },
                         ),
@@ -682,10 +660,10 @@ impl NerveTracerView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            |this: &mut NerveTracerView,
+                            |this: &mut Self,
                              _event: &MouseDownEvent,
                              window: &mut Window,
-                             cx: &mut Context<NerveTracerView>| {
+                             cx: &mut Context<Self>| {
                                 this.load_traces(window, cx);
                             },
                         ),
@@ -745,7 +723,7 @@ impl Render for NerveTracerView {
         };
 
         div()
-            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -757,10 +735,10 @@ impl Render for NerveTracerView {
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
-                    move |this: &mut NerveTracerView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<NerveTracerView>| {
+                          cx: &mut Context<Self>| {
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
@@ -770,12 +748,12 @@ impl Render for NerveTracerView {
             .on_action(cx.listener(Self::save_traces_action))
             .on_action(cx.listener(Self::load_traces_action))
             .child(self.render_header())
-            .child(self.render_status(&state, cx))
-            .child(self.render_image_selector(&state, cx))
-            .child(self.render_segments_section(&state, cx))
-            .child(self.render_add_to_path_button(&state, cx))
-            .child(self.render_paths_section(&state, cx))
-            .child(div().mt_auto().child(self.render_storage_buttons(cx)))
+            .child(Self::render_status(&state, cx))
+            .child(Self::render_image_selector(&state, cx))
+            .child(Self::render_segments_section(&state, cx))
+            .child(Self::render_add_to_path_button(&state, cx))
+            .child(Self::render_paths_section(&state, cx))
+            .child(div().mt_auto().child(Self::render_storage_buttons(cx)))
     }
 }
 
@@ -800,7 +778,7 @@ impl ToolFrontend for NerveTracerView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.base.connect(cx.focus_handle()) {
+        if !self.base.connect() {
             return;
         }
 

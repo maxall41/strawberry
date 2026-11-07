@@ -15,7 +15,7 @@ pub struct Watershed {
     pub state: WatershedState,
     pub base: ToolBase,
     pub cache: ToolCache<WatershedState>,
-    watershed: GpuWatershed,
+    processor: GpuWatershed,
 }
 
 #[async_trait]
@@ -39,7 +39,7 @@ impl ToolBackend for Watershed {
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = match self
-                .watershed
+                .processor
                 .apply_watershed(image, self.state.sigma, self.state.min_distance)
                 .await
             {
@@ -64,7 +64,7 @@ impl ToolBackend for Watershed {
             match message {
                 PipelineCommand::RequestState() => {
                     self.base
-                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
@@ -88,7 +88,7 @@ impl ToolBackend for Watershed {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             self.base.trigger_refresh()?;
@@ -100,7 +100,8 @@ impl ToolBackend for Watershed {
 }
 
 impl Watershed {
-    pub async fn new(
+    #[must_use]
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
@@ -113,7 +114,7 @@ impl Watershed {
             },
             base: ToolBase::new(command_sender, global_sender),
             cache: ToolCache::new(),
-            watershed: GpuWatershed::new(gpu_image_processor).await,
+            processor: GpuWatershed::new(gpu_image_processor),
         }
     }
 }

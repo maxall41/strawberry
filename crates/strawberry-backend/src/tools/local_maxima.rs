@@ -15,7 +15,7 @@ pub struct LocalMaxima {
     pub state: LocalMaximaState,
     pub base: ToolBase,
     pub cache: ToolCache<LocalMaximaState>,
-    local_maxima: GpuLocalMaxima,
+    processor: GpuLocalMaxima,
 }
 
 #[async_trait]
@@ -39,7 +39,7 @@ impl ToolBackend for LocalMaxima {
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = match self
-                .local_maxima
+                .processor
                 .apply_local_maxima(
                     image,
                     self.state.min_distance,
@@ -69,7 +69,7 @@ impl ToolBackend for LocalMaxima {
             match message {
                 PipelineCommand::RequestState() => {
                     self.base
-                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
@@ -98,7 +98,7 @@ impl ToolBackend for LocalMaxima {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             self.base.trigger_refresh()?;
@@ -110,7 +110,8 @@ impl ToolBackend for LocalMaxima {
 }
 
 impl LocalMaxima {
-    pub async fn new(
+    #[must_use]
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
@@ -119,7 +120,7 @@ impl LocalMaxima {
             state: LocalMaximaState::default(),
             base: ToolBase::new(command_sender, global_sender),
             cache: ToolCache::new(),
-            local_maxima: GpuLocalMaxima::new(gpu_image_processor).await,
+            processor: GpuLocalMaxima::new(gpu_image_processor),
         }
     }
 }

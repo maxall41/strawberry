@@ -1,129 +1,131 @@
+use num_traits::ToPrimitive;
 use strawberry_types::CountData;
 
-const EPSILON: u64 = 10;
+const EPSILON: f64 = 10.0;
 
+#[must_use]
 pub fn ramer_douglas_peucker(points: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     if points.len() <= 2 {
         return points;
     }
-
-    rdp_recursive(&points, 0, points.len() - 1)
+    rdp_recursive(&points)
 }
 
-fn rdp_recursive(points: &[(u64, u64)], start: usize, end: usize) -> Vec<(u64, u64)> {
-    if end <= start + 1 {
-        return vec![points[start], points[end]];
+fn rdp_recursive(points: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
+        return Vec::new();
+    };
+    if points.len() <= 2 {
+        return points.to_vec();
     }
-
-    let mut max_dist = 0u64;
-    let mut max_index = start;
-
-    for i in (start + 1)..end {
-        let dist = perpendicular_distance(points[i], points[start], points[end]);
+    let mut max_dist = 0.0;
+    let mut max_index = 0;
+    for (i, &point) in points
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(points.len().saturating_sub(2))
+    {
+        // If a distance is unrepresentable, retain the point instead of simplifying it away.
+        let dist = perpendicular_distance(point, first, last).map_or(f64::INFINITY, f64::floor);
         if dist > max_dist {
             max_dist = dist;
             max_index = i;
         }
     }
-
     if max_dist > EPSILON {
-        let mut left_result = rdp_recursive(points, start, max_index);
-        let right_result = rdp_recursive(points, max_index, end);
-
-        left_result.pop();
-        left_result.extend(right_result);
-        left_result
+        let mut left = rdp_recursive(points.get(..=max_index).unwrap_or_default());
+        let right = rdp_recursive(points.get(max_index..).unwrap_or_default());
+        left.pop();
+        left.extend(right);
+        left
     } else {
-        vec![points[start], points[end]]
+        vec![first, last]
     }
 }
 
-fn perpendicular_distance(point: (u64, u64), line_start: (u64, u64), line_end: (u64, u64)) -> u64 {
-    let (px, py) = (point.0 as i64, point.1 as i64);
-    let (x1, y1) = (line_start.0 as i64, line_start.1 as i64);
-    let (x2, y2) = (line_end.0 as i64, line_end.1 as i64);
-
-    let dx = x2 - x1;
-    let dy = y2 - y1;
-
-    // Handle degenerate case where line_start == line_end
-    if dx == 0 && dy == 0 {
-        let dist_x = px - x1;
-        let dist_y = py - y1;
-        return ((dist_x * dist_x + dist_y * dist_y) as f64).sqrt() as u64;
+// Subtract in the integer domain first to retain small distances near u64::MAX.
+fn delta(a: u64, b: u64) -> Option<f64> {
+    let distance = a.abs_diff(b);
+    let magnitude = distance.to_f64()?;
+    // Computation must not silently round an integer distance. An inexact
+    // conversion makes the simplifier retain the point instead.
+    if magnitude.to_u64() != Some(distance) {
+        return None;
     }
-
-    let numerator = ((x2 - x1) * (y1 - py) - (x1 - px) * (y2 - y1)).abs();
-    let denominator = ((dx * dx + dy * dy) as f64).sqrt();
-
-    (numerator as f64 / denominator) as u64
+    Some(if a < b { -magnitude } else { magnitude })
 }
 
+fn perpendicular_distance(point: (u64, u64), start: (u64, u64), end: (u64, u64)) -> Option<f64> {
+    let dx = delta(end.0, start.0)?;
+    let dy = delta(end.1, start.1)?;
+    let px = delta(point.0, start.0)?;
+    let py = delta(point.1, start.1)?;
+    if start == end {
+        return Some(px.hypot(py));
+    }
+    Some(dx.mul_add(py, -(px * dy)).abs() / dx.hypot(dy))
+}
+
+#[must_use]
 pub fn ramer_douglas_peucker_closed(mut points: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     if points.len() < 3 {
         return points;
     }
-
-    // Ensure the polygon is closed
-    if points.first() != points.last() {
-        let first_point = points[0];
-        points.push(first_point);
+    if points.first() != points.last()
+        && let Some(&first) = points.first()
+    {
+        points.push(first);
     }
-
     ramer_douglas_peucker(points)
 }
 
+#[must_use]
 pub fn find_counts_within_polygon(
-    polygon: Vec<(u64, u64)>,
+    polygon: &[(u64, u64)],
     counts: Vec<CountData>,
 ) -> Vec<CountData> {
-    if polygon.is_empty() {
+    let Some(&last) = polygon.last() else {
         return Vec::new();
-    }
-
-    // Phase 1: Compute bounding box
+    };
     let (min_x, max_x, min_y, max_y) = polygon.iter().fold(
         (u64::MAX, 0, u64::MAX, 0),
         |(min_x, max_x, min_y, max_y), &(x, y)| {
             (min_x.min(x), max_x.max(x), min_y.min(y), max_y.max(y))
         },
     );
-
-    println!("Bounding Box: ({min_x}, {min_y}) to ({max_x}, {max_y})");
-
-    // Phase 2: Filter and test
     counts
         .into_iter()
         .filter(|data| {
             let (x, y) = data.position;
-            // Bounding box test
             if x < min_x || x > max_x || y < min_y || y > max_y {
                 return true;
             }
-
-            // Ray casting test (horizontal ray to the right)
+            let mut previous = last;
             let mut inside = false;
-            let mut j = polygon.len() - 1;
-
-            for k in 0..polygon.len() {
-                let (xi, yi) = polygon[k];
-                let (xj, yj) = polygon[j];
-
+            for &current in polygon {
+                let (xi, yi) = current;
+                let (xj, yj) = previous;
                 if (yi > y) != (yj > y) {
-                    // Convert to signed integers to handle potential negative values
-                    let (x, xi, xj, y, yi, yj) = (
-                        x as i64, xi as i64, xj as i64, y as i64, yi as i64, yj as i64,
-                    );
-
-                    let intersection_x = (xj - xi) * (y - yi) / (yj - yi) + xi;
-
+                    // The ray crosses this edge, so the vertical fraction is in [0, 1].
+                    // A product of two u64 differences fits in u128, and its quotient
+                    // fits in u64. Keep integer truncation consistent with existing lassos.
+                    let offset = u128::from(xj.abs_diff(xi))
+                        .saturating_mul(u128::from(y.abs_diff(yi)))
+                        .checked_div(u128::from(yj.abs_diff(yi)))
+                        .unwrap_or_default();
+                    let offset = u64::try_from(offset).unwrap_or(u64::MAX);
+                    let intersection_x = if xj < xi {
+                        xi.saturating_sub(offset)
+                    } else {
+                        xi.saturating_add(offset)
+                    };
                     if x < intersection_x {
                         inside = !inside;
                     }
                 }
-                j = k;
+                previous = current;
             }
-
             !inside
         })
         .collect()

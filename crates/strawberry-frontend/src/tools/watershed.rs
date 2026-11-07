@@ -1,3 +1,6 @@
+use crate::gui::actions::actions;
+use num_traits::ToPrimitive;
+
 use crate::gui::theme;
 // Implements UI for watershed tool
 
@@ -5,12 +8,11 @@ use std::sync::{Arc, RwLock};
 
 use gpui::{
     App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
-    px, size,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
 use crate::gui::ToggleButton;
-use crate::gui::value_control::{ValueControl, ValueControlEvent};
+use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     PipelineCommand, PipelineObjectMessage, ToolState, WatershedMessage, WatershedState,
@@ -27,10 +29,7 @@ pub struct WatershedView {
 
 impl Focusable for WatershedView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.base
-            .focus_handle
-            .clone()
-            .expect("focus_handle should be initialized before use")
+        self.base.focus_handle.clone()
     }
 }
 
@@ -38,28 +37,25 @@ impl WatershedView {
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        cx: &App,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(WatershedState::default())),
             sigma_control: None,
             min_distance_control: None,
             base: crate::tools::base::ToolBase::new(
-                command_sender.clone(),
+                command_sender,
                 strawberry_types::BackendToolType::Watershed,
+                cx.focus_handle(),
             ),
         }
     }
 
-    fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
-    fn toggle_enabled(
-        &mut self,
-        current_value: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::ToggleActive(!current_value),
         )) {
@@ -67,7 +63,7 @@ impl WatershedView {
         }
     }
 
-    fn update_parameters(&mut self, sigma: f32, min_distance: u32) {
+    fn update_parameters(&self, sigma: f32, min_distance: u32) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::WatershedMessage(WatershedMessage::SetParameters(
                 sigma,
@@ -78,11 +74,11 @@ impl WatershedView {
         }
     }
 
-    fn adjust_sigma(&mut self, new_sigma: f32, current_min_distance: u32) {
+    fn adjust_sigma(&self, new_sigma: f32, current_min_distance: u32) {
         self.update_parameters(new_sigma, current_min_distance);
     }
 
-    fn adjust_min_distance(&mut self, current_sigma: f32, new_min_distance: u32) {
+    fn adjust_min_distance(&self, current_sigma: f32, new_min_distance: u32) {
         self.update_parameters(current_sigma, new_min_distance);
     }
 
@@ -95,26 +91,22 @@ impl WatershedView {
         let current_enabled = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
 
         self.toggle_enabled(current_enabled, window, cx);
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(
-        &self,
-        state: &WatershedState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_status(state: &WatershedState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
             is_enabled,
-            move |this: &mut WatershedView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
-                  cx: &mut Context<WatershedView>| {
+                  cx: &mut Context<Self>| {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
@@ -126,31 +118,32 @@ impl WatershedView {
     fn render_sigma_control(
         &self,
         _cx: &mut Context<Self>,
-        _window: &mut Window,
+        _window: &Window,
     ) -> impl IntoElement + use<> {
-        self.sigma_control
-            .clone()
-            .expect("sigma_control should be initialized before use")
+        self.sigma_control.clone().map_or_else(
+            || div().into_any_element(),
+            gpui::IntoElement::into_any_element,
+        )
     }
 
     // Min Distance control component
     fn render_min_distance_control(
         &self,
         _cx: &mut Context<Self>,
-        _window: &mut Window,
+        _window: &Window,
     ) -> impl IntoElement + use<> {
-        self.min_distance_control
-            .clone()
-            .expect("min_distance_control should be initialized before use")
+        self.min_distance_control.clone().map_or_else(
+            || div().into_any_element(),
+            gpui::IntoElement::into_any_element,
+        )
     }
 
     // Preset button component
     fn render_preset_button(
-        &self,
         label: String,
         sigma: f32,
         min_distance: u32,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .px_3()
@@ -164,10 +157,10 @@ impl WatershedView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(
-                    move |this: &mut WatershedView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           _window: &mut Window,
-                          _cx: &mut Context<WatershedView>| {
+                          _cx: &mut Context<Self>| {
                         this.update_parameters(sigma, min_distance);
                     },
                 ),
@@ -175,7 +168,7 @@ impl WatershedView {
     }
 
     // Presets section component
-    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -186,10 +179,25 @@ impl WatershedView {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(self.render_preset_button("Fine".to_string(), 0.5, 5, cx))
-                    .child(self.render_preset_button("Normal".to_string(), 1.0, 10, cx))
-                    .child(self.render_preset_button("Coarse".to_string(), 2.0, 20, cx))
-                    .child(self.render_preset_button("Very Coarse".to_string(), 3.0, 30, cx)),
+                    .child(Self::render_preset_button("Fine".to_string(), 0.5, 5, cx))
+                    .child(Self::render_preset_button(
+                        "Normal".to_string(),
+                        1.0,
+                        10,
+                        cx,
+                    ))
+                    .child(Self::render_preset_button(
+                        "Coarse".to_string(),
+                        2.0,
+                        20,
+                        cx,
+                    ))
+                    .child(Self::render_preset_button(
+                        "Very Coarse".to_string(),
+                        3.0,
+                        30,
+                        cx,
+                    )),
             )
     }
 
@@ -197,14 +205,14 @@ impl WatershedView {
     fn render_controls_section(
         &self,
         cx: &mut Context<Self>,
-        _window: &mut Window,
+        window: &Window,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_sigma_control(cx, _window))
-            .child(self.render_min_distance_control(cx, _window))
+            .child(self.render_sigma_control(cx, window))
+            .child(self.render_min_distance_control(cx, window))
     }
 }
 
@@ -243,7 +251,12 @@ impl FrontendMessageHandler for WatershedView {
         }
         if let Some(ref ctrl) = self.min_distance_control {
             ctrl.update(cx, |c, cx| {
-                c.value = new_state.min_distance as f32;
+                // This approximation is only used to display the integer backend state.
+                let Some(display_value) = new_state.min_distance.to_f32() else {
+                    eprintln!("Cannot display min_distance in the numeric control");
+                    return;
+                };
+                c.value = display_value;
                 cx.notify();
             });
         }
@@ -251,7 +264,7 @@ impl FrontendMessageHandler for WatershedView {
 }
 
 impl Render for WatershedView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
@@ -271,7 +284,7 @@ impl Render for WatershedView {
         };
 
         div()
-            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -283,19 +296,19 @@ impl Render for WatershedView {
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
-                    move |this: &mut WatershedView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<WatershedView>| {
+                          cx: &mut Context<Self>| {
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
-            .child(self.render_status(&state, cx))
-            .child(self.render_controls_section(cx, _window))
-            .child(self.render_presets_section(cx))
+            .child(Self::render_status(&state, cx))
+            .child(self.render_controls_section(cx, window))
+            .child(Self::render_presets_section(cx))
     }
 }
 
@@ -318,7 +331,7 @@ impl ToolFrontend for WatershedView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.base.connect(cx.focus_handle()) {
+        if !self.base.connect() {
             return;
         }
 
@@ -328,29 +341,39 @@ impl ToolFrontend for WatershedView {
         let state = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let sigma_control = cx.new(|_cx| {
+        let sigma_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.2}", state.sigma),
                 state.sigma,
-                "Sigma".to_string(),
-                0.1,
-                "sigma".to_string(),
-                0.1,
-                10.0,
+                ValueControlConfig {
+                    label: "Sigma".to_string(),
+                    step: 0.1,
+                    id: "sigma".to_string(),
+                    min: 0.1,
+                    max: 10.0,
+                },
+                cx,
             )
         });
 
-        let min_distance_control = cx.new(|_cx| {
+        let Some(display_value) = state.min_distance.to_f32() else {
+            eprintln!("Cannot display min_distance in the numeric control");
+            return;
+        };
+        let min_distance_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.0}", state.min_distance),
-                state.min_distance as f32,
-                "Min Distance".to_string(),
-                1.0,
-                "min_distance".to_string(),
-                1.0,
-                100.0,
+                display_value,
+                ValueControlConfig {
+                    label: "Min Distance".to_string(),
+                    step: 1.0,
+                    id: "min_distance".to_string(),
+                    min: 1.0,
+                    max: 100.0,
+                },
+                cx,
             )
         });
 
@@ -362,7 +385,7 @@ impl ToolFrontend for WatershedView {
                     let current_state = this
                         .state
                         .read()
-                        .expect("State lock should not be poisoned");
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let min_dist = current_state.min_distance;
                     drop(current_state);
                     this.adjust_sigma(event.value, min_dist);
@@ -374,14 +397,18 @@ impl ToolFrontend for WatershedView {
         cx.subscribe(
             &min_distance_control,
             |this, _control, event: &ValueControlEvent, _cx| {
-                if event.id == "min_distance" {
+                if event.id == "min_distance"
+                    && event.value.is_finite()
+                    && event.value >= 0.0
+                    && let Some(value) = event.value.to_u32()
+                {
                     let current_state = this
                         .state
                         .read()
-                        .expect("State lock should not be poisoned");
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let sigma = current_state.sigma;
                     drop(current_state);
-                    this.adjust_min_distance(sigma, event.value as u32);
+                    this.adjust_min_distance(sigma, value);
                 }
             },
         )

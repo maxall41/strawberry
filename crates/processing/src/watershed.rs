@@ -33,7 +33,8 @@ pub struct GpuWatershed {
 }
 
 impl GpuWatershed {
-    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    #[must_use]
+    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         let watershed_pipeline = Self::create_watershed_pipeline(&gpu);
         let (distance_init_pipeline, distance_jump_pipeline, distance_final_pipeline) =
             Self::create_distance_pipelines(&gpu);
@@ -169,6 +170,8 @@ impl GpuWatershed {
         )
     }
 
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn apply_watershed(
         &self,
         image: &RgbaImage,
@@ -195,33 +198,34 @@ impl GpuWatershed {
     ) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
 
-        let binary = self.to_binary_mask(image);
+        let binary = Self::to_binary_mask(image);
         let distance_map = self.gpu_distance_transform(&binary, width, height).await?;
         let markers = self
             .find_peaks_gpu(&distance_map, width, height, sigma, min_distance)
             .await?;
-        let labels =
-            self.watershed_transform(&distance_map, &markers, width as usize, height as usize);
+        let labels = Self::watershed_transform(
+            &distance_map,
+            &markers,
+            usize::try_from(width)?,
+            usize::try_from(height)?,
+        )?;
 
-        self.to_rgba_image(&labels, width, height)
+        Self::to_rgba_image(&labels, width, height)
     }
 
-    fn to_rgba_image(&self, labels: &[u32], width: u32, height: u32) -> Result<RgbaImage> {
+    fn to_rgba_image(labels: &[u32], width: u32, height: u32) -> Result<RgbaImage> {
+        anyhow::ensure!(
+            labels.len() == crate::pixel_count(width, height)?,
+            "Label dimensions do not match image"
+        );
         let mut result = RgbaImage::new(width, height);
-
-        for (idx, &label) in labels.iter().enumerate() {
-            let x = (idx % width as usize) as u32;
-            let y = (idx / width as usize) as u32;
-
-            let color = if label == 0 {
+        for (pixel, &label) in result.pixels_mut().zip(labels) {
+            *pixel = if label == 0 {
                 image::Rgba([0, 0, 0, 255])
             } else {
                 image::Rgba([255, 255, 255, 255])
             };
-
-            result.put_pixel(x, y, color);
         }
-
         Ok(result)
     }
 
@@ -233,12 +237,12 @@ impl GpuWatershed {
         min_distance: u32,
     ) -> Result<RgbaImage> {
         let (full_width, full_height) = image.dimensions();
-        let tile_grid = TileGrid::new(full_width, full_height, tile_config.clone());
+        let tile_grid = TileGrid::new(full_width, full_height, tile_config);
 
         let mut processed_tiles = Vec::new();
 
         for tile_info in &tile_grid.tiles {
-            let tile_image = extract_rgba_tile(image, tile_info);
+            let tile_image = extract_rgba_tile(image, tile_info)?;
             let processed_tile = self
                 .apply_watershed_single(&tile_image, sigma, min_distance)
                 .await?;
@@ -248,14 +252,15 @@ impl GpuWatershed {
         merge_rgba_tiles(&processed_tiles, full_width, full_height)
     }
 
-    fn to_binary_mask(&self, image: &RgbaImage) -> Vec<bool> {
+    fn to_binary_mask(image: &RgbaImage) -> Vec<bool> {
         image
             .pixels()
             .map(|pixel| {
                 // Pipeline images are BGRA internally.
-                let gray =
-                    (0.299 * pixel[2] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[0] as f32)
-                        / 255.0;
+                let gray = 0.114f32.mul_add(
+                    f32::from(pixel[0]),
+                    0.587f32.mul_add(f32::from(pixel[1]), 0.299 * f32::from(pixel[2])),
+                ) / 255.0;
                 gray > GRAYSCALE_THRESHOLD
             })
             .collect()
@@ -267,12 +272,9 @@ impl GpuWatershed {
         width: u32,
         height: u32,
     ) -> Result<Vec<f32>> {
-        let pixel_count = (width * height) as usize;
+        let pixel_count = crate::pixel_count(width, height)?;
 
-        let binary_u32: Vec<u32> = binary
-            .iter()
-            .map(|&b| if b { 1u32 } else { 0u32 })
-            .collect();
+        let binary_u32: Vec<u32> = binary.iter().map(|&b| u32::from(b)).collect();
 
         let buffers = self.create_distance_buffers(&binary_u32, pixel_count)?;
 
@@ -341,28 +343,28 @@ impl GpuWatershed {
 
         let seeds_a = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Seeds Buffer A"),
-            size: (pixel_count * 8) as u64,
+            size: crate::buffer_size(pixel_count, 8)?,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
 
         let seeds_b = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Seeds Buffer B"),
-            size: (pixel_count * 8) as u64,
+            size: crate::buffer_size(pixel_count, 8)?,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
 
         let distance_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Distance Buffer"),
-            size: (pixel_count * 4) as u64,
+            size: crate::buffer_size(pixel_count, 4)?,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         let staging_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Distance Staging Buffer"),
-            size: (pixel_count * 4) as u64,
+            size: crate::buffer_size(pixel_count, 4)?,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -471,7 +473,7 @@ impl GpuWatershed {
             0,
             staging_buffer,
             0,
-            (pixel_count * 4) as u64,
+            crate::buffer_size(pixel_count, 4)?,
         );
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
@@ -486,8 +488,8 @@ impl GpuWatershed {
         let map_result = receiver
             .recv_async()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {}", e))?;
-        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {e}"))?;
+        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {e:?}"))?;
 
         let data = buffer_slice.get_mapped_range()?;
         let distances: &[f32] = bytemuck::cast_slice(&data);
@@ -503,7 +505,7 @@ impl GpuWatershed {
         sigma: f32,
         min_distance: u32,
     ) -> Result<Vec<u32>> {
-        let pixel_count = (width * height) as usize;
+        let pixel_count = crate::pixel_count(width, height)?;
 
         let distance_buffer =
             self.gpu
@@ -516,14 +518,14 @@ impl GpuWatershed {
 
         let output_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Markers Buffer"),
-            size: (pixel_count * 4) as u64,
+            size: crate::buffer_size(pixel_count, 4)?,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         let staging_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Staging Buffer"),
-            size: (pixel_count * 4) as u64,
+            size: crate::buffer_size(pixel_count, 4)?,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -593,7 +595,7 @@ impl GpuWatershed {
             0,
             &staging_buffer,
             0,
-            (pixel_count * 4) as u64,
+            crate::buffer_size(pixel_count, 4)?,
         );
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
@@ -608,8 +610,8 @@ impl GpuWatershed {
         let map_result = receiver
             .recv_async()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {}", e))?;
-        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {e}"))?;
+        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {e:?}"))?;
 
         let data = buffer_slice.get_mapped_range()?;
         let markers: &[u32] = bytemuck::cast_slice(&data);
@@ -618,72 +620,72 @@ impl GpuWatershed {
     }
 
     fn watershed_transform(
-        &self,
         distance_map: &[f32],
         local_maxima_points: &[u32],
         width: usize,
         height: usize,
-    ) -> Vec<u32> {
-        let mut labels = vec![0u32; width * height];
+    ) -> Result<Vec<u32>> {
+        let count = width
+            .checked_mul(height)
+            .ok_or_else(|| anyhow::anyhow!("Image dimensions overflow"))?;
+        anyhow::ensure!(
+            distance_map.len() == count && local_maxima_points.len() == count,
+            "Watershed input dimensions do not match"
+        );
+        let mut labels = vec![0u32; count];
         let mut priority_queue = BinaryHeap::new();
         let mut age_counter = 0u32;
 
-        // Initialize queue with markers
-        for (idx, &marker_label) in local_maxima_points.iter().enumerate() {
-            if marker_label > 0 {
-                labels[idx] = marker_label;
+        for (idx, ((label, &marker), &distance)) in labels
+            .iter_mut()
+            .zip(local_maxima_points)
+            .zip(distance_map)
+            .enumerate()
+        {
+            if marker > 0 {
+                *label = marker;
                 priority_queue.push(QueueItem {
-                    value: distance_map[idx],
+                    value: distance,
                     age: age_counter,
                     index: idx,
-                    source: marker_label,
+                    source: marker,
                 });
             }
         }
 
-        // Flooding loop
-        while let Some(current_pixel) = priority_queue.pop() {
-            labels[current_pixel.index] = current_pixel.source;
-
-            let x = (current_pixel.index % width) as i32;
-            let y = (current_pixel.index / width) as i32;
-
-            let is_watershed_line =
-                Self::check_watershed_boundary(&labels, current_pixel.source, x, y, width);
-
-            if is_watershed_line {
-                labels[current_pixel.index] = 0;
+        while let Some(current) = priority_queue.pop() {
+            *labels
+                .get_mut(current.index)
+                .ok_or_else(|| anyhow::anyhow!("Invalid watershed queue index"))? = current.source;
+            let is_boundary = Self::neighbor_indices(current.index, width, height)
+                .filter_map(|i| labels.get(i))
+                .any(|&label| label != 0 && label != IN_QUEUE_MARKER && label != current.source);
+            if is_boundary {
+                *labels
+                    .get_mut(current.index)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid watershed queue index"))? = 0;
             } else {
                 Self::expand_to_neighbors(
                     &mut labels,
                     &mut priority_queue,
                     &mut age_counter,
                     distance_map,
-                    &current_pixel,
+                    &current,
                     width,
                     height,
-                );
+                )?;
             }
         }
-
-        // Cleanup any remaining IN_QUEUE markers
-        for label in labels.iter_mut() {
+        for label in &mut labels {
             if *label == IN_QUEUE_MARKER {
                 *label = 0;
             }
         }
-
-        labels
+        Ok(labels)
     }
 
-    fn check_watershed_boundary(
-        labels: &[u32],
-        current_source: u32,
-        x: i32,
-        y: i32,
-        width: usize,
-    ) -> bool {
-        const OFFSETS: [(i32, i32); 8] = [
+    fn neighbor_indices(index: usize, width: usize, height: usize) -> impl Iterator<Item = usize> {
+        const OFFSETS: [(isize, isize); 8] = [
             (-1, -1),
             (0, -1),
             (1, -1),
@@ -693,25 +695,15 @@ impl GpuWatershed {
             (0, 1),
             (1, 1),
         ];
-
-        for (dx, dy) in &OFFSETS {
-            let nx = x + dx;
-            let ny = y + dy;
-
-            if nx >= 0 && nx < width as i32 && ny >= 0 {
-                let neighbor_index = (ny as usize * width) + nx as usize;
-                if neighbor_index < labels.len() {
-                    let neighbor_label = labels[neighbor_index];
-                    if neighbor_label != 0
-                        && neighbor_label != IN_QUEUE_MARKER
-                        && neighbor_label != current_source
-                    {
-                        return true;
-                    }
-                }
+        OFFSETS.into_iter().filter_map(move |(dx, dy)| {
+            let x = index.checked_rem(width)?.checked_add_signed(dx)?;
+            let y = index.checked_div(width)?.checked_add_signed(dy)?;
+            if x < width && y < height {
+                y.checked_mul(width)?.checked_add(x)
+            } else {
+                None
             }
-        }
-        false
+        })
     }
 
     fn expand_to_neighbors(
@@ -719,42 +711,31 @@ impl GpuWatershed {
         priority_queue: &mut BinaryHeap<QueueItem>,
         age_counter: &mut u32,
         distance_map: &[f32],
-        current_pixel: &QueueItem,
+        current: &QueueItem,
         width: usize,
         height: usize,
-    ) {
-        let x = (current_pixel.index % width) as i32;
-        let y = (current_pixel.index / width) as i32;
-        const OFFSETS: [(i32, i32); 8] = [
-            (-1, -1),
-            (0, -1),
-            (1, -1),
-            (-1, 0),
-            (1, 0),
-            (-1, 1),
-            (0, 1),
-            (1, 1),
-        ];
-
-        for (dx, dy) in &OFFSETS {
-            let nx = x + dx;
-            let ny = y + dy;
-
-            if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
-                let neighbor_index = (ny as usize * width) + nx as usize;
-
-                if labels[neighbor_index] == 0 && distance_map[neighbor_index] > 0.0 {
-                    labels[neighbor_index] = IN_QUEUE_MARKER;
-                    *age_counter += 1;
-                    priority_queue.push(QueueItem {
-                        value: distance_map[neighbor_index],
-                        age: *age_counter,
-                        index: neighbor_index,
-                        source: current_pixel.source,
-                    });
-                }
+    ) -> Result<()> {
+        for index in Self::neighbor_indices(current.index, width, height) {
+            let label = labels
+                .get_mut(index)
+                .ok_or_else(|| anyhow::anyhow!("Invalid watershed neighbor"))?;
+            let &distance = distance_map
+                .get(index)
+                .ok_or_else(|| anyhow::anyhow!("Missing watershed distance"))?;
+            if *label == 0 && distance > 0.0 {
+                *label = IN_QUEUE_MARKER;
+                *age_counter = age_counter
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("Watershed queue age overflow"))?;
+                priority_queue.push(QueueItem {
+                    value: distance,
+                    age: *age_counter,
+                    index,
+                    source: current.source,
+                });
             }
         }
+        Ok(())
     }
 }
 

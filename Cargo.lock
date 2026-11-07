@@ -5240,6 +5240,7 @@ dependencies = [
  "futures",
  "image",
  "lutz",
+ "num-traits",
  "quick-xml 0.41.0",
  "serde",
  "strawberry-processing",
@@ -5274,6 +5275,7 @@ dependencies = [
  "gpui_platform",
  "image",
  "nucleo-matcher",
+ "num-traits",
  "rfd",
  "strawberry-backend",
  "strawberry-processing",
@@ -5289,6 +5291,7 @@ dependencies = [
  "bytemuck",
  "flume",
  "image",
+ "num-traits",
  "serde",
  "wgpu 30.0.1",
 ]

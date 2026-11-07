@@ -5,6 +5,7 @@ use gpui::{
     Context, InteractiveElement, IntoElement, MouseDownEvent, ParentElement, Render, Styled,
     Window, div,
 };
+use num_traits::ToPrimitive;
 use strawberry_types::FeedbackLevel;
 
 use super::theme;
@@ -18,7 +19,7 @@ pub struct FeedbackModal {
 }
 
 impl FeedbackModal {
-    pub fn new(message: String, level: FeedbackLevel) -> Self {
+    pub const fn new(message: String, level: FeedbackLevel) -> Self {
         Self {
             message,
             level,
@@ -28,23 +29,32 @@ impl FeedbackModal {
         }
     }
 
-    pub fn enable_auto_close(&self, cx: &mut Context<Self>) {
+    pub fn enable_auto_close(cx: &Context<Self>) {
         cx.spawn(async move |this, cx| {
             let total_duration = Duration::from_millis(3000);
             let update_interval = Duration::from_millis(16);
-            let total_steps = total_duration.as_millis() / update_interval.as_millis();
+            let total_steps = total_duration
+                .as_nanos()
+                .checked_div(update_interval.as_nanos())
+                .unwrap_or_default();
 
-            for step in 0..=total_steps {
-                let progress = 1.0 - (step as f32 / total_steps as f32);
+            // A zero interval or a duration shorter than one update skips the fade.
+            if let Some(total_steps_f32) = total_steps.to_f32().filter(|steps| *steps > 0.0) {
+                for step in 0..=total_steps {
+                    let Some(step_f32) = step.to_f32() else {
+                        break;
+                    };
+                    let progress = 1.0 - (step_f32 / total_steps_f32);
 
-                this.update(cx, |this, cx| {
-                    this.progress = progress;
-                    cx.notify();
-                })
-                .ok();
+                    this.update(cx, |this, cx| {
+                        this.progress = progress;
+                        cx.notify();
+                    })
+                    .ok();
 
-                if step < total_steps {
-                    cx.background_executor().timer(update_interval).await;
+                    if step < total_steps {
+                        cx.background_executor().timer(update_interval).await;
+                    }
                 }
             }
 
@@ -135,10 +145,10 @@ impl Render for FeedbackModal {
                                         .on_mouse_down(
                                             gpui::MouseButton::Left,
                                             cx.listener(
-                                                |this: &mut FeedbackModal,
+                                                |this: &mut Self,
                                                  _event: &MouseDownEvent,
                                                  _window: &mut Window,
-                                                 cx: &mut Context<FeedbackModal>| {
+                                                 cx: &mut Context<Self>| {
                                                     this.show_toast = false;
                                                     this.marked_for_deletion = true;
                                                     cx.notify();

@@ -41,7 +41,7 @@ impl ToolBackend for Compositor {
 
         if input.len() == 1 {
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             return Ok(());
@@ -79,9 +79,9 @@ impl ToolBackend for Compositor {
             println!(
                 "Real Layers Length Comparison | Frontend: {} Backend: {}",
                 frontend_state.real_layers_len, self.state.real_layers_len
-            )
+            );
         } else {
-            println!("Frontend state is empty")
+            println!("Frontend state is empty");
         }
 
         Ok(())
@@ -94,7 +94,7 @@ impl ToolBackend for Compositor {
             match message {
                 PipelineCommand::RequestState() => {
                     self.base
-                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
@@ -105,7 +105,7 @@ impl ToolBackend for Compositor {
                     PipelineObjectMessage::CompositorMessage(message) => match message {
                         CompositorMessage::ToggleVisibility(value, layer_index) => {
                             let mut mutated = self.state.enabled_layers.clone();
-                            let index = layer_index as usize;
+                            let index = usize::from(layer_index);
 
                             if index >= mutated.len() {
                                 let error_msg = format!(
@@ -121,14 +121,15 @@ impl ToolBackend for Compositor {
                                 return Err(anyhow::anyhow!(error_msg));
                             }
 
-                            mutated[index] = value;
+                            if let Some(layer) = mutated.get_mut(index) {
+                                *layer = value;
+                            }
 
                             let end_range =
                                 std::cmp::min(self.state.real_layers_len, mutated.len());
                             if mutated
                                 .get(0..end_range)
-                                .map(|slice| slice.iter().all(|&x| !x))
-                                .unwrap_or(true)
+                                .is_none_or(|slice| slice.iter().all(|&x| !x))
                             {
                                 return Ok(());
                             }
@@ -146,7 +147,7 @@ impl ToolBackend for Compositor {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             self.base.trigger_refresh()?;
@@ -158,7 +159,8 @@ impl ToolBackend for Compositor {
 }
 
 impl Compositor {
-    pub async fn new(
+    #[must_use]
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
@@ -171,7 +173,7 @@ impl Compositor {
             },
             base: ToolBase::new(command_sender, global_sender),
             cache: ToolCache::new(),
-            compositer: GpuCompositor::new(gpu_image_processor).await,
+            compositer: GpuCompositor::new(gpu_image_processor),
         }
     }
 }

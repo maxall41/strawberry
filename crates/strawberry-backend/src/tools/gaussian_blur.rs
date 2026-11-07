@@ -15,7 +15,7 @@ pub struct GaussianBlur {
     pub state: GaussianBlurState,
     pub base: ToolBase,
     pub cache: ToolCache<GaussianBlurState>,
-    gaussian_blur: GpuGaussianBlur,
+    processor: GpuGaussianBlur,
 }
 
 #[async_trait]
@@ -38,7 +38,7 @@ impl ToolBackend for GaussianBlur {
 
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self.gaussian_blur.apply_blur(image, self.state.sigma).await {
+            *image = match self.processor.apply_blur(image, self.state.sigma).await {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
@@ -60,7 +60,7 @@ impl ToolBackend for GaussianBlur {
             match message {
                 PipelineCommand::RequestState() => {
                     self.base
-                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
@@ -83,7 +83,7 @@ impl ToolBackend for GaussianBlur {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             self.base.trigger_refresh()?;
@@ -95,7 +95,8 @@ impl ToolBackend for GaussianBlur {
 }
 
 impl GaussianBlur {
-    pub async fn new(
+    #[must_use]
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
@@ -107,7 +108,7 @@ impl GaussianBlur {
             },
             base: ToolBase::new(command_sender, global_sender),
             cache: ToolCache::new(),
-            gaussian_blur: GpuGaussianBlur::new(gpu_image_processor).await,
+            processor: GpuGaussianBlur::new(gpu_image_processor),
         }
     }
 }

@@ -24,7 +24,8 @@ pub struct GpuDecomposer {
 }
 
 impl GpuDecomposer {
-    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    #[must_use]
+    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         // Compute shader for channel decomposition
         let shader = gpu
             .device
@@ -52,6 +53,8 @@ impl GpuDecomposer {
         }
     }
 
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn apply_decomposition(&self, image: &RgbaImage) -> Result<Vec<RgbaImage>> {
         let (width, height) = image.dimensions();
         let tile_config = TileConfig::from_limits(&self.gpu.device.limits());
@@ -69,20 +72,20 @@ impl GpuDecomposer {
     /// Apply decomposition to a single image (no tiling needed)
     async fn apply_decomposition_single(&self, image: &RgbaImage) -> Result<Vec<RgbaImage>> {
         let (width, height) = image.dimensions();
-        let pixel_count = (width * height) as usize;
+        let pixel_count = crate::pixel_count(width, height)?;
 
         // Create input buffer
         let input_buffer = self.gpu.create_input_buffer(image);
 
         // Create output buffers for all three channels
-        let red_output_buffer = self.gpu.create_output_buffer(pixel_count);
-        let green_output_buffer = self.gpu.create_output_buffer(pixel_count);
-        let blue_output_buffer = self.gpu.create_output_buffer(pixel_count);
+        let red_output_buffer = self.gpu.create_output_buffer(pixel_count)?;
+        let green_output_buffer = self.gpu.create_output_buffer(pixel_count)?;
+        let blue_output_buffer = self.gpu.create_output_buffer(pixel_count)?;
 
         // Create staging buffers for all three channels
-        let red_staging_buffer = self.gpu.create_staging_buffer(pixel_count);
-        let green_staging_buffer = self.gpu.create_staging_buffer(pixel_count);
-        let blue_staging_buffer = self.gpu.create_staging_buffer(pixel_count);
+        let red_staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
+        let green_staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
+        let blue_staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
 
         // Uniform buffer for dimensions
         let uniforms = DecomposerUniforms {
@@ -196,7 +199,7 @@ impl GpuDecomposer {
         tile_config: &TileConfig,
     ) -> Result<Vec<RgbaImage>> {
         let (full_width, full_height) = image.dimensions();
-        let tile_grid = TileGrid::new(full_width, full_height, tile_config.clone());
+        let tile_grid = TileGrid::new(full_width, full_height, tile_config);
 
         println!(
             "Processing {} tiles for {}x{} image with decomposition",
@@ -213,7 +216,7 @@ impl GpuDecomposer {
         for (i, tile_info) in tile_grid.tiles.iter().enumerate() {
             println!(
                 "Processing tile {}/{}: {}x{} at ({}, {})",
-                i + 1,
+                i.saturating_add(1),
                 tile_grid.tiles.len(),
                 tile_info.width,
                 tile_info.height,
@@ -222,15 +225,18 @@ impl GpuDecomposer {
             );
 
             // Extract tile from the full image
-            let tile_image = extract_rgba_tile(image, tile_info);
+            let tile_image = extract_rgba_tile(image, tile_info)?;
 
             // Process the tile
             let processed_tiles = self.apply_decomposition_single(&tile_image).await?;
 
             // Store tiles for each channel
-            red_tiles.push((tile_info.clone(), processed_tiles[0].clone()));
-            green_tiles.push((tile_info.clone(), processed_tiles[1].clone()));
-            blue_tiles.push((tile_info.clone(), processed_tiles[2].clone()));
+            let [red, green, blue]: [RgbaImage; 3] = processed_tiles
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Expected three decomposed channels"))?;
+            red_tiles.push((tile_info.clone(), red));
+            green_tiles.push((tile_info.clone(), green));
+            blue_tiles.push((tile_info.clone(), blue));
         }
 
         // Merge tiles back into full images for each channel

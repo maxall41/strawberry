@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+num-traits = "0.2"
 strawberry-types = { path = "../strawberry-types" }
 strawberry-backend = { path = "../strawberry-backend" }
 strawberry-processing = { path = "../processing" }
@@ -17,3 +18,7 @@ image = { git = "https://github.com/maxall41/image.git", branch = "single-channe
 tokio = { version = "1.53", features = ["full"] }
 flume = "0.12"
 nucleo-matcher = "0.3.1"
+
+
+[lints]
+workspace = true

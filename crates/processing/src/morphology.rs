@@ -10,7 +10,7 @@ use super::{
     tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MorphologyOperation {
     #[default]
     Dilation,
@@ -20,20 +20,17 @@ pub enum MorphologyOperation {
 }
 
 impl MorphologyOperation {
-    fn to_u32(self) -> u32 {
+    const fn to_u32(self) -> u32 {
         match self {
-            MorphologyOperation::Dilation => 0,
-            MorphologyOperation::Erosion => 1,
-            MorphologyOperation::Opening => 2,
-            MorphologyOperation::Closing => 3,
+            Self::Dilation => 0,
+            Self::Erosion => 1,
+            Self::Opening => 2,
+            Self::Closing => 3,
         }
     }
 
-    fn is_two_pass(self) -> bool {
-        matches!(
-            self,
-            MorphologyOperation::Opening | MorphologyOperation::Closing
-        )
+    const fn is_two_pass(self) -> bool {
+        matches!(self, Self::Opening | Self::Closing)
     }
 }
 
@@ -53,7 +50,8 @@ pub struct GpuMorphology {
 }
 
 impl GpuMorphology {
-    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    #[must_use]
+    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         // Compute shader for morphological operations
         let shader = gpu
             .device
@@ -93,6 +91,8 @@ impl GpuMorphology {
         }
     }
 
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn apply_morphology(
         &self,
         image: &RgbaImage,
@@ -114,6 +114,40 @@ impl GpuMorphology {
         }
     }
 
+    fn create_bind_group(
+        &self,
+        pipeline: &wgpu::ComputePipeline,
+        uniforms: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        input: &wgpu::Buffer,
+        temp: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        self.gpu
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: output.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: input.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: temp.as_entire_binding(),
+                    },
+                ],
+                label: Some("Morphology Bind Group"),
+            })
+    }
+
     /// Apply morphological operation to a single image (no tiling needed)
     async fn apply_morphology_single(
         &self,
@@ -123,23 +157,23 @@ impl GpuMorphology {
     ) -> Result<RgbaImage> {
         // Ensure element_size is odd for symmetric structuring element
         let element_size = if element_size.is_multiple_of(2) {
-            element_size + 1
+            element_size | 1
         } else {
             element_size
         };
 
         let (width, height) = image.dimensions();
-        let pixel_count = (width * height) as usize;
+        let pixel_count = crate::pixel_count(width, height)?;
 
         // Create buffers using helper methods
         let input_buffer = self.gpu.create_input_buffer(image);
-        let output_buffer = self.gpu.create_output_buffer(pixel_count);
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count);
+        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
 
         // Create temp buffer for two-pass operations
         let temp_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Temp Buffer"),
-            size: (pixel_count * 4) as u64,
+            size: crate::buffer_size(pixel_count, 4)?,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -154,37 +188,17 @@ impl GpuMorphology {
 
         let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
 
-        // Create bind group for first pass
-        let bind_group_layout = self.compute_pipeline.get_bind_group_layout(0);
-        let first_pass_bind_group = self
-            .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: if operation.is_two_pass() {
-                            temp_buffer.as_entire_binding() // First pass writes to temp
-                        } else {
-                            output_buffer.as_entire_binding() // Single pass writes to output
-                        },
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: input_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: temp_buffer.as_entire_binding(),
-                    },
-                ],
-                label: Some("Morphology First Pass Bind Group"),
-            });
+        let first_pass_bind_group = self.create_bind_group(
+            &self.compute_pipeline,
+            &uniform_buffer,
+            if operation.is_two_pass() {
+                &temp_buffer
+            } else {
+                &output_buffer
+            },
+            &input_buffer,
+            &temp_buffer,
+        );
 
         // Dispatch first pass
         let mut encoder = self
@@ -205,33 +219,13 @@ impl GpuMorphology {
 
         // If this is a two-pass operation, dispatch the second pass
         if operation.is_two_pass() {
-            // Create bind group for second pass
-            let second_pass_bind_group_layout = self.second_pass_pipeline.get_bind_group_layout(0);
-            let second_pass_bind_group =
-                self.gpu
-                    .device
-                    .create_bind_group(&wgpu::BindGroupDescriptor {
-                        layout: &second_pass_bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: uniform_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: output_buffer.as_entire_binding(), // Second pass writes to output
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: input_buffer.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 3,
-                                resource: temp_buffer.as_entire_binding(), // Second pass reads from temp
-                            },
-                        ],
-                        label: Some("Morphology Second Pass Bind Group"),
-                    });
+            let second_pass_bind_group = self.create_bind_group(
+                &self.second_pass_pipeline,
+                &uniform_buffer,
+                &output_buffer,
+                &input_buffer,
+                &temp_buffer,
+            );
 
             self.gpu.dispatch_compute_with_encoder(
                 &mut encoder,
@@ -263,7 +257,7 @@ impl GpuMorphology {
         tile_config: &TileConfig,
     ) -> Result<RgbaImage> {
         let (full_width, full_height) = image.dimensions();
-        let tile_grid = TileGrid::new(full_width, full_height, tile_config.clone());
+        let tile_grid = TileGrid::new(full_width, full_height, tile_config);
 
         println!(
             "Processing {} tiles for {}x{} image with morphology {:?}",
@@ -278,7 +272,7 @@ impl GpuMorphology {
         for (i, tile_info) in tile_grid.tiles.iter().enumerate() {
             println!(
                 "Processing tile {}/{}: {}x{} at ({}, {})",
-                i + 1,
+                i.saturating_add(1),
                 tile_grid.tiles.len(),
                 tile_info.width,
                 tile_info.height,
@@ -287,7 +281,7 @@ impl GpuMorphology {
             );
 
             // Extract tile from the full image
-            let tile_image = extract_rgba_tile(image, tile_info);
+            let tile_image = extract_rgba_tile(image, tile_info)?;
 
             // Process the tile
             let processed_tile = self
@@ -302,21 +296,29 @@ impl GpuMorphology {
     }
 
     // Convenience methods for specific operations
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn dilate(&self, image: &RgbaImage, element_size: u32) -> Result<RgbaImage> {
         self.apply_morphology(image, MorphologyOperation::Dilation, element_size)
             .await
     }
 
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn erode(&self, image: &RgbaImage, element_size: u32) -> Result<RgbaImage> {
         self.apply_morphology(image, MorphologyOperation::Erosion, element_size)
             .await
     }
 
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn opening(&self, image: &RgbaImage, element_size: u32) -> Result<RgbaImage> {
         self.apply_morphology(image, MorphologyOperation::Opening, element_size)
             .await
     }
 
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn closing(&self, image: &RgbaImage, element_size: u32) -> Result<RgbaImage> {
         self.apply_morphology(image, MorphologyOperation::Closing, element_size)
             .await

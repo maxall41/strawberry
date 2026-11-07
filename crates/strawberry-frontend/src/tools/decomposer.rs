@@ -1,3 +1,4 @@
+use crate::gui::actions::actions;
 use crate::gui::theme;
 // Implements UI for Decomposer tool
 
@@ -5,7 +6,7 @@ use std::sync::{Arc, RwLock};
 
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
 use crate::gui::ToggleButton;
@@ -23,10 +24,7 @@ pub struct DecomposerView {
 
 impl Focusable for DecomposerView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.base
-            .focus_handle
-            .clone()
-            .expect("focus_handle should be initialized before use")
+        self.base.focus_handle.clone()
     }
 }
 
@@ -34,43 +32,44 @@ impl DecomposerView {
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        cx: &App,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(DecomposerState::default())),
             base: crate::tools::base::ToolBase::new(
-                command_sender.clone(),
+                command_sender,
                 strawberry_types::BackendToolType::Decomposer,
+                cx.focus_handle(),
             ),
         }
     }
 
-    fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
     fn toggle_layer(
-        &mut self,
+        &self,
         current_value: bool,
         layer_index: usize,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
+        let Ok(layer_index) = u16::try_from(layer_index) else {
+            eprintln!("Layer index exceeds the backend command range");
+            return;
+        };
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::DecomposerMessage(DecomposerMessage::ToggleVisibility(
                 !current_value,
-                layer_index as u16,
+                layer_index,
             )),
         )) {
             eprintln!("Failed to send toggle layer command: {e}");
         }
     }
 
-    fn toggle_enabled(
-        &mut self,
-        current_value: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn toggle_enabled(&self, current_value: bool, _window: &mut Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::ToggleActive(!current_value),
         )) {
@@ -87,14 +86,14 @@ impl DecomposerView {
         let current_enabled = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
 
         self.toggle_enabled(current_enabled, window, cx);
     }
 
     fn toggle_layer_by_index(
-        &mut self,
+        &self,
         layer_index: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -102,9 +101,8 @@ impl DecomposerView {
         let state = self
             .state
             .read()
-            .expect("State lock should not be poisoned");
-        if layer_index < state.enabled_layers.len() {
-            let current_value = state.enabled_layers[layer_index];
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(&current_value) = state.enabled_layers.get(layer_index) {
             drop(state);
             self.toggle_layer(current_value, layer_index, window, cx);
         }
@@ -192,19 +190,15 @@ impl DecomposerView {
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(
-        &self,
-        state: &DecomposerState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_status(state: &DecomposerState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
             is_enabled,
-            move |this: &mut DecomposerView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
-                  cx: &mut Context<DecomposerView>| {
+                  cx: &mut Context<Self>| {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
@@ -214,32 +208,30 @@ impl DecomposerView {
 
     // Individual layer item component
     fn render_layer_item(
-        &self,
         index: usize,
         is_enabled: bool,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         ToggleButton::new(
-            format!("Layer {}", index + 1),
+            format!("Layer {}", index.saturating_add(1)),
             is_enabled,
-            move |this: &mut DecomposerView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
-                  cx: &mut Context<DecomposerView>| {
+                  cx: &mut Context<Self>| {
                 this.toggle_layer(is_enabled, index, window, cx);
             },
         )
         .with_text("On".to_string(), "Off".to_string())
-        .with_keyboard_shortcut(&format!("⌘{}", index + 1))
+        .with_keyboard_shortcut(&format!("⌘{}", index.saturating_add(1)))
         .with_no_margin()
         .render(cx)
     }
 
     // Layers section component
     fn render_layers_section(
-        &self,
         state: &DecomposerState,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -252,7 +244,7 @@ impl DecomposerView {
                         .enabled_layers
                         .iter()
                         .enumerate()
-                        .map(|(index, &is_enabled)| self.render_layer_item(index, is_enabled, cx)),
+                        .map(|(index, &is_enabled)| Self::render_layer_item(index, is_enabled, cx)),
                 ),
             )
     }
@@ -315,7 +307,7 @@ impl Render for DecomposerView {
         };
 
         div()
-            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -327,10 +319,10 @@ impl Render for DecomposerView {
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
-                    move |this: &mut DecomposerView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<DecomposerView>| {
+                          cx: &mut Context<Self>| {
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
@@ -346,8 +338,8 @@ impl Render for DecomposerView {
             .on_action(cx.listener(Self::toggle_layer_8_action))
             .on_action(cx.listener(Self::toggle_layer_9_action))
             .child(self.render_header())
-            .child(self.render_status(&state, cx))
-            .child(self.render_layers_section(&state, cx))
+            .child(Self::render_status(&state, cx))
+            .child(Self::render_layers_section(&state, cx))
     }
 }
 
@@ -372,7 +364,7 @@ impl ToolFrontend for DecomposerView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.base.connect(cx.focus_handle()) {
+        if !self.base.connect() {
             return;
         }
 

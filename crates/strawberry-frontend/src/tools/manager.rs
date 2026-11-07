@@ -113,10 +113,7 @@ pub struct ManagerView {
 
 impl Focusable for ManagerView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.base
-            .focus_handle
-            .clone()
-            .expect("focus_handle should be initialized before use")
+        self.base.focus_handle.clone()
     }
 }
 
@@ -124,19 +121,21 @@ impl ManagerView {
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        cx: &App,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(ManagerState::default())),
             drag_row: None,
             drop_slot: None,
             base: crate::tools::base::ToolBase::new(
-                command_sender.clone(),
+                command_sender,
                 strawberry_types::BackendToolType::Manager,
+                cx.focus_handle(),
             ),
         }
     }
 
-    fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
@@ -145,7 +144,7 @@ impl ManagerView {
         row: usize,
         row_count: usize,
         tool: &ToolProxy,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let name = SharedString::from(tool.name.clone());
         let order_label = SharedString::from(format!("#{row}"));
@@ -187,7 +186,7 @@ impl ManagerView {
                                 this.drop_slot = Some(dragged.row);
                                 cx.notify();
                             });
-                            let available = window.viewport_size().width - px(32.);
+                            let available = px(f32::from(window.viewport_size().width) - 32.);
                             let tool = dragged.clone();
                             cx.new(move |_| ToolDragPreview {
                                 tool,
@@ -200,10 +199,10 @@ impl ManagerView {
                         },
                     )
                     .on_drag_move(cx.listener(
-                        move |this: &mut ManagerView,
+                        move |this: &mut Self,
                               event: &DragMoveEvent<DraggedTool>,
                               _window: &mut Window,
-                              cx: &mut Context<ManagerView>| {
+                              cx: &mut Context<Self>| {
                             this.track_drag(row, row_count, event.bounds, event.event.position, cx);
                         },
                     )),
@@ -219,8 +218,9 @@ impl ManagerView {
         cx: &mut Context<Self>,
     ) {
         let half_slot = px(SLOT_HEIGHT / 2.0);
-        let below_top = row == 0 || pointer.y >= bounds.top() - half_slot;
-        let above_bottom = row + 1 == row_count || pointer.y < bounds.bottom() + half_slot;
+        let below_top = row == 0 || pointer.y >= px(f32::from(bounds.top()) - f32::from(half_slot));
+        let above_bottom = row.saturating_add(1) == row_count
+            || pointer.y < px(f32::from(bounds.bottom()) + f32::from(half_slot));
         if !(below_top && above_bottom) {
             return;
         }
@@ -228,7 +228,7 @@ impl ManagerView {
         let slot = if pointer.y < bounds.center().y {
             row
         } else {
-            row + 1
+            row.saturating_add(1)
         };
         if self.drop_slot != Some(slot) {
             self.drop_slot = Some(slot);
@@ -245,7 +245,7 @@ impl ManagerView {
             return;
         };
         // Both slots bordering the dragged row leave the order unchanged.
-        if slot == from || slot == from + 1 {
+        if slot == from || slot == from.saturating_add(1) {
             return;
         }
 
@@ -264,11 +264,16 @@ impl ManagerView {
             return;
         }
 
-        let start_index = sorted[from].position;
-        let new_index = if slot < from {
-            sorted[slot].position
+        let Some(start_index) = sorted.get(from).map(|tool| tool.position) else {
+            return;
+        };
+        let target = if slot < from {
+            slot
         } else {
-            sorted[slot - 1].position
+            slot.saturating_sub(1)
+        };
+        let Some(new_index) = sorted.get(target).map(|tool| tool.position) else {
+            return;
         };
 
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
@@ -282,11 +287,7 @@ impl ManagerView {
     }
 
     // Tools list component
-    fn render_tools(
-        &self,
-        tools: &[ToolProxy],
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_tools(&self, tools: &[ToolProxy], cx: &Context<Self>) -> impl IntoElement + use<> {
         let row_count = tools.len();
         let rows: Vec<_> = tools
             .iter()
@@ -343,12 +344,12 @@ impl ManagerView {
             )
     }
 
-    fn save_pipeline(&self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn save_pipeline(&self, window: &Window, cx: &Context<Self>) {
         let Some(current_tool_index) = self.base.get_current_tool_index() else {
             return;
         };
 
-        cx.spawn_in(_window, async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let file = FileDialog::new()
                 .add_filter("toml", &["toml"])
                 .set_directory("~/")
@@ -356,7 +357,9 @@ impl ManagerView {
 
             if let Some(file) = file
                 && let Err(e) = this.update(cx, |this, _cx| {
-                    if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
+                    if let Some(sender) =
+                        this.base.send_channels.get(usize::from(current_tool_index))
+                    {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::ManagerMessage(ManagerMessage::SavePipeline(
                                 file,
@@ -375,12 +378,12 @@ impl ManagerView {
         .detach();
     }
 
-    fn load_pipeline(&self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn load_pipeline(&self, window: &Window, cx: &Context<Self>) {
         let Some(current_tool_index) = self.base.get_current_tool_index() else {
             return;
         };
 
-        cx.spawn_in(_window, async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let file = FileDialog::new()
                 .add_filter("toml", &["toml"])
                 .set_directory("~/")
@@ -388,7 +391,9 @@ impl ManagerView {
 
             if let Some(file) = file
                 && let Err(e) = this.update(cx, |this, _cx| {
-                    if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
+                    if let Some(sender) =
+                        this.base.send_channels.get(usize::from(current_tool_index))
+                    {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::ManagerMessage(ManagerMessage::LoadPipeline(
                                 file,
@@ -407,7 +412,7 @@ impl ManagerView {
         .detach();
     }
 
-    fn render_storage_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_storage_buttons(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .gap_2()
@@ -424,11 +429,11 @@ impl ManagerView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            |_this: &mut ManagerView,
+                            |this: &mut Self,
                              _event: &MouseDownEvent,
-                             _window: &mut Window,
-                             _cx: &mut Context<ManagerView>| {
-                                _this.save_pipeline(_window, _cx);
+                             window: &mut Window,
+                             cx: &mut Context<Self>| {
+                                this.save_pipeline(window, cx);
                             },
                         ),
                     ),
@@ -446,11 +451,11 @@ impl ManagerView {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
-                            |_this: &mut ManagerView,
+                            |this: &mut Self,
                              _event: &MouseDownEvent,
-                             _window: &mut Window,
-                             _cx: &mut Context<ManagerView>| {
-                                _this.load_pipeline(_window, _cx);
+                             window: &mut Window,
+                             cx: &mut Context<Self>| {
+                                this.load_pipeline(window, cx);
                             },
                         ),
                     ),
@@ -511,7 +516,7 @@ impl Render for ManagerView {
         };
 
         div()
-            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -523,19 +528,19 @@ impl Render for ManagerView {
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
-                    move |this: &mut ManagerView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<ManagerView>| {
+                          cx: &mut Context<Self>| {
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })
             .on_drop(cx.listener(
-                |this: &mut ManagerView,
+                |this: &mut Self,
                  _dragged: &DraggedTool,
                  _window: &mut Window,
-                 cx: &mut Context<ManagerView>| {
+                 cx: &mut Context<Self>| {
                     this.commit_drop(cx);
                 },
             ))
@@ -545,7 +550,7 @@ impl Render for ManagerView {
                 div()
                     .flex()
                     .justify_between()
-                    .child(self.render_storage_buttons(cx)),
+                    .child(Self::render_storage_buttons(cx)),
             )
     }
 }
@@ -571,7 +576,7 @@ impl ToolFrontend for ManagerView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.base.connect(cx.focus_handle()) {
+        if !self.base.connect() {
             return;
         }
         self.process_messages(window, cx);

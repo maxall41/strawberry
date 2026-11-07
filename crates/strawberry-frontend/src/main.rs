@@ -1,6 +1,8 @@
 // wgpu auto-trait checks exceed the default compiler recursion depth.
 #![recursion_limit = "256"]
 
+use num_traits::ToPrimitive;
+
 use anyhow::Result;
 use commands::{
     OpenFile, PalettePaste, PalleteCommand, Quit, SaveImage, ToggleCommandPalette, ZoomIn, ZoomOut,
@@ -47,7 +49,7 @@ struct PipelineActivity {
     label: String,
     stage: usize,
     total: usize,
-    /// Flips once the run outlasts ACTIVITY_SHOW_DELAY.
+    /// Flips once the run outlasts `ACTIVITY_SHOW_DELAY`.
     shown: bool,
     /// The run ended but the indicator is lingering; a new run's progress
     /// message clears this and takes the indicator over seamlessly.
@@ -58,7 +60,7 @@ impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
         fs::read(self.base.join(path))
             .map(|data| Some(std::borrow::Cow::Owned(data)))
-            .map_err(|e| e.into())
+            .map_err(std::convert::Into::into)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
@@ -73,7 +75,7 @@ impl AssetSource for Assets {
                     })
                     .collect()
             })
-            .map_err(|e| e.into())
+            .map_err(std::convert::Into::into)
     }
 }
 
@@ -105,7 +107,7 @@ struct PrimaryViewer {
 }
 
 impl PrimaryViewer {
-    pub fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn process_messages(&self, window: &Window, cx: &Context<Self>) {
         let mut receiver = self.command_receiver.resubscribe();
         let mut output_frames = self.output_frame_receiver.clone();
 
@@ -131,20 +133,19 @@ impl PrimaryViewer {
                     match receiver.try_recv() {
                         Ok(PipelineCommand::FrontendMessage(msg)) => match msg {
                             FrontendMessage::UserFeedback(text, level) => {
-                                toasts.push((text, level))
+                                toasts.push((text, level));
                             }
                             FrontendMessage::ReturnOverlays(overlays) => {
-                                latest_overlays = Some(overlays)
+                                latest_overlays = Some(overlays);
                             }
                             FrontendMessage::SnapToPosition(x, y) => latest_snap = Some((x, y)),
                             FrontendMessage::PipelineProgress(progress) => {
-                                activity_events.push(Some(progress))
+                                activity_events.push(Some(progress));
                             }
                             FrontendMessage::PipelineFinished => activity_events.push(None),
                             _ => {}
                         },
-                        Ok(_) => {}
-                        Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                        Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
                         Err(broadcast::error::TryRecvError::Empty) => break,
                         Err(broadcast::error::TryRecvError::Closed) => {
                             closed = true;
@@ -178,7 +179,7 @@ impl PrimaryViewer {
                     }
                     for event in activity_events {
                         match event {
-                            Some(progress) => this.pipeline_progress(progress, cx),
+                            Some(progress) => this.pipeline_progress(&progress, cx),
                             None => this.pipeline_finished(cx),
                         }
                     }
@@ -208,18 +209,18 @@ impl PrimaryViewer {
         let img_data = Arc::new(RenderImage::new(vec![Frame::new(Arc::unwrap_or_clone(
             image,
         ))]));
-        let new_width = img_data.size(0).width.0 as u32;
-        let new_height = img_data.size(0).height.0 as u32;
+        let new_width = u32::try_from(img_data.size(0).width.0).unwrap_or_default();
+        let new_height = u32::try_from(img_data.size(0).height.0).unwrap_or_default();
 
         // Center the viewport on the new image unless its dimensions match the
         // current one (then it's just a reprocessed frame; keep the camera put).
         if (new_width != self.original_width || new_height != self.original_height)
             && let Some(viewport) = self.last_viewport_size
         {
-            self.pan_x = (viewport.width.to_f64() as f32 / 2.0)
-                - ((new_width as f32 / 2.0) * self.zoom_level);
-            self.pan_y = (viewport.height.to_f64() as f32 / 2.0)
-                - ((new_height as f32 / 2.0) * self.zoom_level);
+            self.pan_x = (f32::from(gpui::Pixels::from(new_width)) / 2.0)
+                .mul_add(-self.zoom_level, f32::from(viewport.width) / 2.0);
+            self.pan_y = (f32::from(gpui::Pixels::from(new_height)) / 2.0)
+                .mul_add(-self.zoom_level, f32::from(viewport.height) / 2.0);
         }
 
         self.original_width = new_width;
@@ -242,8 +243,8 @@ impl PrimaryViewer {
 
     fn pipeline_progress(
         &mut self,
-        progress: strawberry_types::PipelineProgress,
-        cx: &mut Context<Self>,
+        progress: &strawberry_types::PipelineProgress,
+        cx: &Context<Self>,
     ) {
         let label = humanize_tool_name(&progress.name);
         if let Some(activity) = &mut self.activity {
@@ -261,7 +262,7 @@ impl PrimaryViewer {
             shown: false,
             finishing: false,
         });
-        self.activity_epoch += 1;
+        self.activity_epoch = self.activity_epoch.wrapping_add(1);
         let epoch = self.activity_epoch;
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(ACTIVITY_SHOW_DELAY).await;
@@ -280,13 +281,13 @@ impl PrimaryViewer {
         .detach();
     }
 
-    fn pipeline_finished(&mut self, cx: &mut Context<Self>) {
+    fn pipeline_finished(&mut self, cx: &Context<Self>) {
         let Some(activity) = &mut self.activity else {
             return;
         };
         if !activity.shown {
             self.activity = None;
-            self.activity_epoch += 1;
+            self.activity_epoch = self.activity_epoch.wrapping_add(1);
             return;
         }
 
@@ -298,7 +299,7 @@ impl PrimaryViewer {
                 let still_finishing = this.activity.as_ref().is_some_and(|a| a.finishing);
                 if this.activity_epoch == epoch && still_finishing {
                     this.activity = None;
-                    this.activity_epoch += 1;
+                    this.activity_epoch = this.activity_epoch.wrapping_add(1);
                     set_pipeline_busy(cx, false);
                     cx.notify();
                 }
@@ -309,10 +310,10 @@ impl PrimaryViewer {
     }
 
     fn add_toast(&mut self, text: String, level: FeedbackLevel, cx: &mut Context<Self>) {
-        println!("Toast added {}", text);
+        println!("Toast added {text}");
         let modal = cx.new(|cx| {
             let modal = FeedbackModal::new(text, level);
-            modal.enable_auto_close(cx);
+            FeedbackModal::enable_auto_close(cx);
             modal
         });
         self.toasts
@@ -321,11 +322,11 @@ impl PrimaryViewer {
         cx.notify();
     }
 
-    fn handle_open_file(&mut self, _: &OpenFile, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         let sender_p = self.command_sender.clone();
         let image_dir = self.image_directory.clone();
 
-        cx.spawn_in(_window, async move |_, _| {
+        cx.spawn_in(window, async move |_, _| {
             let files = FileDialog::new()
                 .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
                 .set_directory("~/")
@@ -347,10 +348,10 @@ impl PrimaryViewer {
         .detach();
     }
 
-    fn handle_save_image(&mut self, _: &SaveImage, _window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_save_image(&mut self, _: &SaveImage, window: &mut Window, cx: &mut Context<Self>) {
         let sender_p = self.command_sender.clone();
 
-        cx.spawn_in(_window, async move |_, _| {
+        cx.spawn_in(window, async move |_, _| {
             let output_file = FileDialog::new()
                 .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
                 .set_directory("~/")
@@ -365,23 +366,26 @@ impl PrimaryViewer {
         .detach();
     }
 
-    fn zoom_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn zoom_in(&mut self, window: &Window, cx: &mut Context<Self>) {
         let old_zoom = self.zoom_level;
         self.zoom_level *= 1.25;
         self.adjust_pan_for_center_zoom(window, old_zoom, self.zoom_level);
         cx.notify();
     }
 
-    fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn zoom_out(&mut self, window: &Window, cx: &mut Context<Self>) {
         let old_zoom = self.zoom_level;
         self.zoom_level /= 1.25;
         self.adjust_pan_for_center_zoom(window, old_zoom, self.zoom_level);
         cx.notify();
     }
 
-    fn adjust_pan_for_center_zoom(&mut self, window: &mut Window, old_zoom: f32, new_zoom: f32) {
+    fn adjust_pan_for_center_zoom(&mut self, window: &Window, old_zoom: f32, new_zoom: f32) {
         let viewport = window.viewport_size();
-        let center = Point::new(viewport.width / 2.0, viewport.height / 2.0);
+        let center = Point::new(
+            px(f32::from(viewport.width) / 2.0),
+            px(f32::from(viewport.height) / 2.0),
+        );
         self.adjust_pan_around_point(center, old_zoom, new_zoom);
     }
 
@@ -390,12 +394,12 @@ impl PrimaryViewer {
         let center_y = center.y;
 
         // Find the point in image coordinates that's currently at center
-        let image_center_x = (center_x.to_f64() as f32 - self.pan_x) / old_zoom;
-        let image_center_y = (center_y.to_f64() as f32 - self.pan_y) / old_zoom;
+        let image_center_x = (f32::from(center_x) - self.pan_x) / old_zoom;
+        let image_center_y = (f32::from(center_y) - self.pan_y) / old_zoom;
 
         // Adjust pan so this same point remains at center with new zoom
-        self.pan_x = center_x.to_f64() as f32 - (image_center_x * new_zoom);
-        self.pan_y = center_y.to_f64() as f32 - (image_center_y * new_zoom);
+        self.pan_x = image_center_x.mul_add(-new_zoom, f32::from(center_x));
+        self.pan_y = image_center_y.mul_add(-new_zoom, f32::from(center_y));
     }
 
     fn on_scroll_wheel(
@@ -405,7 +409,7 @@ impl PrimaryViewer {
         cx: &mut Context<Self>,
     ) {
         let delta_y = match event.delta {
-            gpui::ScrollDelta::Pixels(point) => point.y.to_f64() as f32,
+            gpui::ScrollDelta::Pixels(point) => f32::from(point.y),
             gpui::ScrollDelta::Lines(point) => point.y * 40.0,
         };
 
@@ -449,16 +453,16 @@ impl PrimaryViewer {
             dy -= 1.0;
         }
 
-        let length = (dx * dx + dy * dy).sqrt();
+        let length = dx.hypot(dy);
         if length > 0.0 {
             // Normalize such that diagonal movement is not faster
-            self.pan_x += dx / length * MOVEMENT_SPEED * dt;
-            self.pan_y += dy / length * MOVEMENT_SPEED * dt;
+            self.pan_x = (dx / length * MOVEMENT_SPEED).mul_add(dt, self.pan_x);
+            self.pan_y = (dy / length * MOVEMENT_SPEED).mul_add(dt, self.pan_y);
             cx.notify();
         }
     }
 
-    fn start_pan_loop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_pan_loop(&mut self, window: &Window, cx: &Context<Self>) {
         if self.pan_loop_running {
             return;
         }
@@ -548,34 +552,37 @@ impl PrimaryViewer {
 
     // Helper method to convert screen coordinates to image coordinates
     fn screen_to_image_coords(&self, screen_x: f32, screen_y: f32) -> Option<(u64, u64)> {
-        match *self
+        let coords = (*self
             .img_coords
             .read()
-            .expect("Image coordinates lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner))?;
+        // Preserve integer image dimensions exactly in f64 during hit testing.
+        let relative_x =
+            (f64::from(screen_x) - f64::from(coords.origin.x)) / f64::from(coords.size.width);
+        let relative_y =
+            (f64::from(screen_y) - f64::from(coords.origin.y)) / f64::from(coords.size.height);
+        if self.original_width == 0
+            || self.original_height == 0
+            || !(0.0..1.0).contains(&relative_x)
+            || !(0.0..1.0).contains(&relative_y)
         {
-            Some(coords) => {
-                let relative_x = (screen_x - coords.origin.x.to_f64() as f32)
-                    / coords.size.width.to_f64() as f32;
-                let relative_y = (screen_y - coords.origin.y.to_f64() as f32)
-                    / coords.size.height.to_f64() as f32;
-
-                if (0.0..=1.0).contains(&relative_x) && (0.0..=1.0).contains(&relative_y) {
-                    let image_pixel_x = (relative_x * self.original_width as f32) as u64;
-                    let image_pixel_y = (relative_y * self.original_height as f32) as u64;
-                    Some((image_pixel_x, image_pixel_y))
-                } else {
-                    None
-                }
-            }
-            _ => None,
+            return None;
         }
+        let x = (relative_x * f64::from(self.original_width))
+            .floor()
+            .to_u64()?;
+        let y = (relative_y * f64::from(self.original_height))
+            .floor()
+            .to_u64()?;
+        (x < u64::from(self.original_width) && y < u64::from(self.original_height))
+            .then_some((x, y))
     }
 
     // Helper to convert image coords to screen coords
-    fn image_to_screen_coords(&self, img_x: f32, img_y: f32) -> (f32, f32) {
+    const fn image_to_screen_coords(&self, img_x: f32, img_y: f32) -> (f32, f32) {
         (
-            img_x * self.zoom_level + self.pan_x,
-            img_y * self.zoom_level + self.pan_y,
+            img_x.mul_add(self.zoom_level, self.pan_x),
+            img_y.mul_add(self.zoom_level, self.pan_y),
         )
     }
 
@@ -592,10 +599,10 @@ impl PrimaryViewer {
                 let (screen_x, screen_y) = self.image_to_screen_coords(*x, *y);
                 let screen_radius = radius * self.zoom_level;
                 let gpui_color =
-                    rgb((color[0] as u32) << 16 | (color[1] as u32) << 8 | color[2] as u32);
+                    rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
 
                 match style {
-                    CircleStyle::Border { width } => {
+                    CircleStyle::Border { width } | CircleStyle::Selected { width } => {
                         let screen_width = width * self.zoom_level;
                         div()
                             .absolute()
@@ -615,18 +622,6 @@ impl PrimaryViewer {
                         .h(px(screen_radius * 2.0))
                         .rounded_full()
                         .bg(gpui_color),
-                    CircleStyle::Selected { width } => {
-                        let screen_width = width * self.zoom_level;
-                        div()
-                            .absolute()
-                            .left(px(screen_x - screen_radius))
-                            .top(px(screen_y - screen_radius))
-                            .w(px(screen_radius * 2.0))
-                            .h(px(screen_radius * 2.0))
-                            .rounded_full()
-                            .border(px(screen_width))
-                            .border_color(gpui_color)
-                    }
                 }
             }
             OverlayElement::Point {
@@ -638,7 +633,7 @@ impl PrimaryViewer {
                 let (screen_x, screen_y) = self.image_to_screen_coords(*x, *y);
                 let screen_radius = radius * self.zoom_level;
                 let gpui_color =
-                    rgb((color[0] as u32) << 16 | (color[1] as u32) << 8 | color[2] as u32);
+                    rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
 
                 div()
                     .absolute()
@@ -668,7 +663,7 @@ impl PrimaryViewer {
 
                 // Convert RGBA array to gpui::Rgba
                 let gpui_color =
-                    rgb((color[0] as u32) << 16 | (color[1] as u32) << 8 | color[2] as u32);
+                    rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
 
                 gui::polyline::Polyline::new(screen_points, gpui_color, px(screen_stroke))
                     .into_element()
@@ -679,24 +674,28 @@ impl PrimaryViewer {
 }
 
 impl Focusable for PrimaryViewer {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
 impl Render for PrimaryViewer {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep declarative GPUI layout and its event bindings together"
+    )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.last_viewport_size = Some(window.viewport_size());
 
         // Handle snap if needed
         if let Some((x, y)) = self.snap_target.take() {
             let viewport = window.viewport_size();
-            let viewport_center_x = viewport.width / 2.0;
-            let viewport_center_y = viewport.height / 2.0;
+            let viewport_center_x = px(f32::from(viewport.width) / 2.0);
+            let viewport_center_y = px(f32::from(viewport.height) / 2.0);
 
             // Calculate pan to center the position
-            self.pan_x = viewport_center_x.to_f64() as f32 - (x * self.zoom_level);
-            self.pan_y = viewport_center_y.to_f64() as f32 - (y * self.zoom_level);
+            self.pan_x = f32::mul_add(x, -self.zoom_level, f32::from(viewport_center_x));
+            self.pan_y = f32::mul_add(y, -self.zoom_level, f32::from(viewport_center_y));
         }
 
         // Keep the canvas focused for pan/zoom keys as long as command palette is not open.
@@ -706,34 +705,38 @@ impl Render for PrimaryViewer {
 
         let activity_status = self.activity.as_ref().filter(|a| a.shown).map(|a| {
             if a.total > 1 {
-                format!("{} · {}/{}", a.label, a.stage + 1, a.total)
+                format!("{} · {}/{}", a.label, a.stage.saturating_add(1), a.total)
             } else {
                 format!("{}…", a.label)
             }
         });
 
-        let mut _img = img(self.display_image.clone())
+        let img = img(self.display_image.clone())
             .use_nearest_filter(true)
-            .w(px(self.original_width as f32 * self.zoom_level))
-            .h(px(self.original_height as f32 * self.zoom_level));
+            .w(px(
+                f32::from(gpui::Pixels::from(self.original_width)) * self.zoom_level
+            ))
+            .h(px(
+                f32::from(gpui::Pixels::from(self.original_height)) * self.zoom_level
+            ));
 
-        let coords = _img.coords.clone();
-        self.img_coords = coords.clone();
+        let coords = img.coords.clone();
+        self.img_coords = coords;
 
         let mouse_down_sender = self.command_sender.clone();
 
-        let mut _img = _img.on_mouse_down(
+        let mut img = img.on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener({
-                move |this: &mut PrimaryViewer,
+                move |this: &mut Self,
                       event: &MouseDownEvent,
                       _window: &mut Window,
-                      _: &mut Context<PrimaryViewer>| {
+                      _: &mut Context<Self>| {
                     let mouse_x = event.position.x;
                     let mouse_y = event.position.y;
 
-                    if let Some((image_x, image_y)) = this
-                        .screen_to_image_coords(mouse_x.to_f64() as f32, mouse_y.to_f64() as f32)
+                    if let Some((image_x, image_y)) =
+                        this.screen_to_image_coords(f32::from(mouse_x), f32::from(mouse_y))
                     {
                         // Send both interaction start (for lasso) and click (for place/delete)
                         if let Err(e) = mouse_down_sender
@@ -753,16 +756,16 @@ impl Render for PrimaryViewer {
             }),
         );
 
-        _img = _img.on_mouse_move(cx.listener(
-            move |this: &mut PrimaryViewer,
+        img = img.on_mouse_move(cx.listener(
+            move |this: &mut Self,
                   event: &MouseMoveEvent,
                   _window: &mut Window,
-                  _cx: &mut Context<PrimaryViewer>| {
+                  _cx: &mut Context<Self>| {
                 let mouse_x = event.position.x;
                 let mouse_y = event.position.y;
 
                 if let Some((image_x, image_y)) =
-                    this.screen_to_image_coords(mouse_x.to_f64() as f32, mouse_y.to_f64() as f32)
+                    this.screen_to_image_coords(f32::from(mouse_x), f32::from(mouse_y))
                 {
                     let _ = this
                         .command_sender
@@ -771,13 +774,13 @@ impl Render for PrimaryViewer {
             },
         ));
 
-        let mut _img = _img.on_mouse_up(
+        let img = img.on_mouse_up(
             gpui::MouseButton::Left,
             cx.listener(
-                move |this: &mut PrimaryViewer,
+                move |this: &mut Self,
                       _event: &MouseUpEvent,
                       _window: &mut Window,
-                      _cx: &mut Context<PrimaryViewer>| {
+                      _cx: &mut Context<Self>| {
                     if let Err(e) = this.command_sender.send(PipelineCommand::InteractionEnd) {
                         eprintln!("Error sending interaction end: {e}");
                     }
@@ -801,10 +804,10 @@ impl Render for PrimaryViewer {
             .on_key_up(cx.listener(Self::on_key_up))
             .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
             .on_drop(cx.listener(
-                |this: &mut PrimaryViewer,
+                |this: &mut Self,
                  paths: &ExternalPaths,
                  _window: &mut Window,
-                 _cx: &mut Context<PrimaryViewer>| {
+                 _cx: &mut Context<Self>| {
                     if let Err(e) = this
                         .command_sender
                         .send(PipelineCommand::Load(paths.paths().to_vec()))
@@ -819,7 +822,7 @@ impl Render for PrimaryViewer {
                         .absolute()
                         .left(px(self.pan_x))
                         .top(px(self.pan_y))
-                        .child(_img),
+                        .child(img),
                 )
             })
             .when(!self.image_loaded, |el| {
@@ -836,24 +839,17 @@ impl Render for PrimaryViewer {
                         .child(div().text_sm().child("or press ⌘L to open files")),
                 )
             })
-            .children(
-                self.toasts
-                    .iter()
-                    .enumerate()
-                    .map(|(index, toast)| {
-                        div()
-                            .absolute()
-                            .bottom(px(20.0 + (index as f32 * 90.0)))
-                            .right(px(20.0))
-                            .child(toast.clone())
-                    })
-                    .collect::<Vec<_>>(),
-            )
+            .children(self.toasts.iter().enumerate().map(|(index, toast)| {
+                div()
+                    .absolute()
+                    .bottom(px(f32::from(gpui::Pixels::from(index)).mul_add(90.0, 20.0)))
+                    .right(px(20.0))
+                    .child(toast.clone())
+            }))
             .children(
                 self.overlays
                     .all_elements()
-                    .map(|element| self.render_overlay_element(element))
-                    .collect::<Vec<_>>(),
+                    .map(|element| self.render_overlay_element(element)),
             )
             .child(self.busy_overlay.clone())
             .when_some(activity_status, |el, status| {
@@ -874,7 +870,7 @@ impl Render for PrimaryViewer {
                                 Animation::new(Duration::from_millis(1500))
                                     .repeat()
                                     .with_easing(gpui::pulsating_between(0.3, 1.0)),
-                                |el, delta| el.opacity(delta),
+                                gpui::Styled::opacity,
                             ),
                         ),
                 )
@@ -896,13 +892,13 @@ impl Render for PrimaryViewer {
                 )
             })
             // Pallete added as last child to ensure that it paints above other elements.
-            .when_some(self.palette.clone(), |el, palette| el.child(palette))
+            .when_some(self.palette.clone(), gpui::ParentElement::child)
     }
 }
 
-/// "RollingBall" (a `BackendToolType` debug name) -> "Rolling Ball".
+/// "`RollingBall`" (a `BackendToolType` debug name) -> "Rolling Ball".
 fn humanize_tool_name(name: &str) -> String {
-    let mut result = String::with_capacity(name.len() + 4);
+    let mut result = String::with_capacity(name.len().saturating_add(4));
     for (i, c) in name.chars().enumerate() {
         if c.is_uppercase() && i != 0 {
             result.push(' ');
@@ -913,6 +909,10 @@ fn humanize_tool_name(name: &str) -> String {
 }
 
 #[tokio::main]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep declarative GPUI layout and its event bindings together"
+)]
 async fn main() -> Result<()> {
     env_logger::init();
 
@@ -924,7 +924,7 @@ async fn main() -> Result<()> {
         loop {
             if let Err(e) = pipeline.process_commands().await {
                 eprintln!("Error processing pipeline commands: {e}");
-                panic!("Pipeline processing failed: {e}");
+                eprintln!("Pipeline processing failed: {e}");
             }
             tokio::time::sleep(Duration::from_millis(33)).await; // Lock at 30FPS
         }
@@ -946,12 +946,8 @@ async fn main() -> Result<()> {
             base: manifest_dir.join("examples"),
         })
         .run(move |cx: &mut App| {
-            let commands = commands::install(
-                cx,
-                view_sender.clone(),
-                view_recv.resubscribe(),
-                image_directory.clone(),
-            );
+            let commands =
+                commands::install(cx, view_sender.clone(), &view_recv, image_directory.clone());
 
             cx.on_action(|_: &Quit, cx| cx.quit());
 
@@ -1011,7 +1007,7 @@ async fn main() -> Result<()> {
 
             let primary_viewer_image_dir = image_directory.clone();
             let main_window = cx.open_window(window_options, |window, cx| {
-                let mut raw_primary_viewer = PrimaryViewer {
+                let raw_primary_viewer = PrimaryViewer {
                     focus_handle: cx.focus_handle(),
                     zoom_level: 1.0,
                     original_width: 800,

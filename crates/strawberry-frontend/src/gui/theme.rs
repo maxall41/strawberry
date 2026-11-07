@@ -2,6 +2,10 @@
 // Single source of truth for the app's palette.
 use gpui::Rgba;
 
+#[expect(
+    clippy::as_conversions,
+    reason = "Converting u8 color channels to f32 is exact; From is not const"
+)]
 const fn hex(hex: u32) -> Rgba {
     let [_, r, g, b] = hex.to_be_bytes();
     Rgba {
@@ -13,45 +17,45 @@ const fn hex(hex: u32) -> Rgba {
 }
 
 /// Main viewer background behind the image.
-pub const CANVAS: Rgba = hex(0x1e2023);
+pub const CANVAS: Rgba = hex(0x1e_20_23);
 /// Tool window background.
-pub const WINDOW_BG: Rgba = hex(0x2e3035);
+pub const WINDOW_BG: Rgba = hex(0x2e_30_35);
 /// Inset panel / section background.
-pub const SURFACE: Rgba = hex(0x35373c);
+pub const SURFACE: Rgba = hex(0x35_37_3c);
 /// Deeper inset (text fields, wells).
-pub const SURFACE_DEEP: Rgba = hex(0x26282c);
+pub const SURFACE_DEEP: Rgba = hex(0x26_28_2c);
 /// Alternate row background for lists.
-pub const SURFACE_ALT: Rgba = hex(0x3a3d42);
+pub const SURFACE_ALT: Rgba = hex(0x3a_3d_42);
 
 /// Raised interactive control (buttons, chips).
-pub const CONTROL: Rgba = hex(0x43464d);
-pub const CONTROL_HOVER: Rgba = hex(0x51555d);
-pub const CONTROL_ACTIVE: Rgba = hex(0x393c42);
+pub const CONTROL: Rgba = hex(0x43_46_4d);
+pub const CONTROL_HOVER: Rgba = hex(0x51_55_5d);
+pub const CONTROL_ACTIVE: Rgba = hex(0x39_3c_42);
 
-pub const BORDER: Rgba = hex(0x4a4e56);
-pub const BORDER_MUTED: Rgba = hex(0x3c3f45);
+pub const BORDER: Rgba = hex(0x4a_4e_56);
+pub const BORDER_MUTED: Rgba = hex(0x3c_3f_45);
 
-pub const TEXT: Rgba = hex(0xe8eaed);
-pub const TEXT_MUTED: Rgba = hex(0xa6abb4);
+pub const TEXT: Rgba = hex(0xe8_ea_ed);
+pub const TEXT_MUTED: Rgba = hex(0xa6_ab_b4);
 
-pub const ACCENT: Rgba = hex(0x4088d8);
-pub const ACCENT_HOVER: Rgba = hex(0x549ae4);
-pub const ACCENT_ACTIVE: Rgba = hex(0x3672bd);
+pub const ACCENT: Rgba = hex(0x40_88_d8);
+pub const ACCENT_HOVER: Rgba = hex(0x54_9a_e4);
+pub const ACCENT_ACTIVE: Rgba = hex(0x36_72_bd);
 
-pub const SUCCESS: Rgba = hex(0x3d9a5f);
-pub const SUCCESS_HOVER: Rgba = hex(0x47ab6c);
-pub const SUCCESS_ACTIVE: Rgba = hex(0x358753);
+pub const SUCCESS: Rgba = hex(0x3d_9a_5f);
+pub const SUCCESS_HOVER: Rgba = hex(0x47_ab_6c);
+pub const SUCCESS_ACTIVE: Rgba = hex(0x35_87_53);
 
-pub const DANGER: Rgba = hex(0xc25049);
-pub const DANGER_HOVER: Rgba = hex(0xd05e57);
-pub const DANGER_ACTIVE: Rgba = hex(0xa8443e);
+pub const DANGER: Rgba = hex(0xc2_50_49);
+pub const DANGER_HOVER: Rgba = hex(0xd0_5e_57);
+pub const DANGER_ACTIVE: Rgba = hex(0xa8_44_3e);
 
 /// Blend a color toward white. Used for hover/feedback states.
 pub fn lighten(color: Rgba, amount: f32) -> Rgba {
     Rgba {
-        r: color.r + (1.0 - color.r) * amount,
-        g: color.g + (1.0 - color.g) * amount,
-        b: color.b + (1.0 - color.b) * amount,
+        r: (1.0 - color.r).mul_add(amount, color.r),
+        g: (1.0 - color.g).mul_add(amount, color.g),
+        b: (1.0 - color.b).mul_add(amount, color.b),
         a: color.a,
     }
 }

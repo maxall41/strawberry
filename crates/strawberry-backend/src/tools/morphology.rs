@@ -18,7 +18,7 @@ pub struct Morphology {
     pub state: MorphologyState,
     pub base: ToolBase,
     pub cache: ToolCache<MorphologyState>,
-    morphology: GpuMorphology,
+    processor: GpuMorphology,
 }
 
 #[async_trait]
@@ -42,7 +42,7 @@ impl ToolBackend for Morphology {
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = match self
-                .morphology
+                .processor
                 .apply_morphology(image, self.state.operation, self.state.element_size)
                 .await
             {
@@ -67,7 +67,7 @@ impl ToolBackend for Morphology {
             match message {
                 PipelineCommand::RequestState() => {
                     self.base
-                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
@@ -93,7 +93,7 @@ impl ToolBackend for Morphology {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             self.base.trigger_refresh()?;
@@ -105,7 +105,8 @@ impl ToolBackend for Morphology {
 }
 
 impl Morphology {
-    pub async fn new(
+    #[must_use]
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
@@ -118,7 +119,7 @@ impl Morphology {
             },
             base: ToolBase::new(command_sender, global_sender),
             cache: ToolCache::new(),
-            morphology: GpuMorphology::new(gpu_image_processor).await,
+            processor: GpuMorphology::new(gpu_image_processor),
         }
     }
 }
