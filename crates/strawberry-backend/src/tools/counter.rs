@@ -32,8 +32,8 @@ impl Filter for SizeFilter {
     fn name(&self) -> &str {
         "Filter by Size"
     }
-    fn process(&self, counts: &Vec<CountData>) -> Vec<CountData> {
-        let mut out = counts.clone();
+    fn process(&self, counts: &[CountData]) -> Vec<CountData> {
+        let mut out = counts.to_vec();
         out.retain(|count| count.size > self.min_size);
         out
     }
@@ -64,7 +64,7 @@ impl SizeFilter {
 pub trait Filter: Send + Sync {
     fn is_enabled(&self) -> bool;
     fn name(&self) -> &str;
-    fn process(&self, counts: &Vec<CountData>) -> Vec<CountData>;
+    fn process(&self, counts: &[CountData]) -> Vec<CountData>;
     fn receive_message(&mut self, message: &FilterMessage);
     fn set_enabled(&mut self, enabled: bool);
     fn get_values(&self) -> Vec<f64>;
@@ -232,26 +232,26 @@ impl ToolBackend for Counter {
                                     );
                                 }
                             }
-                            Some(CounterTool::Delete) => {
-                                if self.state.manual_counts.contains_key(&id) {
-                                    let counts = self
-                                        .state
-                                        .manual_counts
-                                        .get(&id)
-                                        .expect("Should never fire: Confirmed that key exists")
-                                        .clone();
-                                    let new_counts: Vec<CountData> = counts
-                                        .iter()
-                                        .filter(|count| {
-                                            let dx = (count.position.0 as i64 - x as i64).abs();
-                                            let dy = (count.position.1 as i64 - y as i64).abs();
-                                            let distance = ((dx * dx + dy * dy) as f64).sqrt();
-                                            distance > 6.0
-                                        })
-                                        .cloned()
-                                        .collect();
-                                    self.state.manual_counts.insert(id, new_counts);
-                                }
+                            Some(CounterTool::Delete)
+                                if self.state.manual_counts.contains_key(&id) =>
+                            {
+                                let counts = self
+                                    .state
+                                    .manual_counts
+                                    .get(&id)
+                                    .expect("Should never fire: Confirmed that key exists")
+                                    .clone();
+                                let new_counts: Vec<CountData> = counts
+                                    .iter()
+                                    .filter(|count| {
+                                        let dx = (count.position.0 as i64 - x as i64).abs();
+                                        let dy = (count.position.1 as i64 - y as i64).abs();
+                                        let distance = ((dx * dx + dy * dy) as f64).sqrt();
+                                        distance > 6.0
+                                    })
+                                    .cloned()
+                                    .collect();
+                                self.state.manual_counts.insert(id, new_counts);
                             }
                             _ => {}
                         }
@@ -461,101 +461,94 @@ impl ToolBackend for Counter {
                             self.state.review_current_index = 0;
                         }
                         CountMessage::ReviewNavigatePrevious => {
-                            if let Some(active_count_type) = self.state.active_count_type {
-                                if let Some(counts) =
+                            if let Some(active_count_type) = self.state.active_count_type
+                                && let Some(counts) =
                                     self.state.manual_counts.get(&active_count_type)
-                                {
-                                    let counts_len = counts.len();
+                            {
+                                let counts_len = counts.len();
 
-                                    if counts_len > 0 {
-                                        // Clamp: the cursor can be stale when counts were
-                                        // trimmed outside review (Delete tool, lasso).
-                                        let current_index =
-                                            self.state.review_current_index.min(counts_len - 1);
-                                        let new_index = if current_index == 0 {
-                                            counts_len - 1
-                                        } else {
-                                            current_index - 1
-                                        };
-                                        self.state.review_current_index = new_index;
+                                if counts_len > 0 {
+                                    // Clamp: the cursor can be stale when counts were
+                                    // trimmed outside review (Delete tool, lasso).
+                                    let current_index =
+                                        self.state.review_current_index.min(counts_len - 1);
+                                    let new_index = if current_index == 0 {
+                                        counts_len - 1
+                                    } else {
+                                        current_index - 1
+                                    };
+                                    self.state.review_current_index = new_index;
 
-                                        // Emit snap to position
-                                        if let Some(count) = counts.get(new_index) {
-                                            let _ = self.global_sender.send(
-                                                PipelineCommand::FrontendMessage(
-                                                    FrontendMessage::SnapToPosition(
-                                                        count.position.0 as f32,
-                                                        count.position.1 as f32,
-                                                    ),
+                                    // Emit snap to position
+                                    if let Some(count) = counts.get(new_index) {
+                                        let _ = self.global_sender.send(
+                                            PipelineCommand::FrontendMessage(
+                                                FrontendMessage::SnapToPosition(
+                                                    count.position.0 as f32,
+                                                    count.position.1 as f32,
                                                 ),
-                                            );
-                                        }
+                                            ),
+                                        );
                                     }
                                 }
                             }
                         }
                         CountMessage::ReviewNavigateNext => {
-                            if let Some(active_count_type) = self.state.active_count_type {
-                                if let Some(counts) =
+                            if let Some(active_count_type) = self.state.active_count_type
+                                && let Some(counts) =
                                     self.state.manual_counts.get(&active_count_type)
-                                {
-                                    let counts_len = counts.len();
+                            {
+                                let counts_len = counts.len();
 
-                                    if counts_len > 0 {
-                                        // Clamp: the cursor can be stale when counts were
-                                        // trimmed outside review (Delete tool, lasso).
-                                        let current_index =
-                                            self.state.review_current_index.min(counts_len - 1);
-                                        let new_index = (current_index + 1) % counts_len;
-                                        self.state.review_current_index = new_index;
+                                if counts_len > 0 {
+                                    // Clamp: the cursor can be stale when counts were
+                                    // trimmed outside review (Delete tool, lasso).
+                                    let current_index =
+                                        self.state.review_current_index.min(counts_len - 1);
+                                    let new_index = (current_index + 1) % counts_len;
+                                    self.state.review_current_index = new_index;
 
-                                        // Emit snap to position
-                                        if let Some(count) = counts.get(new_index) {
-                                            let _ = self.global_sender.send(
-                                                PipelineCommand::FrontendMessage(
-                                                    FrontendMessage::SnapToPosition(
-                                                        count.position.0 as f32,
-                                                        count.position.1 as f32,
-                                                    ),
+                                    // Emit snap to position
+                                    if let Some(count) = counts.get(new_index) {
+                                        let _ = self.global_sender.send(
+                                            PipelineCommand::FrontendMessage(
+                                                FrontendMessage::SnapToPosition(
+                                                    count.position.0 as f32,
+                                                    count.position.1 as f32,
                                                 ),
-                                            );
-                                        }
+                                            ),
+                                        );
                                     }
                                 }
                             }
                         }
                         CountMessage::DeleteCurrentCount => {
-                            if let Some(active_count_type) = self.state.active_count_type {
-                                if let Some(counts) =
+                            if let Some(active_count_type) = self.state.active_count_type
+                                && let Some(counts) =
                                     self.state.manual_counts.get_mut(&active_count_type)
-                                {
-                                    if !counts.is_empty() {
-                                        // Clamp instead of the old `index < len` guard: a
-                                        // stale cursor (counts trimmed outside review) must
-                                        // still delete something, not silently no-op.
-                                        let current_index =
-                                            self.state.review_current_index.min(counts.len() - 1);
-                                        counts.remove(current_index);
+                                && !counts.is_empty()
+                            {
+                                // Clamp instead of the old `index < len` guard: a
+                                // stale cursor (counts trimmed outside review) must
+                                // still delete something, not silently no-op.
+                                let current_index =
+                                    self.state.review_current_index.min(counts.len() - 1);
+                                counts.remove(current_index);
 
-                                        self.state.review_current_index = if counts.is_empty() {
-                                            0
-                                        } else {
-                                            current_index.min(counts.len() - 1)
-                                        };
-                                        // Deleting the last count leaves nothing to snap to.
-                                        if let Some(count) =
-                                            counts.get(self.state.review_current_index)
-                                        {
-                                            let _ = self.global_sender.send(
-                                                PipelineCommand::FrontendMessage(
-                                                    FrontendMessage::SnapToPosition(
-                                                        count.position.0 as f32,
-                                                        count.position.1 as f32,
-                                                    ),
-                                                ),
-                                            );
-                                        }
-                                    }
+                                self.state.review_current_index = if counts.is_empty() {
+                                    0
+                                } else {
+                                    current_index.min(counts.len() - 1)
+                                };
+                                // Deleting the last count leaves nothing to snap to.
+                                if let Some(count) = counts.get(self.state.review_current_index) {
+                                    let _ =
+                                        self.global_sender.send(PipelineCommand::FrontendMessage(
+                                            FrontendMessage::SnapToPosition(
+                                                count.position.0 as f32,
+                                                count.position.1 as f32,
+                                            ),
+                                        ));
                                 }
                             }
                         }

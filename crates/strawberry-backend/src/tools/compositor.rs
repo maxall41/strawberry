@@ -74,23 +74,11 @@ impl ToolBackend for Compositor {
 
         *input = vec![Arc::new(composited)];
 
-        if self.cache.frontend_latest_state.is_some() {
-            println!(
-                "State Status {}",
-                self.cache
-                    .frontend_latest_state
-                    .as_ref()
-                    .expect("Just checked that frontend_latest_state is some")
-                    == &self.state
-            );
+        if let Some(frontend_state) = &self.cache.frontend_latest_state {
+            println!("State Status {}", frontend_state == &self.state);
             println!(
                 "Real Layers Length Comparison | Frontend: {} Backend: {}",
-                self.cache
-                    .frontend_latest_state
-                    .as_ref()
-                    .unwrap()
-                    .real_layers_len,
-                self.state.real_layers_len
+                frontend_state.real_layers_len, self.state.real_layers_len
             )
         } else {
             println!("Frontend state is empty")

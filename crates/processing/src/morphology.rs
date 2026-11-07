@@ -10,18 +10,13 @@ use super::{
     tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum MorphologyOperation {
+    #[default]
     Dilation,
     Erosion,
     Opening,
     Closing,
-}
-
-impl Default for MorphologyOperation {
-    fn default() -> Self {
-        MorphologyOperation::Dilation
-    }
 }
 
 impl MorphologyOperation {
@@ -127,7 +122,7 @@ impl GpuMorphology {
         element_size: u32,
     ) -> Result<RgbaImage> {
         // Ensure element_size is odd for symmetric structuring element
-        let element_size = if element_size % 2 == 0 {
+        let element_size = if element_size.is_multiple_of(2) {
             element_size + 1
         } else {
             element_size

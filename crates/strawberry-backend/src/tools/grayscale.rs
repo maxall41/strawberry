@@ -64,10 +64,8 @@ impl ToolBackend for Grayscale {
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
-                PipelineCommand::PipelineObject(message) => {
-                    if let PipelineObjectMessage::ToggleActive(value) = message {
-                        self.state.is_enabled = value;
-                    }
+                PipelineCommand::PipelineObject(PipelineObjectMessage::ToggleActive(value)) => {
+                    self.state.is_enabled = value;
                 }
                 _ => {}
             }

@@ -354,8 +354,8 @@ impl ManagerView {
                 .set_directory("~/")
                 .save_file();
 
-            if let Some(file) = file {
-                if let Err(e) = this.update(cx, |this, _cx| {
+            if let Some(file) = file
+                && let Err(e) = this.update(cx, |this, _cx| {
                     if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::ManagerMessage(ManagerMessage::SavePipeline(
@@ -367,9 +367,9 @@ impl ManagerView {
                     } else {
                         eprintln!("Invalid tool index: {current_tool_index}");
                     }
-                }) {
-                    eprintln!("Failed to save pipeline: {e}");
-                }
+                })
+            {
+                eprintln!("Failed to save pipeline: {e}");
             }
         })
         .detach();
@@ -386,8 +386,8 @@ impl ManagerView {
                 .set_directory("~/")
                 .pick_file();
 
-            if let Some(file) = file {
-                if let Err(e) = this.update(cx, |this, _cx| {
+            if let Some(file) = file
+                && let Err(e) = this.update(cx, |this, _cx| {
                     if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::ManagerMessage(ManagerMessage::LoadPipeline(
@@ -399,9 +399,9 @@ impl ManagerView {
                     } else {
                         eprintln!("Invalid tool index: {current_tool_index}");
                     }
-                }) {
-                    eprintln!("Failed to load pipeline: {e}");
-                }
+                })
+            {
+                eprintln!("Failed to load pipeline: {e}");
             }
         })
         .detach();

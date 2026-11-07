@@ -281,9 +281,7 @@ impl GpuWatershed {
             &buffers,
             &buffers.seeds_b,
             &buffers.seeds_a,
-            width,
-            height,
-            0,
+            (width, height),
             0,
         )?;
 
@@ -302,10 +300,8 @@ impl GpuWatershed {
                 &buffers,
                 seeds_input,
                 seeds_output,
-                width,
-                height,
+                (width, height),
                 step_size,
-                0,
             )?;
             seeds_are_in_a = !seeds_are_in_a;
             step_size /= 2;
@@ -321,9 +317,7 @@ impl GpuWatershed {
             &buffers,
             final_seeds,
             scratch_seeds,
-            width,
-            height,
-            0,
+            (width, height),
             0,
         )?;
 
@@ -388,12 +382,11 @@ impl GpuWatershed {
         buffers: &DistanceBuffers,
         seeds_input: &wgpu::Buffer,
         seeds_output: &wgpu::Buffer,
-        width: u32,
-        height: u32,
+        dimensions: (u32, u32),
         step_size: u32,
-        iteration: u32,
     ) -> Result<()> {
-        let uniforms = [width, height, step_size, iteration];
+        let (width, height) = dimensions;
+        let uniforms = [width, height, step_size, 0];
         let uniform_buffer =
             self.gpu
                 .device
@@ -667,8 +660,6 @@ impl GpuWatershed {
                     &mut age_counter,
                     distance_map,
                     &current_pixel,
-                    x,
-                    y,
                     width,
                     height,
                 );
@@ -729,11 +720,11 @@ impl GpuWatershed {
         age_counter: &mut u32,
         distance_map: &[f32],
         current_pixel: &QueueItem,
-        x: i32,
-        y: i32,
         width: usize,
         height: usize,
     ) {
+        let x = (current_pixel.index % width) as i32;
+        let y = (current_pixel.index / width) as i32;
         const OFFSETS: [(i32, i32); 8] = [
             (-1, -1),
             (0, -1),
