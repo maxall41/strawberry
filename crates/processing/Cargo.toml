@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-wgpu = "30.0.0"
+wgpu = "30.0.1"
 bytemuck = { version = "1.25", features = ["derive"] }
 anyhow = "1.0"
 image = { git = "https://github.com/maxall41/image.git", branch = "single-channel-support" }

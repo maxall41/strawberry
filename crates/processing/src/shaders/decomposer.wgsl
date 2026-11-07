@@ -11,11 +11,11 @@ struct DecomposerUniforms {
 @group(0) @binding(3) var<storage, read_write> blue_output: array<u32>;
 @group(0) @binding(4) var<storage, read> input_buffer: array<u32>;
 
-// Convert RGBA8 packed u32 to vec4<f32>
-fn unpack_rgba8(packed: u32) -> vec4<f32> {
-    let r = f32((packed >> 0u) & 0xFFu) / 255.0;
+// Convert the pipeline's internal BGRA8 packed u32 to vec4<f32>.
+fn unpack_bgra8(packed: u32) -> vec4<f32> {
+    let b = f32((packed >> 0u) & 0xFFu) / 255.0;
     let g = f32((packed >> 8u) & 0xFFu) / 255.0;
-    let b = f32((packed >> 16u) & 0xFFu) / 255.0;
+    let r = f32((packed >> 16u) & 0xFFu) / 255.0;
     let a = f32((packed >> 24u) & 0xFFu) / 255.0;
     return vec4<f32>(r, g, b, a);
 }
@@ -42,7 +42,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = y * uniforms.width + x;
 
     // Read input pixel
-    let input_pixel = unpack_rgba8(input_buffer[index]);
+    let input_pixel = unpack_bgra8(input_buffer[index]);
 
     // Create decomposed channel images
     // Red channel: keep red, zero out green and blue

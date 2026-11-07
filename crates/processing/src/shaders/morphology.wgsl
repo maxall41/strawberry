@@ -16,22 +16,22 @@ const OPERATION_EROSION: u32 = 1u;
 const OPERATION_OPENING: u32 = 2u;
 const OPERATION_CLOSING: u32 = 3u;
 
-// Convert RGBA8 packed u32 to vec4<f32>
-fn unpack_rgba8(packed: u32) -> vec4<f32> {
-    let r = f32((packed >> 0u) & 0xFFu) / 255.0;
+// Convert the pipeline's internal BGRA8 packed u32 to vec4<f32>.
+fn unpack_bgra8(packed: u32) -> vec4<f32> {
+    let b = f32((packed >> 0u) & 0xFFu) / 255.0;
     let g = f32((packed >> 8u) & 0xFFu) / 255.0;
-    let b = f32((packed >> 16u) & 0xFFu) / 255.0;
+    let r = f32((packed >> 16u) & 0xFFu) / 255.0;
     let a = f32((packed >> 24u) & 0xFFu) / 255.0;
     return vec4<f32>(r, g, b, a);
 }
 
-// Convert vec4<f32> to RGBA8 packed u32
-fn pack_rgba8(color: vec4<f32>) -> u32 {
+// Convert vec4<f32> to the pipeline's internal BGRA8 representation.
+fn pack_bgra8(color: vec4<f32>) -> u32 {
     let r = u32(clamp(color.r * 255.0, 0.0, 255.0));
     let g = u32(clamp(color.g * 255.0, 0.0, 255.0));
     let b = u32(clamp(color.b * 255.0, 0.0, 255.0));
     let a = u32(clamp(color.a * 255.0, 0.0, 255.0));
-    return r | (g << 8u) | (b << 16u) | (a << 24u);
+    return b | (g << 8u) | (r << 16u) | (a << 24u);
 }
 
 // Calculate luminance using standard weights
@@ -49,7 +49,7 @@ fn sample_pixel_input(x: i32, y: i32) -> vec4<f32> {
     let clamped_y = clamp(y, 0, height - 1);
 
     let index = u32(clamped_y * width + clamped_x);
-    return unpack_rgba8(input_buffer[index]);
+    return unpack_bgra8(input_buffer[index]);
 }
 
 // Sample pixel with bounds checking from temp buffer
@@ -62,7 +62,7 @@ fn sample_pixel_temp(x: i32, y: i32) -> vec4<f32> {
     let clamped_y = clamp(y, 0, height - 1);
 
     let index = u32(clamped_y * width + clamped_x);
-    return unpack_rgba8(temp_buffer[index]);
+    return unpack_bgra8(temp_buffer[index]);
 }
 
 // Perform morphological operation on a neighborhood
@@ -165,10 +165,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = u32(y * i32(uniforms.width) + x);
     if (operation == OPERATION_DILATION || operation == OPERATION_EROSION) {
         // Single-pass: write to output
-        output_buffer[index] = pack_rgba8(result_pixel);
+        output_buffer[index] = pack_bgra8(result_pixel);
     } else {
         // Two-pass: write to temp buffer
-        temp_buffer[index] = pack_rgba8(result_pixel);
+        temp_buffer[index] = pack_bgra8(result_pixel);
     }
 }
 
@@ -198,5 +198,5 @@ fn second_pass(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Write to output buffer
     let index = u32(y * i32(uniforms.width) + x);
-    output_buffer[index] = pack_rgba8(result_pixel);
+    output_buffer[index] = pack_bgra8(result_pixel);
 }

@@ -373,11 +373,14 @@ impl Pipeline {
                         {
                             compositor_tool.set_enabled(true);
                         }
-                    } else if let Some(image) = loaded_images.first_mut() {
+                    }
+                    // Convert all images from RGBA to BGRA by swapping R and B channels
+                    for image in &mut loaded_images {
                         for pixel in image.pixels_mut() {
                             pixel.0.swap(0, 2);
                         }
                     }
+                    //
                     self.input_images = loaded_images.into_iter().map(Arc::new).collect();
                     self.load_generation += 1;
 

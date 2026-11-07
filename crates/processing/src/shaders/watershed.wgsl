@@ -75,6 +75,10 @@ fn blur_distance(x: i32, y: i32, sigma: f32) -> f32 {
 // Check if pixel at (x,y) is a local maximum in the distance map
 fn is_local_maximum(x: i32, y: i32, center_value: f32) -> bool {
     let min_dist = i32(uniforms.min_distance);
+    let width = i32(uniforms.width);
+    let height = i32(uniforms.height);
+    let center_index = u32(y) * uniforms.width + u32(x);
+    let epsilon = 0.000001;
 
     // Check neighborhood for any higher values
     for (var dy = -min_dist; dy <= min_dist; dy++) {
@@ -86,11 +90,21 @@ fn is_local_maximum(x: i32, y: i32, center_value: f32) -> bool {
             let neighbor_x = x + dx;
             let neighbor_y = y + dy;
 
+            if (neighbor_x < 0 || neighbor_x >= width || neighbor_y < 0 || neighbor_y >= height) {
+                continue;
+            }
+
             // Get blurred distance value at neighbor
             let neighbor_value = blur_distance(neighbor_x, neighbor_y, uniforms.sigma);
 
-            // If any neighbor is higher or equal, this is not a maximum
-            if (neighbor_value >= center_value) {
+            if (neighbor_value > center_value + epsilon) {
+                return false;
+            }
+
+            // Keep exactly one deterministic marker on a flat maximum. This also
+            // suppresses equal-height peaks inside the configured min_distance.
+            let neighbor_index = u32(neighbor_y) * uniforms.width + u32(neighbor_x);
+            if (abs(neighbor_value - center_value) <= epsilon && neighbor_index < center_index) {
                 return false;
             }
         }
@@ -127,10 +141,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let is_peak = is_local_maximum(x, y, blurred_distance);
 
     if (is_peak) {
-        // Generate a unique marker ID based on position
-        // Use a simple hash to avoid conflicts while staying deterministic
-        let hash = u32(x * 73856093) ^ u32(y * 19349663);
-        output_buffer[index] = (hash % 65535u) + 1u; // Ensure non-zero
+        // A pixel index is already unique and deterministic. The +1 reserves zero
+        // for non-markers without introducing hash collisions between basins.
+        output_buffer[index] = index + 1u;
     } else {
         output_buffer[index] = 0u;
     }

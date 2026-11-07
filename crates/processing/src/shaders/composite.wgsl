@@ -44,10 +44,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Use function to get pixel from the right buffer
         layer_pixel = get_pixel_from_layer(layer, pixel_index);
 
-        // Unpack RGBA from u32 (Red, Green, Blue, Alpha)
-        let r = f32((layer_pixel >> 0u) & 0xFFu) / 255.0;   // Red in lowest bits
+        // Unpack the pipeline's internal BGRA representation.
+        let b = f32((layer_pixel >> 0u) & 0xFFu) / 255.0;   // Blue in lowest bits
         let g = f32((layer_pixel >> 8u) & 0xFFu) / 255.0;   // Green
-        let b = f32((layer_pixel >> 16u) & 0xFFu) / 255.0;  // Blue
+        let r = f32((layer_pixel >> 16u) & 0xFFu) / 255.0;  // Red
         let a = f32((layer_pixel >> 24u) & 0xFFu) / 255.0;  // Alpha in highest bits
 
         let layer_color = vec4<f32>(r, g, b, a);

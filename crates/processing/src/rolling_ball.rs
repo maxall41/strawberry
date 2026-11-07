@@ -10,7 +10,8 @@ use super::{
 };
 
 pub struct GpuRollingBall {
-    compute_pipeline: wgpu::ComputePipeline,
+    erosion_pipeline: wgpu::ComputePipeline,
+    reconstruction_pipeline: wgpu::ComputePipeline,
     gpu: Arc<GpuImageProcessor>,
 }
 
@@ -34,10 +35,21 @@ impl GpuRollingBall {
                 ))),
             });
 
-        let compute_pipeline =
+        let erosion_pipeline =
             gpu.device
                 .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Rolling Ball Pipeline"),
+                    label: Some("Rolling Ball Erosion Pipeline"),
+                    layout: None,
+                    module: &shader,
+                    entry_point: Some("erosion_pass"),
+                    compilation_options: PipelineCompilationOptions::default(),
+                    cache: None,
+                });
+
+        let reconstruction_pipeline =
+            gpu.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("Rolling Ball Reconstruction Pipeline"),
                     layout: None,
                     module: &shader,
                     entry_point: Some("main"),
@@ -46,7 +58,8 @@ impl GpuRollingBall {
                 });
 
         Self {
-            compute_pipeline,
+            erosion_pipeline,
+            reconstruction_pipeline,
             gpu,
         }
     }
@@ -93,6 +106,12 @@ impl GpuRollingBall {
         let input_buffer = self.gpu.create_input_buffer(image);
         let output_buffer = self.gpu.create_output_buffer(pixel_count);
         let staging_buffer = self.gpu.create_staging_buffer(pixel_count);
+        let eroded_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Rolling Ball Eroded Luminance Buffer"),
+            size: (pixel_count * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
 
         let uniforms = RollingBallUniforms {
             width,
@@ -103,28 +122,56 @@ impl GpuRollingBall {
 
         let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
 
-        let bind_group_layout = self.compute_pipeline.get_bind_group_layout(0);
-        let bind_group = self
+        let erosion_bind_group_layout = self.erosion_pipeline.get_bind_group_layout(0);
+        let erosion_bind_group = self
             .gpu
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
+                layout: &erosion_bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
                         resource: uniform_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: output_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
                         binding: 2,
                         resource: input_buffer.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: eroded_buffer.as_entire_binding(),
+                    },
                 ],
-                label: Some("Rolling Ball Bind Group"),
+                label: Some("Rolling Ball Erosion Bind Group"),
             });
+
+        let reconstruction_bind_group_layout =
+            self.reconstruction_pipeline.get_bind_group_layout(0);
+        let reconstruction_bind_group =
+            self.gpu
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &reconstruction_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: uniform_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: output_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: input_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: eroded_buffer.as_entire_binding(),
+                        },
+                    ],
+                    label: Some("Rolling Ball Reconstruction Bind Group"),
+                });
 
         let mut encoder = self
             .gpu
@@ -135,11 +182,19 @@ impl GpuRollingBall {
 
         self.gpu.dispatch_compute_with_encoder(
             &mut encoder,
-            &self.compute_pipeline,
-            &bind_group,
+            &self.erosion_pipeline,
+            &erosion_bind_group,
             width,
             height,
-            "Rolling Ball Pass",
+            "Rolling Ball Erosion Pass",
+        );
+        self.gpu.dispatch_compute_with_encoder(
+            &mut encoder,
+            &self.reconstruction_pipeline,
+            &reconstruction_bind_group,
+            width,
+            height,
+            "Rolling Ball Reconstruction Pass",
         );
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
@@ -159,7 +214,11 @@ impl GpuRollingBall {
         tile_config: &TileConfig,
     ) -> Result<RgbaImage> {
         let (full_width, full_height) = image.dimensions();
-        let tile_grid = TileGrid::new(full_width, full_height, tile_config.clone());
+        let mut tile_config = tile_config.clone();
+        // Reconstruction samples eroded pixels one radius away, and each of
+        // those pixels depends on another radius of the original image.
+        tile_config.overlap = tile_config.overlap.max(2 * ball_radius as usize);
+        let tile_grid = TileGrid::new(full_width, full_height, tile_config);
 
         println!(
             "Processing {} tiles for {}x{} image with rolling ball (radius: {})",
