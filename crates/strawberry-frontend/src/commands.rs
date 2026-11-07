@@ -1,10 +1,11 @@
+use crate::gui::actions::actions;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    Action, AnyWindowHandle, App, Context, Entity, Focusable, Global, Render, Window, actions, div,
+    Action, AnyWindowHandle, App, Context, Entity, Focusable, Global, Render, Window, div,
     prelude::*,
 };
 use strawberry_types::{BackendToolType, PipelineCommand, ToolFrontend};
@@ -63,7 +64,7 @@ pub enum CommandHint {
 }
 
 impl CommandHint {
-    pub fn label(&self) -> &'static str {
+    pub const fn label(&self) -> &'static str {
         match self {
             Self::Shortcut(text) | Self::Category(text) => text,
         }
@@ -143,7 +144,7 @@ where
     }
 }
 
-fn track_window_closes(cx: &mut App) {
+fn track_window_closes(cx: &App) {
     cx.on_window_closed(|cx, window_id| {
         let tracked = cx
             .try_global::<OpenToolWindows>()
@@ -163,19 +164,23 @@ fn register_tool<T, A>(
     action: A,
     label: &'static str,
     view_sender: broadcast::Sender<PipelineCommand>,
-    view_receiver: broadcast::Receiver<PipelineCommand>,
-    constructor: impl Fn(broadcast::Receiver<PipelineCommand>, broadcast::Sender<PipelineCommand>) -> T
+    view_receiver: &broadcast::Receiver<PipelineCommand>,
+    constructor: impl Fn(
+        broadcast::Receiver<PipelineCommand>,
+        broadcast::Sender<PipelineCommand>,
+        &App,
+    ) -> T
     + 'static,
 ) -> PalleteCommand
 where
     T: ToolFrontend + FrontendMessageHandler + Render + Focusable + 'static,
     A: Action + 'static,
 {
-    let sender = view_sender.clone();
+    let sender = view_sender;
     let receiver = view_receiver.resubscribe();
 
     cx.on_action(move |_: &A, cx| {
-        open_tool_window(constructor(receiver.resubscribe(), sender.clone()), cx);
+        open_tool_window(constructor(receiver.resubscribe(), sender.clone(), cx), cx);
     });
 
     PalleteCommand {
@@ -186,10 +191,14 @@ where
 }
 
 /// Installs every action handler and returns the palette's command list.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep declarative GPUI layout and its event bindings together"
+)]
 pub fn install(
     cx: &mut App,
     tx: broadcast::Sender<PipelineCommand>,
-    rx: broadcast::Receiver<PipelineCommand>,
+    rx: &broadcast::Receiver<PipelineCommand>,
     image_directory: Arc<RwLock<Option<PathBuf>>>,
 ) -> Rc<[PalleteCommand]> {
     track_window_closes(cx);
@@ -200,7 +209,7 @@ pub fn install(
             CompositorSettings,
             "Compositor",
             tx.clone(),
-            rx.resubscribe(),
+            rx,
             CompositorView::new,
         ),
         register_tool(
@@ -208,7 +217,7 @@ pub fn install(
             ContrastSettings,
             "Contrast",
             tx.clone(),
-            rx.resubscribe(),
+            rx,
             ContrastView::new,
         ),
         register_tool(
@@ -216,15 +225,17 @@ pub fn install(
             CounterSettings,
             "Counter",
             tx.clone(),
-            rx.resubscribe(),
-            move |receiver, sender| CounterView::new(receiver, sender, image_directory.clone()),
+            rx,
+            move |receiver, sender, cx| {
+                CounterView::new(receiver, sender, image_directory.clone(), cx)
+            },
         ),
         register_tool(
             cx,
             GaussianBlurSettings,
             "Gaussian Blur",
             tx.clone(),
-            rx.resubscribe(),
+            rx,
             GaussianBlurView::new,
         ),
         register_tool(
@@ -232,7 +243,7 @@ pub fn install(
             GrayscaleSettings,
             "Grayscale",
             tx.clone(),
-            rx.resubscribe(),
+            rx,
             GrayscaleView::new,
         ),
         register_tool(
@@ -240,7 +251,7 @@ pub fn install(
             ThresholdSettings,
             "Threshold",
             tx.clone(),
-            rx.resubscribe(),
+            rx,
             ThresholdView::new,
         ),
         register_tool(
@@ -248,7 +259,7 @@ pub fn install(
             LocalMaximaSettings,
             "Local Maxima",
             tx.clone(),
-            rx.resubscribe(),
+            rx,
             LocalMaximaView::new,
         ),
         register_tool(
@@ -256,7 +267,7 @@ pub fn install(
             MorphologySettings,
             "Morphology",
             tx.clone(),
-            rx.resubscribe(),
+            rx,
             MorphologyView::new,
         ),
         register_tool(
@@ -264,7 +275,7 @@ pub fn install(
             RollingBallSettings,
             "Rolling Ball",
             tx.clone(),
-            rx.resubscribe(),
+            rx,
             RollingBallView::new,
         ),
         register_tool(
@@ -272,7 +283,7 @@ pub fn install(
             WatershedSettings,
             "Watershed",
             tx.clone(),
-            rx.resubscribe(),
+            rx,
             WatershedView::new,
         ),
         register_tool(
@@ -280,7 +291,7 @@ pub fn install(
             ManagerSettings,
             "Pipeline",
             tx.clone(),
-            rx.resubscribe(),
+            rx,
             ManagerView::new,
         ),
         register_tool(
@@ -288,23 +299,16 @@ pub fn install(
             DecomposerSettings,
             "Decomposer",
             tx.clone(),
-            rx.resubscribe(),
+            rx,
             DecomposerView::new,
         ),
-        register_tool(
-            cx,
-            SobelSettings,
-            "Sobel",
-            tx.clone(),
-            rx.resubscribe(),
-            SobelView::new,
-        ),
+        register_tool(cx, SobelSettings, "Sobel", tx.clone(), rx, SobelView::new),
         register_tool(
             cx,
             NerveTracerSettings,
             "Nerve Tracer",
-            tx.clone(),
-            rx.resubscribe(),
+            tx,
+            rx,
             NerveTracerView::new,
         ),
     ];

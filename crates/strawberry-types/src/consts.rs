@@ -5,12 +5,13 @@ pub const CIRCLE_COLORS: [image::Rgba<u8>; 5] = [
     image::Rgba([238, 51, 119, 255]),
     image::Rgba([38, 255, 0, 255]),
 ];
+#[must_use]
 pub fn image_rgba_to_gpui_rgba(rgba: image::Rgba<u8>) -> gpui::Rgba {
     let [r, g, b, a] = rgba.0;
     gpui::Rgba {
-        r: r as f32 / 255.0,
-        g: g as f32 / 255.0,
-        b: b as f32 / 255.0,
-        a: a as f32 / 255.0,
+        r: f32::from(r) / 255.0,
+        g: f32::from(g) / 255.0,
+        b: f32::from(b) / 255.0,
+        a: f32::from(a) / 255.0,
     }
 }

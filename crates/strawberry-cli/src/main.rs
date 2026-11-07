@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use colored::*;
+use colored::Colorize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,6 +26,10 @@ fn drain(receiver: &mut broadcast::Receiver<PipelineCommand>) {
 #[command(name = "strawberry")]
 #[command(about = "A powerful image processing pipeline for scientific and research applications")]
 #[command(version, long_about = None)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "These are independent command-line switches"
+)]
 pub struct Args {
     /// Pipeline configuration file to load (.toml format)
     #[arg(short, long, value_name = "FILE")]
@@ -96,9 +100,9 @@ impl std::str::FromStr for GroupingMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "none" => Ok(GroupingMode::None),
-            "subdirectory" | "subdir" => Ok(GroupingMode::Subdirectory),
-            "regex" => Ok(GroupingMode::Regex),
+            "none" => Ok(Self::None),
+            "subdirectory" | "subdir" => Ok(Self::Subdirectory),
+            "regex" => Ok(Self::Regex),
             _ => Err(format!("Invalid grouping mode: {s}")),
         }
     }
@@ -117,22 +121,23 @@ impl std::str::FromStr for OutputFormat {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "preserve" => Ok(OutputFormat::Preserve),
-            "png" => Ok(OutputFormat::Png),
-            "tiff" | "tif" => Ok(OutputFormat::Tiff),
-            "jpeg" | "jpg" => Ok(OutputFormat::Jpeg),
+            "preserve" => Ok(Self::Preserve),
+            "png" => Ok(Self::Png),
+            "tiff" | "tif" => Ok(Self::Tiff),
+            "jpeg" | "jpg" => Ok(Self::Jpeg),
             _ => Err(format!("Invalid output format: {s}")),
         }
     }
 }
 
 impl OutputFormat {
-    pub fn extension(&self) -> &str {
+    #[must_use]
+    pub const fn extension(&self) -> &str {
         match self {
-            OutputFormat::Preserve => "",
-            OutputFormat::Png => "png",
-            OutputFormat::Tiff => "tiff",
-            OutputFormat::Jpeg => "jpg",
+            Self::Preserve => "",
+            Self::Png => "png",
+            Self::Tiff => "tiff",
+            Self::Jpeg => "jpg",
         }
     }
 }
@@ -144,6 +149,8 @@ pub struct CliProcessor {
 }
 
 impl CliProcessor {
+    /// # Errors
+    /// Returns an error if configuration, image processing, file I/O, or communication fails.
     pub fn new(args: Args) -> Result<Self> {
         let regex = regex::Regex::new(&args.filter)
             .with_context(|| format!("Invalid regex pattern: {}", args.filter))?;
@@ -175,6 +182,8 @@ impl CliProcessor {
         })
     }
 
+    /// # Errors
+    /// Returns an error if configuration, image processing, file I/O, or communication fails.
     pub async fn run(&self) -> Result<()> {
         self.validate_args()?;
 
@@ -231,7 +240,7 @@ impl CliProcessor {
         }
 
         if self.args.dry_run {
-            let total_images: usize = groups.values().map(|v| v.len()).sum();
+            let total_images: usize = groups.values().map(std::vec::Vec::len).sum();
             println!(
                 "{}",
                 format!(
@@ -259,12 +268,7 @@ impl CliProcessor {
 
         if let Some(output) = &self.args.output {
             // If input is a directory, output should be treated as a directory too
-            let output_should_be_dir = self
-                .args
-                .input
-                .as_ref()
-                .map(|i| i.is_dir())
-                .unwrap_or(false);
+            let output_should_be_dir = self.args.input.as_ref().is_some_and(|i| i.is_dir());
 
             if output_should_be_dir
                 || output.to_string_lossy().ends_with('/')
@@ -345,11 +349,9 @@ impl CliProcessor {
     }
 
     fn is_image_file(&self, path: &Path) -> bool {
-        if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-            self.regex.is_match(filename)
-        } else {
-            false
-        }
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|filename| self.regex.is_match(filename))
     }
 
     fn group_images(&self, image_files: Vec<PathBuf>) -> Result<HashMap<String, Vec<PathBuf>>> {
@@ -359,22 +361,19 @@ impl CliProcessor {
             GroupingMode::None => {
                 // Each image is its own group
                 for (index, file) in image_files.into_iter().enumerate() {
-                    let group_name = format!("image_{:04}", index + 1);
+                    let group_name = format!("image_{:04}", index.saturating_add(1));
                     groups.insert(group_name, vec![file]);
                 }
             }
             GroupingMode::Subdirectory => {
                 // Group by parent directory
                 for file in image_files {
-                    let group_name = if let Some(parent) = file.parent() {
-                        parent
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("root")
-                            .to_string()
-                    } else {
-                        "root".to_string()
-                    };
+                    let group_name = file
+                        .parent()
+                        .and_then(Path::file_name)
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("root")
+                        .to_string();
                     groups.entry(group_name).or_insert_with(Vec::new).push(file);
                 }
             }
@@ -383,24 +382,20 @@ impl CliProcessor {
                 let group_regex = self
                     .group_regex
                     .as_ref()
-                    .expect("group_regex is guaranteed to be Some when in Regex grouping mode");
+                    .ok_or_else(|| anyhow!("Group regex is required"))?;
                 for file in image_files {
                     let filename = file
                         .file_name()
                         .and_then(|n| n.to_str())
                         .ok_or_else(|| anyhow!("Invalid filename: {}", file.display()))?;
 
-                    let group_name = if let Some(captures) = group_regex.captures(filename) {
-                        if let Some(matched) = captures.get(1) {
-                            matched.as_str().to_string()
-                        } else if let Some(matched) = captures.get(0) {
-                            matched.as_str().to_string()
-                        } else {
-                            "ungrouped".to_string()
-                        }
-                    } else {
-                        "ungrouped".to_string()
-                    };
+                    let group_name = group_regex
+                        .captures(filename)
+                        .and_then(|captures| captures.get(1).or_else(|| captures.get(0)))
+                        .map_or_else(
+                            || "ungrouped".to_string(),
+                            |matched| matched.as_str().to_string(),
+                        );
 
                     groups.entry(group_name).or_insert_with(Vec::new).push(file);
                 }
@@ -440,17 +435,12 @@ impl CliProcessor {
             pipeline_file.to_path_buf(),
         )) {
             pipeline_handle.abort();
-            return Err(anyhow!("Failed to load pipeline: {}", e));
+            return Err(anyhow!("Failed to load pipeline: {e}"));
         }
 
         let total_groups = groups.len();
-        let total_images: usize = groups.values().map(|v| v.len()).sum();
-        let input_is_dir = self
-            .args
-            .input
-            .as_ref()
-            .map(|i| i.is_dir())
-            .unwrap_or(false);
+        let total_images: usize = groups.values().map(std::vec::Vec::len).sum();
+        let input_is_dir = self.args.input.as_ref().is_some_and(|i| i.is_dir());
         let output_is_dir =
             output_path.is_dir() || input_is_dir || total_groups > 1 || total_images > 1;
 
@@ -468,7 +458,7 @@ impl CliProcessor {
                 println!(
                     "{} [{}/{}]: {} ({} image(s))",
                     "Processing group".green(),
-                    group_index + 1,
+                    group_index.saturating_add(1),
                     total_groups,
                     group_name.cyan(),
                     group_files.len()
@@ -481,7 +471,7 @@ impl CliProcessor {
                 &view_sender,
                 &mut view_recv,
                 &mut frame_rx,
-                (group_index + 1) as u64,
+                u64::try_from(group_index.saturating_add(1)).unwrap_or(u64::MAX),
             )
             .await
             .with_context(|| format!("Failed to process group: {group_name}"))?;
@@ -516,33 +506,31 @@ impl CliProcessor {
         drain(view_recv);
         view_sender
             .send(PipelineCommand::Load(group_files.to_vec()))
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to send load command for group {}: {}",
-                    group_name,
-                    e
-                )
-            })?;
+            .map_err(|e| anyhow!("Failed to send load command for group {group_name}: {e}"))?;
 
         self.await_generation(view_recv, frame_rx, expected_generation, group_name)
             .await?;
 
-        let input_is_dir = self
-            .args
-            .input
-            .as_ref()
-            .map(|i| i.is_dir())
-            .unwrap_or(false);
+        let input_is_dir = self.args.input.as_ref().is_some_and(|i| i.is_dir());
         let output_is_dir = output_path.is_dir() || input_is_dir;
 
         let output_file = if output_is_dir {
             if group_files.len() == 1 {
                 // For single files, preserve the directory structure and filename
-                self.generate_output_filename_with_structure(&group_files[0], output_path)?
+                self.generate_output_filename_with_structure(
+                    group_files
+                        .first()
+                        .ok_or_else(|| anyhow!("Image group is empty"))?,
+                    output_path,
+                )?
             } else {
                 // For multiple files, use group-based naming
-                let output_filename =
-                    self.generate_group_output_filename(group_name, &group_files[0])?;
+                let output_filename = self.generate_group_output_filename(
+                    group_name,
+                    group_files
+                        .first()
+                        .ok_or_else(|| anyhow!("Image group is empty"))?,
+                );
                 output_path.join(output_filename)
             }
         } else {
@@ -555,13 +543,7 @@ impl CliProcessor {
         drain(view_recv);
         view_sender
             .send(PipelineCommand::SaveOutput(output_file.clone()))
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to send save command for group {}: {}",
-                    group_name,
-                    e
-                )
-            })?;
+            .map_err(|e| anyhow!("Failed to send save command for group {group_name}: {e}"))?;
 
         self.await_save(view_recv, group_name)
             .await
@@ -590,7 +572,9 @@ impl CliProcessor {
     ) -> Result<()> {
         // Absolute deadline: frames from other generations must not keep
         // extending the budget.
-        let deadline = tokio::time::Instant::now() + GROUP_TIMEOUT;
+        let deadline = tokio::time::Instant::now()
+            .checked_add(GROUP_TIMEOUT)
+            .ok_or_else(|| anyhow!("Group deadline overflow"))?;
 
         loop {
             tokio::select! {
@@ -607,7 +591,7 @@ impl CliProcessor {
                 message = view_recv.recv() => {
                     self.handle_feedback(message)?;
                 }
-                _ = tokio::time::sleep_until(deadline) => {
+                () = tokio::time::sleep_until(deadline) => {
                     return Err(anyhow!(
                         "Timeout waiting for group {group_name} processing to complete"
                     ));
@@ -623,7 +607,9 @@ impl CliProcessor {
         view_recv: &mut broadcast::Receiver<PipelineCommand>,
         group_name: &str,
     ) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + GROUP_TIMEOUT;
+        let deadline = tokio::time::Instant::now()
+            .checked_add(GROUP_TIMEOUT)
+            .ok_or_else(|| anyhow!("Group deadline overflow"))?;
 
         loop {
             tokio::select! {
@@ -641,7 +627,7 @@ impl CliProcessor {
                         other => self.handle_feedback(other)?,
                     }
                 }
-                _ = tokio::time::sleep_until(deadline) => {
+                () = tokio::time::sleep_until(deadline) => {
                     return Err(anyhow!("Timeout waiting for group {group_name} to be written"));
                 }
             }
@@ -666,21 +652,16 @@ impl CliProcessor {
                     }
                 }
             }
-            Ok(_) => Ok(()),
             // Overflow is progress chatter we do not act on; the frame channel
             // remains the authority on completion.
-            Err(broadcast::error::RecvError::Lagged(_)) => Ok(()),
+            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => Ok(()),
             Err(broadcast::error::RecvError::Closed) => {
                 Err(anyhow!("Pipeline shut down unexpectedly"))
             }
         }
     }
 
-    fn generate_group_output_filename(
-        &self,
-        group_name: &str,
-        reference_file: &Path,
-    ) -> Result<String> {
+    fn generate_group_output_filename(&self, group_name: &str, reference_file: &Path) -> String {
         let extension = match &self.args.format {
             OutputFormat::Preserve => reference_file
                 .extension()
@@ -704,7 +685,7 @@ impl CliProcessor {
         output_filename.push('.');
         output_filename.push_str(extension);
 
-        Ok(output_filename)
+        output_filename
     }
 
     fn generate_output_filename_with_structure(
@@ -716,7 +697,7 @@ impl CliProcessor {
             .args
             .input
             .as_ref()
-            .expect("input path is guaranteed to be Some in CLI mode");
+            .ok_or_else(|| anyhow!("Input path is required"))?;
 
         // Calculate the relative path from input base to the input file
         let relative_path = if input_base.is_dir() {
@@ -735,12 +716,12 @@ impl CliProcessor {
         };
 
         // Apply format conversion if needed
-        let output_path = if !matches!(self.args.format, OutputFormat::Preserve) {
+        let output_path = if matches!(self.args.format, OutputFormat::Preserve) {
+            relative_path.to_path_buf()
+        } else {
             let mut path = relative_path.to_path_buf();
             path.set_extension(self.args.format.extension());
             path
-        } else {
-            relative_path.to_path_buf()
         };
 
         // Apply prefix/suffix if needed
@@ -792,6 +773,8 @@ impl CliProcessor {
     }
 }
 
+/// # Errors
+/// Returns an error if argument validation, processing, or file I/O fails.
 pub async fn run_cli(args: Args) -> Result<()> {
     let processor = CliProcessor::new(args)?;
     processor.run().await
@@ -855,36 +838,12 @@ mod tests {
 
     #[test]
     fn test_regex_filter() {
-        let args = Args {
-            filter: r".*\.tiff?$".to_string(),
-            ..Default::default()
-        };
+        let args = Args::parse_from(["strawberry", "--filter", r".*\.tiff?$"]);
         let processor =
             CliProcessor::new(args).expect("CliProcessor should be created successfully in test");
 
         assert!(processor.is_image_file(Path::new("test.tif")));
         assert!(processor.is_image_file(Path::new("test.tiff")));
         assert!(!processor.is_image_file(Path::new("test.png")));
-    }
-}
-
-// Implement Default for Args to support testing
-impl Default for Args {
-    fn default() -> Self {
-        Self {
-            pipeline: None,
-            input: None,
-            output: None,
-            cli: false,
-            filter: r".*\.(tif|tiff|png|jpg|jpeg)$".to_string(),
-            recursive: false,
-            verbose: false,
-            dry_run: false,
-            format: OutputFormat::Preserve,
-            prefix: None,
-            suffix: None,
-            group: GroupingMode::None,
-            group_regex: None,
-        }
     }
 }

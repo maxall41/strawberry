@@ -40,13 +40,13 @@ pub struct CommandPalette {
 impl EventEmitter<PaletteDismissed> for CommandPalette {}
 
 impl Focusable for CommandPalette {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
 impl CommandPalette {
-    pub fn new(commands: Rc<[PalleteCommand]>, cx: &mut Context<Self>) -> Self {
+    pub fn new(commands: Rc<[PalleteCommand]>, cx: &Context<Self>) -> Self {
         let mut palette = Self {
             focus_handle: cx.focus_handle(),
             commands,
@@ -81,11 +81,10 @@ impl CommandPalette {
             })
             .collect();
 
-        scored.sort_by(|a, b| {
-            self.commands[a.0.index]
-                .label
-                .to_lowercase()
-                .cmp(&self.commands[b.0.index].label.to_lowercase())
+        scored.sort_by_key(|(candidate, _)| {
+            self.commands
+                .get(candidate.index)
+                .map(|command| command.label.to_lowercase())
         });
 
         self.matches = scored.into_iter().map(|(candidate, _)| candidate).collect();
@@ -97,41 +96,54 @@ impl CommandPalette {
         if self.matches.is_empty() {
             return;
         }
-        let count = self.matches.len() as isize;
-        self.selected = (self.selected as isize + delta).rem_euclid(count) as usize;
+        let Some(count) = isize::try_from(self.matches.len()).ok() else {
+            return;
+        };
+        let Some(selected) = isize::try_from(self.selected).ok() else {
+            return;
+        };
+        self.selected =
+            usize::try_from(selected.saturating_add(delta).rem_euclid(count)).unwrap_or_default();
         self.list_scroll
             .scroll_to_item(self.selected, ScrollStrategy::Nearest);
         cx.notify();
     }
 
-    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm(&self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(candidate) = self.matches.get(self.selected) else {
             return;
         };
-        let action = self.commands[candidate.index].action.boxed_clone();
+        let Some(command) = self.commands.get(candidate.index) else {
+            return;
+        };
+        let action = command.action.boxed_clone();
         window.dispatch_action(action, cx);
         cx.emit(PaletteDismissed);
     }
 
     /// Byte offset of the char boundary before the cursor, or the cursor itself at the start.
     fn prev_boundary(&self) -> usize {
-        self.query[..self.cursor]
+        self.query
+            .get(..self.cursor)
+            .unwrap_or_default()
             .chars()
             .next_back()
-            .map_or(self.cursor, |c| self.cursor - c.len_utf8())
+            .map_or(self.cursor, |c| self.cursor.saturating_sub(c.len_utf8()))
     }
 
     /// Byte offset of the char boundary after the cursor, or the cursor itself at the end.
     fn next_boundary(&self) -> usize {
-        self.query[self.cursor..]
+        self.query
+            .get(self.cursor..)
+            .unwrap_or_default()
             .chars()
             .next()
-            .map_or(self.cursor, |c| self.cursor + c.len_utf8())
+            .map_or(self.cursor, |c| self.cursor.saturating_add(c.len_utf8()))
     }
 
     fn insert(&mut self, text: &str, cx: &mut Context<Self>) {
         self.query.insert_str(self.cursor, text);
-        self.cursor += text.len();
+        self.cursor = self.cursor.saturating_add(text.len());
         self.recompute();
         cx.notify();
     }
@@ -247,7 +259,7 @@ impl CommandPalette {
         }
     }
 
-    fn render_query(&self, window: &mut Window) -> impl IntoElement + use<> {
+    fn render_query(&self, window: &Window) -> impl IntoElement + use<> {
         let style = window.text_style();
         let font_size = QUERY_FONT_SIZE.to_pixels(window.rem_size());
         let shaped = window.text_system().shape_line(
@@ -268,14 +280,14 @@ impl CommandPalette {
             .left(shaped.x_for_index(self.cursor))
             .top_0()
             .w(px(1.5))
-            .h(font_size * 1.3)
+            .h(px(f32::from(font_size) * 1.3))
             .bg(theme::ACCENT)
             .with_animation(
                 "palette-caret",
                 Animation::new(Duration::from_millis(1100))
                     .repeat()
                     .with_easing(gpui::pulsating_between(0.1, 1.0)),
-                |el, delta| el.opacity(delta),
+                gpui::Styled::opacity,
             );
 
         div()
@@ -297,7 +309,7 @@ impl CommandPalette {
                     .relative()
                     .flex_1()
                     .min_w_0()
-                    .h(font_size * 1.3)
+                    .h(px(f32::from(font_size) * 1.3))
                     .child(if self.query.is_empty() {
                         div().text_color(theme::TEXT_MUTED).child("Type a command…")
                     } else {
@@ -307,9 +319,13 @@ impl CommandPalette {
             )
     }
 
-    fn render_row(&self, row: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let candidate = &self.matches[row];
-        let command = &self.commands[candidate.index];
+    fn render_row(&self, row: usize, cx: &Context<Self>) -> gpui::AnyElement {
+        let Some(candidate) = self.matches.get(row) else {
+            return div().into_any_element();
+        };
+        let Some(command) = self.commands.get(candidate.index) else {
+            return div().into_any_element();
+        };
         let selected = row == self.selected;
 
         let label =
@@ -358,9 +374,10 @@ impl CommandPalette {
                 this.selected = row;
                 this.confirm(window, cx);
             }))
+            .into_any_element()
     }
 
-    fn render_results(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_results(&self, cx: &Context<Self>) -> gpui::AnyElement {
         if self.matches.is_empty() {
             return div()
                 .h(px(ROW_HEIGHT))
@@ -385,7 +402,7 @@ impl CommandPalette {
             }),
         )
         .track_scroll(&self.list_scroll)
-        .h(px(visible as f32 * ROW_HEIGHT))
+        .h(px(f32::from(gpui::Pixels::from(visible)) * ROW_HEIGHT))
         .into_any_element()
     }
 }

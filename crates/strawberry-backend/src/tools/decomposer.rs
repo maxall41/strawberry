@@ -18,7 +18,7 @@ pub struct Decomposer {
     pub base: ToolBase,
     pub cache: ToolCache<DecomposerState>,
     compositer: GpuCompositor,
-    gpu_decomposer: GpuDecomposer,
+    processor: GpuDecomposer,
 }
 
 #[async_trait]
@@ -64,7 +64,7 @@ impl ToolBackend for Decomposer {
             anyhow::anyhow!(error_msg)
         })?;
 
-        let decomposed = match self.gpu_decomposer.apply_decomposition(first_image).await {
+        let decomposed = match self.processor.apply_decomposition(first_image).await {
             Ok(result) => result,
             Err(e) => {
                 self.base
@@ -112,7 +112,7 @@ impl ToolBackend for Decomposer {
             match message {
                 PipelineCommand::RequestState() => {
                     self.base
-                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
@@ -123,7 +123,7 @@ impl ToolBackend for Decomposer {
                     PipelineObjectMessage::DecomposerMessage(message) => match message {
                         DecomposerMessage::ToggleVisibility(value, layer_index) => {
                             let mut mutated = self.state.enabled_layers.clone();
-                            let index = layer_index as usize;
+                            let index = usize::from(layer_index);
 
                             if index >= mutated.len() {
                                 let error_msg = format!(
@@ -139,7 +139,9 @@ impl ToolBackend for Decomposer {
                                 return Err(anyhow::anyhow!(error_msg));
                             }
 
-                            mutated[index] = value;
+                            if let Some(layer) = mutated.get_mut(index) {
+                                *layer = value;
+                            }
                             self.state.enabled_layers = mutated;
                         }
                     },
@@ -153,7 +155,7 @@ impl ToolBackend for Decomposer {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             self.base.trigger_refresh()?;
@@ -165,7 +167,8 @@ impl ToolBackend for Decomposer {
 }
 
 impl Decomposer {
-    pub async fn new(
+    #[must_use]
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
@@ -177,8 +180,8 @@ impl Decomposer {
             },
             base: ToolBase::new(command_sender, global_sender),
             cache: ToolCache::new(),
-            compositer: GpuCompositor::new(gpu_image_processor.clone()).await,
-            gpu_decomposer: GpuDecomposer::new(gpu_image_processor).await,
+            compositer: GpuCompositor::new(gpu_image_processor.clone()),
+            processor: GpuDecomposer::new(gpu_image_processor),
         }
     }
 }

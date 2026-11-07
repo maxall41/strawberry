@@ -66,7 +66,8 @@ pub struct OverlayCollection {
 }
 
 impl OverlayCollection {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self { overlays: vec![] }
     }
 

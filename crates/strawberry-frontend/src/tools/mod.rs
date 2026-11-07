@@ -31,7 +31,7 @@ pub struct CleanupGuard {
 }
 
 impl CleanupGuard {
-    pub fn new(
+    pub const fn new(
         command_sender: tokio::sync::broadcast::Sender<strawberry_types::PipelineCommand>,
         backend_tool_type: strawberry_types::BackendToolType,
     ) -> Self {
@@ -74,7 +74,7 @@ pub trait FrontendMessageHandler: Sized + 'static {
     /// Get the base (mutable)
     fn base_mut(&mut self) -> &mut ToolBase;
 
-    /// Extract tool-specific state from ToolState enum
+    /// Extract tool-specific state from `ToolState` enum
     fn extract_state(tool_state: ToolState) -> Option<Self::State>;
 
     /// Called when state changes (before cx.notify)
@@ -84,8 +84,8 @@ pub trait FrontendMessageHandler: Sized + 'static {
 
 pub fn spawn_message_processor<V: FrontendMessageHandler>(
     view: &mut V,
-    window: &mut Window,
-    cx: &mut Context<V>,
+    window: &Window,
+    cx: &Context<V>,
 ) {
     // The receive channel is flume (MPMC): a second consumer task would steal
     // messages and race state application out of order, so the view could end
@@ -96,11 +96,10 @@ pub fn spawn_message_processor<V: FrontendMessageHandler>(
     view.base_mut().processor_spawned = true;
 
     let state = view.state_arc();
-    let receiver = view
-        .base()
-        .receive_channel
-        .clone()
-        .expect("receive_channel should be initialized");
+    let Some(receiver) = view.base().receive_channel.clone() else {
+        view.base_mut().processor_spawned = false;
+        return;
+    };
 
     cx.spawn_in(window, async move |this, cx| {
         loop {

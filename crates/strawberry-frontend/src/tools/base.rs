@@ -10,12 +10,9 @@ pub struct ToolBase {
     pub current_tool_index: Arc<RwLock<Option<u16>>>,
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
-    pub focus_handle: Option<FocusHandle>,
+    pub focus_handle: FocusHandle,
     #[allow(dead_code)]
     pub cleanup_guard: crate::tools::CleanupGuard,
-    // Exactly one message-processor task may consume receive_channel: flume is
-    // MPMC, so a second consumer steals messages and states get applied out of
-    // order, leaving the view showing stale backend state.
     pub processor_spawned: bool,
 }
 
@@ -23,6 +20,7 @@ impl ToolBase {
     pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         backend_type: BackendToolType,
+        focus_handle: FocusHandle,
     ) -> Self {
         Self {
             command_sender: command_sender.clone(),
@@ -31,7 +29,7 @@ impl ToolBase {
             current_tool_index: Arc::new(RwLock::new(None)),
             send_channels: vec![],
             receive_channel: None,
-            focus_handle: None,
+            focus_handle,
             cleanup_guard: crate::tools::CleanupGuard::new(command_sender, backend_type),
             processor_spawned: false,
         }
@@ -40,10 +38,9 @@ impl ToolBase {
     /// Set up the backend connection: allocate the message channel and announce
     /// ourselves so the pipeline hands back per-tool channels (answered via
     /// `ReturnBackendTools`). Returns false if the pipeline is unreachable.
-    pub fn connect(&mut self, focus_handle: FocusHandle) -> bool {
+    pub fn connect(&mut self) -> bool {
         let (sender, receiver) = flume::unbounded();
         self.receive_channel = Some(receiver);
-        self.focus_handle = Some(focus_handle);
         if let Err(e) = self.command_sender.send(PipelineCommand::DiscoverBackend(
             self.backend_type.clone(),
             sender,
@@ -61,13 +58,7 @@ impl ToolBase {
     /// Get current backend tool index - 100% identical across all tools
     pub fn get_current_tool_index(&self) -> Option<u16> {
         match self.current_tool_index.read() {
-            Ok(guard) => match *guard {
-                Some(index) => Some(index),
-                None => {
-                    eprintln!("No current tool index available");
-                    None
-                }
-            },
+            Ok(guard) => *guard,
             Err(e) => {
                 eprintln!("Failed to read current tool index: {e}");
                 None
@@ -81,12 +72,10 @@ impl ToolBase {
             return Err("No current tool index".to_string());
         };
 
-        if let Some(sender) = self.send_channels.get(current_tool_index as usize) {
-            sender
-                .send(message)
-                .map_err(|e| format!("Failed to send to backend: {e}"))
-        } else {
-            Err(format!("Invalid tool index: {current_tool_index}"))
-        }
+        self.send_channels
+            .get(usize::from(current_tool_index))
+            .ok_or_else(|| format!("Invalid tool index: {current_tool_index}"))?
+            .send(message)
+            .map_err(|e| format!("Failed to send to backend: {e}"))
     }
 }

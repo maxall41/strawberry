@@ -1,3 +1,6 @@
+// wgpu auto-trait checks exceed the default compiler recursion depth.
+#![recursion_limit = "256"]
+
 use anyhow::{Result, anyhow};
 use image::RgbaImage;
 use wgpu::{Trace, util::DeviceExt};
@@ -22,7 +25,23 @@ pub struct GpuImageProcessor {
     pub queue: wgpu::Queue,
 }
 
+pub(crate) fn pixel_count(width: u32, height: u32) -> Result<usize> {
+    Ok(usize::try_from(
+        u64::from(width)
+            .checked_mul(u64::from(height))
+            .ok_or_else(|| anyhow!("Image dimensions overflow"))?,
+    )?)
+}
+
+pub(crate) fn buffer_size(pixel_count: usize, bytes_per_pixel: u64) -> Result<u64> {
+    u64::try_from(pixel_count)?
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| anyhow!("GPU buffer size overflow"))
+}
+
 impl GpuImageProcessor {
+    /// # Errors
+    /// Returns an error if no suitable GPU adapter or device is available.
     pub async fn new() -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -35,7 +54,7 @@ impl GpuImageProcessor {
                 ..Default::default()
             })
             .await
-            .map_err(|e| anyhow!("Failed to find suitable GPU adapter: {}", e))?;
+            .map_err(|e| anyhow!("Failed to find suitable GPU adapter: {e}"))?;
 
         let required_limits = wgpu::Limits {
             max_storage_buffer_binding_size: adapter.limits().max_storage_buffer_binding_size,
@@ -53,7 +72,7 @@ impl GpuImageProcessor {
                 trace: Trace::Off,
             })
             .await
-            .map_err(|e| anyhow!("Failed to create GPU device: {}", e))?;
+            .map_err(|e| anyhow!("Failed to create GPU device: {e}"))?;
         println!(
             "GPU Device created max_storage_buffer_binding_size: {:?}",
             device.limits().max_storage_buffer_binding_size
@@ -63,6 +82,7 @@ impl GpuImageProcessor {
     }
 
     // Helper methods for common GPU operations
+    #[must_use]
     pub fn create_input_buffer(&self, image: &RgbaImage) -> wgpu::Buffer {
         self.device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -72,22 +92,26 @@ impl GpuImageProcessor {
             })
     }
 
-    pub fn create_output_buffer(&self, pixel_count: usize) -> wgpu::Buffer {
-        self.device.create_buffer(&wgpu::BufferDescriptor {
+    /// # Errors
+    /// Returns an error if the buffer byte count overflows.
+    pub fn create_output_buffer(&self, pixel_count: usize) -> Result<wgpu::Buffer> {
+        Ok(self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Output Buffer"),
-            size: (pixel_count * 4) as u64, // 4 bytes per RGBA pixel
+            size: crate::buffer_size(pixel_count, 4)?, // 4 bytes per RGBA pixel
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
-        })
+        }))
     }
 
-    pub fn create_staging_buffer(&self, pixel_count: usize) -> wgpu::Buffer {
-        self.device.create_buffer(&wgpu::BufferDescriptor {
+    /// # Errors
+    /// Returns an error if the buffer byte count overflows.
+    pub fn create_staging_buffer(&self, pixel_count: usize) -> Result<wgpu::Buffer> {
+        Ok(self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Staging Buffer"),
-            size: (pixel_count * 4) as u64,
+            size: crate::buffer_size(pixel_count, 4)?,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        })
+        }))
     }
 
     pub fn create_uniform_buffer<T: bytemuck::Pod>(&self, data: &T) -> wgpu::Buffer {
@@ -123,6 +147,8 @@ impl GpuImageProcessor {
         compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
     }
 
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn read_buffer_to_image(
         &self,
         output_buffer: &wgpu::Buffer,
@@ -144,7 +170,7 @@ impl GpuImageProcessor {
             0,
             staging_buffer,
             0,
-            (pixel_count * 4) as u64,
+            crate::buffer_size(pixel_count, 4)?,
         );
 
         // Submit commands
@@ -161,8 +187,8 @@ impl GpuImageProcessor {
         let map_result = receiver
             .recv_async()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {}", e))?;
-        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {e}"))?;
+        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {e:?}"))?;
 
         let data = buffer_slice.get_mapped_range()?;
         let result_bytes: &[u8] = &data;

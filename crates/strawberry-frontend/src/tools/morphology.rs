@@ -1,3 +1,6 @@
+use crate::gui::actions::actions;
+use num_traits::ToPrimitive;
+
 use crate::gui::theme;
 // Implements UI for morphology tool
 
@@ -5,12 +8,11 @@ use std::sync::{Arc, RwLock};
 
 use gpui::{
     App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
-    px, size,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
 use crate::gui::ToggleButton;
-use crate::gui::value_control::{ValueControl, ValueControlEvent};
+use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_processing::morphology::MorphologyOperation;
 use strawberry_types::{
@@ -27,10 +29,7 @@ pub struct MorphologyView {
 
 impl Focusable for MorphologyView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.base
-            .focus_handle
-            .clone()
-            .expect("focus_handle should be initialized before use")
+        self.base.focus_handle.clone()
     }
 }
 
@@ -38,27 +37,24 @@ impl MorphologyView {
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        cx: &App,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(MorphologyState::default())),
             element_size_control: None,
             base: crate::tools::base::ToolBase::new(
-                command_sender.clone(),
+                command_sender,
                 strawberry_types::BackendToolType::Morphology,
+                cx.focus_handle(),
             ),
         }
     }
 
-    fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
-    fn toggle_enabled(
-        &mut self,
-        current_value: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &Context<Self>) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::ToggleActive(!current_value),
         )) {
@@ -67,11 +63,11 @@ impl MorphologyView {
     }
 
     fn update_operation_and_size(
-        &mut self,
+        &self,
         operation: MorphologyOperation,
         element_size: u32,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
+        _window: &Window,
+        _cx: &Context<Self>,
     ) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::MorphologyMessage(MorphologyMessage::SetOperation(operation)),
@@ -87,12 +83,7 @@ impl MorphologyView {
         }
     }
 
-    fn set_operation(
-        &mut self,
-        operation: MorphologyOperation,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn set_operation(&self, operation: MorphologyOperation, window: &Window, cx: &Context<Self>) {
         let element_size = match self.state.read() {
             Ok(state) => state.element_size,
             Err(e) => {
@@ -100,14 +91,14 @@ impl MorphologyView {
                 return;
             }
         };
-        self.update_operation_and_size(operation, element_size, _window, _cx);
+        self.update_operation_and_size(operation, element_size, window, cx);
     }
 
-    fn adjust_element_size_value(&mut self, new_size: u32) {
+    fn adjust_element_size_value(&self, new_size: u32) {
         let current_state = self
             .state
             .read()
-            .expect("State lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let operation = current_state.operation;
         drop(current_state);
 
@@ -133,26 +124,22 @@ impl MorphologyView {
         let current_enabled = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
 
         self.toggle_enabled(current_enabled, window, cx);
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(
-        &self,
-        state: &MorphologyState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_status(state: &MorphologyState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
             is_enabled,
-            move |this: &mut MorphologyView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
-                  cx: &mut Context<MorphologyView>| {
+                  cx: &mut Context<Self>| {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
@@ -161,11 +148,11 @@ impl MorphologyView {
     }
 
     // Operation selection component
-    fn render_operation_control(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_operation_control(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let state = self
             .state
             .read()
-            .expect("State lock should not be poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         div()
             .flex()
             .flex_col()
@@ -180,25 +167,25 @@ impl MorphologyView {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(self.render_operation_button(
+                    .child(Self::render_operation_button(
                         "Dilation".to_string(),
                         MorphologyOperation::Dilation,
                         state.operation == MorphologyOperation::Dilation,
                         cx,
                     ))
-                    .child(self.render_operation_button(
+                    .child(Self::render_operation_button(
                         "Erosion".to_string(),
                         MorphologyOperation::Erosion,
                         state.operation == MorphologyOperation::Erosion,
                         cx,
                     ))
-                    .child(self.render_operation_button(
+                    .child(Self::render_operation_button(
                         "Opening".to_string(),
                         MorphologyOperation::Opening,
                         state.operation == MorphologyOperation::Opening,
                         cx,
                     ))
-                    .child(self.render_operation_button(
+                    .child(Self::render_operation_button(
                         "Closing".to_string(),
                         MorphologyOperation::Closing,
                         state.operation == MorphologyOperation::Closing,
@@ -208,11 +195,10 @@ impl MorphologyView {
     }
 
     fn render_operation_button(
-        &self,
         label: String,
         operation: MorphologyOperation,
         is_selected: bool,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .px_2()
@@ -237,10 +223,10 @@ impl MorphologyView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(
-                    move |this: &mut MorphologyView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<MorphologyView>| {
+                          cx: &mut Context<Self>| {
                         this.set_operation(operation, window, cx);
                     },
                 ),
@@ -250,21 +236,21 @@ impl MorphologyView {
     // Element size control component
     fn render_element_size_control(
         &self,
-        _cx: &mut Context<Self>,
-        _window: &mut Window,
+        _cx: &Context<Self>,
+        _window: &Window,
     ) -> impl IntoElement + use<> {
-        self.element_size_control
-            .clone()
-            .expect("element_size_control should be initialized before use")
+        self.element_size_control.clone().map_or_else(
+            || div().into_any_element(),
+            gpui::IntoElement::into_any_element,
+        )
     }
 
     // Preset button component
     fn render_preset_button(
-        &self,
         label: String,
         operation: MorphologyOperation,
         element_size: u32,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .px_2()
@@ -279,10 +265,10 @@ impl MorphologyView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(
-                    move |this: &mut MorphologyView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<MorphologyView>| {
+                          cx: &mut Context<Self>| {
                         this.update_operation_and_size(operation, element_size, window, cx);
                     },
                 ),
@@ -290,7 +276,7 @@ impl MorphologyView {
     }
 
     // Presets section component
-    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -301,25 +287,25 @@ impl MorphologyView {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(self.render_preset_button(
+                    .child(Self::render_preset_button(
                         "Small Dilation".to_string(),
                         MorphologyOperation::Dilation,
                         3,
                         cx,
                     ))
-                    .child(self.render_preset_button(
+                    .child(Self::render_preset_button(
                         "Medium Erosion".to_string(),
                         MorphologyOperation::Erosion,
                         5,
                         cx,
                     ))
-                    .child(self.render_preset_button(
+                    .child(Self::render_preset_button(
                         "Small Opening".to_string(),
                         MorphologyOperation::Opening,
                         3,
                         cx,
                     ))
-                    .child(self.render_preset_button(
+                    .child(Self::render_preset_button(
                         "Medium Closing".to_string(),
                         MorphologyOperation::Closing,
                         5,
@@ -331,15 +317,15 @@ impl MorphologyView {
     // Controls section component
     fn render_controls_section(
         &self,
-        cx: &mut Context<Self>,
-        _window: &mut Window,
+        cx: &Context<Self>,
+        window: &Window,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
             .gap_3()
             .child(self.render_operation_control(cx))
-            .child(self.render_element_size_control(cx, _window))
+            .child(self.render_element_size_control(cx, window))
     }
 }
 
@@ -370,7 +356,12 @@ impl FrontendMessageHandler for MorphologyView {
     fn on_state_changed(&mut self, new_state: &MorphologyState, cx: &mut Context<Self>) {
         if let Some(ref ctrl) = self.element_size_control {
             ctrl.update(cx, |c, cx| {
-                c.value = new_state.element_size as f32;
+                // This approximation is only used to display the integer backend state.
+                let Some(display_value) = new_state.element_size.to_f32() else {
+                    eprintln!("Cannot display element_size in the numeric control");
+                    return;
+                };
+                c.value = display_value;
                 cx.notify();
             });
         }
@@ -378,7 +369,7 @@ impl FrontendMessageHandler for MorphologyView {
 }
 
 impl Render for MorphologyView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
@@ -398,7 +389,7 @@ impl Render for MorphologyView {
         };
 
         div()
-            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -410,19 +401,19 @@ impl Render for MorphologyView {
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
-                    move |this: &mut MorphologyView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<MorphologyView>| {
+                          cx: &mut Context<Self>| {
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
-            .child(self.render_status(&state, cx))
-            .child(self.render_controls_section(cx, _window))
-            .child(self.render_presets_section(cx))
+            .child(Self::render_status(&state, cx))
+            .child(self.render_controls_section(cx, window))
+            .child(Self::render_presets_section(cx))
     }
 }
 
@@ -447,7 +438,7 @@ impl ToolFrontend for MorphologyView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.base.connect(cx.focus_handle()) {
+        if !self.base.connect() {
             return;
         }
 
@@ -457,17 +448,24 @@ impl ToolFrontend for MorphologyView {
         let state = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let element_size_control = cx.new(|_cx| {
+        let Some(display_value) = state.element_size.to_f32() else {
+            eprintln!("Cannot display element_size in the numeric control");
+            return;
+        };
+        let element_size_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.0}", state.element_size),
-                state.element_size as f32,
-                "Element Size".to_string(),
-                1.0,
-                "element_size".to_string(),
-                1.0,
-                50.0,
+                display_value,
+                ValueControlConfig {
+                    label: "Element Size".to_string(),
+                    step: 1.0,
+                    id: "element_size".to_string(),
+                    min: 1.0,
+                    max: 50.0,
+                },
+                cx,
             )
         });
 
@@ -475,8 +473,12 @@ impl ToolFrontend for MorphologyView {
         cx.subscribe(
             &element_size_control,
             |this, _control, event: &ValueControlEvent, _cx| {
-                if event.id == "element_size" {
-                    this.adjust_element_size_value(event.value as u32);
+                if event.id == "element_size"
+                    && event.value.is_finite()
+                    && event.value >= 0.0
+                    && let Some(value) = event.value.to_u32()
+                {
+                    this.adjust_element_size_value(value);
                 }
             },
         )

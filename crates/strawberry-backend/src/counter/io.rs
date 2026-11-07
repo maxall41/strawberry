@@ -92,7 +92,8 @@ impl Default for ImageProperties {
 }
 
 impl CellCounterMarkerFile {
-    /// Create a new CellCounterMarkerFile from counter state
+    /// Create a new `CellCounterMarkerFile` from counter state
+    #[must_use]
     pub fn from_counter_state(state: &CounterState, image_filename: Option<String>) -> Self {
         let mut image_properties = ImageProperties::default();
         if let Some(filename) = image_filename {
@@ -105,12 +106,13 @@ impl CellCounterMarkerFile {
             // Convert manual counts to marker types
             for (&type_id, counts) in &state.manual_counts {
                 if !counts.is_empty() {
-                    let markers: Vec<Marker> = counts.iter().map(|count| count.into()).collect();
+                    let markers: Vec<Marker> =
+                        counts.iter().map(std::convert::Into::into).collect();
                     let name = state
                         .count_type_names
                         .get(&type_id)
                         .cloned()
-                        .unwrap_or_else(|| format!("Type {}", type_id));
+                        .unwrap_or_else(|| format!("Type {type_id}"));
 
                     marker_types.push(MarkerType {
                         type_id,
@@ -120,7 +122,11 @@ impl CellCounterMarkerFile {
                 }
             }
         } else if state.mode == CounterMode::Auto {
-            let markers: Vec<Marker> = state.auto_counts.iter().map(|count| count.into()).collect();
+            let markers: Vec<Marker> = state
+                .auto_counts
+                .iter()
+                .map(std::convert::Into::into)
+                .collect();
             marker_types.push(MarkerType {
                 type_id: 0u16,
                 name: format!("Type {}", 0),
@@ -145,30 +151,31 @@ impl CellCounterMarkerFile {
     }
 
     /// Convert to XML string with proper XML declaration
+    /// # Errors
+    /// Returns an error if XML conversion or file I/O fails.
     pub fn to_xml_string(&self) -> Result<String, Box<dyn std::error::Error>> {
         let xml_body = to_string(self)?;
         let xml = format!("<?xml version='1.0' encoding='utf-8'?>\n{xml_body}");
         Ok(xml)
     }
 
-    /// Parse XML string and create CellCounterMarkerFile
+    /// Parse XML string and create `CellCounterMarkerFile`
+    /// # Errors
+    /// Returns an error if XML conversion or file I/O fails.
     pub fn from_xml_string(xml: &str) -> Result<Self, Box<dyn std::error::Error>> {
         // Remove XML declaration if present
         let xml_content = if xml.starts_with("<?xml") {
-            if let Some(start) = xml.find('>') {
-                xml[start + 1..].trim()
-            } else {
-                xml
-            }
+            xml.split_once('>').map_or(xml, |(_, body)| body.trim())
         } else {
             xml
         };
 
-        let cell_counter_file: CellCounterMarkerFile = from_str(xml_content)?;
+        let cell_counter_file: Self = from_str(xml_content)?;
         Ok(cell_counter_file)
     }
 
-    /// Convert to CounterState
+    /// Convert to `CounterState`
+    #[must_use]
     pub fn to_counter_state(&self) -> CounterState {
         let mut manual_counts = HashMap::new();
         let mut count_type_visibility = HashMap::new();
@@ -178,7 +185,7 @@ impl CellCounterMarkerFile {
             let counts: Vec<CountData> = marker_type
                 .markers
                 .iter()
-                .map(|marker| marker.into())
+                .map(std::convert::Into::into)
                 .collect();
             if !counts.is_empty() {
                 manual_counts.insert(marker_type.type_id, counts);
@@ -202,7 +209,9 @@ impl CellCounterMarkerFile {
     }
 }
 
-/// Export counter data to CellCounter XML format
+/// Export counter data to `CellCounter` XML format
+/// # Errors
+/// Returns an error if XML conversion or file I/O fails.
 pub fn export_counter_to_xml(
     state: &CounterState,
     filename: Option<String>,
@@ -211,7 +220,9 @@ pub fn export_counter_to_xml(
     cell_counter_file.to_xml_string()
 }
 
-/// Export counter data to CellCounter XML format and save to file
+/// Export counter data to `CellCounter` XML format and save to file
+/// # Errors
+/// Returns an error if XML conversion or file I/O fails.
 pub fn export_counter_to_xml_file(
     state: &CounterState,
     file_path: &Path,
@@ -219,20 +230,24 @@ pub fn export_counter_to_xml_file(
     let filename = file_path
         .file_name()
         .and_then(|name| name.to_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     let xml = export_counter_to_xml(state, filename)?;
     fs::write(file_path, xml)?;
     Ok(())
 }
 
-/// Import counter data from CellCounter XML format
+/// Import counter data from `CellCounter` XML format
+/// # Errors
+/// Returns an error if XML conversion or file I/O fails.
 pub fn import_counter_from_xml(xml: &str) -> Result<CounterState, Box<dyn std::error::Error>> {
     let cell_counter_file = CellCounterMarkerFile::from_xml_string(xml)?;
     Ok(cell_counter_file.to_counter_state())
 }
 
-/// Import counter data from CellCounter XML file
+/// Import counter data from `CellCounter` XML file
+/// # Errors
+/// Returns an error if XML conversion or file I/O fails.
 pub fn import_counter_from_xml_file(
     file_path: &Path,
 ) -> Result<CounterState, Box<dyn std::error::Error>> {

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use strawberry_processing::{local_maxima::ThresholdType, morphology::MorphologyOperation};
 
 // Counter-specific types
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CountData {
     pub position: (u64, u64), // X, Y
     pub size: u16,
@@ -33,7 +33,7 @@ pub struct FilterProxy {
 }
 
 // Manager-specific types
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolProxy {
     pub name: String,
     pub position: u16,
@@ -45,7 +45,7 @@ pub struct PipelineConfig {
 }
 
 // Individual tool states
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompositorState {
     pub is_enabled: bool,
     pub enabled_layers: Vec<bool>,
@@ -65,7 +65,7 @@ pub struct GaussianBlurState {
     pub is_enabled: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrayscaleState {
     pub is_enabled: bool,
 }
@@ -73,7 +73,7 @@ pub struct GrayscaleState {
 type PathSegment = Vec<(u64, u64)>;
 type Path = Vec<PathSegment>;
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NerveTracerState {
     pub is_enabled: bool,
     pub paths: Vec<Path>,
@@ -102,20 +102,20 @@ impl Default for LocalMaximaState {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagerState {
     pub proxy_tools: Vec<ToolProxy>,
     pub is_enabled: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MorphologyState {
     pub operation: MorphologyOperation,
     pub element_size: u32,
     pub is_enabled: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollingBallState {
     pub ball_radius: u32,
     pub is_enabled: bool,
@@ -157,7 +157,7 @@ pub struct CounterState {
     pub count_type_names: HashMap<u16, String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecomposerState {
     pub is_enabled: bool,
     pub enabled_layers: Vec<bool>,

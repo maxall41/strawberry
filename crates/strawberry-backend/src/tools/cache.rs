@@ -7,7 +7,8 @@ pub struct ToolCache<TState> {
 }
 
 impl<TState> ToolCache<TState> {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             cached_output: None,
             cached_state: None,

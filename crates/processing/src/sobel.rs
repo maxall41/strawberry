@@ -24,7 +24,8 @@ pub struct GpuSobel {
 }
 
 impl GpuSobel {
-    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    #[must_use]
+    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         let shader = gpu
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -49,6 +50,8 @@ impl GpuSobel {
         }
     }
 
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn apply_sobel(
         &self,
         image: &RgbaImage,
@@ -71,11 +74,11 @@ impl GpuSobel {
         threshold: Option<f32>,
     ) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
-        let pixel_count = (width * height) as usize;
+        let pixel_count = crate::pixel_count(width, height)?;
 
         let input_buffer = self.gpu.create_input_buffer(image);
-        let output_buffer = self.gpu.create_output_buffer(pixel_count);
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count);
+        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
 
         let uniforms = SobelUniforms {
             width,
@@ -144,7 +147,7 @@ impl GpuSobel {
         tile_config: &TileConfig,
     ) -> Result<RgbaImage> {
         let (full_width, full_height) = image.dimensions();
-        let tile_grid = TileGrid::new(full_width, full_height, tile_config.clone());
+        let tile_grid = TileGrid::new(full_width, full_height, tile_config);
 
         println!(
             "Processing {} tiles for {}x{} image with Sobel edge detection",
@@ -158,7 +161,7 @@ impl GpuSobel {
         for (i, tile_info) in tile_grid.tiles.iter().enumerate() {
             println!(
                 "Processing tile {}/{}: {}x{} at ({}, {})",
-                i + 1,
+                i.saturating_add(1),
                 tile_grid.tiles.len(),
                 tile_info.width,
                 tile_info.height,
@@ -166,7 +169,7 @@ impl GpuSobel {
                 tile_info.y
             );
 
-            let tile_image = extract_rgba_tile(image, tile_info);
+            let tile_image = extract_rgba_tile(image, tile_info)?;
             let processed_tile = self.apply_sobel_single(&tile_image, threshold).await?;
 
             processed_tiles.push((tile_info.clone(), processed_tile));

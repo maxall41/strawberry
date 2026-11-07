@@ -64,19 +64,21 @@ fn byte_runs(text: &str, indices: &[u32]) -> Vec<Range<usize>> {
     let mut position = 0usize;
 
     for &index in indices {
-        let index = index as usize;
+        let Ok(index) = usize::try_from(index) else {
+            return runs;
+        };
         let (offset, ch) = loop {
             let Some(next) = chars.next() else {
                 return runs;
             };
             let current = position;
-            position += 1;
+            position = position.saturating_add(1);
             if current == index {
                 break next;
             }
         };
 
-        let end = offset + ch.len_utf8();
+        let end = offset.saturating_add(ch.len_utf8());
         match runs.last_mut() {
             Some(run) if run.end == offset => run.end = end,
             _ => runs.push(offset..end),

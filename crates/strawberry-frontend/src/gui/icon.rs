@@ -2,7 +2,7 @@ use gpui::{IntoElement, Rgba, SharedString, div, prelude::*, px, svg};
 
 use super::theme;
 
-pub(crate) fn asset_path(name: &str) -> String {
+pub fn asset_path(name: &str) -> String {
     format!("{}/../../assets/icons/{name}", env!("CARGO_MANIFEST_DIR"))
 }
 
@@ -21,13 +21,13 @@ impl Icon {
         }
     }
 
-    pub fn size(mut self, size: f32) -> Self {
+    pub const fn size(mut self, size: f32) -> Self {
         self.size = size;
         self
     }
 
     #[allow(dead_code)]
-    pub fn color(mut self, color: Rgba) -> Self {
+    pub const fn color(mut self, color: Rgba) -> Self {
         self.color = color;
         self
     }

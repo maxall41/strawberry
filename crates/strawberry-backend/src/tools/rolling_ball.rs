@@ -15,7 +15,7 @@ pub struct RollingBall {
     pub state: RollingBallState,
     pub base: ToolBase,
     pub cache: ToolCache<RollingBallState>,
-    rolling_ball: GpuRollingBall,
+    processor: GpuRollingBall,
 }
 
 #[async_trait]
@@ -39,7 +39,7 @@ impl ToolBackend for RollingBall {
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = match self
-                .rolling_ball
+                .processor
                 .apply_rolling_ball(image, self.state.ball_radius)
                 .await
             {
@@ -64,7 +64,7 @@ impl ToolBackend for RollingBall {
             match message {
                 PipelineCommand::RequestState() => {
                     self.base
-                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
@@ -87,7 +87,7 @@ impl ToolBackend for RollingBall {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             self.base.trigger_refresh()?;
@@ -99,7 +99,8 @@ impl ToolBackend for RollingBall {
 }
 
 impl RollingBall {
-    pub async fn new(
+    #[must_use]
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
@@ -108,7 +109,7 @@ impl RollingBall {
             state: RollingBallState::default(),
             base: ToolBase::new(command_sender, global_sender),
             cache: ToolCache::new(),
-            rolling_ball: GpuRollingBall::new(gpu_image_processor).await,
+            processor: GpuRollingBall::new(gpu_image_processor),
         }
     }
 }

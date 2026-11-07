@@ -1,3 +1,4 @@
+use crate::gui::actions::actions;
 use crate::gui::theme;
 // Implements UI for threshold tool
 
@@ -5,12 +6,11 @@ use std::sync::{Arc, RwLock};
 
 use gpui::{
     App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
-    px, size,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
 use crate::gui::ToggleButton;
-use crate::gui::value_control::{ValueControl, ValueControlEvent};
+use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     PipelineCommand, PipelineObjectMessage, ThresholdMessage, ThresholdState, ToolState,
@@ -26,10 +26,7 @@ pub struct ThresholdView {
 
 impl Focusable for ThresholdView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.base
-            .focus_handle
-            .clone()
-            .expect("focus_handle should be initialized before use")
+        self.base.focus_handle.clone()
     }
 }
 
@@ -37,27 +34,24 @@ impl ThresholdView {
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        cx: &App,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(ThresholdState::default())),
             threshold_control: None,
             base: crate::tools::base::ToolBase::new(
-                command_sender.clone(),
+                command_sender,
                 strawberry_types::BackendToolType::Threshold,
+                cx.focus_handle(),
             ),
         }
     }
 
-    fn process_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
-    fn toggle_enabled(
-        &mut self,
-        current_value: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::ToggleActive(!current_value),
         )) {
@@ -74,13 +68,13 @@ impl ThresholdView {
         let current_enabled = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
 
         self.toggle_enabled(current_enabled, window, cx);
     }
 
-    fn update_threshold_value(&mut self, threshold_value: f32) {
+    fn update_threshold_value(&self, threshold_value: f32) {
         if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::ThresholdMessage(ThresholdMessage::SetThresholdValue(
                 threshold_value,
@@ -90,25 +84,21 @@ impl ThresholdView {
         }
     }
 
-    fn adjust_threshold(&mut self, new_threshold: f32) {
+    fn adjust_threshold(&self, new_threshold: f32) {
         let clamped_threshold = new_threshold.clamp(0.0, 1.0);
         self.update_threshold_value(clamped_threshold);
     }
 
     // Status component showing enabled/disabled state
-    fn render_status(
-        &self,
-        state: &ThresholdState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_status(state: &ThresholdState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
             "Enabled".to_string(),
             is_enabled,
-            move |this: &mut ThresholdView,
+            move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
-                  cx: &mut Context<ThresholdView>| {
+                  cx: &mut Context<Self>| {
                 this.toggle_enabled(is_enabled, window, cx);
             },
         )
@@ -120,19 +110,19 @@ impl ThresholdView {
     fn render_threshold_control(
         &self,
         _cx: &mut Context<Self>,
-        _window: &mut Window,
+        _window: &Window,
     ) -> impl IntoElement + use<> {
-        self.threshold_control
-            .clone()
-            .expect("threshold_control should be initialized before use")
+        self.threshold_control.clone().map_or_else(
+            || div().into_any_element(),
+            gpui::IntoElement::into_any_element,
+        )
     }
 
     // Preset button component
     fn render_preset_button(
-        &self,
         label: String,
         threshold_value: f32,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
             .px_3()
@@ -146,10 +136,10 @@ impl ThresholdView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(
-                    move |this: &mut ThresholdView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           _window: &mut Window,
-                          _cx: &mut Context<ThresholdView>| {
+                          _cx: &mut Context<Self>| {
                         this.update_threshold_value(threshold_value);
                     },
                 ),
@@ -157,7 +147,7 @@ impl ThresholdView {
     }
 
     // Presets section component
-    fn render_presets_section(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -168,10 +158,22 @@ impl ThresholdView {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(self.render_preset_button("Dark (0.25)".to_string(), 0.25, cx))
-                    .child(self.render_preset_button("Mid (0.5)".to_string(), 0.5, cx))
-                    .child(self.render_preset_button("Light (0.75)".to_string(), 0.75, cx))
-                    .child(self.render_preset_button("Bright (0.9)".to_string(), 0.9, cx)),
+                    .child(Self::render_preset_button(
+                        "Dark (0.25)".to_string(),
+                        0.25,
+                        cx,
+                    ))
+                    .child(Self::render_preset_button("Mid (0.5)".to_string(), 0.5, cx))
+                    .child(Self::render_preset_button(
+                        "Light (0.75)".to_string(),
+                        0.75,
+                        cx,
+                    ))
+                    .child(Self::render_preset_button(
+                        "Bright (0.9)".to_string(),
+                        0.9,
+                        cx,
+                    )),
             )
     }
 
@@ -179,13 +181,13 @@ impl ThresholdView {
     fn render_controls_section(
         &self,
         cx: &mut Context<Self>,
-        _window: &mut Window,
+        window: &Window,
     ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_threshold_control(cx, _window))
+            .child(self.render_threshold_control(cx, window))
     }
 }
 
@@ -224,7 +226,7 @@ impl FrontendMessageHandler for ThresholdView {
 }
 
 impl Render for ThresholdView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
             Err(e) => {
@@ -244,7 +246,7 @@ impl Render for ThresholdView {
         };
 
         div()
-            .track_focus(&self.base.focus_handle.clone().expect("initialized"))
+            .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
@@ -256,19 +258,19 @@ impl Render for ThresholdView {
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
-                    move |this: &mut ThresholdView,
+                    move |this: &mut Self,
                           _event: &MouseDownEvent,
                           window: &mut Window,
-                          cx: &mut Context<ThresholdView>| {
+                          cx: &mut Context<Self>| {
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
             .child(self.render_header())
-            .child(self.render_status(&state, cx))
-            .child(self.render_controls_section(cx, _window))
-            .child(self.render_presets_section(cx))
+            .child(Self::render_status(&state, cx))
+            .child(self.render_controls_section(cx, window))
+            .child(Self::render_presets_section(cx))
     }
 }
 
@@ -293,7 +295,7 @@ impl ToolFrontend for ThresholdView {
     }
 
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.base.connect(cx.focus_handle()) {
+        if !self.base.connect() {
             return;
         }
 
@@ -303,17 +305,20 @@ impl ToolFrontend for ThresholdView {
         let state = self
             .state
             .read()
-            .expect("State lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let threshold_control = cx.new(|_cx| {
+        let threshold_control = cx.new(|cx| {
             ValueControl::new(
                 format!("{:.3}", state.threshold_value),
                 state.threshold_value,
-                "Threshold".to_string(),
-                0.01,
-                "threshold".to_string(),
-                0.0,
-                1.0,
+                ValueControlConfig {
+                    label: "Threshold".to_string(),
+                    step: 0.01,
+                    id: "threshold".to_string(),
+                    min: 0.0,
+                    max: 1.0,
+                },
+                cx,
             )
         });
 

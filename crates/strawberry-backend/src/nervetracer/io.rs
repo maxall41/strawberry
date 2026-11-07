@@ -1,3 +1,5 @@
+use num_traits::ToPrimitive;
+
 use std::path::Path;
 
 use quick_xml::de::from_str;
@@ -105,17 +107,20 @@ impl Default for ImageSize {
 }
 
 impl Tracings {
-    /// Create a new Tracings structure from NerveTracerState
+    /// Create a new Tracings structure from `NerveTracerState`.
+    ///
+    /// # Errors
+    /// Returns an error if a trace coordinate cannot be represented exactly for XML calibration.
     pub fn from_nerve_tracer_state(
         state: &NerveTracerState,
         samplespacing: Option<SampleSpacing>,
         imagesize: Option<ImageSize>,
-    ) -> Self {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let samplespacing = samplespacing.unwrap_or_default();
         let imagesize = imagesize.unwrap_or_default();
 
         let mut paths = Vec::new();
-        let mut path_id = 1;
+        let mut path_id = 1usize;
 
         // Convert committed paths
         for path in &state.paths {
@@ -124,8 +129,13 @@ impl Tracings {
             // Flatten all segments in this path into a single list of points
             for segment in path {
                 for &(x, y) in segment {
-                    let xd = x as f64 * samplespacing.x;
-                    let yd = y as f64 * samplespacing.y;
+                    // Keep integer coordinates exact before applying floating-point calibration.
+                    let xd = x.to_f64().filter(|value| value.to_u64() == Some(x)).ok_or(
+                        "Trace X coordinate cannot be represented exactly for calibration",
+                    )? * samplespacing.x;
+                    let yd = y.to_f64().filter(|value| value.to_u64() == Some(y)).ok_or(
+                        "Trace Y coordinate cannot be represented exactly for calibration",
+                    )? * samplespacing.y;
                     all_points.push(PointElement {
                         x,
                         y,
@@ -150,46 +160,47 @@ impl Tracings {
                     spines: 0,
                     primary: true,
                     usefitted: false,
-                    name: format!("Path ({})", path_id),
+                    name: format!("Path ({path_id})"),
                     reallength,
                     points: all_points,
                 });
-                path_id += 1;
+                path_id = path_id.saturating_add(1);
             }
         }
 
-        Self {
+        Ok(Self {
             samplespacing,
             imagesize,
             paths,
-        }
+        })
     }
 
     /// Convert to XML string with proper XML declaration
+    /// # Errors
+    /// Returns an error if XML conversion or file I/O fails.
     pub fn to_xml_string(&self) -> Result<String, Box<dyn std::error::Error>> {
         let xml_body = to_string(self)?;
-        let xml = format!("<?xml version='1.0' encoding='utf-8'?>\n{}", xml_body);
+        let xml = format!("<?xml version='1.0' encoding='utf-8'?>\n{xml_body}");
         Ok(xml)
     }
 
     /// Parse XML string and create Tracings
+    /// # Errors
+    /// Returns an error if XML conversion or file I/O fails.
     pub fn from_xml_string(xml: &str) -> Result<Self, Box<dyn std::error::Error>> {
         // Remove XML declaration if present
         let xml_content = if xml.starts_with("<?xml") {
-            if let Some(start) = xml.find('>') {
-                xml[start + 1..].trim()
-            } else {
-                xml
-            }
+            xml.split_once('>').map_or(xml, |(_, body)| body.trim())
         } else {
             xml
         };
 
-        let tracings: Tracings = from_str(xml_content)?;
+        let tracings: Self = from_str(xml_content)?;
         Ok(tracings)
     }
 
-    /// Convert to NerveTracerState
+    /// Convert to `NerveTracerState`
+    #[must_use]
     pub fn to_nerve_tracer_state(&self) -> NerveTracerState {
         let mut paths = Vec::new();
 
@@ -219,31 +230,32 @@ impl Tracings {
 
 /// Calculate the real length of a path by summing distances between consecutive points
 fn calculate_path_length(points: &[PointElement]) -> f64 {
-    if points.len() < 2 {
-        return 0.0;
-    }
-
-    let mut length = 0.0;
-    for i in 0..points.len() - 1 {
-        let dx = points[i + 1].xd - points[i].xd;
-        let dy = points[i + 1].yd - points[i].yd;
-        let dz = points[i + 1].zd - points[i].zd;
-        length += (dx * dx + dy * dy + dz * dz).sqrt();
-    }
-    length
+    points
+        .windows(2)
+        .filter_map(|pair| {
+            let [a, b] = pair else {
+                return None;
+            };
+            Some((b.xd - a.xd).hypot(b.yd - a.yd).hypot(b.zd - a.zd))
+        })
+        .sum()
 }
 
 /// Export nerve tracer data to XML format
+/// # Errors
+/// Returns an error if XML conversion or file I/O fails.
 pub fn export_nervetracer_to_xml(
     state: &NerveTracerState,
     samplespacing: Option<SampleSpacing>,
     imagesize: Option<ImageSize>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let tracings = Tracings::from_nerve_tracer_state(state, samplespacing, imagesize);
+    let tracings = Tracings::from_nerve_tracer_state(state, samplespacing, imagesize)?;
     tracings.to_xml_string()
 }
 
 /// Export nerve tracer data to XML file
+/// # Errors
+/// Returns an error if XML conversion or file I/O fails.
 pub fn export_nervetracer_to_xml_file(
     state: &NerveTracerState,
     file_path: &Path,
@@ -256,6 +268,8 @@ pub fn export_nervetracer_to_xml_file(
 }
 
 /// Import nerve tracer data from XML format
+/// # Errors
+/// Returns an error if XML conversion or file I/O fails.
 pub fn import_nervetracer_from_xml(
     xml: &str,
 ) -> Result<NerveTracerState, Box<dyn std::error::Error>> {
@@ -264,6 +278,8 @@ pub fn import_nervetracer_from_xml(
 }
 
 /// Import nerve tracer data from XML file
+/// # Errors
+/// Returns an error if XML conversion or file I/O fails.
 pub fn import_nervetracer_from_xml_file(
     file_path: &Path,
 ) -> Result<NerveTracerState, Box<dyn std::error::Error>> {

@@ -24,7 +24,8 @@ pub struct GpuContrast {
 }
 
 impl GpuContrast {
-    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    #[must_use]
+    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         // Compute shader for contrast remapping
         let shader = gpu
             .device
@@ -52,6 +53,8 @@ impl GpuContrast {
         }
     }
 
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn apply_contrast(
         &self,
         image: &RgbaImage,
@@ -81,12 +84,12 @@ impl GpuContrast {
         max_value: f32,
     ) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
-        let pixel_count = (width * height) as usize;
+        let pixel_count = crate::pixel_count(width, height)?;
 
         // Create buffers using helper methods
         let input_buffer = self.gpu.create_input_buffer(image);
-        let output_buffer = self.gpu.create_output_buffer(pixel_count);
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count);
+        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
 
         // Uniform buffer for dimensions and contrast parameters
         let uniforms = ContrastUniforms {
@@ -159,7 +162,7 @@ impl GpuContrast {
         tile_config: &TileConfig,
     ) -> Result<RgbaImage> {
         let (full_width, full_height) = image.dimensions();
-        let tile_grid = TileGrid::new(full_width, full_height, tile_config.clone());
+        let tile_grid = TileGrid::new(full_width, full_height, tile_config);
 
         println!(
             "Processing {} tiles for {}x{} image with contrast (min: {}, max: {})",
@@ -175,7 +178,7 @@ impl GpuContrast {
         for (i, tile_info) in tile_grid.tiles.iter().enumerate() {
             println!(
                 "Processing tile {}/{}: {}x{} at ({}, {})",
-                i + 1,
+                i.saturating_add(1),
                 tile_grid.tiles.len(),
                 tile_info.width,
                 tile_info.height,
@@ -184,7 +187,7 @@ impl GpuContrast {
             );
 
             // Extract tile from the full image
-            let tile_image = extract_rgba_tile(image, tile_info);
+            let tile_image = extract_rgba_tile(image, tile_info)?;
 
             // Process the tile
             let processed_tile = self

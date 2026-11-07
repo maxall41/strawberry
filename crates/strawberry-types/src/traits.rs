@@ -14,6 +14,8 @@ pub trait ToolBackend: Send + Sync {
     fn is_enabled(&self) -> bool;
 
     /// Receive messages from the pipeline
+    /// # Errors
+    /// Returns an error if a command cannot be handled or a channel is disconnected.
     fn receive_messages(&mut self) -> anyhow::Result<()>;
 
     /// Enable or disable this tool

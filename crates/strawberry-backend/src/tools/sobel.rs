@@ -15,7 +15,7 @@ pub struct Sobel {
     pub state: SobelState,
     pub base: ToolBase,
     pub cache: ToolCache<SobelState>,
-    sobel: GpuSobel,
+    processor: GpuSobel,
 }
 
 #[async_trait]
@@ -44,7 +44,7 @@ impl ToolBackend for Sobel {
         };
 
         for image in input {
-            *image = match self.sobel.apply_sobel(image, threshold).await {
+            *image = match self.processor.apply_sobel(image, threshold).await {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
@@ -66,7 +66,7 @@ impl ToolBackend for Sobel {
             match message {
                 PipelineCommand::RequestState() => {
                     self.base
-                        .send_to_frontend(PipelineCommand::FrontendMessage(
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
                             FrontendMessage::ReturnState(self.get_state()),
                         ))?;
                 }
@@ -92,7 +92,7 @@ impl ToolBackend for Sobel {
             self.cache.cached_output = None;
             self.cache.cached_state = None;
             self.base
-                .send_to_frontend(PipelineCommand::FrontendMessage(
+                .send_to_frontend(&PipelineCommand::FrontendMessage(
                     FrontendMessage::ReturnState(self.get_state()),
                 ))?;
             self.base.trigger_refresh()?;
@@ -104,7 +104,8 @@ impl ToolBackend for Sobel {
 }
 
 impl Sobel {
-    pub async fn new(
+    #[must_use]
+    pub fn new(
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
@@ -117,7 +118,7 @@ impl Sobel {
             },
             base: ToolBase::new(command_sender, global_sender),
             cache: ToolCache::new(),
-            sobel: GpuSobel::new(gpu_image_processor).await,
+            processor: GpuSobel::new(gpu_image_processor),
         }
     }
 }

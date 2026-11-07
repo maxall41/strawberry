@@ -39,8 +39,8 @@ impl BusyOverlay {
     fn render_spinner(position: Point<Pixels>) -> impl IntoElement {
         div()
             .absolute()
-            .left(position.x + px(12.))
-            .top(position.y + px(16.))
+            .left(px(f32::from(position.x) + 12.))
+            .top(px(f32::from(position.y) + 16.))
             .child(
                 svg()
                     .path(icon::asset_path("spinner.svg"))
