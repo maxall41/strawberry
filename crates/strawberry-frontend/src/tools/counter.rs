@@ -81,8 +81,8 @@ impl CounterView {
                 .set_directory(&default_dir)
                 .save_file();
 
-            if let Some(file) = file {
-                if let Err(e) = this.update(cx, |this, _cx| {
+            if let Some(file) = file
+                && let Err(e) = this.update(cx, |this, _cx| {
                     if let Some(sender) = this.base.send_channels.get(current_tool_index as usize) {
                         if let Err(e) = sender.send(PipelineCommand::PipelineObject(
                             PipelineObjectMessage::CountMessage(CountMessage::SaveCounts(file)),
@@ -92,9 +92,9 @@ impl CounterView {
                     } else {
                         eprintln!("Invalid tool index: {current_tool_index}");
                     }
-                }) {
-                    eprintln!("Failed to update count types: {e}");
-                }
+                })
+            {
+                eprintln!("Failed to update count types: {e}");
             }
         })
         .detach();
@@ -128,10 +128,10 @@ impl CounterView {
 
             if let Some(file) = file {
                 // Store the directory for future save/load operations
-                if let Some(parent) = file.parent() {
-                    if let Ok(mut dir) = last_directory.write() {
-                        *dir = Some(parent.to_path_buf());
-                    }
+                if let Some(parent) = file.parent()
+                    && let Ok(mut dir) = last_directory.write()
+                {
+                    *dir = Some(parent.to_path_buf());
                 }
 
                 if let Err(e) = this.update(cx, |this, _cx| {
@@ -224,32 +224,31 @@ impl CounterView {
         }
 
         // Clear selection if this was the selected type
-        if let Ok(state) = self.state.read() {
-            if state.active_count_type == Some(count_type_id) {
-                if let Some(sender) = self.base.send_channels.get(current_tool_index as usize) {
-                    let mut remaining_types: Vec<u16> = state
-                        .manual_counts
-                        .keys()
-                        .filter(|&&id| id != count_type_id)
-                        .copied()
-                        .collect();
-                    remaining_types.sort_unstable();
-                    let new_active = remaining_types
-                        .iter()
-                        .find(|&&id| id > count_type_id)
-                        .or_else(|| remaining_types.iter().rev().find(|&&id| id < count_type_id))
-                        .copied();
+        if let Ok(state) = self.state.read()
+            && state.active_count_type == Some(count_type_id)
+            && let Some(sender) = self.base.send_channels.get(current_tool_index as usize)
+        {
+            let mut remaining_types: Vec<u16> = state
+                .manual_counts
+                .keys()
+                .filter(|&&id| id != count_type_id)
+                .copied()
+                .collect();
+            remaining_types.sort_unstable();
+            let new_active = remaining_types
+                .iter()
+                .find(|&&id| id > count_type_id)
+                .or_else(|| remaining_types.iter().rev().find(|&&id| id < count_type_id))
+                .copied();
 
-                    if let Some(new_active_id) = new_active {
-                        if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                            PipelineObjectMessage::CountMessage(CountMessage::SetActiveCountType(
-                                new_active_id,
-                            )),
-                        )) {
-                            eprintln!("Failed to send set active count type command: {e}");
-                        }
-                    }
-                }
+            if let Some(new_active_id) = new_active
+                && let Err(e) = sender.send(PipelineCommand::PipelineObject(
+                    PipelineObjectMessage::CountMessage(CountMessage::SetActiveCountType(
+                        new_active_id,
+                    )),
+                ))
+            {
+                eprintln!("Failed to send set active count type command: {e}");
             }
         }
     }
@@ -413,7 +412,7 @@ impl CounterView {
         cx: &mut Context<Self>,
     ) {
         let current_tool = match self.state.read() {
-            Ok(state) => state.active_tool.clone(),
+            Ok(state) => state.active_tool,
             Err(_) => return,
         };
 
@@ -431,7 +430,7 @@ impl CounterView {
         cx: &mut Context<Self>,
     ) {
         let current_tool = match self.state.read() {
-            Ok(state) => state.active_tool.clone(),
+            Ok(state) => state.active_tool,
             Err(_) => return,
         };
 
@@ -449,7 +448,7 @@ impl CounterView {
         cx: &mut Context<Self>,
     ) {
         let current_tool = match self.state.read() {
-            Ok(state) => state.active_tool.clone(),
+            Ok(state) => state.active_tool,
             Err(_) => return,
         };
 
@@ -467,7 +466,7 @@ impl CounterView {
         cx: &mut Context<Self>,
     ) {
         let current_tool = match self.state.read() {
-            Ok(state) => state.active_tool.clone(),
+            Ok(state) => state.active_tool,
             Err(_) => return,
         };
 
@@ -750,10 +749,9 @@ impl CounterView {
 
     // Individual count type item component
     fn render_count_type_item(
-        &self,
         count_type_id: u16,
         name: String,
-        count_data: &Vec<CountData>,
+        count_data: &[CountData],
         is_selected: bool,
         is_visible: bool,
         position: Option<usize>,
@@ -904,7 +902,7 @@ impl CounterView {
                         .get(&count_type_id)
                         .cloned()
                         .unwrap_or_else(|| format!("Type {}", position + 1));
-                    self.render_count_type_item(
+                    Self::render_count_type_item(
                         count_type_id,
                         name,
                         count_data,
@@ -1003,7 +1001,7 @@ impl CounterView {
                         if is_active {
                             this.set_tool(None, window, cx);
                         } else {
-                            this.set_tool(Some(tool.clone()), window, cx);
+                            this.set_tool(Some(tool), window, cx);
                         }
                     },
                 ),

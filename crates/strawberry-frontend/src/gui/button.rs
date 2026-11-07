@@ -3,13 +3,15 @@ use gpui::{Context, ElementId, IntoElement, MouseDownEvent, SharedString, div, p
 use super::theme;
 use super::tooltip::TooltipView;
 
+type ClickHandler<V> =
+    Box<dyn Fn(&mut V, &MouseDownEvent, &mut gpui::Window, &mut Context<V>) + 'static>;
+
 pub struct ToggleButton<V: 'static> {
     pub label: String,
     pub is_enabled: bool,
     pub enabled_text: String,
     pub disabled_text: String,
-    pub on_click:
-        Box<dyn Fn(&mut V, &MouseDownEvent, &mut gpui::Window, &mut Context<V>) + 'static>,
+    pub on_click: ClickHandler<V>,
     pub keyboard_shortcut: Option<String>,
     pub disable_margin: bool,
 }

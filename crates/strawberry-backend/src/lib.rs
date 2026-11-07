@@ -1,3 +1,6 @@
+// wgpu auto-trait checks exceed the default compiler recursion depth.
+#![recursion_limit = "256"]
+
 use std::{sync::Arc, time::Instant};
 
 use image::{ImageReader, RgbaImage};
@@ -364,15 +367,14 @@ impl Pipeline {
                         }
                     }
                     //
-                    if loaded_images.len() > 1 {
-                        if let Some(compositor_tool) = self
+                    if loaded_images.len() > 1
+                        && let Some(compositor_tool) = self
                             .tool_manager
                             .tools
                             .iter_mut()
                             .find(|tool| tool.iam() == BackendToolType::Compositor)
-                        {
-                            compositor_tool.set_enabled(true);
-                        }
+                    {
+                        compositor_tool.set_enabled(true);
                     }
                     // Convert all images from RGBA to BGRA by swapping R and B channels
                     for image in &mut loaded_images {

@@ -67,8 +67,8 @@ impl NerveTracerView {
                 .set_directory(&default_dir)
                 .save_file();
 
-            if let Some(file) = file {
-                if let Err(e) = this.update(cx, |this, _cx| {
+            if let Some(file) = file
+                && let Err(e) = this.update(cx, |this, _cx| {
                     if let Err(e) = this.base.send_to_backend(PipelineCommand::PipelineObject(
                         PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::SaveTraces(
                             file,
@@ -76,9 +76,9 @@ impl NerveTracerView {
                     )) {
                         eprintln!("Failed to send save traces command: {e}");
                     }
-                }) {
-                    eprintln!("Failed to save traces: {e}");
-                }
+                })
+            {
+                eprintln!("Failed to save traces: {e}");
             }
         })
         .detach();
@@ -101,10 +101,10 @@ impl NerveTracerView {
 
             if let Some(file) = file {
                 // Store the directory for future save/load operations
-                if let Some(parent) = file.parent() {
-                    if let Ok(mut dir) = last_directory.write() {
-                        *dir = Some(parent.to_path_buf());
-                    }
+                if let Some(parent) = file.parent()
+                    && let Ok(mut dir) = last_directory.write()
+                {
+                    *dir = Some(parent.to_path_buf());
                 }
 
                 if let Err(e) = this.update(cx, |this, _cx| {
@@ -511,7 +511,7 @@ impl NerveTracerView {
     fn render_path_item(
         &self,
         path_id: usize,
-        path: &Vec<Vec<(u64, u64)>>,
+        path: &[Vec<(u64, u64)>],
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         div()

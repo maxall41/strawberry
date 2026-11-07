@@ -1,3 +1,6 @@
+// wgpu auto-trait checks exceed the default compiler recursion depth.
+#![recursion_limit = "256"]
+
 use anyhow::Result;
 use commands::{
     OpenFile, PalettePaste, PalleteCommand, Quit, SaveImage, ToggleCommandPalette, ZoomIn, ZoomOut,
@@ -210,13 +213,13 @@ impl PrimaryViewer {
 
         // Center the viewport on the new image unless its dimensions match the
         // current one (then it's just a reprocessed frame; keep the camera put).
-        if new_width != self.original_width || new_height != self.original_height {
-            if let Some(viewport) = self.last_viewport_size {
-                self.pan_x = (viewport.width.to_f64() as f32 / 2.0)
-                    - ((new_width as f32 / 2.0) * self.zoom_level);
-                self.pan_y = (viewport.height.to_f64() as f32 / 2.0)
-                    - ((new_height as f32 / 2.0) * self.zoom_level);
-            }
+        if (new_width != self.original_width || new_height != self.original_height)
+            && let Some(viewport) = self.last_viewport_size
+        {
+            self.pan_x = (viewport.width.to_f64() as f32 / 2.0)
+                - ((new_width as f32 / 2.0) * self.zoom_level);
+            self.pan_y = (viewport.height.to_f64() as f32 / 2.0)
+                - ((new_height as f32 / 2.0) * self.zoom_level);
         }
 
         self.original_width = new_width;
@@ -224,10 +227,10 @@ impl PrimaryViewer {
         self.image_loaded = true;
         let previous = std::mem::replace(&mut self.display_image, ImageSource::Render(img_data));
 
-        if let ImageSource::Render(previous) = previous {
-            if let Err(e) = window.drop_image(previous) {
-                eprintln!("Failed to release previous frame from the sprite atlas: {e}");
-            }
+        if let ImageSource::Render(previous) = previous
+            && let Err(e) = window.drop_image(previous)
+        {
+            eprintln!("Failed to release previous frame from the sprite atlas: {e}");
         }
 
         cx.notify();
@@ -329,12 +332,11 @@ impl PrimaryViewer {
                 .pick_files();
 
             if let Some(files) = files {
-                if let Some(first_file) = files.first() {
-                    if let Some(parent) = first_file.parent() {
-                        if let Ok(mut dir) = image_dir.write() {
-                            *dir = Some(parent.to_path_buf());
-                        }
-                    }
+                if let Some(first_file) = files.first()
+                    && let Some(parent) = first_file.parent()
+                    && let Ok(mut dir) = image_dir.write()
+                {
+                    *dir = Some(parent.to_path_buf());
                 }
 
                 if let Err(e) = sender_p.send(PipelineCommand::Load(files)) {
@@ -354,10 +356,10 @@ impl PrimaryViewer {
                 .set_directory("~/")
                 .save_file();
 
-            if let Some(file) = output_file {
-                if let Err(e) = sender_p.send(PipelineCommand::SaveOutput(file)) {
-                    eprintln!("Failed to send save output command to pipeline: {e}");
-                }
+            if let Some(file) = output_file
+                && let Err(e) = sender_p.send(PipelineCommand::SaveOutput(file))
+            {
+                eprintln!("Failed to send save output command to pipeline: {e}");
             }
         })
         .detach();
@@ -996,7 +998,7 @@ async fn main() -> Result<()> {
             let mut data = RgbaImage::new(width, height);
 
             // Fill with black pixels (BGRA format for GPUI)
-            for pixel in data.chunks_exact_mut(4) {
+            for pixel in data.as_chunks_mut::<4>().0 {
                 pixel[0] = 0; // B
                 pixel[1] = 0; // G
                 pixel[2] = 0; // R
