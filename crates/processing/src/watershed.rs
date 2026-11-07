@@ -103,7 +103,7 @@ impl GpuWatershed {
                             binding: 1,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
                                 has_dynamic_offset: false,
                                 min_binding_size: None,
                             },
@@ -113,7 +113,7 @@ impl GpuWatershed {
                             binding: 2,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
                                 has_dynamic_offset: false,
                                 min_binding_size: None,
                             },
@@ -121,6 +121,16 @@ impl GpuWatershed {
                         },
                         wgpu::BindGroupLayoutEntry {
                             binding: 3,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 4,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Storage { read_only: false },
@@ -242,8 +252,9 @@ impl GpuWatershed {
         image
             .pixels()
             .map(|pixel| {
+                // Pipeline images are BGRA internally.
                 let gray =
-                    (0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32)
+                    (0.299 * pixel[2] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[0] as f32)
                         / 255.0;
                 gray > GRAYSCALE_THRESHOLD
             })
@@ -265,24 +276,56 @@ impl GpuWatershed {
 
         let buffers = self.create_distance_buffers(&binary_u32, pixel_count)?;
 
-        self.run_distance_pass(&self.distance_init_pipeline, &buffers, width, height, 0, 0)?;
+        self.run_distance_pass(
+            &self.distance_init_pipeline,
+            &buffers,
+            &buffers.seeds_b,
+            &buffers.seeds_a,
+            width,
+            height,
+            0,
+            0,
+        )?;
 
         let max_dimension = width.max(height);
         let mut step_size = max_dimension.next_power_of_two() / 2;
+        let mut seeds_are_in_a = true;
 
         while step_size >= 1 {
+            let (seeds_input, seeds_output) = if seeds_are_in_a {
+                (&buffers.seeds_a, &buffers.seeds_b)
+            } else {
+                (&buffers.seeds_b, &buffers.seeds_a)
+            };
             self.run_distance_pass(
                 &self.distance_jump_pipeline,
                 &buffers,
+                seeds_input,
+                seeds_output,
                 width,
                 height,
                 step_size,
                 0,
             )?;
+            seeds_are_in_a = !seeds_are_in_a;
             step_size /= 2;
         }
 
-        self.run_distance_pass(&self.distance_final_pipeline, &buffers, width, height, 0, 0)?;
+        let (final_seeds, scratch_seeds) = if seeds_are_in_a {
+            (&buffers.seeds_a, &buffers.seeds_b)
+        } else {
+            (&buffers.seeds_b, &buffers.seeds_a)
+        };
+        self.run_distance_pass(
+            &self.distance_final_pipeline,
+            &buffers,
+            final_seeds,
+            scratch_seeds,
+            width,
+            height,
+            0,
+            0,
+        )?;
 
         self.read_distance_results(&buffers.distance, &buffers.staging, pixel_count)
             .await
@@ -302,8 +345,15 @@ impl GpuWatershed {
                 usage: wgpu::BufferUsages::STORAGE,
             });
 
-        let seeds_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Seeds Buffer"),
+        let seeds_a = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Seeds Buffer A"),
+            size: (pixel_count * 8) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
+        let seeds_b = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Seeds Buffer B"),
             size: (pixel_count * 8) as u64,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
@@ -325,7 +375,8 @@ impl GpuWatershed {
 
         Ok(DistanceBuffers {
             binary: binary_buffer,
-            seeds: seeds_buffer,
+            seeds_a,
+            seeds_b,
             distance: distance_buffer,
             staging: staging_buffer,
         })
@@ -335,6 +386,8 @@ impl GpuWatershed {
         &self,
         pipeline: &wgpu::ComputePipeline,
         buffers: &DistanceBuffers,
+        seeds_input: &wgpu::Buffer,
+        seeds_output: &wgpu::Buffer,
         width: u32,
         height: u32,
         step_size: u32,
@@ -363,14 +416,18 @@ impl GpuWatershed {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: buffers.seeds.as_entire_binding(),
+                        resource: seeds_input.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: buffers.binary.as_entire_binding(),
+                        resource: seeds_output.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
+                        resource: buffers.binary.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
                         resource: buffers.distance.as_entire_binding(),
                     },
                 ],
@@ -712,7 +769,8 @@ impl GpuWatershed {
 
 struct DistanceBuffers {
     binary: wgpu::Buffer,
-    seeds: wgpu::Buffer,
+    seeds_a: wgpu::Buffer,
+    seeds_b: wgpu::Buffer,
     distance: wgpu::Buffer,
     staging: wgpu::Buffer,
 }

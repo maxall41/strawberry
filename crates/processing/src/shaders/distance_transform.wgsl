@@ -6,9 +6,10 @@ struct DistanceTransformUniforms {
 }
 
 @group(0) @binding(0) var<uniform> uniforms: DistanceTransformUniforms;
-@group(0) @binding(1) var<storage, read_write> seeds_buffer: array<vec2<i32>>;
-@group(0) @binding(2) var<storage, read> binary_buffer: array<u32>;
-@group(0) @binding(3) var<storage, read_write> distance_buffer: array<f32>;
+@group(0) @binding(1) var<storage, read> seeds_input: array<vec2<i32>>;
+@group(0) @binding(2) var<storage, read_write> seeds_output: array<vec2<i32>>;
+@group(0) @binding(3) var<storage, read> binary_buffer: array<u32>;
+@group(0) @binding(4) var<storage, read_write> distance_buffer: array<f32>;
 
 const NO_SEED = vec2<i32>(-1, -1);
 
@@ -22,7 +23,7 @@ fn sample_seed(x: i32, y: i32) -> vec2<i32> {
     }
 
     let index = u32(y * width + x);
-    return seeds_buffer[index];
+    return seeds_input[index];
 }
 
 // Calculate squared distance between two points
@@ -47,11 +48,11 @@ fn init_seeds(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     if (is_foreground) {
         // Foreground pixels start with no seed
-        seeds_buffer[index] = NO_SEED;
+        seeds_output[index] = NO_SEED;
         distance_buffer[index] = 999999.0; // Large initial distance
     } else {
         // Background pixels are seeds to themselves
-        seeds_buffer[index] = vec2<i32>(x, y);
+        seeds_output[index] = vec2<i32>(x, y);
         distance_buffer[index] = 0.0;
     }
 }
@@ -68,7 +69,7 @@ fn jump_flood(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     let index = u32(y * i32(uniforms.width) + x);
     let current_pos = vec2<i32>(x, y);
-    let current_seed = seeds_buffer[index];
+    let current_seed = seeds_input[index];
 
     var best_seed = current_seed;
     var best_distance = 999999.0;
@@ -104,7 +105,7 @@ fn jump_flood(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
     }
 
-    seeds_buffer[index] = best_seed;
+    seeds_output[index] = best_seed;
 }
 
 // Finalize distances (convert from squared to actual distance)
@@ -119,7 +120,7 @@ fn finalize_distances(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     let index = u32(y * i32(uniforms.width) + x);
     let current_pos = vec2<i32>(x, y);
-    let seed = seeds_buffer[index];
+    let seed = seeds_input[index];
 
     if (seed.x != -1) {
         let squared_dist = squared_distance(current_pos, seed);

@@ -13,22 +13,22 @@ struct LocalMaximaUniforms {
 @group(0) @binding(1) var<storage, read_write> output_buffer: array<u32>;
 @group(0) @binding(2) var<storage, read> input_buffer: array<u32>;
 
-// Convert RGBA8 packed u32 to vec4<f32>
-fn unpack_rgba8(packed: u32) -> vec4<f32> {
-    let r = f32((packed >> 0u) & 0xFFu) / 255.0;
+// Convert the pipeline's internal BGRA8 packed u32 to vec4<f32>.
+fn unpack_bgra8(packed: u32) -> vec4<f32> {
+    let b = f32((packed >> 0u) & 0xFFu) / 255.0;
     let g = f32((packed >> 8u) & 0xFFu) / 255.0;
-    let b = f32((packed >> 16u) & 0xFFu) / 255.0;
+    let r = f32((packed >> 16u) & 0xFFu) / 255.0;
     let a = f32((packed >> 24u) & 0xFFu) / 255.0;
     return vec4<f32>(r, g, b, a);
 }
 
-// Convert vec4<f32> to RGBA8 packed u32
-fn pack_rgba8(color: vec4<f32>) -> u32 {
+// Convert vec4<f32> to the pipeline's internal BGRA8 representation.
+fn pack_bgra8(color: vec4<f32>) -> u32 {
     let r = u32(clamp(color.r * 255.0, 0.0, 255.0));
     let g = u32(clamp(color.g * 255.0, 0.0, 255.0));
     let b = u32(clamp(color.b * 255.0, 0.0, 255.0));
     let a = u32(clamp(color.a * 255.0, 0.0, 255.0));
-    return r | (g << 8u) | (b << 16u) | (a << 24u);
+    return b | (g << 8u) | (r << 16u) | (a << 24u);
 }
 
 // Calculate luminance using standard weights
@@ -46,7 +46,7 @@ fn sample_pixel(x: i32, y: i32) -> vec4<f32> {
     let clamped_y = clamp(y, 0, height - 1);
 
     let index = u32(clamped_y * width + clamped_x);
-    return unpack_rgba8(input_buffer[index]);
+    return unpack_bgra8(input_buffer[index]);
 }
 
 // Get luminance at specific coordinates with bounds checking
@@ -69,33 +69,16 @@ fn is_in_excluded_border(x: i32, y: i32) -> bool {
            x >= (width - border_size) || y >= (height - border_size);
 }
 
-// Apply maximum filter in min_distance neighborhood (scikit-image approach)
-fn apply_maximum_filter(center_x: i32, center_y: i32) -> f32 {
-    let min_dist = i32(uniforms.min_distance);
-    var max_value = 0.0;
-
-    // Search in square neighborhood of size (2 * min_distance + 1)
-    for (var dy = -min_dist; dy <= min_dist; dy++) {
-        for (var dx = -min_dist; dx <= min_dist; dx++) {
-            let sample_x = center_x + dx;
-            let sample_y = center_y + dy;
-
-            let sample_luma = sample_luminance(sample_x, sample_y);
-            max_value = max(max_value, sample_luma);
-        }
-    }
-
-    return max_value;
-}
-
-// Check if current pixel is a local maximum using scikit-image algorithm
+// Check if the current pixel is the deterministic winner in its peak neighborhood.
+// The coordinate tie-break collapses plateaus and equal-height nearby peaks to one
+// marker, so min_distance remains meaningful without a serial suppression pass.
 fn is_peak_local_maximum(center_x: i32, center_y: i32, center_luma: f32) -> bool {
     // Calculate effective threshold (max of absolute and relative thresholds)
     let rel_threshold = uniforms.max_intensity * uniforms.threshold_rel;
     let effective_threshold = max(uniforms.threshold_abs, rel_threshold);
 
-    // If the center pixel is below threshold, it can't be a maximum
-    if (center_luma < effective_threshold) {
+    // Zero-valued background is never a peak, even when the configured threshold is 0.
+    if (center_luma <= 0.0 || center_luma < effective_threshold) {
         return false;
     }
 
@@ -104,13 +87,40 @@ fn is_peak_local_maximum(center_x: i32, center_y: i32, center_luma: f32) -> bool
         return false;
     }
 
-    // Apply maximum filter to the neighborhood
-    let max_in_neighborhood = apply_maximum_filter(center_x, center_y);
-
-    // Peak is detected if the original value equals the maximum filtered value
-    // Use small epsilon for floating point comparison
     let epsilon = 0.001;
-    return abs(center_luma - max_in_neighborhood) < epsilon;
+    let min_dist = i32(uniforms.min_distance);
+    let width = i32(uniforms.width);
+    let height = i32(uniforms.height);
+    let center_index = center_y * width + center_x;
+
+    for (var dy = -min_dist; dy <= min_dist; dy++) {
+        for (var dx = -min_dist; dx <= min_dist; dx++) {
+            let sample_x = center_x + dx;
+            let sample_y = center_y + dy;
+
+            // Do not turn clamped copies of edge pixels into plateau competitors.
+            if (sample_x < 0 || sample_x >= width || sample_y < 0 || sample_y >= height) {
+                continue;
+            }
+
+            let sample_luma = sample_luminance(sample_x, sample_y);
+            if (sample_luma > center_luma + epsilon) {
+                return false;
+            }
+
+            let sample_index = sample_y * width + sample_x;
+            // Only pixels eligible to emit a marker may win an equal-height tie.
+            // Brighter neighbors still participate in the maximum filter above.
+            let sample_is_eligible = sample_luma > 0.0 &&
+                sample_luma >= effective_threshold &&
+                !is_in_excluded_border(sample_x, sample_y);
+            if (sample_is_eligible && abs(sample_luma - center_luma) <= epsilon && sample_index < center_index) {
+                return false;
+            }
+        }
+    }
+
+    return true;
 }
 
 @compute @workgroup_size(8, 8)
@@ -142,5 +152,5 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Write output pixel
     let index = u32(y * i32(uniforms.width) + x);
-    output_buffer[index] = pack_rgba8(output_pixel);
+    output_buffer[index] = pack_bgra8(output_pixel);
 }

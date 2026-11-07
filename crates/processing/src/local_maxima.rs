@@ -107,9 +107,9 @@ impl GpuLocalMaxima {
         let max_intensity = image
             .pixels()
             .map(|p| {
-                let r = p[0] as f32 / 255.0;
+                let r = p[2] as f32 / 255.0;
                 let g = p[1] as f32 / 255.0;
-                let b = p[2] as f32 / 255.0;
+                let b = p[0] as f32 / 255.0;
                 0.299 * r + 0.587 * g + 0.114 * b
             })
             .fold(0.0f32, f32::max);
