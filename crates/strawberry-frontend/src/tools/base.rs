@@ -11,7 +11,6 @@ pub struct ToolBase {
     pub send_channels: Vec<flume::Sender<PipelineCommand>>,
     pub receive_channel: Option<flume::Receiver<PipelineCommand>>,
     pub focus_handle: FocusHandle,
-    #[allow(dead_code)]
     pub cleanup_guard: crate::tools::CleanupGuard,
     pub processor_spawned: bool,
 }
@@ -48,6 +47,7 @@ impl ToolBase {
             eprintln!("Failed to send backend discovery request: {e}");
             return false;
         }
+        self.cleanup_guard.mark_connected();
         println!(
             "Sent discovery request to backend | {:?}",
             self.backend_type
