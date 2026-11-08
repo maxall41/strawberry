@@ -28,8 +28,8 @@ pub mod tools;
 
 /// Helper macros for tool registration
 macro_rules! create_gpu_tool {
-    ($tool:ident, $cmd:expr, $out:expr, $gpu:expr) => {
-        Box::new($tool::new($cmd.clone(), $out.clone(), $gpu.clone()))
+    ($tool:ident, $out:expr, $gpu:expr) => {
+        Box::new($tool::new($out.clone(), $gpu.clone()))
     };
 }
 
@@ -80,21 +80,20 @@ impl Pipeline {
         let tool_manager = ToolManager::new(
             vec![
                 // GPU-accelerated tools
-                create_gpu_tool!(Compositor, command_tx, output_tx, gpu_image_processor),
-                create_gpu_tool!(Contrast, command_tx, output_tx, gpu_image_processor),
-                create_gpu_tool!(GaussianBlur, command_tx, output_tx, gpu_image_processor),
-                create_gpu_tool!(LocalMaxima, command_tx, output_tx, gpu_image_processor),
-                create_gpu_tool!(Morphology, command_tx, output_tx, gpu_image_processor),
-                create_gpu_tool!(RollingBall, command_tx, output_tx, gpu_image_processor),
-                create_gpu_tool!(Threshold, command_tx, output_tx, gpu_image_processor),
-                create_gpu_tool!(Watershed, command_tx, output_tx, gpu_image_processor),
+                create_gpu_tool!(Compositor, output_tx, gpu_image_processor),
+                create_gpu_tool!(Contrast, output_tx, gpu_image_processor),
+                create_gpu_tool!(GaussianBlur, output_tx, gpu_image_processor),
+                create_gpu_tool!(LocalMaxima, output_tx, gpu_image_processor),
+                create_gpu_tool!(Morphology, output_tx, gpu_image_processor),
+                create_gpu_tool!(RollingBall, output_tx, gpu_image_processor),
+                create_gpu_tool!(Threshold, output_tx, gpu_image_processor),
+                create_gpu_tool!(Watershed, output_tx, gpu_image_processor),
                 create_cpu_tool!(Counter, command_tx, output_tx),
-                create_gpu_tool!(Decomposer, command_tx, output_tx, gpu_image_processor),
-                create_gpu_tool!(Sobel, command_tx, output_tx, gpu_image_processor),
-                create_gpu_tool!(Grayscale, command_tx, output_tx, gpu_image_processor),
+                create_gpu_tool!(Decomposer, output_tx, gpu_image_processor),
+                create_gpu_tool!(Sobel, output_tx, gpu_image_processor),
+                create_gpu_tool!(Grayscale, output_tx, gpu_image_processor),
                 Box::new(NerveTracer::new(command_tx.clone(), output_tx.clone())?),
             ],
-            command_tx.clone(),
             output_tx.clone(),
         );
         let pipeline = Self {
@@ -127,6 +126,9 @@ impl Pipeline {
     /// # Errors
     /// Returns an error if configuration, image processing, file I/O, or communication fails.
     pub async fn process_from(&mut self, start_index: usize) -> anyhow::Result<()> {
+        let mut pending = Some(start_index);
+        self.reconcile_tools(&mut pending);
+        let start_index = pending.unwrap_or(start_index);
         let start_time = std::time::Instant::now();
         println!("Got process_from command!");
         if self.input_images.is_empty() {
@@ -192,7 +194,9 @@ impl Pipeline {
                     }),
                 ));
                 stage = stage.saturating_add(1);
-                tool.process(&mut images).await?;
+                let result = tool.process(&mut images).await;
+                tool.acknowledge_processed_state();
+                result?;
                 tool.set_cached_output(images.clone());
             }
         }
@@ -205,7 +209,9 @@ impl Pipeline {
                 .iter_mut()
                 .find(|tool| tool.iam() == BackendToolType::Compositor)
             {
-                compositor_tool.process(&mut images).await?;
+                let result = compositor_tool.process(&mut images).await;
+                compositor_tool.acknowledge_processed_state();
+                result?;
             }
         }
 
@@ -262,44 +268,14 @@ impl Pipeline {
         reason = "Command dispatch as one function is cleaner"
     )]
     pub async fn process_commands(&mut self) -> anyhow::Result<()> {
-        // Collect all available messages and deduplicate Refresh commands
         let commands: Vec<_> =
             std::iter::from_fn(|| self.command_receiver.try_recv().ok()).collect();
-
-        let commands = if commands.len() > 1 {
-            if let Some(last_refresh) = commands
-                .iter()
-                .rev()
-                .find(|cmd| matches!(cmd, PipelineCommand::Refresh(_)))
-                .cloned()
-            {
-                let mut filtered: Vec<_> = commands
-                    .into_iter()
-                    .filter(|cmd| !matches!(cmd, PipelineCommand::Refresh(_)))
-                    .collect();
-                filtered.push(last_refresh);
-                filtered
-            } else {
-                commands
-            }
-        } else {
-            commands
-        };
+        let mut pending_processing_from = None;
 
         'commands: for cmd in commands {
             match &cmd {
-                PipelineCommand::Refresh(index) => {
-                    println!("Refreshing!");
-                    if self.input_images.is_empty() {
-                        continue 'commands;
-                    }
-                    self.run_pipeline(
-                        *index,
-                        &format!("Pipeline processing failed at stage {index}"),
-                    )
-                    .await;
-                }
                 PipelineCommand::SaveOutput(file) => {
+                    self.flush_processing(&mut pending_processing_from).await;
                     let message = match self.save_output(file).await {
                         Ok(()) => FrontendMessage::success("Image saved successfully!".to_string()),
                         Err(e) => FrontendMessage::error(format!("Failed to save image: {e}")),
@@ -309,6 +285,7 @@ impl Pipeline {
                         .send(PipelineCommand::FrontendMessage(message));
                 }
                 PipelineCommand::Load(files) => {
+                    self.flush_processing(&mut pending_processing_from).await;
                     // Cache is cleared later during process_from anyways, but clearing here first reduces peak memory.
                     for tool in &mut self.tool_manager.tools {
                         tool.invalidate_cache();
@@ -404,7 +381,7 @@ impl Pipeline {
 
                     println!("Images loaded");
 
-                    self.run_pipeline(0, "Failed to process images").await;
+                    request_processing(&mut pending_processing_from, 0);
                 }
                 PipelineCommand::DiscoverBackend(backend_tool_type, sender) => {
                     let mut discovered = vec![];
@@ -493,13 +470,7 @@ impl Pipeline {
                     self.tool_manager.restore_tool_indices(&indices);
                     self.tool_manager.synchronize_enabled_history();
                     println!("CLI Pipeline load");
-                    // The config normally arrives before any images do; running
-                    // then would only raise a spurious "no input images" error.
-                    if self.input_images.is_empty() {
-                        continue 'commands;
-                    }
-                    self.run_pipeline(0, "Failed to process loaded pipeline")
-                        .await;
+                    request_processing(&mut pending_processing_from, 0);
                 }
                 PipelineCommand::RegisterClickReceiver(click_sender) => {
                     self.click_receivers.push(click_sender.clone()); //TODO: Ehhhhh
@@ -547,27 +518,61 @@ impl Pipeline {
             }
         }
 
-        let result = self
-            .tool_manager
-            .tools
-            .iter_mut()
-            .try_for_each(|tool| tool.receive_messages());
-        if let Err(e) = result {
-            let _ =
-                self.output_sender
-                    .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                        format!("Error processing tool messages: {e}"),
-                    )));
-        }
-
-        if let Err(e) = self.tool_manager.receive_messages() {
-            let _ =
-                self.output_sender
-                    .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                        format!("Tool manager communication error: {e}"),
-                    )));
-        }
-
+        self.flush_processing(&mut pending_processing_from).await;
         Ok(())
     }
+
+    fn report_error(&self, context: &str, error: &anyhow::Error) {
+        let _ = self
+            .output_sender
+            .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
+                format!("{context}: {error}"),
+            )));
+    }
+
+    fn reconcile_tools(&mut self, pending: &mut Option<usize>) {
+        for (index, tool) in self.tool_manager.tools.iter_mut().enumerate() {
+            if tool.reconcile_state() {
+                request_processing(pending, index);
+            }
+        }
+    }
+
+    /// A batch boundary: apply mutations, reconcile once, then process and publish.
+    async fn flush_processing(&mut self, pending: &mut Option<usize>) {
+        // Keep draining other tools even when one rejects a message.
+        for tool in &mut self.tool_manager.tools {
+            if let Err(error) = tool.receive_messages() {
+                let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                    FrontendMessage::error(format!("Error processing tool messages: {error}")),
+                ));
+            }
+        }
+        match self.tool_manager.receive_messages() {
+            Ok(true) => request_processing(pending, 0),
+            Ok(false) => {}
+            Err(error) => {
+                self.report_error("Tool manager communication error", &error);
+                // Earlier commands in the same batch may already have changed the order.
+                request_processing(pending, 0);
+            }
+        }
+        self.reconcile_tools(pending);
+        if let Some(index) = pending.take()
+            && !self.input_images.is_empty()
+        {
+            self.run_pipeline(index, "Pipeline processing failed").await;
+        }
+        for tool in &mut self.tool_manager.tools {
+            if let Err(error) = tool.sync_frontend() {
+                let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                    FrontendMessage::error(format!("Tool state synchronization failed: {error}")),
+                ));
+            }
+        }
+    }
+}
+
+fn request_processing(pending: &mut Option<usize>, from: usize) {
+    *pending = Some(pending.map_or(from, |index| index.min(from)));
 }

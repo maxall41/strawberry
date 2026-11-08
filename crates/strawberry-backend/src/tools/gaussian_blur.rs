@@ -79,17 +79,6 @@ impl ToolBackend for GaussianBlur {
             }
         }
 
-        if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
-            self.cache.cached_output = None;
-            self.cache.cached_state = None;
-            self.base
-                .send_to_frontend(&PipelineCommand::FrontendMessage(
-                    FrontendMessage::ReturnState(self.get_state()),
-                ))?;
-            self.base.trigger_refresh()?;
-            self.cache.frontend_latest_state = Some(self.state.clone());
-        }
-
         Ok(())
     }
 }
@@ -97,17 +86,17 @@ impl ToolBackend for GaussianBlur {
 impl GaussianBlur {
     #[must_use]
     pub fn new(
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
+        let state = GaussianBlurState {
+            is_enabled: false,
+            sigma: 2.0,
+        };
         Self {
-            state: GaussianBlurState {
-                is_enabled: false,
-                sigma: 2.0,
-            },
-            base: ToolBase::new(command_sender, global_sender),
-            cache: ToolCache::new(),
+            state: state.clone(),
+            base: ToolBase::new(global_sender),
+            cache: ToolCache::new(&state),
             processor: GpuGaussianBlur::new(gpu_image_processor),
         }
     }

@@ -11,11 +11,6 @@ use strawberry_types::{
     overlay::{OverlayElement, ToolOverlay},
 };
 
-/// Check if statechange requires reprocess.
-const fn nervetracer_output_differs(a: &NerveTracerState, b: &NerveTracerState) -> bool {
-    a.is_enabled != b.is_enabled || a.selected_image_index != b.selected_image_index
-}
-
 pub struct NerveTracer {
     pub state: NerveTracerState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -24,9 +19,7 @@ pub struct NerveTracer {
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub index: usize,
-    pub cached_output: Option<Vec<Arc<image::RgbaImage>>>,
-    pub cached_state: Option<NerveTracerState>,
-    pub frontend_latest_state: Option<NerveTracerState>,
+    pub cache: crate::tools::cache::ToolCache<NerveTracerState>,
     pub cached_input: Option<Arc<image::RgbaImage>>,
 }
 
@@ -197,22 +190,6 @@ impl ToolBackend for NerveTracer {
             }
         }
 
-        let (changed, affects_output) = match self.frontend_latest_state.as_ref() {
-            Some(previous) => (
-                previous != &self.state,
-                nervetracer_output_differs(previous, &self.state),
-            ),
-            None => (true, true),
-        };
-
-        if changed {
-            if affects_output {
-                self.update_state()?;
-            } else {
-                self.sync_frontend()?;
-            }
-        }
-
         Ok(())
     }
 
@@ -224,12 +201,21 @@ impl ToolBackend for NerveTracer {
         self.index = index;
     }
 
-    fn valid_cached_output(&self) -> Option<Vec<Arc<image::RgbaImage>>> {
-        if self.cached_state.as_ref() == Some(&self.state) {
-            self.cached_output.clone()
-        } else {
-            None
+    crate::impl_tool_cache!();
+
+    /// Push state to the frontend without discarding the cached image.
+    fn sync_frontend(&mut self) -> anyhow::Result<()> {
+        if !self.cache.sync.needs_frontend_sync(&self.state) {
+            return Ok(());
         }
+        self.send_to_frontend(&PipelineCommand::FrontendMessage(
+            FrontendMessage::ReturnState(self.get_state()),
+        ))?;
+        self.cache.sync.frontend_latest_state = Some(self.state.clone());
+        self.command_sender
+            .send(PipelineCommand::RequestOverlays)
+            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {e}"))?;
+        Ok(())
     }
 
     fn get_overlays(&self) -> Option<crate::overlay::ToolOverlay> {
@@ -303,17 +289,6 @@ impl ToolBackend for NerveTracer {
             })
         }
     }
-
-    fn set_cached_output(&mut self, output: Vec<Arc<image::RgbaImage>>) {
-        self.cached_output = Some(output);
-        self.cached_state = Some(self.state.clone());
-    }
-
-    fn invalidate_cache(&mut self) {
-        self.cached_output = None;
-        self.cached_state = None;
-        self.cached_input = None;
-    }
 }
 
 impl NerveTracer {
@@ -327,47 +302,25 @@ impl NerveTracer {
         command_sender
             .send(PipelineCommand::RegisterClickReceiver(sender.clone()))
             .map_err(|e| anyhow::anyhow!("Failed to register click receiver: {e}"))?;
+        let state = NerveTracerState {
+            is_enabled: false,
+            paths: vec![],
+            current_path_segments: vec![],
+            first_point: None,
+            selected_image_index: 0,
+            total_images: 0,
+        };
         Ok(Self {
-            state: NerveTracerState {
-                is_enabled: false,
-                paths: vec![],
-                current_path_segments: vec![],
-                first_point: None,
-                selected_image_index: 0,
-                total_images: 0,
-            },
+            state: state.clone(),
             frontend_senders: Vec::new(),
             command_sender,
             global_sender,
             sender,
             receiver,
             index: 0,
-            cached_output: None,
-            cached_state: None,
-            frontend_latest_state: None,
+            cache: crate::tools::cache::ToolCache::new(&state),
             cached_input: None,
         })
-    }
-
-    /// Push state to the frontend without discarding the cached image.
-    fn sync_frontend(&mut self) -> anyhow::Result<()> {
-        self.send_to_frontend(&PipelineCommand::FrontendMessage(
-            FrontendMessage::ReturnState(self.get_state()),
-        ))?;
-        self.frontend_latest_state = Some(self.state.clone());
-        self.command_sender
-            .send(PipelineCommand::RequestOverlays)
-            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {e}"))?;
-        Ok(())
-    }
-
-    fn update_state(&mut self) -> anyhow::Result<()> {
-        self.invalidate_cache();
-        self.sync_frontend()?;
-        self.command_sender
-            .send(PipelineCommand::Refresh(self.index))
-            .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {e}"))?;
-        Ok(())
     }
 
     fn send_to_frontend(&self, message: &PipelineCommand) -> anyhow::Result<()> {

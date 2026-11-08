@@ -18,6 +18,17 @@ pub trait ToolBackend: Send + Sync {
     /// Returns an error if a command cannot be handled or a channel is disconnected.
     fn receive_messages(&mut self) -> anyhow::Result<()>;
 
+    /// Reconcile backend mutations; return whether the pipeline needs processing.
+    fn reconcile_state(&mut self) -> bool;
+
+    /// Acknowledge state produced by processing, without scheduling another pass.
+    fn acknowledge_processed_state(&mut self);
+
+    /// Publish frontend state independently of processing/cache validity.
+    /// # Errors
+    /// Returns an error if a communication channel is disconnected.
+    fn sync_frontend(&mut self) -> anyhow::Result<()>;
+
     /// Enable or disable this tool
     fn set_enabled(&mut self, enabled: bool);
 
