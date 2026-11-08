@@ -16,6 +16,12 @@ const fn nervetracer_output_differs(a: &NerveTracerState, b: &NerveTracerState) 
     a.is_enabled != b.is_enabled || a.selected_image_index != b.selected_image_index
 }
 
+/// Trace positions are pixel indices; overlays align with the centers of those
+/// pixels. Keep this display offset out of stored and exported path coordinates.
+fn pixel_center((x, y): (u64, u64)) -> Option<(f32, f32)> {
+    Some((x.to_f32()? + 0.5, y.to_f32()? + 0.5))
+}
+
 pub struct NerveTracer {
     pub state: NerveTracerState,
     pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -251,9 +257,10 @@ impl ToolBackend for NerveTracer {
 
         // Draw first point if waiting for second click
         if let Some((x, y)) = self.state.first_point {
+            let (x, y) = pixel_center((x, y))?;
             elements.push(OverlayElement::Point {
-                x: x.to_f32()?,
-                y: y.to_f32()?,
+                x,
+                y,
                 radius: point_radius,
                 color: current_point_color,
             });
@@ -263,7 +270,8 @@ impl ToolBackend for NerveTracer {
         for segment in &self.state.current_path_segments {
             let points: Vec<(f32, f32)> = segment
                 .iter()
-                .map(|(x, y)| Some((x.to_f32()?, y.to_f32()?)))
+                .copied()
+                .map(pixel_center)
                 .collect::<Option<Vec<_>>>()?;
 
             if points.len() >= 2 {
@@ -280,7 +288,8 @@ impl ToolBackend for NerveTracer {
             for segment in path {
                 let points: Vec<(f32, f32)> = segment
                     .iter()
-                    .map(|(x, y)| Some((x.to_f32()?, y.to_f32()?)))
+                    .copied()
+                    .map(pixel_center)
                     .collect::<Option<Vec<_>>>()?;
 
                 if points.len() >= 2 {
@@ -376,6 +385,54 @@ impl NerveTracer {
                 .try_send(message.clone())
                 .map_err(|e| anyhow::anyhow!("Failed to send message to frontend: {e}"))?;
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_markers_and_segments_use_pixel_centers_without_changing_stored_paths()
+    -> anyhow::Result<()> {
+        let (commands, _commands_rx) = tokio::sync::broadcast::channel(16);
+        let (output, _output_rx) = tokio::sync::broadcast::channel(16);
+        let mut tracer = NerveTracer::new(commands, output)?;
+        tracer.state.is_enabled = true;
+        tracer.state.first_point = Some((0, 0));
+        tracer.state.current_path_segments = vec![vec![(10, 20), (30, 20)]];
+        tracer.state.paths = vec![vec![vec![(5, 6), (7, 8)]]];
+        let state = tracer.state.clone();
+        let overlay = tracer
+            .get_overlays()
+            .ok_or_else(|| anyhow::anyhow!("Trace overlay missing"))?;
+        let expected = vec![
+            OverlayElement::Point {
+                x: 0.5,
+                y: 0.5,
+                radius: 2.0,
+                color: [255, 50, 100, 255],
+            },
+            OverlayElement::Polyline {
+                points: vec![(10.5, 20.5), (30.5, 20.5)],
+                color: [255, 200, 0, 255],
+                stroke_width: 2.0,
+            },
+            OverlayElement::Polyline {
+                points: vec![(5.5, 6.5), (7.5, 8.5)],
+                color: [0, 200, 255, 255],
+                stroke_width: 2.0,
+            },
+        ];
+        anyhow::ensure!(
+            overlay.elements == expected,
+            "Trace overlays are not centered on their pixels"
+        );
+        anyhow::ensure!(
+            tracer.state == state,
+            "Rendering changed stored trace coordinates"
+        );
         Ok(())
     }
 }

@@ -1,3 +1,4 @@
+use crate::gui::Button;
 // Reusable value control components for tool UIs
 
 use std::time::Duration;
@@ -8,7 +9,7 @@ use gpui::{
 };
 use tokio::time::Instant;
 
-use super::theme;
+use super::{icon::Icon, theme};
 
 #[derive(Clone)]
 pub struct ValueControlEvent {
@@ -78,7 +79,15 @@ impl ValueControl {
             config,
         }
     }
-    pub fn initialize(&mut self, _window: &Window, cx: &mut Context<Self>) {
+    pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Commit immediately when focus leaves, including when the containing
+        // tool is no longer rendered after selecting a different sidebar panel.
+        cx.on_blur(&self.focus_handle, window, |this, _window, cx| {
+            this.on_unfocus(cx);
+            this.last_focus = false;
+            cx.notify();
+        })
+        .detach();
         cx.observe_keystrokes(|this, event, window, cx| {
             let now = Instant::now();
             this.last_key_time = now;
@@ -145,27 +154,22 @@ impl ValueControl {
         self.highlight = false;
     }
 
-    fn step_button(
-        id: String,
-        symbol: &'static str,
-        direction: f32,
-        cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
-        div()
-            .id(ElementId::Name(SharedString::from(id)))
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(theme::CONTROL)
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::CONTROL_HOVER))
-            .active(|style| style.bg(theme::CONTROL_ACTIVE))
-            .text_sm()
-            .child(symbol)
-            .on_mouse_down(gpui::MouseButton::Left, {
+    fn step_button(id: String, direction: f32, cx: &Context<Self>) -> impl IntoElement + use<> {
+        Button::new(ElementId::Name(SharedString::from(id)))
+            .child(if direction > 0.0 {
+                Icon::plus()
+            } else {
+                Icon::minus()
+            })
+            .aria_label(if direction > 0.0 {
+                "Increase value"
+            } else {
+                "Decrease value"
+            })
+            .on_click({
                 cx.listener(
                     move |this: &mut Self,
-                          _event: &MouseDownEvent,
+                          _event: &gpui::ClickEvent,
                           _window: &mut Window,
                           cx: &mut Context<Self>| {
                         this.value = direction
@@ -348,8 +352,8 @@ impl Render for ValueControl {
                         div()
                             .flex()
                             .gap_1()
-                            .child(Self::step_button(dec_id, "−", -1.0, cx))
-                            .child(Self::step_button(inc_id, "+", 1.0, cx)),
+                            .child(Self::step_button(dec_id, -1.0, cx))
+                            .child(Self::step_button(inc_id, 1.0, cx)),
                     ),
             )
     }

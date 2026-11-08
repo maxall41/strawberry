@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use strawberry_types::{
-    FrontendMessage, ManagerMessage, ManagerState, PipelineCommand, PipelineConfig,
-    PipelineObjectMessage, ToolBackend, ToolProxy, ToolState,
+    BackendToolType, FrontendMessage, ManagerMessage, ManagerState, PipelineCommand,
+    PipelineConfig, PipelineObjectMessage, ToolBackend, ToolProxy, ToolState,
 };
 
 pub(crate) fn serialize_pipeline_config(
@@ -66,19 +66,22 @@ pub struct ToolManager {
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub frontend_latest_state: Option<ManagerState>,
-    previous_enabled: Vec<bool>,
-    ever_enabled: Vec<bool>,
+    included: HashSet<BackendToolType>,
 }
 
-fn update_proxy_tools(input: &Vec<Box<dyn ToolBackend>>) -> Vec<ToolProxy> {
+fn update_proxy_tools(
+    input: &[Box<dyn ToolBackend>],
+    included: &HashSet<BackendToolType>,
+) -> Vec<ToolProxy> {
     input
         .iter()
         .enumerate()
-        .filter(|(_, tool)| tool.is_enabled())
+        .filter(|(_, tool)| included.contains(&tool.iam()))
         .filter_map(|(index, tool)| {
             Some(ToolProxy {
                 name: tool.iam().to_string(),
                 position: u16::try_from(index).ok()?,
+                is_enabled: tool.is_enabled(),
             })
         })
         .collect()
@@ -97,12 +100,15 @@ impl ToolManager {
         for (index, tool) in input.iter_mut().enumerate() {
             tool.set_index(index);
         }
-        let previous_enabled: Vec<bool> = input.iter().map(|tool| tool.is_enabled()).collect();
-        let ever_enabled = previous_enabled.clone();
+        let included = input
+            .iter()
+            .filter(|tool| tool.is_enabled())
+            .map(|tool| tool.iam())
+            .collect();
 
         Self {
             state: ManagerState {
-                proxy_tools: update_proxy_tools(&input),
+                proxy_tools: update_proxy_tools(&input, &included),
                 is_enabled: true,
             },
             tools: input,
@@ -112,8 +118,7 @@ impl ToolManager {
             sender,
             receiver,
             frontend_latest_state: None,
-            previous_enabled,
-            ever_enabled,
+            included,
         }
     }
 
@@ -123,75 +128,118 @@ impl ToolManager {
         }
     }
 
+    fn move_tool(&mut self, from: usize, to: usize) {
+        let tool = self.tools.remove(from);
+        let destination = to.min(self.tools.len());
+        self.tools.insert(destination, tool);
+        self.reindex_tools();
+    }
+
+    /// Adding appends the tool, including when restoring a removed tool.
+    /// An existing item keeps its enabled state and position in the stack.
+    fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<()> {
+        let Some(index) = self.tools.iter().position(|tool| tool.iam() == *kind) else {
+            anyhow::bail!("Unknown pipeline tool: {kind}");
+        };
+        if self.included.contains(kind) {
+            return Ok(());
+        }
+        if let Some(tool) = self.tools.get_mut(index) {
+            tool.set_enabled(true);
+        }
+        self.included.insert(kind.clone());
+        self.move_tool(index, self.tools.len().saturating_sub(1));
+        self.command_sender.send(PipelineCommand::Refresh(0))?;
+        Ok(())
+    }
+
+    fn remove_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<()> {
+        let Some(index) = self.tools.iter().position(|tool| tool.iam() == *kind) else {
+            anyhow::bail!("Unknown pipeline tool: {kind}");
+        };
+        if !self.included.contains(kind)
+            && !self.tools.get(index).is_some_and(|tool| tool.is_enabled())
+        {
+            return Ok(());
+        }
+        if let Some(tool) = self.tools.get_mut(index) {
+            tool.set_enabled(false);
+        }
+        self.included.remove(kind);
+        self.command_sender.send(PipelineCommand::Refresh(0))?;
+        Ok(())
+    }
+
+    fn pipeline_config(&self) -> anyhow::Result<(PipelineConfig, HashMap<String, u16>)> {
+        let mut configs = HashMap::new();
+        let mut indices = HashMap::new();
+        let mut pipeline_index = 0u16;
+        for tool in &self.tools {
+            if !self.included.contains(&tool.iam()) {
+                continue;
+            }
+            let name = tool.iam().to_string();
+            indices.insert(name.clone(), pipeline_index);
+            configs.insert(name, tool.get_state());
+            pipeline_index = pipeline_index
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("Too many pipeline tools"))?;
+        }
+        Ok((PipelineConfig { tools: configs }, indices))
+    }
+
+    pub(crate) fn apply_pipeline_config(
+        &mut self,
+        config: &PipelineConfig,
+        indices: &HashMap<String, u16>,
+    ) {
+        for tool in &mut self.tools {
+            tool.set_enabled(false);
+            if let Some(state) = config.tools.get(&tool.iam().to_string()) {
+                tool.apply_state(state.clone());
+            }
+        }
+        self.restore_tool_indices(indices);
+        // Presence in the file defines membership, including disabled tools.
+        self.included = self
+            .tools
+            .iter()
+            .filter(|tool| config.tools.contains_key(&tool.iam().to_string()))
+            .map(|tool| tool.iam())
+            .collect();
+    }
+
     pub(crate) fn restore_tool_indices(&mut self, indices: &HashMap<String, u16>) {
         if indices.is_empty() {
             return;
         }
 
-        let mut ordered: Vec<_> = self
-            .tools
-            .drain(..)
-            .zip(self.previous_enabled.drain(..))
-            .zip(self.ever_enabled.drain(..))
-            .enumerate()
-            .collect();
-        ordered.sort_by_key(|(current_index, ((tool, _), _))| {
+        let mut ordered: Vec<_> = self.tools.drain(..).enumerate().collect();
+        ordered.sort_by_key(|(current_index, tool)| {
             indices
-                .get(&format!("{:?}", tool.iam()))
+                .get(&tool.iam().to_string())
                 .copied()
                 .map_or((1, *current_index), |index| (0, usize::from(index)))
         });
-
-        for (_, ((tool, was_enabled), was_ever_enabled)) in ordered {
-            self.tools.push(tool);
-            self.previous_enabled.push(was_enabled);
-            self.ever_enabled.push(was_ever_enabled);
-        }
+        self.tools = ordered.into_iter().map(|(_, tool)| tool).collect();
         self.reindex_tools();
     }
 
-    pub(crate) fn synchronize_enabled_history(&mut self) {
-        self.previous_enabled = self.tools.iter().map(|tool| tool.is_enabled()).collect();
-        self.ever_enabled
-            .iter_mut()
-            .zip(&self.previous_enabled)
-            .for_each(|(ever_enabled, enabled)| *ever_enabled |= *enabled);
-    }
-
-    /// Move tools that became enabled during this cycle to the end of the pipeline.
+    /// Automatically include tools enabled outside Add Tool. Existing stack items
+    /// keep their position when disabled or enabled again.
     fn move_newly_enabled_tools_to_end(&mut self) {
-        let mut retained_tools = Vec::with_capacity(self.tools.len());
-        let mut retained_enabled = Vec::with_capacity(self.previous_enabled.len());
-        let mut retained_ever_enabled = Vec::with_capacity(self.ever_enabled.len());
-        let mut newly_enabled_tools = Vec::new();
-        let mut newly_enabled_states = Vec::new();
-        let mut newly_enabled_ever_states = Vec::new();
-
-        for ((tool, was_enabled), was_ever_enabled) in self
-            .tools
-            .drain(..)
-            .zip(self.previous_enabled.drain(..))
-            .zip(self.ever_enabled.drain(..))
-        {
-            if tool.is_enabled() && !was_enabled && !was_ever_enabled {
-                newly_enabled_states.push(true);
-                newly_enabled_ever_states.push(true);
-                newly_enabled_tools.push(tool);
+        let mut retained = Vec::with_capacity(self.tools.len());
+        let mut added = Vec::new();
+        for tool in self.tools.drain(..) {
+            if tool.is_enabled() && self.included.insert(tool.iam()) {
+                added.push(tool);
             } else {
-                retained_enabled.push(tool.is_enabled());
-                retained_ever_enabled.push(was_ever_enabled || tool.is_enabled());
-                retained_tools.push(tool);
+                retained.push(tool);
             }
         }
-
-        let order_changed = !newly_enabled_tools.is_empty();
-        retained_tools.append(&mut newly_enabled_tools);
-        retained_enabled.append(&mut newly_enabled_states);
-        retained_ever_enabled.append(&mut newly_enabled_ever_states);
-        self.tools = retained_tools;
-        self.previous_enabled = retained_enabled;
-        self.ever_enabled = retained_ever_enabled;
-
+        let order_changed = !added.is_empty();
+        retained.append(&mut added);
+        self.tools = retained;
         if order_changed {
             self.reindex_tools();
         }
@@ -236,22 +284,10 @@ impl ToolManager {
                         self.state.is_enabled = value;
                     }
                     PipelineObjectMessage::ManagerMessage(message) => match message {
+                        ManagerMessage::AddTool(kind) => self.add_tool(&kind)?,
+                        ManagerMessage::RemoveTool(kind) => self.remove_tool(&kind)?,
                         ManagerMessage::SavePipeline(path) => {
-                            let mut configs: HashMap<String, ToolState> = HashMap::new();
-                            let mut indices = HashMap::new();
-                            let mut enabled_index = 0u16;
-                            for tool in &self.tools {
-                                if !tool.is_enabled() {
-                                    continue;
-                                }
-                                let tool_name = format!("{:?}", tool.iam());
-                                indices.insert(tool_name.clone(), enabled_index);
-                                configs.insert(tool_name, tool.get_state());
-                                enabled_index = enabled_index
-                                    .checked_add(1)
-                                    .ok_or_else(|| anyhow::anyhow!("Too many pipeline tools"))?;
-                            }
-                            let pipeline_config = PipelineConfig { tools: configs };
+                            let (pipeline_config, indices) = self.pipeline_config()?;
                             let toml_string =
                                 match serialize_pipeline_config(&pipeline_config, &indices) {
                                     Ok(s) => s,
@@ -307,18 +343,7 @@ impl ToolManager {
                                     }
                                 };
 
-                            // A loaded pipeline replaces the active configuration.
-                            for tool in &mut self.tools {
-                                tool.set_enabled(false);
-                            }
-                            for tool in &mut self.tools {
-                                let tool_name = format!("{:?}", tool.iam());
-                                if let Some(config) = pipeline_config.tools.get(&tool_name) {
-                                    tool.apply_state(config.clone());
-                                }
-                            }
-                            self.restore_tool_indices(&indices);
-                            self.synchronize_enabled_history();
+                            self.apply_pipeline_config(&pipeline_config, &indices);
 
                             self.command_sender
                                 .send(PipelineCommand::Refresh(0))
@@ -348,17 +373,7 @@ impl ToolManager {
                                 return Err(anyhow::anyhow!(error_msg));
                             }
 
-                            let tool = self.tools.remove(start_idx);
-                            let was_enabled = self.previous_enabled.remove(start_idx);
-                            let was_ever_enabled = self.ever_enabled.remove(start_idx);
-                            let insert_idx = std::cmp::min(new_idx, self.tools.len());
-                            self.tools.insert(insert_idx, tool);
-                            self.previous_enabled.insert(insert_idx, was_enabled);
-                            self.ever_enabled.insert(insert_idx, was_ever_enabled);
-
-                            // Reassign indices to all tools after reordering
-                            self.reindex_tools();
-
+                            self.move_tool(start_idx, new_idx);
                             self.command_sender
                                 .send(PipelineCommand::Refresh(0))
                                 .map_err(|e| {
@@ -374,7 +389,7 @@ impl ToolManager {
 
         self.move_newly_enabled_tools_to_end();
 
-        let new_proxy_tools = update_proxy_tools(&self.tools);
+        let new_proxy_tools = update_proxy_tools(&self.tools, &self.included);
         if new_proxy_tools != self.state.proxy_tools {
             self.state.proxy_tools = new_proxy_tools;
         }

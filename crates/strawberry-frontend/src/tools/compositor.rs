@@ -5,8 +5,7 @@ use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    App, Bounds, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div, prelude::*,
 };
 
 use crate::gui::ToggleButton;
@@ -303,25 +302,24 @@ impl Render for CompositorView {
                     .flex_col()
                     .gap_3()
                     .bg(theme::WINDOW_BG)
-                    .size_full()
+                    .w_full()
                     .text_sm()
                     .p_4()
-                    .shadow_lg()
                     .text_color(theme::TEXT)
                     .child("Error: Unable to read compositor state");
             }
         };
 
         div()
+            .key_context("CompositorView")
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
             .bg(theme::WINDOW_BG)
-            .size_full()
+            .w_full()
             .text_sm()
             .p_4()
-            .shadow_lg()
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
@@ -343,48 +341,28 @@ impl Render for CompositorView {
             .on_action(cx.listener(Self::toggle_layer_7_action))
             .on_action(cx.listener(Self::toggle_layer_8_action))
             .on_action(cx.listener(Self::toggle_layer_9_action))
-            .child(self.render_header())
             .child(Self::render_status(&state, cx))
             .child(Self::render_layers_section(&state, cx))
     }
 }
 
-impl_tool_view_basics!(CompositorView, "Compositor");
-
 impl ToolFrontend for CompositorView {
-    fn get_window_options(&self) -> WindowOptions {
-        WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("Compositor")),
-                appears_transparent: false,
-                ..Default::default()
-            }),
-
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                size: size(px(250.), px(350.)),
-                origin: Point::new(px(200.), px(200.)),
-            })),
-
-            ..Default::default()
-        }
-    }
-
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;
         }
 
         cx.bind_keys([
-            KeyBinding::new("cmd-t", CompositorToggleActivity, None),
-            KeyBinding::new("cmd-1", CompositorToggleLayer1, None),
-            KeyBinding::new("cmd-2", CompositorToggleLayer2, None),
-            KeyBinding::new("cmd-3", CompositorToggleLayer3, None),
-            KeyBinding::new("cmd-4", CompositorToggleLayer4, None),
-            KeyBinding::new("cmd-5", CompositorToggleLayer5, None),
-            KeyBinding::new("cmd-6", CompositorToggleLayer6, None),
-            KeyBinding::new("cmd-7", CompositorToggleLayer7, None),
-            KeyBinding::new("cmd-8", CompositorToggleLayer8, None),
-            KeyBinding::new("cmd-9", CompositorToggleLayer9, None),
+            KeyBinding::new("cmd-t", CompositorToggleActivity, Some("CompositorView")),
+            KeyBinding::new("cmd-1", CompositorToggleLayer1, Some("CompositorView")),
+            KeyBinding::new("cmd-2", CompositorToggleLayer2, Some("CompositorView")),
+            KeyBinding::new("cmd-3", CompositorToggleLayer3, Some("CompositorView")),
+            KeyBinding::new("cmd-4", CompositorToggleLayer4, Some("CompositorView")),
+            KeyBinding::new("cmd-5", CompositorToggleLayer5, Some("CompositorView")),
+            KeyBinding::new("cmd-6", CompositorToggleLayer6, Some("CompositorView")),
+            KeyBinding::new("cmd-7", CompositorToggleLayer7, Some("CompositorView")),
+            KeyBinding::new("cmd-8", CompositorToggleLayer8, Some("CompositorView")),
+            KeyBinding::new("cmd-9", CompositorToggleLayer9, Some("CompositorView")),
         ]);
 
         self.process_messages(window, cx);

@@ -1,3 +1,4 @@
+use crate::gui::Button;
 use crate::gui::actions::actions;
 use crate::gui::theme;
 // Implements UI for contrast tool
@@ -5,8 +6,8 @@ use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div,
+    prelude::*,
 };
 
 use crate::gui::ToggleButton;
@@ -139,27 +140,18 @@ impl ContrastView {
         max: f32,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(theme::CONTROL)
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::CONTROL_HOVER))
-            .text_sm()
-            .text_center()
-            .child(label)
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(
-                    move |this: &mut Self,
-                          _event: &MouseDownEvent,
-                          _window: &mut Window,
-                          _cx: &mut Context<Self>| {
-                        this.update_min_max(min, max);
-                    },
-                ),
-            )
+        Button::new(gpui::ElementId::Name(
+            format!("render_preset_button-{label}").into(),
+        ))
+        .label(label)
+        .on_click(cx.listener(
+            move |this: &mut Self,
+                  _event: &gpui::ClickEvent,
+                  _window: &mut Window,
+                  _cx: &mut Context<Self>| {
+                this.update_min_max(min, max);
+            },
+        ))
     }
 
     // Presets section component
@@ -223,8 +215,6 @@ impl ContrastView {
     }
 }
 
-impl_tool_view_basics!(ContrastView, "Contrast");
-
 impl FrontendMessageHandler for ContrastView {
     type State = ContrastState;
 
@@ -276,25 +266,24 @@ impl Render for ContrastView {
                     .flex_col()
                     .gap_3()
                     .bg(theme::WINDOW_BG)
-                    .size_full()
+                    .w_full()
                     .text_sm()
                     .p_4()
-                    .shadow_lg()
                     .text_color(theme::TEXT)
                     .child("Error: Unable to read contrast state");
             }
         };
 
         div()
+            .key_context("ContrastView")
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
             .bg(theme::WINDOW_BG)
-            .size_full()
+            .w_full()
             .text_sm()
             .p_4()
-            .shadow_lg()
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
@@ -307,7 +296,6 @@ impl Render for ContrastView {
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
-            .child(self.render_header())
             .child(Self::render_status(&state, cx))
             .child(self.render_controls_section(cx, window))
             .child(Self::render_presets_section(cx))
@@ -315,29 +303,16 @@ impl Render for ContrastView {
 }
 
 impl ToolFrontend for ContrastView {
-    fn get_window_options(&self) -> WindowOptions {
-        WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("Contrast")),
-                appears_transparent: false,
-                ..Default::default()
-            }),
-
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                size: size(px(280.), px(400.)),
-                origin: Point::new(px(460.), px(200.)),
-            })),
-
-            ..Default::default()
-        }
-    }
-
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;
         }
 
-        cx.bind_keys([KeyBinding::new("cmd-t", ContrastToggleActivity, None)]);
+        cx.bind_keys([KeyBinding::new(
+            "cmd-t",
+            ContrastToggleActivity,
+            Some("ContrastView"),
+        )]);
 
         // Create and initialize ValueControl components
         let state = self

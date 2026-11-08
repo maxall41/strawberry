@@ -480,18 +480,8 @@ impl Pipeline {
                         }
                     };
 
-                    // A loaded pipeline replaces the active configuration.
-                    for tool in &mut self.tool_manager.tools {
-                        tool.set_enabled(false);
-                    }
-                    for tool in &mut self.tool_manager.tools {
-                        let tool_name = format!("{:?}", tool.iam());
-                        if let Some(config) = pipeline_config.tools.get(&tool_name) {
-                            tool.apply_state(config.clone());
-                        }
-                    }
-                    self.tool_manager.restore_tool_indices(&indices);
-                    self.tool_manager.synchronize_enabled_history();
+                    self.tool_manager
+                        .apply_pipeline_config(&pipeline_config, &indices);
                     println!("CLI Pipeline load");
                     // The config normally arrives before any images do; running
                     // then would only raise a spurious "no input images" error.

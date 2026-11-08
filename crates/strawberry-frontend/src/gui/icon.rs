@@ -45,7 +45,23 @@ impl Icon {
     }
 
     pub fn x() -> Self {
-        Self::from_asset("x.svg")
+        Self::from_asset("x.svg").size(12.)
+    }
+
+    pub fn plus() -> Self {
+        Self::from_asset("plus.svg").size(12.)
+    }
+
+    pub fn minus() -> Self {
+        Self::from_asset("minus.svg").size(12.)
+    }
+
+    pub fn disclosure(expanded: bool) -> Self {
+        Self::from_asset(if expanded {
+            "caret_down.svg"
+        } else {
+            "caret_right.svg"
+        })
     }
 }
 

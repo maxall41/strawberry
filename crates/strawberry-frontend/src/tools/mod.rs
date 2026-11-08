@@ -3,8 +3,6 @@ use std::sync::{Arc, RwLock};
 use gpui::{Context, Window};
 
 pub mod base;
-#[macro_use]
-pub mod macros;
 
 pub use base::ToolBase;
 use strawberry_types::{FrontendMessage, PipelineCommand, ToolState};
@@ -16,7 +14,6 @@ pub mod decomposer;
 pub mod gaussian_blur;
 pub mod grayscale;
 pub mod local_maxima;
-pub mod manager;
 pub mod morphology;
 pub mod nervetracer;
 pub mod rolling_ball;
@@ -50,14 +47,14 @@ impl CleanupGuard {
 
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
-        // Views that never connected must not disconnect another window's
+        // Views that never connected must not disconnect another view's
         // frontend subscription.
         if !self.connected {
             return;
         }
 
         println!(
-            "CleanupGuard dropping for {:?} - tool window closing",
+            "CleanupGuard dropping for {:?} - tool view released",
             self.backend_tool_type
         );
         if let Err(e) =
@@ -141,7 +138,7 @@ pub fn spawn_message_processor<V: FrontendMessageHandler>(
                     }
                 }
                 FrontendMessage::ReturnBackendTools(backend_ids, senders) => {
-                    let _ = this.update(cx, |view, _cx| {
+                    let _ = this.update(cx, |view, cx| {
                         let base = view.base_mut();
                         if let Ok(mut idx) = base.current_tool_index.write() {
                             *idx = backend_ids.first().copied();
@@ -152,6 +149,7 @@ pub fn spawn_message_processor<V: FrontendMessageHandler>(
                         if let Some(sender) = base.send_channels.first() {
                             let _ = sender.send(PipelineCommand::RequestState());
                         }
+                        cx.notify();
                     });
                 }
                 _ => {}

@@ -1,13 +1,13 @@
 use crate::gui::actions::actions;
 use crate::gui::theme;
+use crate::gui::{Button, ButtonVariant};
 // Implements UI for nerve tracer tool
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    App, Bounds, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div, prelude::*, px,
 };
 use rfd::FileDialog;
 
@@ -264,37 +264,17 @@ impl NerveTracerView {
                     .flex_wrap()
                     .children((0..state.total_images).map(|i| {
                         let is_selected = i == state.selected_image_index;
-                        div()
-                            .px_3()
-                            .py_1()
-                            .bg(if is_selected {
-                                theme::ACCENT
-                            } else {
-                                theme::CONTROL
-                            })
-                            .cursor_pointer()
-                            .hover(move |style| {
-                                style.bg(if is_selected {
-                                    theme::ACCENT_HOVER
-                                } else {
-                                    theme::CONTROL_HOVER
-                                })
-                            })
-                            .rounded_md()
-                            .text_sm()
-                            .text_center()
-                            .child(format!("{}", i.saturating_add(1)))
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(
-                                    move |this: &mut Self,
-                                          _event: &MouseDownEvent,
-                                          _window: &mut Window,
-                                          _cx: &mut Context<Self>| {
-                                        this.set_selected_image(i);
-                                    },
-                                ),
-                            )
+                        Button::new(("trace-image", i))
+                            .selected(is_selected)
+                            .label(format!("{}", i.saturating_add(1)))
+                            .on_click(cx.listener(
+                                move |this: &mut Self,
+                                      _event: &gpui::ClickEvent,
+                                      _window: &mut Window,
+                                      _cx: &mut Context<Self>| {
+                                    this.set_selected_image(i);
+                                },
+                            ))
                     })),
             )
     }
@@ -354,8 +334,6 @@ impl NerveTracerView {
             .justify_between()
             .p_2()
             .bg(theme::CONTROL)
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .child(div().flex_1().child(format!(
                 "Segment {:03} ({} points)",
@@ -363,30 +341,17 @@ impl NerveTracerView {
                 point_count
             )))
             .child(
-                div()
-                    .w_6()
-                    .h_6()
-                    .bg(theme::DANGER)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::DANGER_HOVER))
-                    .rounded_sm()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_lg()
-                    .text_color(theme::TEXT)
-                    .child("×")
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(
-                            move |this: &mut Self,
-                                  _event: &MouseDownEvent,
-                                  _window: &mut Window,
-                                  _cx: &mut Context<Self>| {
-                                this.delete_uncommitted_segment(segment_id);
-                            },
-                        ),
-                    ),
+                Button::new(("delete-segment", segment_id))
+                    .variant(ButtonVariant::Delete)
+                    .aria_label("Delete segment")
+                    .on_click(cx.listener(
+                        move |this: &mut Self,
+                              _event: &gpui::ClickEvent,
+                              _window: &mut Window,
+                              _cx: &mut Context<Self>| {
+                            this.delete_uncommitted_segment(segment_id);
+                        },
+                    )),
             )
     }
 
@@ -395,49 +360,15 @@ impl NerveTracerView {
         state: &NerveTracerState,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        let has_segments = !state.current_path_segments.is_empty();
-
-        if has_segments {
-            div()
-                .w_full()
-                .px_4()
-                .py_2()
-                .my_2()
-                .bg(theme::ACCENT)
-                .cursor_pointer()
-                .hover(|style| style.bg(theme::ACCENT_HOVER))
-                .rounded_md()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_sm()
-                .child("COMMIT")
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(
-                        |this: &mut Self,
-                         _event: &MouseDownEvent,
-                         _window: &mut Window,
-                         _cx: &mut Context<Self>| {
-                            this.commit_segments();
-                        },
-                    ),
-                )
-        } else {
-            div()
-                .w_full()
-                .px_4()
-                .py_2()
-                .my_2()
-                .bg(theme::CONTROL)
-                .rounded_md()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_sm()
-                .text_color(theme::TEXT_MUTED)
-                .child("COMMIT")
-        }
+        Button::new("commit-segments")
+            .variant(ButtonVariant::Primary)
+            .large()
+            .w_full()
+            .my_2()
+            .label("Commit")
+            .disabled(state.current_path_segments.is_empty())
+            .tooltip_text("Commit segments to a path (⌘C)")
+            .on_click(cx.listener(|this, _, _, _| this.commit_segments()))
     }
 
     // Paths section
@@ -506,7 +437,6 @@ impl NerveTracerView {
                     .justify_between()
                     .p_2()
                     .bg(theme::CONTROL)
-                    .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
                     .rounded_md()
                     .child(
                         div()
@@ -515,29 +445,17 @@ impl NerveTracerView {
                             .child(format!("Path {:03}", path_id.saturating_add(1))),
                     )
                     .child(
-                        div()
-                            .w_6()
-                            .h_6()
-                            .bg(theme::DANGER)
-                            .cursor_pointer().hover(|style| style.bg(theme::DANGER_HOVER))
-                            .rounded_sm()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_lg()
-                            .text_color(theme::TEXT)
-                            .child("×")
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(
-                                    move |this: &mut Self,
-                                          _event: &MouseDownEvent,
-                                          _window: &mut Window,
-                                          _cx: &mut Context<Self>| {
-                                        this.delete_path(path_id);
-                                    },
-                                ),
-                            ),
+                        Button::new(("delete-path", path_id))
+                            .variant(ButtonVariant::Delete)
+                            .aria_label("Delete path")
+                            .on_click(cx.listener(
+                                move |this: &mut Self,
+                                      _event: &gpui::ClickEvent,
+                                      _window: &mut Window,
+                                      _cx: &mut Context<Self>| {
+                                    this.delete_path(path_id);
+                                },
+                            )),
                     ),
             )
             .child(
@@ -566,8 +484,6 @@ impl NerveTracerView {
             .justify_between()
             .p_2()
             .bg(theme::CONTROL)
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::CONTROL_HOVER))
             .rounded_md()
             .child(div().flex_1().child(format!(
                 "Segment {:03} ({} points)",
@@ -575,30 +491,19 @@ impl NerveTracerView {
                 point_count
             )))
             .child(
-                div()
-                    .w_5()
-                    .h_5()
-                    .bg(theme::DANGER)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::DANGER_HOVER))
-                    .rounded_sm()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_sm()
-                    .text_color(theme::TEXT)
-                    .child("×")
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(
-                            move |this: &mut Self,
-                                  _event: &MouseDownEvent,
-                                  _window: &mut Window,
-                                  _cx: &mut Context<Self>| {
-                                this.delete_path_segment(path_id, segment_id);
-                            },
-                        ),
-                    ),
+                Button::new(gpui::ElementId::Name(
+                    format!("delete-path-{path_id}-segment-{segment_id}").into(),
+                ))
+                .variant(ButtonVariant::Delete)
+                .aria_label("Delete path segment")
+                .on_click(cx.listener(
+                    move |this: &mut Self,
+                          _event: &gpui::ClickEvent,
+                          _window: &mut Window,
+                          _cx: &mut Context<Self>| {
+                        this.delete_path_segment(path_id, segment_id);
+                    },
+                )),
             )
     }
 
@@ -608,66 +513,36 @@ impl NerveTracerView {
             .flex()
             .gap_2()
             .child(
-                div()
+                Button::new("save-button")
+                    .variant(ButtonVariant::Success)
+                    .large()
                     .flex_1()
-                    .px_4()
-                    .py_2()
-                    .bg(theme::SUCCESS)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::SUCCESS_HOVER))
-                    .rounded_md()
-                    .text_sm()
-                    .text_center()
-                    .child("SAVE")
-                    .id("save-button")
-                    .tooltip(move |_window, cx| {
-                        let tooltip_view = crate::gui::tooltip::TooltipView {
-                            text: "⌘S".to_string(),
-                        };
-                        cx.new(|_cx| tooltip_view).into()
-                    })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(
-                            |this: &mut Self,
-                             _event: &MouseDownEvent,
-                             window: &mut Window,
-                             cx: &mut Context<Self>| {
-                                this.save_traces(window, cx);
-                            },
-                        ),
-                    ),
+                    .label("Save")
+                    .tooltip_text("⌘S")
+                    .on_click(cx.listener(
+                        |this: &mut Self,
+                         _event: &gpui::ClickEvent,
+                         window: &mut Window,
+                         cx: &mut Context<Self>| {
+                            this.save_traces(window, cx);
+                        },
+                    )),
             )
             .child(
-                div()
+                Button::new("load-button")
+                    .variant(ButtonVariant::Primary)
+                    .large()
                     .flex_1()
-                    .px_4()
-                    .py_2()
-                    .bg(theme::ACCENT)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::ACCENT_HOVER))
-                    .rounded_md()
-                    .text_sm()
-                    .text_center()
-                    .child("LOAD")
-                    .id("load-button")
-                    .tooltip(move |_window, cx| {
-                        let tooltip_view = crate::gui::tooltip::TooltipView {
-                            text: "⌘L".to_string(),
-                        };
-                        cx.new(|_cx| tooltip_view).into()
-                    })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(
-                            |this: &mut Self,
-                             _event: &MouseDownEvent,
-                             window: &mut Window,
-                             cx: &mut Context<Self>| {
-                                this.load_traces(window, cx);
-                            },
-                        ),
-                    ),
+                    .label("Load")
+                    .tooltip_text("⌘L")
+                    .on_click(cx.listener(
+                        |this: &mut Self,
+                         _event: &gpui::ClickEvent,
+                         window: &mut Window,
+                         cx: &mut Context<Self>| {
+                            this.load_traces(window, cx);
+                        },
+                    )),
             )
     }
 }
@@ -713,25 +588,24 @@ impl Render for NerveTracerView {
                     .flex_col()
                     .gap_3()
                     .bg(theme::WINDOW_BG)
-                    .size_full()
+                    .w_full()
                     .text_sm()
                     .p_4()
-                    .shadow_lg()
                     .text_color(theme::TEXT)
                     .child("Error: Unable to read nerve tracer state");
             }
         };
 
         div()
+            .key_context("NerveTracerView")
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
             .bg(theme::WINDOW_BG)
-            .size_full()
+            .w_full()
             .text_sm()
             .p_4()
-            .shadow_lg()
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
@@ -747,7 +621,6 @@ impl Render for NerveTracerView {
             .on_action(cx.listener(Self::commit_segments_action))
             .on_action(cx.listener(Self::save_traces_action))
             .on_action(cx.listener(Self::load_traces_action))
-            .child(self.render_header())
             .child(Self::render_status(&state, cx))
             .child(Self::render_image_selector(&state, cx))
             .child(Self::render_segments_section(&state, cx))
@@ -757,36 +630,17 @@ impl Render for NerveTracerView {
     }
 }
 
-impl_tool_view_basics!(NerveTracerView, "Nerve Tracer");
-
 impl ToolFrontend for NerveTracerView {
-    fn get_window_options(&self) -> WindowOptions {
-        WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("Nerve Tracer")),
-                appears_transparent: false,
-                ..Default::default()
-            }),
-
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                size: size(px(400.), px(700.)),
-                origin: Point::new(px(1130.), px(200.)),
-            })),
-
-            ..Default::default()
-        }
-    }
-
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;
         }
 
         cx.bind_keys([
-            KeyBinding::new("cmd-t", NerveTracerToggleActivity, None),
-            KeyBinding::new("cmd-c", NerveTracerCommitSegments, None),
-            KeyBinding::new("cmd-s", NerveTracerSaveTraces, None),
-            KeyBinding::new("cmd-l", NerveTracerLoadTraces, None),
+            KeyBinding::new("cmd-t", NerveTracerToggleActivity, Some("NerveTracerView")),
+            KeyBinding::new("cmd-c", NerveTracerCommitSegments, Some("NerveTracerView")),
+            KeyBinding::new("cmd-s", NerveTracerSaveTraces, Some("NerveTracerView")),
+            KeyBinding::new("cmd-l", NerveTracerLoadTraces, Some("NerveTracerView")),
         ]);
 
         self.process_messages(window, cx);
