@@ -24,10 +24,11 @@ pub mod sobel;
 pub mod threshold;
 pub mod watershed;
 
-/// RAII guard that automatically sends disconnect command when dropped
+/// Disconnects an initialized tool view when it is dropped.
 pub struct CleanupGuard {
     command_sender: tokio::sync::broadcast::Sender<strawberry_types::PipelineCommand>,
     backend_tool_type: strawberry_types::BackendToolType,
+    connected: bool,
 }
 
 impl CleanupGuard {
@@ -38,12 +39,23 @@ impl CleanupGuard {
         Self {
             command_sender,
             backend_tool_type,
+            connected: false,
         }
+    }
+
+    const fn mark_connected(&mut self) {
+        self.connected = true;
     }
 }
 
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
+        // Views that never connected must not disconnect another window's
+        // frontend subscription.
+        if !self.connected {
+            return;
+        }
+
         println!(
             "CleanupGuard dropping for {:?} - tool window closing",
             self.backend_tool_type

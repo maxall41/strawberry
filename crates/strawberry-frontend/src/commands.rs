@@ -1,4 +1,5 @@
 use crate::gui::actions::actions;
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -8,7 +9,7 @@ use gpui::{
     Action, AnyWindowHandle, App, Context, Entity, Focusable, Global, Render, Window, div,
     prelude::*,
 };
-use strawberry_types::{BackendToolType, PipelineCommand, ToolFrontend};
+use strawberry_types::{PipelineCommand, ToolFrontend};
 use tokio::sync::broadcast;
 
 use crate::gui::busy::BusyOverlay;
@@ -78,7 +79,7 @@ pub struct PalleteCommand {
 }
 
 #[derive(Default)]
-struct OpenToolWindows(HashMap<BackendToolType, AnyWindowHandle>);
+struct OpenToolWindows(HashMap<TypeId, AnyWindowHandle>);
 impl Global for OpenToolWindows {}
 
 /// Hosts a tool view plus the blocking busy overlay that locks the window's controls while a slow pipeline run is in flight.
@@ -96,15 +97,15 @@ impl<T: Render> Render for ToolWindowRoot<T> {
     }
 }
 
-fn open_tool_window<T>(mut tool: T, cx: &mut App)
+fn open_tool_window<T>(constructor: impl FnOnce(&App) -> T, cx: &mut App)
 where
     T: ToolFrontend + FrontendMessageHandler + Render + Focusable + 'static,
 {
-    let backend_type = tool.base().backend_type.clone();
+    let tool_type = TypeId::of::<T>();
 
     if let Some(existing) = cx
         .try_global::<OpenToolWindows>()
-        .and_then(|open| open.0.get(&backend_type))
+        .and_then(|open| open.0.get(&tool_type))
         .copied()
     {
         if cx
@@ -119,11 +120,10 @@ where
             });
             return;
         }
-        cx.default_global::<OpenToolWindows>()
-            .0
-            .remove(&backend_type);
+        cx.default_global::<OpenToolWindows>().0.remove(&tool_type);
     }
 
+    let mut tool = constructor(cx);
     match cx.open_window(tool.get_window_options(), |window, cx| {
         let tool = cx.new(|cx| {
             tool.initialize(window, cx);
@@ -138,7 +138,7 @@ where
         Ok(handle) => {
             cx.default_global::<OpenToolWindows>()
                 .0
-                .insert(backend_type, handle.into());
+                .insert(tool_type, handle.into());
         }
         Err(e) => eprintln!("Failed to open tool window: {e}"),
     }
@@ -180,7 +180,10 @@ where
     let receiver = view_receiver.resubscribe();
 
     cx.on_action(move |_: &A, cx| {
-        open_tool_window(constructor(receiver.resubscribe(), sender.clone(), cx), cx);
+        open_tool_window(
+            |cx| constructor(receiver.resubscribe(), sender.clone(), cx),
+            cx,
+        );
     });
 
     PalleteCommand {
