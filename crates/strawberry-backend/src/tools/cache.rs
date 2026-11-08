@@ -4,9 +4,10 @@ use strawberry_types::{
     SobelState, ThresholdState, WatershedState,
 };
 
-/// Which state changes affect processing, independently of frontend presentation.
-pub trait ProcessingState: Clone + PartialEq {
+pub trait SyncState: Clone + PartialEq {
+    // Check if enabled
     fn is_enabled(&self) -> bool;
+    // Check if processing specific data mismatches. Does not include UI data in check.
     fn processing_differs(&self, other: &Self) -> bool {
         self != other
     }
@@ -15,7 +16,7 @@ pub trait ProcessingState: Clone + PartialEq {
 macro_rules! processing_states {
     ($($state:ty),* $(,)?) => {
         $(
-            impl ProcessingState for $state {
+            impl SyncState for $state {
                 fn is_enabled(&self) -> bool { self.is_enabled }
             }
         )*
@@ -34,7 +35,7 @@ processing_states!(
     WatershedState
 );
 
-impl ProcessingState for CompositorState {
+impl SyncState for CompositorState {
     fn is_enabled(&self) -> bool {
         self.is_enabled
     }
@@ -42,7 +43,7 @@ impl ProcessingState for CompositorState {
         self.is_enabled != other.is_enabled || self.enabled_layers != other.enabled_layers
     }
 }
-impl ProcessingState for CounterState {
+impl SyncState for CounterState {
     fn is_enabled(&self) -> bool {
         self.is_enabled
     }
@@ -52,7 +53,7 @@ impl ProcessingState for CounterState {
             || self.filter_proxys != other.filter_proxys
     }
 }
-impl ProcessingState for NerveTracerState {
+impl SyncState for NerveTracerState {
     fn is_enabled(&self) -> bool {
         self.is_enabled
     }
@@ -68,7 +69,7 @@ pub struct ToolSync<TState> {
     pub frontend_latest_state: Option<TState>,
 }
 
-impl<TState: ProcessingState> ToolSync<TState> {
+impl<TState: SyncState> ToolSync<TState> {
     #[must_use]
     pub fn new(state: &TState) -> Self {
         Self {
@@ -103,7 +104,7 @@ pub struct ToolCache<TState> {
     pub sync: ToolSync<TState>,
 }
 
-impl<TState: ProcessingState> ToolCache<TState> {
+impl<TState: SyncState> ToolCache<TState> {
     #[must_use]
     pub fn new(state: &TState) -> Self {
         Self {
