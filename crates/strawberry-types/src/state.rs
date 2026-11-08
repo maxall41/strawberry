@@ -37,6 +37,7 @@ pub struct FilterProxy {
 pub struct ToolProxy {
     pub name: String,
     pub position: u16,
+    pub is_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

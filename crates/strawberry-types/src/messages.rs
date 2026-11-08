@@ -44,6 +44,8 @@ pub enum MorphologyMessage {
 
 #[derive(Debug, Clone)]
 pub enum ManagerMessage {
+    AddTool(BackendToolType),
+    RemoveTool(BackendToolType),
     ReorderTool(u16, u16),
     SavePipeline(PathBuf),
     LoadPipeline(PathBuf),

@@ -7,6 +7,11 @@ pub mod icon;
 pub mod palette;
 pub mod polyline;
 pub mod theme;
+pub mod toggle_button;
 pub mod value_control;
-pub use button::ToggleButton;
+pub use button::{Button, ButtonVariant};
+pub use toggle_button::ToggleButton;
 pub mod tooltip;
+
+pub mod sidebar;
+pub mod workspace;

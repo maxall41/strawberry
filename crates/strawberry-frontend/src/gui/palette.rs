@@ -262,7 +262,7 @@ impl CommandPalette {
     fn render_query(&self, window: &Window) -> impl IntoElement + use<> {
         let style = window.text_style();
         let font_size = QUERY_FONT_SIZE.to_pixels(window.rem_size());
-        let line_height = (font_size * 1.3).round();
+        let line_height = px(f32::from(font_size) * 1.3).round();
         let shaped = window.text_system().shape_line(
             self.query.clone().into(),
             font_size,

@@ -1,3 +1,4 @@
+use crate::gui::Button;
 use crate::gui::actions::actions;
 use num_traits::ToPrimitive;
 
@@ -7,8 +8,8 @@ use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div,
+    prelude::*,
 };
 
 use crate::gui::ToggleButton;
@@ -200,37 +201,19 @@ impl MorphologyView {
         is_selected: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(if is_selected {
-                theme::ACCENT
-            } else {
-                theme::CONTROL
-            })
-            .cursor_pointer()
-            .hover(move |style| {
-                style.bg(if is_selected {
-                    theme::ACCENT_HOVER
-                } else {
-                    theme::CONTROL_HOVER
-                })
-            })
-            .text_sm()
-            .text_center()
-            .child(label)
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(
-                    move |this: &mut Self,
-                          _event: &MouseDownEvent,
-                          window: &mut Window,
-                          cx: &mut Context<Self>| {
-                        this.set_operation(operation, window, cx);
-                    },
-                ),
-            )
+        Button::new(gpui::ElementId::Name(
+            format!("render_operation_button-{label}").into(),
+        ))
+        .selected(is_selected)
+        .label(label)
+        .on_click(cx.listener(
+            move |this: &mut Self,
+                  _event: &gpui::ClickEvent,
+                  window: &mut Window,
+                  cx: &mut Context<Self>| {
+                this.set_operation(operation, window, cx);
+            },
+        ))
     }
 
     // Element size control component
@@ -252,27 +235,18 @@ impl MorphologyView {
         element_size: u32,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(theme::CONTROL)
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::CONTROL_HOVER))
-            .text_sm()
-            .text_center()
-            .child(label)
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(
-                    move |this: &mut Self,
-                          _event: &MouseDownEvent,
-                          window: &mut Window,
-                          cx: &mut Context<Self>| {
-                        this.update_operation_and_size(operation, element_size, window, cx);
-                    },
-                ),
-            )
+        Button::new(gpui::ElementId::Name(
+            format!("render_preset_button-{label}").into(),
+        ))
+        .label(label)
+        .on_click(cx.listener(
+            move |this: &mut Self,
+                  _event: &gpui::ClickEvent,
+                  window: &mut Window,
+                  cx: &mut Context<Self>| {
+                this.update_operation_and_size(operation, element_size, window, cx);
+            },
+        ))
     }
 
     // Presets section component
@@ -379,25 +353,24 @@ impl Render for MorphologyView {
                     .flex_col()
                     .gap_3()
                     .bg(theme::WINDOW_BG)
-                    .size_full()
+                    .w_full()
                     .text_sm()
                     .p_4()
-                    .shadow_lg()
                     .text_color(theme::TEXT)
                     .child("Error: Unable to read morphology state");
             }
         };
 
         div()
+            .key_context("MorphologyView")
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
             .bg(theme::WINDOW_BG)
-            .size_full()
+            .w_full()
             .text_sm()
             .p_4()
-            .shadow_lg()
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
@@ -410,39 +383,23 @@ impl Render for MorphologyView {
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
-            .child(self.render_header())
             .child(Self::render_status(&state, cx))
             .child(self.render_controls_section(cx, window))
             .child(Self::render_presets_section(cx))
     }
 }
 
-impl_tool_view_basics!(MorphologyView, "Morphology");
-
 impl ToolFrontend for MorphologyView {
-    fn get_window_options(&self) -> WindowOptions {
-        WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("Morphological Operations")),
-                appears_transparent: false,
-                ..Default::default()
-            }),
-
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                size: size(px(300.), px(500.)),
-                origin: Point::new(px(470.), px(200.)),
-            })),
-
-            ..Default::default()
-        }
-    }
-
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;
         }
 
-        cx.bind_keys([KeyBinding::new("cmd-t", MorphologyToggleActivity, None)]);
+        cx.bind_keys([KeyBinding::new(
+            "cmd-t",
+            MorphologyToggleActivity,
+            Some("MorphologyView"),
+        )]);
 
         // Create and initialize ValueControl component
         let state = self
