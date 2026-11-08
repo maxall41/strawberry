@@ -84,17 +84,6 @@ impl ToolBackend for Watershed {
             }
         }
 
-        if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
-            self.cache.cached_output = None;
-            self.cache.cached_state = None;
-            self.base
-                .send_to_frontend(&PipelineCommand::FrontendMessage(
-                    FrontendMessage::ReturnState(self.get_state()),
-                ))?;
-            self.base.trigger_refresh()?;
-            self.cache.frontend_latest_state = Some(self.state.clone());
-        }
-
         Ok(())
     }
 }
@@ -102,18 +91,18 @@ impl ToolBackend for Watershed {
 impl Watershed {
     #[must_use]
     pub fn new(
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
+        let state = WatershedState {
+            is_enabled: false,
+            sigma: 1.0,
+            min_distance: 10,
+        };
         Self {
-            state: WatershedState {
-                is_enabled: false,
-                sigma: 1.0,
-                min_distance: 10,
-            },
-            base: ToolBase::new(command_sender, global_sender),
-            cache: ToolCache::new(),
+            state: state.clone(),
+            base: ToolBase::new(global_sender),
+            cache: ToolCache::new(&state),
             processor: GpuWatershed::new(gpu_image_processor),
         }
     }

@@ -89,17 +89,6 @@ impl ToolBackend for Morphology {
             }
         }
 
-        if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
-            self.cache.cached_output = None;
-            self.cache.cached_state = None;
-            self.base
-                .send_to_frontend(&PipelineCommand::FrontendMessage(
-                    FrontendMessage::ReturnState(self.get_state()),
-                ))?;
-            self.base.trigger_refresh()?;
-            self.cache.frontend_latest_state = Some(self.state.clone());
-        }
-
         Ok(())
     }
 }
@@ -107,18 +96,18 @@ impl ToolBackend for Morphology {
 impl Morphology {
     #[must_use]
     pub fn new(
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
+        let state = MorphologyState {
+            is_enabled: false,
+            operation: MorphologyOperation::Dilation,
+            element_size: 3,
+        };
         Self {
-            state: MorphologyState {
-                is_enabled: false,
-                operation: MorphologyOperation::Dilation,
-                element_size: 3,
-            },
-            base: ToolBase::new(command_sender, global_sender),
-            cache: ToolCache::new(),
+            state: state.clone(),
+            base: ToolBase::new(global_sender),
+            cache: ToolCache::new(&state),
             processor: GpuMorphology::new(gpu_image_processor),
         }
     }
