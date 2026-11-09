@@ -114,6 +114,15 @@ impl ToolManager {
                 updates.push(update);
             }
         }
+        // Check for unsupported tools
+        if !config.tools.is_empty() {
+            let mut unsupported_tools: Vec<_> = config.tools.keys().cloned().collect();
+            unsupported_tools.sort();
+            anyhow::bail!(
+                "Unsupported pipeline tools: {}",
+                unsupported_tools.join(", ")
+            );
+        }
         // Apply updates seperately such that pipelines are never partially loaded if one tool fails to parse into concrete types.
         for update in updates {
             update();
