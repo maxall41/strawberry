@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
+# Generate in-place struct updates that leave serde(skip) fields untouched.
+serde_derive = { version = "1.0", features = ["deserialize_in_place"] }
+serde-value = "0.7"
 image = { git = "https://github.com/maxall41/image.git", branch = "single-channel-support" }
 flume = "0.12"
 async-trait = "0.1.91"

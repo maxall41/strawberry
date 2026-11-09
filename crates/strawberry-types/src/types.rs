@@ -1,5 +1,23 @@
 use core::fmt;
 
+/// Coalesces processing requests at the earliest requested tool index.
+#[derive(Default)]
+pub struct PendingProcessing {
+    from: Option<usize>,
+}
+
+impl PendingProcessing {
+    /// Schedule processing without skipping any earlier pending work.
+    pub fn request_processing(&mut self, from: usize) {
+        self.from = Some(self.from.map_or(from, |index| index.min(from)));
+    }
+
+    /// Consume the pending request at a processing boundary.
+    pub fn take(&mut self) -> Option<usize> {
+        self.from.take()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BackendToolType {
     Compositor,

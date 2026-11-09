@@ -26,7 +26,7 @@ impl ToolBackend for Compositor {
         ToolState::CompositorState(self.state.clone())
     }
 
-    fn apply_state(&mut self, state: ToolState) {
+    fn replace_state(&mut self, state: ToolState) {
         if let ToolState::CompositorState(new_state) = state {
             self.state = new_state;
         }
@@ -40,10 +40,6 @@ impl ToolBackend for Compositor {
         self.state.real_layers_len = input.len();
 
         if input.len() == 1 {
-            self.base
-                .send_to_frontend(&PipelineCommand::FrontendMessage(
-                    FrontendMessage::ReturnState(self.get_state()),
-                ))?;
             return Ok(());
         }
 
@@ -73,16 +69,6 @@ impl ToolBackend for Compositor {
         };
 
         *input = vec![Arc::new(composited)];
-
-        if let Some(frontend_state) = &self.cache.frontend_latest_state {
-            println!("State Status {}", frontend_state == &self.state);
-            println!(
-                "Real Layers Length Comparison | Frontend: {} Backend: {}",
-                frontend_state.real_layers_len, self.state.real_layers_len
-            );
-        } else {
-            println!("Frontend state is empty");
-        }
 
         Ok(())
     }
@@ -143,17 +129,6 @@ impl ToolBackend for Compositor {
             }
         }
 
-        if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
-            self.cache.cached_output = None;
-            self.cache.cached_state = None;
-            self.base
-                .send_to_frontend(&PipelineCommand::FrontendMessage(
-                    FrontendMessage::ReturnState(self.get_state()),
-                ))?;
-            self.base.trigger_refresh()?;
-            self.cache.frontend_latest_state = Some(self.state.clone());
-        }
-
         Ok(())
     }
 }
@@ -161,18 +136,18 @@ impl ToolBackend for Compositor {
 impl Compositor {
     #[must_use]
     pub fn new(
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
+        let state = CompositorState {
+            is_enabled: false,
+            enabled_layers: vec![true; 8],
+            real_layers_len: 0,
+        };
         Self {
-            state: CompositorState {
-                is_enabled: false,
-                enabled_layers: vec![true; 8],
-                real_layers_len: 0,
-            },
-            base: ToolBase::new(command_sender, global_sender),
-            cache: ToolCache::new(),
+            state: state.clone(),
+            base: ToolBase::new(global_sender),
+            cache: ToolCache::new(&state),
             compositer: GpuCompositor::new(gpu_image_processor),
         }
     }

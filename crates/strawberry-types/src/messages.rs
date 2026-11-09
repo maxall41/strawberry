@@ -170,8 +170,6 @@ impl FrontendMessage {
 /// Commands that can be sent to the pipeline
 #[derive(Debug, Clone)]
 pub enum PipelineCommand {
-    /// Refresh the pipeline starting from the given tool index
-    Refresh(usize),
     /// Load input images into the pipeline
     Load(Vec<PathBuf>),
     /// Message to pipeline object
