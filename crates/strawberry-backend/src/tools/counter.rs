@@ -18,11 +18,6 @@ use strawberry_types::{
     ToolBackend, ToolState,
 };
 
-/// Check if state change requires reporcessing
-fn counter_output_differs(a: &CounterState, b: &CounterState) -> bool {
-    a.is_enabled != b.is_enabled || a.mode != b.mode || a.filter_proxys != b.filter_proxys
-}
-
 pub struct SizeFilter {
     pub is_enabled: bool,
     pub min_size: u16,
@@ -130,10 +125,8 @@ pub struct Counter {
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub filters: Vec<Box<dyn Filter>>,
     pub index: usize,
-    pub cached_output: Option<Vec<Arc<image::RgbaImage>>>,
-    pub cached_state: Option<CounterState>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub frontend_latest_state: Option<CounterState>,
+    pub cache: crate::tools::cache::ToolCache<CounterState>,
     pub lasso_points: Vec<(u64, u64)>,
     pub is_lasso_dragging: bool,
 }
@@ -143,7 +136,6 @@ impl ToolBackend for Counter {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
-    fn apply_state(&mut self, _state: ToolState) {}
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
     }
@@ -193,11 +185,6 @@ impl ToolBackend for Counter {
                 }
             }
         }
-
-        // Push state update to frontend
-        self.send_to_frontend(&PipelineCommand::FrontendMessage(
-            FrontendMessage::ReturnState(self.get_state()),
-        ))?;
 
         Ok(())
     }
@@ -579,22 +566,6 @@ impl ToolBackend for Counter {
             self.state.filter_proxys = new_filter_proxys;
         }
 
-        let (changed, affects_output) = match self.frontend_latest_state.as_ref() {
-            Some(previous) => (
-                previous != &self.state,
-                counter_output_differs(previous, &self.state),
-            ),
-            None => (true, true),
-        };
-
-        if changed {
-            if affects_output {
-                self.update_state()?;
-            } else {
-                self.sync_frontend()?;
-            }
-        }
-
         Ok(())
     }
 
@@ -606,22 +577,21 @@ impl ToolBackend for Counter {
         self.index = index;
     }
 
-    fn valid_cached_output(&self) -> Option<Vec<Arc<image::RgbaImage>>> {
-        if self.cached_state.as_ref() == Some(&self.state) {
-            self.cached_output.clone()
-        } else {
-            None
+    crate::impl_tool_cache!();
+
+    /// Push state to the frontend without discarding the cached image.
+    fn sync_frontend(&mut self) -> anyhow::Result<()> {
+        if !self.cache.sync.needs_frontend_sync(&self.state) {
+            return Ok(());
         }
-    }
-
-    fn set_cached_output(&mut self, output: Vec<Arc<image::RgbaImage>>) {
-        self.cached_output = Some(output);
-        self.cached_state = Some(self.state.clone());
-    }
-
-    fn invalidate_cache(&mut self) {
-        self.cached_output = None;
-        self.cached_state = None;
+        let message =
+            PipelineCommand::FrontendMessage(FrontendMessage::ReturnState(self.get_state()));
+        self.send_to_frontend(&message)?;
+        self.cache.sync.frontend_latest_state = Some(self.state.clone());
+        self.command_sender
+            .send(PipelineCommand::RequestOverlays)
+            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {e}"))?;
+        Ok(())
     }
 
     fn get_overlays(&self) -> Option<crate::overlay::ToolOverlay> {
@@ -722,19 +692,20 @@ impl Counter {
         let filters: Vec<Box<dyn Filter>> = vec![Box::new(SizeFilter::new(10))];
         let filter_proxys = update_filter_proxys(&filters);
 
+        let state = CounterState {
+            is_enabled: false,
+            manual_counts: HashMap::new(),
+            auto_counts: Vec::new(),
+            mode: CounterMode::Manual,
+            active_tool: None,
+            active_count_type: None,
+            review_current_index: 0,
+            filter_proxys,
+            count_type_visibility: HashMap::new(),
+            count_type_names: HashMap::new(),
+        };
         Ok(Self {
-            state: CounterState {
-                is_enabled: false,
-                manual_counts: HashMap::new(),
-                auto_counts: Vec::new(),
-                mode: CounterMode::Manual,
-                active_tool: None,
-                active_count_type: None,
-                review_current_index: 0,
-                filter_proxys,
-                count_type_visibility: HashMap::new(),
-                count_type_names: HashMap::new(),
-            },
+            state: state.clone(),
             frontend_senders: vec![],
             index: 0,
             filters,
@@ -742,33 +713,10 @@ impl Counter {
             sender,
             receiver,
             global_sender,
-            cached_output: None,
-            cached_state: None,
-            frontend_latest_state: None,
+            cache: crate::tools::cache::ToolCache::new(&state),
             lasso_points: Vec::new(),
             is_lasso_dragging: false,
         })
-    }
-
-    /// Push state to the frontend without discarding the cached image.
-    fn sync_frontend(&mut self) -> anyhow::Result<()> {
-        let message =
-            PipelineCommand::FrontendMessage(FrontendMessage::ReturnState(self.get_state()));
-        self.send_to_frontend(&message)?;
-        self.frontend_latest_state = Some(self.state.clone());
-        self.command_sender
-            .send(PipelineCommand::RequestOverlays)
-            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {e}"))?;
-        Ok(())
-    }
-
-    fn update_state(&mut self) -> anyhow::Result<()> {
-        self.invalidate_cache();
-        self.sync_frontend()?;
-        self.command_sender
-            .send(PipelineCommand::Refresh(self.index))
-            .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {e}"))?;
-        Ok(())
     }
 
     fn send_to_frontend(&self, message: &PipelineCommand) -> anyhow::Result<()> {
