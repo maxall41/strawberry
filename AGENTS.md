@@ -63,4 +63,4 @@ Never edit the README, never create new markdown files/documentation.
 
 ## SVG and Icons
 
-Do NOT write custom SVG icons. Use phosphor icons instead: https://phosphoricons.com/
+Do NOT write custom SVG icons. Use phosphor icons instead: https://phosphoricons.com/. Do not use text as icons, unless explictly instructed to do so.

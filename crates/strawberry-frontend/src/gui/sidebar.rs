@@ -5,8 +5,8 @@ use std::{
 };
 
 use gpui::{
-    AnyView, App, Bounds, Context, DragMoveEvent, EventEmitter, FocusHandle, FontWeight, Pixels,
-    Point, Render, ScrollHandle, Window, div, prelude::*, px,
+    AnyView, App, Bounds, Context, DragMoveEvent, EventEmitter, FocusHandle, Focusable, FontWeight,
+    Pixels, Point, Render, ScrollHandle, Window, div, prelude::*, px,
 };
 use rfd::FileDialog;
 use strawberry_types::{
@@ -14,7 +14,13 @@ use strawberry_types::{
     ToolProxy, ToolState,
 };
 
-use super::{busy::BusyOverlay, icon::Icon, theme, tooltip::TooltipView};
+use super::{
+    busy::BusyOverlay,
+    icon::Icon,
+    theme,
+    tool_picker::{ToolChoice, ToolPicker, ToolPickerEvent},
+    tooltip::TooltipView,
+};
 use crate::tools::{FrontendMessageHandler, ToolBase, spawn_message_processor};
 
 type PanelFactory = Rc<dyn Fn(&mut Window, &mut App) -> ToolPanel>;
@@ -84,7 +90,7 @@ pub struct ToolSidebar {
     base: ToolBase,
     scroll: ScrollHandle,
     focus_requested: Option<BackendToolType>,
-    add_menu_open: bool,
+    add_menu: Option<gpui::Entity<ToolPicker>>,
     drag_tool: Option<BackendToolType>,
     drop_slot: Option<usize>,
     queued_commands: Vec<ManagerMessage>,
@@ -105,7 +111,7 @@ impl ToolSidebar {
             base: ToolBase::new(sender, BackendToolType::Manager, cx.focus_handle()),
             scroll: ScrollHandle::new(),
             focus_requested: None,
-            add_menu_open: false,
+            add_menu: None,
             drag_tool: None,
             drop_slot: None,
             queued_commands: Vec::new(),
@@ -122,7 +128,7 @@ impl ToolSidebar {
     }
 
     pub fn reveal(&mut self, cx: &mut Context<Self>) {
-        self.add_menu_open = false;
+        self.add_menu = None;
         cx.emit(ToolSelected);
         cx.notify();
     }
@@ -131,7 +137,7 @@ impl ToolSidebar {
         if let Some(tool) = self.tools.iter_mut().find(|tool| tool.kind == *kind) {
             tool.expanded = true;
             self.focus_requested = Some(kind.clone());
-            self.add_menu_open = false;
+            self.add_menu = None;
             self.queued_commands
                 .push(ManagerMessage::AddTool(kind.clone()));
             self.reveal(cx);
@@ -386,54 +392,55 @@ impl ToolSidebar {
             .into_any_element()
     }
 
-    fn render_add_menu(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement + use<> {
+    fn available_tools(&self) -> Vec<ToolChoice> {
         let pipeline = self.pipeline_tools();
-        let mut available: Vec<_> = self
-            .tools
+        self.tools
             .iter()
-            .enumerate()
-            .filter(|(_, tool)| {
+            .filter(|tool| {
                 !pipeline
                     .iter()
                     .any(|active| active.name == tool.kind.to_string())
             })
-            .collect();
-        available.sort_by_key(|(_, tool)| tool.label);
+            .map(|tool| ToolChoice {
+                kind: tool.kind.clone(),
+                label: tool.label,
+            })
+            .collect()
+    }
+
+    fn toggle_add_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.add_menu.take().is_some() {
+            self.base.focus_handle.focus(window, cx);
+            cx.notify();
+            return;
+        }
+        let menu = cx.new(|cx| ToolPicker::new(self.available_tools(), cx));
+        cx.subscribe_in(
+            &menu,
+            window,
+            |this, _, event: &ToolPickerEvent, window, cx| match event {
+                ToolPickerEvent::Selected(kind) => this.add_tool(kind, cx),
+                ToolPickerEvent::Dismissed => {
+                    this.add_menu = None;
+                    this.base.focus_handle.focus(window, cx);
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+        menu.read(cx).focus_handle(cx).focus(window, cx);
+        self.add_menu = Some(menu);
+        cx.notify();
+    }
+
+    fn render_add_menu(&self) -> impl IntoElement + use<> {
         div()
             .id("add-tool-menu")
             .absolute()
             .bottom(px(60.))
             .left(px(8.))
             .right(px(8.))
-            .max_h(px(
-                (f32::from(window.viewport_size().height) - 160.0).clamp(100.0, 420.0)
-            ))
-            .overflow_y_scroll()
-            .occlude()
-            .rounded_md()
-            .border_1()
-            .border_color(theme::BORDER)
-            .bg(theme::SURFACE)
-            .shadow_lg()
-            .p_1()
-            .when(available.is_empty(), |el| {
-                el.child(
-                    div()
-                        .p_3()
-                        .text_sm()
-                        .text_color(theme::TEXT_MUTED)
-                        .child("All tools are in the pipeline"),
-                )
-            })
-            .children(available.into_iter().map(|(index, tool)| {
-                let kind = tool.kind.clone();
-                Button::new(("add-tool-option", index))
-                    .variant(ButtonVariant::Ghost)
-                    .justify_start()
-                    .large()
-                    .label(tool.label)
-                    .on_click(cx.listener(move |this, _, _, cx| this.add_tool(&kind, cx)))
-            }))
+            .children(self.add_menu.clone())
     }
 }
 
@@ -454,6 +461,13 @@ impl FrontendMessageHandler for ToolSidebar {
             Some(state)
         } else {
             None
+        }
+    }
+
+    fn on_state_changed(&mut self, _new_state: &Self::State, cx: &mut Context<Self>) {
+        if let Some(menu) = &self.add_menu {
+            let tools = self.available_tools();
+            menu.update(cx, |menu, cx| menu.set_tools(tools, cx));
         }
     }
 }
@@ -503,16 +517,9 @@ impl Render for ToolSidebar {
             .size_full()
             .min_h_0()
             .track_focus(&self.base.focus_handle)
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                if this.add_menu_open {
-                    this.add_menu_open = false;
-                    cx.notify();
-                }
-            }))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                if this.add_menu_open && event.keystroke.key == "escape" {
-                    this.add_menu_open = false;
-                    cx.stop_propagation();
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                if this.add_menu.take().is_some() {
+                    this.base.focus_handle.focus(window, cx);
                     cx.notify();
                 }
             }))
@@ -563,9 +570,9 @@ impl Render for ToolSidebar {
                     .id("pipeline-stack")
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            if this.add_menu_open {
-                                this.add_menu_open = false;
+                        cx.listener(|this, _, window, cx| {
+                            if this.add_menu.take().is_some() {
+                                this.base.focus_handle.focus(window, cx);
                                 cx.notify();
                             }
                         }),
@@ -606,14 +613,12 @@ impl Render for ToolSidebar {
                             .child(Icon::plus())
                             .label("Add Tool")
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.add_menu_open = !this.add_menu_open;
-                                this.base.focus_handle.focus(window, cx);
-                                cx.notify();
+                                this.toggle_add_menu(window, cx);
                             })),
                     ),
             )
-            .when(self.add_menu_open, |el| {
-                el.child(self.render_add_menu(window, cx))
+            .when(self.add_menu.is_some(), |el| {
+                el.child(self.render_add_menu())
             })
             .child(self.busy_overlay.clone())
     }

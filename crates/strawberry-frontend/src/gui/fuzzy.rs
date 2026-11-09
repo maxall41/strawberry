@@ -4,20 +4,18 @@ use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
 pub struct Match {
-    /// Match score
-    pub score: u32,
     /// Byte ranges of the matched characters in the label, ascending and non-overlapping.
     pub runs: Vec<Range<usize>>,
 }
 
-pub struct CommandMatcher {
+pub struct FuzzyMatcher {
     matcher: Matcher,
     pattern: Pattern,
     indices: Vec<u32>,
     haystack: Vec<char>,
 }
 
-impl CommandMatcher {
+impl FuzzyMatcher {
     pub fn new() -> Self {
         Self {
             matcher: Matcher::new(Config::DEFAULT),
@@ -33,25 +31,23 @@ impl CommandMatcher {
             .reparse(query, CaseMatching::Smart, Normalization::Smart);
     }
 
-    /// Match the Pattern against the given label. Returns Match with score.
+    /// Match the pattern against a label and return its highlight ranges.
     pub fn match_candidate(&mut self, label: &str) -> Option<Match> {
         self.indices.clear();
         let haystack = Utf32Str::new(label, &mut self.haystack);
-        let score = self
-            .pattern
+        self.pattern
             .indices(haystack, &mut self.matcher, &mut self.indices)?;
 
         self.indices.sort_unstable();
         self.indices.dedup();
 
         Some(Match {
-            score,
             runs: byte_runs(label, &self.indices),
         })
     }
 }
 
-impl Default for CommandMatcher {
+impl Default for FuzzyMatcher {
     fn default() -> Self {
         Self::new()
     }
