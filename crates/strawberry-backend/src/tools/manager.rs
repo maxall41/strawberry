@@ -28,27 +28,36 @@ pub(crate) fn serialize_pipeline_config(
     Ok(toml::to_string(&value)?)
 }
 
+/// Parsed pipeline settings. Concrete state deserialization is deferred to each tool to allow custom data handliing.
+#[derive(serde::Deserialize)]
+pub(crate) struct LoadedPipelineConfig {
+    pub(crate) tools: HashMap<String, serde_value::Value>,
+}
+
 pub(crate) fn deserialize_pipeline_config(
     content: &str,
-) -> anyhow::Result<(PipelineConfig, HashMap<String, u16>)> {
-    let value: toml::Value = toml::from_str(content)?;
-    let indices = value
-        .get("tools")
-        .and_then(toml::Value::as_table)
-        .into_iter()
-        .flatten()
+) -> anyhow::Result<(LoadedPipelineConfig, HashMap<String, u16>)> {
+    use serde_value::Value;
+    let config: LoadedPipelineConfig = toml::from_str(content)?;
+    let indices = config
+        .tools
+        .iter()
         .filter_map(|(name, tool)| {
-            let index = tool
-                .as_table()?
-                .values()
-                .next()?
-                .as_table()?
-                .get("index")?
-                .as_integer()?;
-            u16::try_from(index).ok().map(|index| (name.clone(), index))
+            let Value::Map(variants) = tool else {
+                return None;
+            };
+            let Value::Map(fields) = variants.values().next()? else {
+                return None;
+            };
+            let Value::I64(index) = fields.get(&Value::String("index".to_string()))? else {
+                return None;
+            };
+            u16::try_from(*index)
+                .ok()
+                .map(|index| (name.clone(), index))
         })
         .collect();
-    Ok((value.try_into()?, indices))
+    Ok((config, indices))
 }
 
 /// Orchestrates the pipeline's tools.
@@ -84,6 +93,50 @@ fn update_proxy_tools(input: &Vec<Box<dyn ToolBackend>>) -> Vec<ToolProxy> {
 }
 
 impl ToolManager {
+    /// Apply a loaded pipeline config to all tools.
+    pub(crate) fn apply_pipeline_config(
+        &mut self,
+        mut config: LoadedPipelineConfig,
+        indices: &HashMap<String, u16>,
+    ) -> anyhow::Result<()> {
+        let mut updates = Vec::new();
+        let mut loaded = Vec::with_capacity(self.tools.len());
+        for tool in &mut self.tools {
+            let name = format!("{:?}", tool.iam());
+            let update = match config.tools.remove(&name) {
+                Some(settings) => tool
+                    .prepare_loaded_persisted_state(settings)
+                    .map_err(|error| anyhow::anyhow!("Failed to load {name}: {error}"))?,
+                None => None,
+            };
+            loaded.push(update.is_some());
+            if let Some(update) = update {
+                updates.push(update);
+            }
+        }
+        // Check for unsupported tools
+        if !config.tools.is_empty() {
+            let mut unsupported_tools: Vec<_> = config.tools.keys().cloned().collect();
+            unsupported_tools.sort();
+            anyhow::bail!(
+                "Unsupported pipeline tools: {}",
+                unsupported_tools.join(", ")
+            );
+        }
+        // Apply updates seperately such that pipelines are never partially loaded if one tool fails to parse into concrete types.
+        for update in updates {
+            update();
+        }
+        for (tool, loaded) in self.tools.iter_mut().zip(loaded) {
+            if !loaded {
+                tool.set_enabled(false);
+            }
+        }
+        self.restore_tool_indices(indices);
+        self.synchronize_enabled_history();
+        Ok(())
+    }
+
     #[must_use]
     pub fn new(
         mut input: Vec<Box<dyn ToolBackend>>,
@@ -306,18 +359,7 @@ impl ToolManager {
                                     }
                                 };
 
-                            // A loaded pipeline replaces the active configuration.
-                            for tool in &mut self.tools {
-                                tool.set_enabled(false);
-                            }
-                            for tool in &mut self.tools {
-                                let tool_name = format!("{:?}", tool.iam());
-                                if let Some(config) = pipeline_config.tools.get(&tool_name) {
-                                    tool.apply_loaded_persisted_state(config.clone())?;
-                                }
-                            }
-                            self.restore_tool_indices(&indices);
-                            self.synchronize_enabled_history();
+                            self.apply_pipeline_config(pipeline_config, &indices)?;
 
                             processing_required = true;
 

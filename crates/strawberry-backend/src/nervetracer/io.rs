@@ -202,6 +202,13 @@ impl Tracings {
     /// Convert to `NerveTracerState`
     #[must_use]
     pub fn to_nerve_tracer_state(&self) -> NerveTracerState {
+        let mut state = NerveTracerState::default();
+        self.apply_to_nerve_tracer_state(&mut state);
+        state
+    }
+
+    /// Apply imported trace data without replacing runtime image metadata.
+    pub fn apply_to_nerve_tracer_state(&self, state: &mut NerveTracerState) {
         let mut paths = Vec::new();
 
         for path_element in &self.paths {
@@ -217,14 +224,11 @@ impl Tracings {
             }
         }
 
-        NerveTracerState {
-            is_enabled: true,
-            paths,
-            current_path_segments: vec![],
-            first_point: None,
-            selected_image_index: 0,
-            total_images: 0,
-        }
+        state.is_enabled = true;
+        state.paths = paths;
+        state.current_path_segments.clear();
+        state.first_point = None;
+        state.selected_image_index = 0;
     }
 }
 
@@ -285,4 +289,17 @@ pub fn import_nervetracer_from_xml_file(
 ) -> Result<NerveTracerState, Box<dyn std::error::Error>> {
     let xml = fs::read_to_string(file_path)?;
     import_nervetracer_from_xml(&xml)
+}
+
+/// Import XML trace data into existing state, retaining runtime image metadata.
+/// # Errors
+/// Returns an error if file reading or XML parsing fails; leaves state unchanged.
+pub fn import_nervetracer_from_xml_file_into(
+    file_path: &Path,
+    state: &mut NerveTracerState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let xml = fs::read_to_string(file_path)?;
+    let tracings = Tracings::from_xml_string(&xml)?;
+    tracings.apply_to_nerve_tracer_state(state);
+    Ok(())
 }

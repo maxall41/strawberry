@@ -41,10 +41,14 @@ impl ToolBase {
 }
 
 /// Macro to implement the repetitive parts of `ToolBackend` trait
-/// Tools only need to implement: `process()`, `receive_messages()`, `get_state()`, `replace_state()`, `iam()`
+/// Tools only need to implement: `process()`, `receive_messages()`, `get_state()`, `iam()`
 #[macro_export]
 macro_rules! impl_tool_backend_basics {
     ($tool_type:ty) => {
+        fn persisted_state_mut(&mut self) -> Option<&mut dyn strawberry_types::PersistedState> {
+            Some(&mut self.state)
+        }
+
         fn is_enabled(&self) -> bool {
             self.state.is_enabled
         }
