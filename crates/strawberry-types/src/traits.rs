@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use image::RgbaImage;
 use std::sync::Arc;
 
-use crate::{BackendToolType, PipelineCommand, ToolState, overlay::ToolOverlay};
+use crate::{
+    BackendToolType, PersistedState, PipelineCommand, PreparedStateUpdate, ToolState,
+    overlay::ToolOverlay,
+};
 
 /// Trait for image processing tools (backend)
 #[async_trait]
@@ -52,17 +55,31 @@ pub trait ToolBackend: Send + Sync {
         true
     }
 
-    /// Apply persisted settings while preserving fields marked `serde(skip)`.
+    /// Prepare parsed settings without changing live state.
     /// # Errors
-    /// Returns an error if the settings cannot be serialized or deserialized.
-    fn apply_loaded_persisted_state(&mut self, loaded_state: ToolState) -> anyhow::Result<()> {
-        let merged = self.get_state().with_persisted_settings(loaded_state)?;
-        self.replace_state(merged);
-        Ok(())
+    /// Returns an error if the wrapper is malformed or fields cannot be deserialized.
+    fn prepare_loaded_persisted_state<'a>(
+        &'a mut self,
+        loaded_state: serde_value::Value,
+    ) -> anyhow::Result<Option<PreparedStateUpdate<'a>>> {
+        let serde_value::Value::Map(mut variants) = loaded_state else {
+            anyhow::bail!("Expected an externally tagged tool state");
+        };
+        anyhow::ensure!(variants.len() == 1, "Expected one tool state variant");
+        let expected = serde_value::Value::String(format!("{:?}State", self.iam()));
+        let Some(fields) = variants.remove(&expected) else {
+            anyhow::bail!("Expected {:?}State variant for {:?}", self.iam(), self.iam());
+        };
+        let Some(current) = self.persisted_state_mut() else {
+            return Ok(None);
+        };
+        current.prepare_persisted_fields(fields).map(Some)
     }
 
-    /// Replace the state snapshot prepared by `apply_state`.
-    fn replace_state(&mut self, state: ToolState);
+    /// Expose the concrete state for loading, or `None` if loading is unsupported.
+    fn persisted_state_mut(&mut self) -> Option<&mut dyn PersistedState> {
+        None
+    }
 
     /// Set the tool's index in the pipeline
     fn set_index(&mut self, index: usize);

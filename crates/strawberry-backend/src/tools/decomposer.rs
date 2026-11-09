@@ -29,12 +29,6 @@ impl ToolBackend for Decomposer {
         ToolState::DecomposerState(self.state.clone())
     }
 
-    fn replace_state(&mut self, state: ToolState) {
-        if let ToolState::DecomposerState(new_state) = state {
-            self.state = new_state;
-        }
-    }
-
     fn iam(&self) -> BackendToolType {
         BackendToolType::Decomposer
     }
