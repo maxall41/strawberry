@@ -1,6 +1,8 @@
 use num_traits::ToPrimitive;
 
-use crate::nervetracer::io::{export_nervetracer_to_xml_file, import_nervetracer_from_xml_file};
+use crate::nervetracer::io::{
+    export_nervetracer_to_xml_file, import_nervetracer_from_xml_file_into,
+};
 use std::sync::Arc;
 use strawberry_processing::nervetracer::create_path;
 
@@ -31,10 +33,8 @@ impl ToolBackend for NerveTracer {
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
     }
-    fn replace_state(&mut self, state: ToolState) {
-        if let ToolState::NerveTracerState(new_state) = state {
-            self.state = new_state;
-        }
+    fn persisted_state_mut(&mut self) -> Option<&mut dyn strawberry_types::PersistedState> {
+        Some(&mut self.state)
     }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
@@ -136,11 +136,8 @@ impl ToolBackend for NerveTracer {
                             }
                         }
                         NerveTracerMessage::LoadTraces(path) => {
-                            match import_nervetracer_from_xml_file(&path) {
-                                Ok(loaded_state) => {
-                                    self.apply_loaded_persisted_state(
-                                        ToolState::NerveTracerState(loaded_state),
-                                    )?;
+                            match import_nervetracer_from_xml_file_into(&path, &mut self.state) {
+                                Ok(()) => {
                                     self.global_sender.send(PipelineCommand::FrontendMessage(
                                         FrontendMessage::success(
                                             "Traces loaded successfully!".to_string(),
