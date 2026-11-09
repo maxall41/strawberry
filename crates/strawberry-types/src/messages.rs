@@ -73,11 +73,6 @@ pub enum SobelMessage {
 }
 
 #[derive(Debug, Clone)]
-pub enum FilterMessage {
-    ConfigureSizeFilter(u16), // Min size
-}
-
-#[derive(Debug, Clone)]
 pub enum NerveTracerMessage {
     CommitCurrentPathSegments(),
     DeleteUncomittedPathSegment(usize),
@@ -98,8 +93,6 @@ pub enum CountMessage {
     SetMode(CounterMode),
     SetActiveCountType(u16),
     SetActiveTool(Option<CounterTool>),
-    ToggleFilter(u16, bool),
-    FilterMessage(FilterMessage),
     SaveCounts(PathBuf),
     LoadCounts(PathBuf),
     CopyToManual,

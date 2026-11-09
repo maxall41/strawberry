@@ -48,9 +48,7 @@ impl SyncState for CounterState {
         self.is_enabled
     }
     fn processing_differs(&self, other: &Self) -> bool {
-        self.is_enabled != other.is_enabled
-            || self.mode != other.mode
-            || self.filter_proxys != other.filter_proxys
+        self.is_enabled != other.is_enabled || self.mode != other.mode
     }
 }
 impl SyncState for NerveTracerState {
