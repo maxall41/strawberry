@@ -1,5 +1,5 @@
 use crate::gui::actions::actions;
-use num_traits::ToPrimitive;
+use crate::gui::{Button, ButtonVariant};
 
 use crate::gui::theme;
 // Implements UI for counter tool
@@ -8,19 +8,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    App, Bounds, Context, ElementId, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Context, ElementId, FocusHandle, Focusable, KeyBinding, MouseDownEvent, SharedString,
+    Window, div, prelude::*,
 };
 use rfd::FileDialog;
 
-use crate::gui::{
-    ToggleButton,
-    icon::Icon,
-    value_control::{ValueControl, ValueControlConfig},
-};
+use crate::gui::{ToggleButton, icon::Icon};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
-    CountData, CountMessage, CounterMode, CounterState, CounterTool, FilterProxy, PipelineCommand,
+    CountData, CountMessage, CounterMode, CounterState, CounterTool, PipelineCommand,
     PipelineObjectMessage, ToolState,
     consts::{CIRCLE_COLORS, image_rgba_to_gpui_rgba},
 };
@@ -672,12 +668,11 @@ impl CounterView {
     }
 
     // Subheader component
-    fn render_subheader() -> impl IntoElement + use<> {
+    fn render_subheader(text: String) -> impl IntoElement + use<> {
         div()
             .text_lg()
             .font_weight(gpui::FontWeight::BOLD)
-            .mb_2()
-            .child("Counts:")
+            .child(text)
     }
 
     // Status component showing enabled/disabled state
@@ -694,54 +689,26 @@ impl CounterView {
             },
         )
         .with_keyboard_shortcut("⌘T")
+        .with_no_margin()
         .render(cx)
     }
 
     // Mode toggle component
     fn render_mode_toggle(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .mb_3()
-            .child("Mode:")
-            .child(
-                // Padding + negative margin extend the click region past the
-                // visible button without shifting layout.
-                div()
-                    .p_1()
-                    .m_neg_1()
-                    .cursor_pointer()
-                    .on_mouse_down(gpui::MouseButton::Left, {
-                        cx.listener(
-                            move |this: &mut Self,
-                                  _event: &MouseDownEvent,
-                                  window: &mut Window,
-                                  cx: &mut Context<Self>| {
-                                this.toggle_mode(window, cx);
-                            },
-                        )
-                    })
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .bg(theme::CONTROL)
-                            .hover(|style| style.bg(theme::CONTROL_HOVER))
-                            .child(match state.mode {
-                                CounterMode::Manual => "Manual",
-                                CounterMode::Auto => "Auto",
-                            }),
-                    ),
-            )
+        div().flex().items_center().gap_2().child("Mode:").child(
+            Button::new("counter-mode")
+                .label(match state.mode {
+                    CounterMode::Manual => "Manual",
+                    CounterMode::Auto => "Auto",
+                })
+                .tooltip_text("Switch counting mode")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_mode(window, cx);
+                })),
+        )
     }
 
     // Individual count type item component
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Keep declarative GPUI layout and its event bindings together"
-    )]
     fn render_count_type_item(
         count_type_id: u16,
         name: &str,
@@ -756,6 +723,11 @@ impl CounterView {
             .unwrap_or_default();
         let color =
             image_rgba_to_gpui_rgba(CIRCLE_COLORS.get(ii).copied().unwrap_or(CIRCLE_COLORS[0]));
+        let selection_color = if is_selected {
+            color
+        } else {
+            theme::CONTROL_HOVER
+        };
         div()
             .flex()
             .items_center()
@@ -766,60 +738,44 @@ impl CounterView {
             .child(div().bg(color).w_2().h_full().rounded_l_md())
             .child(
                 // X button
-                div()
+                Button::new(("count-type-delete", usize::from(count_type_id)))
+                    .variant(ButtonVariant::Delete)
                     .m_2()
-                    .w_5()
-                    .h_5()
-                    .bg(theme::DANGER)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::DANGER_HOVER))
-                    .rounded_sm()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(Icon::x().size(12.0))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(
-                            move |this: &mut Self,
-                                  _event: &MouseDownEvent,
-                                  _window: &mut Window,
-                                  _cx: &mut Context<Self>| {
-                                this.delete_count_type(count_type_id);
-                            },
-                        ),
-                    ),
+                    .aria_label("Delete count type")
+                    .on_click(cx.listener(
+                        move |this: &mut Self,
+                              _event: &gpui::ClickEvent,
+                              _window: &mut Window,
+                              _cx: &mut Context<Self>| {
+                            this.delete_count_type(count_type_id);
+                        },
+                    )),
             )
             .child(
-                // Eye toggle button. Padding traded against the margin keeps the
-                // icon in place while the click region extends past the visual.
-                div()
+                // Visibility button
+                Button::new(("count-type-visibility", usize::from(count_type_id)))
+                    .variant(ButtonVariant::Ghost)
                     .m_1()
-                    .p_1()
-                    .w_7()
-                    .h_7()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::CONTROL_HOVER))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(if is_visible {
-                        Icon::eye_open().size(21.0)
-                    } else {
-                        Icon::eye_closed().size(21.0)
-                    })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(
-                            move |this: &mut Self,
-                                  _event: &MouseDownEvent,
-                                  _window: &mut Window,
-                                  _cx: &mut Context<Self>| {
-                                this.toggle_count_type_visibility(count_type_id);
-                            },
-                        ),
-                    ),
+                    .icon(
+                        if is_visible {
+                            Icon::eye_open().size(21.0)
+                        } else {
+                            Icon::eye_closed().size(21.0)
+                        },
+                        if is_visible {
+                            "Hide count type"
+                        } else {
+                            "Show count type"
+                        },
+                    )
+                    .on_click(cx.listener(
+                        move |this: &mut Self,
+                              _event: &gpui::ClickEvent,
+                              _window: &mut Window,
+                              _cx: &mut Context<Self>| {
+                            this.toggle_count_type_visibility(count_type_id);
+                        },
+                    )),
             )
             .child(
                 // Type label and count
@@ -847,15 +803,9 @@ impl CounterView {
                         })
                     })
                     .rounded_full()
-                    .bg(if is_selected {
-                        color
-                    } else {
-                        theme::CONTROL_HOVER
-                    })
-                    .when(!is_selected, |el| {
-                        el.cursor_pointer()
-                            .hover(|style| style.bg(theme::lighten(theme::CONTROL_HOVER, 0.15)))
-                    })
+                    .bg(selection_color)
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(theme::lighten(selection_color, 0.15)))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
@@ -910,37 +860,20 @@ impl CounterView {
 
     // Plus button component
     fn render_add_button(cx: &Context<Self>) -> impl IntoElement + use<> {
-        div()
+        Button::new("add-count-type-button")
+            .large()
             .w_full()
-            .p_2()
-            .mt_2()
-            .bg(theme::CONTROL)
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::CONTROL_HOVER))
-            .rounded_md()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_lg()
-            .child("+")
-            .id("add-count-type-button")
-            .tooltip(move |_window, cx| {
-                let tooltip_view = crate::gui::tooltip::TooltipView {
-                    text: "⌘N".to_string(),
-                };
-                cx.new(|_cx| tooltip_view).into()
-            })
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(
-                    |this: &mut Self,
-                     _event: &MouseDownEvent,
-                     _window: &mut Window,
-                     _cx: &mut Context<Self>| {
-                        this.add_count_type();
-                    },
-                ),
-            )
+            .child(Icon::plus().size(14.))
+            .aria_label("Add count type")
+            .tooltip_text("⌘N")
+            .on_click(cx.listener(
+                |this: &mut Self,
+                 _event: &gpui::ClickEvent,
+                 _window: &mut Window,
+                 _cx: &mut Context<Self>| {
+                    this.add_count_type();
+                },
+            ))
     }
 
     // Tool button component
@@ -950,53 +883,31 @@ impl CounterView {
         is_active: bool,
         keyboard_shortcut: &str,
         cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
-        div()
-            .id(ElementId::Name(SharedString::from(format!(
-                "tool-button-{tool:?}"
-            ))))
-            .flex_1()
-            .p_2()
-            .cursor_pointer()
-            .bg(if is_active {
-                theme::ACCENT
-            } else {
-                theme::CONTROL
-            })
-            .hover(|style| {
-                style.bg(if is_active {
-                    theme::ACCENT_HOVER
+    ) -> Button {
+        Button::new(ElementId::Name(SharedString::from(format!(
+            "tool-button-{tool:?}"
+        ))))
+        .selected(is_active)
+        .large()
+        .px_2()
+        .flex_1()
+        .min_w_0()
+        .rounded_none()
+        .border_0()
+        .label(label)
+        .tooltip_text(keyboard_shortcut.to_string())
+        .on_click(cx.listener(
+            move |this: &mut Self,
+                  _event: &gpui::ClickEvent,
+                  window: &mut Window,
+                  cx: &mut Context<Self>| {
+                if is_active {
+                    this.set_tool(None, window, cx);
                 } else {
-                    theme::CONTROL_HOVER
-                })
-            })
-            .text_center()
-            .text_sm()
-            .child(label)
-            .tooltip({
-                let shortcut = keyboard_shortcut.to_string();
-                move |_window, cx| {
-                    let tooltip_view = crate::gui::tooltip::TooltipView {
-                        text: shortcut.clone(),
-                    };
-                    cx.new(|_cx| tooltip_view).into()
+                    this.set_tool(Some(tool), window, cx);
                 }
-            })
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(
-                    move |this: &mut Self,
-                          _event: &MouseDownEvent,
-                          window: &mut Window,
-                          cx: &mut Context<Self>| {
-                        if is_active {
-                            this.set_tool(None, window, cx);
-                        } else {
-                            this.set_tool(Some(tool), window, cx);
-                        }
-                    },
-                ),
-            )
+            },
+        ))
     }
 
     // Tools subheader component
@@ -1004,7 +915,6 @@ impl CounterView {
         div()
             .text_lg()
             .font_weight(gpui::FontWeight::BOLD)
-            .mb_2()
             .child("Tools:")
     }
 
@@ -1020,14 +930,16 @@ impl CounterView {
             .bg(theme::SURFACE)
             .rounded_md()
             .overflow_hidden()
-            .mb_4()
-            .child(Self::render_tool_button(
-                CounterTool::Place,
-                "Place".to_string(),
-                current_tool == Some(CounterTool::Place),
-                "⌘W",
-                cx,
-            ))
+            .child(
+                Self::render_tool_button(
+                    CounterTool::Place,
+                    "Place".to_string(),
+                    current_tool == Some(CounterTool::Place),
+                    "⌘W",
+                    cx,
+                )
+                .rounded_l_md(),
+            )
             .child(Self::render_tool_button(
                 CounterTool::Delete,
                 "Delete".to_string(),
@@ -1037,82 +949,56 @@ impl CounterView {
             ))
             .child(Self::render_tool_button(
                 CounterTool::LassoDelete,
-                "Lasso | Delete".to_string(),
+                "Lasso".to_string(),
                 current_tool == Some(CounterTool::LassoDelete),
                 "⌘A",
                 cx,
             ))
-            .child(Self::render_tool_button(
-                CounterTool::Review,
-                "Review".to_string(),
-                current_tool == Some(CounterTool::Review),
-                "⌘R",
-                cx,
-            ))
+            .child(
+                Self::render_tool_button(
+                    CounterTool::Review,
+                    "Review".to_string(),
+                    current_tool == Some(CounterTool::Review),
+                    "⌘R",
+                    cx,
+                )
+                .rounded_r_md(),
+            )
     }
 
     // Save button component
     fn render_storage_buttons(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
+            .items_center()
             .gap_2()
             .child(
-                div()
-                    .px_4()
-                    .py_2()
-                    .bg(theme::SUCCESS)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::SUCCESS_HOVER))
-                    .rounded_md()
-                    .text_sm()
-                    .child("Save")
-                    .id("save-button")
-                    .tooltip(move |_window, cx| {
-                        let tooltip_view = crate::gui::tooltip::TooltipView {
-                            text: "⌘S".to_string(),
-                        };
-                        cx.new(|_cx| tooltip_view).into()
-                    })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(
-                            |this: &mut Self,
-                             _event: &MouseDownEvent,
-                             window: &mut Window,
-                             cx: &mut Context<Self>| {
-                                this.save_counts(window, cx);
-                            },
-                        ),
-                    ),
+                Button::new("save-button")
+                    .variant(ButtonVariant::Success)
+                    .label("Save")
+                    .tooltip_text("⌘S")
+                    .on_click(cx.listener(
+                        |this: &mut Self,
+                         _event: &gpui::ClickEvent,
+                         window: &mut Window,
+                         cx: &mut Context<Self>| {
+                            this.save_counts(window, cx);
+                        },
+                    )),
             )
             .child(
-                div()
-                    .px_4()
-                    .py_2()
-                    .bg(theme::ACCENT)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme::ACCENT_HOVER))
-                    .rounded_md()
-                    .text_sm()
-                    .child("Load")
-                    .id("load-button")
-                    .tooltip(move |_window, cx| {
-                        let tooltip_view = crate::gui::tooltip::TooltipView {
-                            text: "⌘L".to_string(),
-                        };
-                        cx.new(|_cx| tooltip_view).into()
-                    })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(
-                            |this: &mut Self,
-                             _event: &MouseDownEvent,
-                             window: &mut Window,
-                             cx: &mut Context<Self>| {
-                                this.load_counts(window, cx);
-                            },
-                        ),
-                    ),
+                Button::new("load-button")
+                    .variant(ButtonVariant::Primary)
+                    .label("Load")
+                    .tooltip_text("⌘L")
+                    .on_click(cx.listener(
+                        |this: &mut Self,
+                         _event: &gpui::ClickEvent,
+                         window: &mut Window,
+                         cx: &mut Context<Self>| {
+                            this.load_counts(window, cx);
+                        },
+                    )),
             )
     }
 
@@ -1125,12 +1011,26 @@ impl CounterView {
         let mut ui = div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(Self::render_subheader())
-            .child(self.render_count_types_list(cx))
-            .child(Self::render_add_button(cx))
-            .child(Self::render_tools_subheader())
-            .child(self.render_tools_bar(cx));
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(Self::render_subheader("Counts:".to_string()))
+                    .when(!state.manual_counts.is_empty(), |el| {
+                        el.child(self.render_count_types_list(cx))
+                    })
+                    .child(Self::render_add_button(cx)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(Self::render_tools_subheader())
+                    .child(self.render_tools_bar(cx)),
+            );
 
         // Add review UI when Review tool is active
         if state.active_tool == Some(CounterTool::Review) {
@@ -1140,17 +1040,16 @@ impl CounterView {
         ui
     }
 
-    // Auto UI rendering (placeholder)
-    fn render_auto_ui(state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_auto_ui(state: &CounterState) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .p_3()
+            .pb_3()
             .child(
                 div()
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child("Auto Detection"),
+                    .child(Self::render_subheader("Automatic Detection".to_string())),
             )
             .child(
                 div()
@@ -1168,209 +1067,8 @@ impl CounterView {
                             .child(format!("{}", state.auto_counts.len())),
                     ),
             )
-            .child(Self::render_filters_section(state, cx))
     }
 
-    fn render_filters_section(
-        state: &CounterState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .p_3()
-            .rounded_md()
-            .bg(theme::SURFACE_DEEP)
-            .child(
-                div()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_lg()
-                    .child("Filters"),
-            )
-            .when(state.filter_proxys.is_empty(), |el| {
-                el.child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::TEXT_MUTED)
-                        .child("No filters available"),
-                )
-            })
-            .when(!state.filter_proxys.is_empty(), |el| {
-                el.child(
-                    div().flex().flex_col().gap_2().children(
-                        state
-                            .filter_proxys
-                            .iter()
-                            .enumerate()
-                            .map(|(index, filter_proxy)| {
-                                Self::render_filter_item(filter_proxy, index, cx)
-                            }),
-                    ),
-                )
-            })
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Keep declarative GPUI layout and its event bindings together"
-    )]
-    fn render_filter_item(
-        filter_proxy: &FilterProxy,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let is_enabled = filter_proxy.is_enabled;
-        let Ok(filter_index) = u16::try_from(index) else {
-            return div().into_any_element();
-        };
-
-        let is_size_filter = filter_proxy.name == "Filter by Size";
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_3()
-            .rounded_md()
-            .bg(if is_enabled {
-                theme::SURFACE_ALT
-            } else {
-                theme::SURFACE
-            })
-            .hover(|style| {
-                style.bg(if is_enabled {
-                    theme::WINDOW_BG
-                } else {
-                    theme::SURFACE_ALT
-                })
-            })
-            .border_1()
-            .border_color(if is_enabled {
-                theme::SUCCESS
-            } else {
-                theme::CONTROL
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .child(filter_proxy.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .bg(if is_enabled {
-                                        theme::SUCCESS
-                                    } else {
-                                        theme::DANGER
-                                    })
-                                    .child(if is_enabled { "ACTIVE" } else { "DISABLED" }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::TEXT_MUTED)
-                            .child("Click to toggle"),
-                    )
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(
-                            move |this: &mut Self,
-                                  _event: &MouseDownEvent,
-                                  _window: &mut Window,
-                                  _cx: &mut Context<Self>| {
-                                this.toggle_filter(filter_index, !is_enabled);
-                            },
-                        ),
-                    ),
-            )
-            .when(is_size_filter, |el| {
-                let Some(current_value) = filter_proxy.values.first().map_or(Some(10.0), |value| {
-                    value.to_f32().filter(|value| value.is_finite())
-                }) else {
-                    return el.child("Minimum object size cannot be displayed");
-                };
-
-                // Create a ValueControl for this filter
-                let control = cx.new(|cx| {
-                    ValueControl::new(
-                        format!("{current_value:.0}"),
-                        current_value,
-                        ValueControlConfig {
-                            label: "Minimum Object Size".to_string(),
-                            step: 1.0,
-                            id: format!("size_filter_{filter_index}"),
-                            min: 1.0,
-                            max: 10000.0,
-                        },
-                        cx,
-                    )
-                });
-
-                el.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .pt_2()
-                        .border_t_1()
-                        .border_color(theme::CONTROL)
-                        .child(control),
-                )
-            })
-            .into_any_element()
-    }
-
-    fn toggle_filter(&self, filter_index: u16, enabled: bool) {
-        let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => {
-                if let Some(index) = *guard {
-                    index
-                } else {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::ToggleFilter(
-                    filter_index,
-                    enabled,
-                )),
-            )) {
-                eprintln!("Failed to send toggle filter command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
-        }
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Keep declarative GPUI layout and its event bindings together"
-    )]
     fn render_review_ui(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let current_index = state.review_current_index;
 
@@ -1417,94 +1115,47 @@ impl CounterView {
                     .flex()
                     .gap_2()
                     .child(
-                        div()
-                            .id("prev-count")
-                            .px_3()
-                            .py_1()
-                            .bg(theme::CONTROL)
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::CONTROL_HOVER))
-                            .rounded_md()
-                            .text_sm()
-                            .child("← Prev")
-                            .tooltip(move |_window, cx| {
-                                let tooltip_view = crate::gui::tooltip::TooltipView {
-                                    text: "←".to_string(),
-                                };
-                                cx.new(|_cx| tooltip_view).into()
-                            })
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(
-                                    |this: &mut Self,
-                                     _event: &MouseDownEvent,
-                                     _window: &mut Window,
-                                     cx: &mut Context<Self>| {
-                                        this.send_review_navigate_previous();
-                                        cx.notify();
-                                    },
-                                ),
-                            ),
+                        Button::new("prev-count")
+                            .label("← Prev")
+                            .tooltip_text("←")
+                            .on_click(cx.listener(
+                                |this: &mut Self,
+                                 _event: &gpui::ClickEvent,
+                                 _window: &mut Window,
+                                 cx: &mut Context<Self>| {
+                                    this.send_review_navigate_previous();
+                                    cx.notify();
+                                },
+                            )),
                     )
                     .child(
-                        div()
-                            .id("next-count")
-                            .px_3()
-                            .py_1()
-                            .bg(theme::CONTROL)
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::CONTROL_HOVER))
-                            .rounded_md()
-                            .text_sm()
-                            .child("Next →")
-                            .tooltip(move |_window, cx| {
-                                let tooltip_view = crate::gui::tooltip::TooltipView {
-                                    text: "→".to_string(),
-                                };
-                                cx.new(|_cx| tooltip_view).into()
-                            })
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(
-                                    |this: &mut Self,
-                                     _event: &MouseDownEvent,
-                                     _window: &mut Window,
-                                     cx: &mut Context<Self>| {
-                                        this.send_review_navigate_next();
-                                        cx.notify();
-                                    },
-                                ),
-                            ),
+                        Button::new("next-count")
+                            .label("Next →")
+                            .tooltip_text("→")
+                            .on_click(cx.listener(
+                                |this: &mut Self,
+                                 _event: &gpui::ClickEvent,
+                                 _window: &mut Window,
+                                 cx: &mut Context<Self>| {
+                                    this.send_review_navigate_next();
+                                    cx.notify();
+                                },
+                            )),
                     )
                     .child(
-                        div()
-                            .px_3()
-                            .py_1()
-                            .bg(theme::DANGER)
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme::DANGER_HOVER))
-                            .rounded_md()
-                            .text_sm()
-                            .child("Delete")
-                            .id("delete-button")
-                            .tooltip(move |_window, cx| {
-                                let tooltip_view = crate::gui::tooltip::TooltipView {
-                                    text: "⌘D".to_string(),
-                                };
-                                cx.new(|_cx| tooltip_view).into()
-                            })
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(
-                                    |this: &mut Self,
-                                     _event: &MouseDownEvent,
-                                     _window: &mut Window,
-                                     cx: &mut Context<Self>| {
-                                        this.send_delete_current_count();
-                                        cx.notify();
-                                    },
-                                ),
-                            ),
+                        Button::new("delete-button")
+                            .variant(ButtonVariant::Danger)
+                            .label("Delete")
+                            .tooltip_text("⌘D")
+                            .on_click(cx.listener(
+                                |this: &mut Self,
+                                 _event: &gpui::ClickEvent,
+                                 _window: &mut Window,
+                                 cx: &mut Context<Self>| {
+                                    this.send_delete_current_count();
+                                    cx.notify();
+                                },
+                            )),
                     )
                     .child(review_counts.get(current_index).map_or_else(div, |count| {
                         div()
@@ -1666,25 +1317,24 @@ impl Render for CounterView {
                     .flex_col()
                     .gap_3()
                     .bg(theme::WINDOW_BG)
-                    .size_full()
+                    .w_full()
                     .text_sm()
                     .p_4()
-                    .shadow_lg()
                     .text_color(theme::TEXT)
                     .child("Error: Unable to read counter state");
             }
         };
 
         div()
+            .key_context("CounterView")
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
             .bg(theme::WINDOW_BG)
-            .size_full()
+            .w_full()
             .text_sm()
             .p_4()
-            .shadow_lg()
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
@@ -1716,92 +1366,65 @@ impl Render for CounterView {
             .on_action(cx.listener(Self::select_count_type_7_action))
             .on_action(cx.listener(Self::select_count_type_8_action))
             .on_action(cx.listener(Self::select_count_type_9_action))
-            .child(self.render_header())
             .child(Self::render_status(&state, cx))
             .child(Self::render_mode_toggle(&state, cx))
             .child(match state.mode {
                 CounterMode::Manual => div().child(self.render_manual_ui(&state, cx)),
-                CounterMode::Auto => div().child(Self::render_auto_ui(&state, cx)),
+                CounterMode::Auto => div().child(Self::render_auto_ui(&state)),
             })
             .child(
                 div()
                     .flex()
+                    .items_center()
                     .justify_between()
                     .mt_auto()
                     .child(Self::render_storage_buttons(cx))
                     .when(state.mode == CounterMode::Auto, |this| {
                         this.child(
-                            div()
-                                .px_4()
-                                .py_2()
-                                .bg(theme::ACCENT)
-                                .cursor_pointer().hover(|style| style.bg(theme::ACCENT_HOVER))
-                                .rounded_md()
-                                .text_sm()
-                                .child("Copy to Manual")
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(
-                                        |this: &mut Self,
-                                         _event: &MouseDownEvent,
-                                         _window: &mut Window,
-                                         _cx: &mut Context<Self>| {
-                                            this.copy_to_manual();
-                                        },
-                                    ),
-                                )
+                            Button::new("copy-to-manual")
+                                .variant(ButtonVariant::Primary)
+                                .label("Copy to Manual")
+                                .on_click(cx.listener(
+                                    |this: &mut Self,
+                                     _event: &gpui::ClickEvent,
+                                     _window: &mut Window,
+                                     _cx: &mut Context<Self>| {
+                                        this.copy_to_manual();
+                                    },
+                                )),
                         )
                     }),
             )
     }
 }
 
-impl_tool_view_basics!(CounterView, "Counter");
-
 impl ToolFrontend for CounterView {
-    fn get_window_options(&self) -> WindowOptions {
-        WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("Counter")),
-                appears_transparent: false,
-                ..Default::default()
-            }),
-
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                size: size(px(400.), px(700.)),
-                origin: Point::new(px(720.), px(200.)),
-            })),
-
-            ..Default::default()
-        }
-    }
-
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;
         }
 
         cx.bind_keys([
-            KeyBinding::new("cmd-t", CounterToggleActivity, None),
-            KeyBinding::new("cmd-w", CounterPlaceTool, None),
-            KeyBinding::new("cmd-e", CounterDeleteTool, None),
-            KeyBinding::new("cmd-a", CounterLassoTool, None),
-            KeyBinding::new("cmd-r", CounterReviewTool, None),
-            KeyBinding::new("left", CounterReviewPrevious, None),
-            KeyBinding::new("right", CounterReviewNext, None),
-            KeyBinding::new("cmd-d", CounterDeleteCount, None),
-            KeyBinding::new("cmd-s", CounterSaveCounts, None),
-            KeyBinding::new("cmd-l", CounterLoadCounts, None),
-            KeyBinding::new("cmd-n", CounterNewCountType, None),
-            KeyBinding::new("cmd-1", CounterSelectType1, None),
-            KeyBinding::new("cmd-2", CounterSelectType2, None),
-            KeyBinding::new("cmd-3", CounterSelectType3, None),
-            KeyBinding::new("cmd-4", CounterSelectType4, None),
-            KeyBinding::new("cmd-5", CounterSelectType5, None),
-            KeyBinding::new("cmd-6", CounterSelectType6, None),
-            KeyBinding::new("cmd-7", CounterSelectType7, None),
-            KeyBinding::new("cmd-8", CounterSelectType8, None),
-            KeyBinding::new("cmd-9", CounterSelectType9, None),
+            KeyBinding::new("cmd-t", CounterToggleActivity, Some("CounterView")),
+            KeyBinding::new("cmd-w", CounterPlaceTool, Some("CounterView")),
+            KeyBinding::new("cmd-e", CounterDeleteTool, Some("CounterView")),
+            KeyBinding::new("cmd-a", CounterLassoTool, Some("CounterView")),
+            KeyBinding::new("cmd-r", CounterReviewTool, Some("CounterView")),
+            KeyBinding::new("left", CounterReviewPrevious, Some("CounterView")),
+            KeyBinding::new("right", CounterReviewNext, Some("CounterView")),
+            KeyBinding::new("cmd-d", CounterDeleteCount, Some("CounterView")),
+            KeyBinding::new("cmd-s", CounterSaveCounts, Some("CounterView")),
+            KeyBinding::new("cmd-l", CounterLoadCounts, Some("CounterView")),
+            KeyBinding::new("cmd-n", CounterNewCountType, Some("CounterView")),
+            KeyBinding::new("cmd-1", CounterSelectType1, Some("CounterView")),
+            KeyBinding::new("cmd-2", CounterSelectType2, Some("CounterView")),
+            KeyBinding::new("cmd-3", CounterSelectType3, Some("CounterView")),
+            KeyBinding::new("cmd-4", CounterSelectType4, Some("CounterView")),
+            KeyBinding::new("cmd-5", CounterSelectType5, Some("CounterView")),
+            KeyBinding::new("cmd-6", CounterSelectType6, Some("CounterView")),
+            KeyBinding::new("cmd-7", CounterSelectType7, Some("CounterView")),
+            KeyBinding::new("cmd-8", CounterSelectType8, Some("CounterView")),
+            KeyBinding::new("cmd-9", CounterSelectType9, Some("CounterView")),
         ]);
 
         self.process_messages(window, cx);

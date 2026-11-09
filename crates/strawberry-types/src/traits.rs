@@ -108,7 +108,6 @@ pub trait ToolBackend: Send + Sync {
 
 /// Trait for frontend tool views (GPUI)
 pub trait ToolFrontend {
-    fn get_window_options(&self) -> gpui::WindowOptions;
     fn initialize(&mut self, window: &mut gpui::Window, cx: &mut gpui::Context<Self>)
     where
         Self: Sized;

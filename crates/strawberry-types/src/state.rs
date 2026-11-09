@@ -25,18 +25,12 @@ pub enum CounterTool {
     Review,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct FilterProxy {
-    pub name: String,
-    pub is_enabled: bool,
-    pub values: Vec<f64>,
-}
-
 // Manager-specific types
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolProxy {
     pub name: String,
     pub position: u16,
+    pub is_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,7 +149,6 @@ pub struct CounterState {
     pub mode: CounterMode,
     pub active_tool: Option<CounterTool>,
     pub active_count_type: Option<u16>,
-    pub filter_proxys: Vec<FilterProxy>,
     pub count_type_visibility: HashMap<u16, bool>,
     pub review_current_index: usize,
     pub count_type_names: HashMap<u16, String>,

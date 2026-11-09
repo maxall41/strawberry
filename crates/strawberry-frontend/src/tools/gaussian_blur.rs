@@ -1,3 +1,4 @@
+use crate::gui::Button;
 use crate::gui::actions::actions;
 use crate::gui::theme;
 // Implements UI for gaussian blur tool
@@ -5,8 +6,8 @@ use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div,
+    prelude::*,
 };
 
 use crate::gui::ToggleButton;
@@ -116,26 +117,19 @@ impl GaussianBlurView {
         sigma: f32,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
-            .px_3()
-            .py_2()
-            .bg(theme::CONTROL)
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::CONTROL_HOVER))
-            .rounded_md()
-            .text_sm()
-            .child(label)
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(
-                    move |this: &mut Self,
-                          _event: &MouseDownEvent,
-                          _window: &mut Window,
-                          _cx: &mut Context<Self>| {
-                        this.update_sigma(sigma);
-                    },
-                ),
-            )
+        Button::new(gpui::ElementId::Name(
+            format!("render_preset_button-{label}").into(),
+        ))
+        .large()
+        .label(label)
+        .on_click(cx.listener(
+            move |this: &mut Self,
+                  _event: &gpui::ClickEvent,
+                  _window: &mut Window,
+                  _cx: &mut Context<Self>| {
+                this.update_sigma(sigma);
+            },
+        ))
     }
 
     fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
@@ -214,25 +208,24 @@ impl Render for GaussianBlurView {
                     .flex_col()
                     .gap_3()
                     .bg(theme::WINDOW_BG)
-                    .size_full()
+                    .w_full()
                     .text_sm()
                     .p_4()
-                    .shadow_lg()
                     .text_color(theme::TEXT)
                     .child("Error: Unable to read gaussian blur state");
             }
         };
 
         div()
+            .key_context("GaussianBlurView")
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
             .bg(theme::WINDOW_BG)
-            .size_full()
+            .w_full()
             .text_sm()
             .p_4()
-            .shadow_lg()
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
@@ -245,39 +238,23 @@ impl Render for GaussianBlurView {
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
-            .child(self.render_header())
             .child(Self::render_status(&state, cx))
             .child(self.render_controls_section(cx, window))
             .child(Self::render_presets_section(cx))
     }
 }
 
-impl_tool_view_basics!(GaussianBlurView, "Gaussian Blur");
-
 impl ToolFrontend for GaussianBlurView {
-    fn get_window_options(&self) -> WindowOptions {
-        WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("Gaussian Blur")),
-                appears_transparent: false,
-                ..Default::default()
-            }),
-
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                size: size(px(280.), px(400.)),
-                origin: Point::new(px(450.), px(200.)),
-            })),
-
-            ..Default::default()
-        }
-    }
-
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;
         }
 
-        cx.bind_keys([KeyBinding::new("cmd-t", GaussianBlurToggleActivity, None)]);
+        cx.bind_keys([KeyBinding::new(
+            "cmd-t",
+            GaussianBlurToggleActivity,
+            Some("GaussianBlurView"),
+        )]);
 
         // Create and initialize ValueControl components
         let state = self

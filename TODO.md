@@ -104,10 +104,6 @@
 
 ## Known issues:
 
-Each tool's `initialize()` calls `cx.bind_keys([...])`, and `App::bind_keys` appends rather
-than replaces. Reopening a tool window N times registers N duplicate bindings for that tool's
-shortcuts. Harmless in practice today, but the bindings accumulate for the life of the process.
-
 This does not happen in release mode, nothing bad seems to happen so it is probably fine... : Crashes when trying to load CH2_weka_prepped.tif: assertion failed: self.table.is_full() ||
         (self.code_buffer.code_size() == 2 && self.next_code == 4) ||
     self.code_buffer.max_code() - Code::from(self.is_tiff) >= self.next_code

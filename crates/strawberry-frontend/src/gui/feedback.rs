@@ -1,10 +1,8 @@
+use crate::gui::{Button, ButtonVariant};
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
-use gpui::{
-    Context, InteractiveElement, IntoElement, MouseDownEvent, ParentElement, Render, Styled,
-    Window, div,
-};
+use gpui::{Context, IntoElement, ParentElement, Render, Styled, Window, div};
 use num_traits::ToPrimitive;
 use strawberry_types::FeedbackLevel;
 
@@ -127,34 +125,20 @@ impl Render for FeedbackModal {
                                 )
                                 .child(
                                     // Close button
-                                    div()
+                                    Button::new("feedback-render")
+                                        .variant(ButtonVariant::Ghost)
                                         .flex_shrink_0()
-                                        .w_6()
-                                        .h_6()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded_md()
-                                        .text_lg()
-                                        .text_color(theme::TEXT_MUTED)
-                                        .cursor_pointer()
-                                        .hover(|style| {
-                                            style.text_color(theme::TEXT).bg(theme::CONTROL)
-                                        })
-                                        .child("×")
-                                        .on_mouse_down(
-                                            gpui::MouseButton::Left,
-                                            cx.listener(
+                                        .icon(crate::gui::icon::Icon::x().size(16.), "Dismiss notification")
+                                        .on_click(cx.listener(
                                                 |this: &mut Self,
-                                                 _event: &MouseDownEvent,
+                                                 _event: &gpui::ClickEvent,
                                                  _window: &mut Window,
                                                  cx: &mut Context<Self>| {
                                                     this.show_toast = false;
                                                     this.marked_for_deletion = true;
                                                     cx.notify();
                                                 }
-                                            )
-                                        )
+                                            ))
                                 )
                         )
                 )

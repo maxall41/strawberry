@@ -18,7 +18,7 @@ const fn hex(hex: u32) -> Rgba {
 
 /// Main viewer background behind the image.
 pub const CANVAS: Rgba = hex(0x1e_20_23);
-/// Tool window background.
+/// Properties sidebar and workspace chrome.
 pub const WINDOW_BG: Rgba = hex(0x2e_30_35);
 /// Inset panel / section background.
 pub const SURFACE: Rgba = hex(0x35_37_3c);

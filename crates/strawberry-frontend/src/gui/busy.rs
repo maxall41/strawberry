@@ -1,8 +1,8 @@
-use std::time::Duration;
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
     Animation, AnimationExt, App, Context, Global, MouseMoveEvent, Pixels, Point, Render,
-    Transformation, Window, div, prelude::*, px, radians, svg,
+    Transformation, Window, canvas, div, point, prelude::*, px, radians, svg,
 };
 
 use super::{icon, theme};
@@ -24,6 +24,7 @@ pub fn set_pipeline_busy(cx: &mut App, busy: bool) {
 pub struct BusyOverlay {
     blocking: bool,
     cursor_position: Option<Point<Pixels>>,
+    origin: Rc<Cell<Point<Pixels>>>,
 }
 
 impl BusyOverlay {
@@ -33,6 +34,7 @@ impl BusyOverlay {
         Self {
             blocking,
             cursor_position: None,
+            origin: Rc::new(Cell::new(Point::default())),
         }
     }
 
@@ -65,6 +67,7 @@ impl Render for BusyOverlay {
         if !busy {
             self.cursor_position = None;
         }
+        let origin = self.origin.clone();
         div().id("busy-overlay").when(busy, |el| {
             el.absolute()
                 .inset_0()
@@ -75,7 +78,11 @@ impl Render for BusyOverlay {
                     })
                 })
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                    this.cursor_position = Some(event.position);
+                    let origin = this.origin.get();
+                    this.cursor_position = Some(point(
+                        px(f32::from(event.position.x) - f32::from(origin.x)),
+                        px(f32::from(event.position.y) - f32::from(origin.y)),
+                    ));
                     cx.notify();
                 }))
                 .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
@@ -84,6 +91,14 @@ impl Render for BusyOverlay {
                         cx.notify();
                     }
                 }))
+                .child(
+                    canvas(
+                        move |bounds, _, _| origin.set(bounds.origin),
+                        |_, (), _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
                 .when_some(self.cursor_position, |el, position| {
                     el.child(Self::render_spinner(position))
                 })

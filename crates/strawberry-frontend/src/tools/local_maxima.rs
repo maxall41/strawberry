@@ -1,3 +1,4 @@
+use crate::gui::Button;
 use crate::gui::actions::actions;
 use num_traits::ToPrimitive;
 
@@ -7,8 +8,8 @@ use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div,
+    prelude::*,
 };
 
 use crate::gui::ToggleButton;
@@ -229,16 +230,10 @@ impl LocalMaximaView {
                             .child("Threshold:")
                     )
                     .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .bg(theme::CONTROL)
-                            .cursor_pointer().hover(|style| style.bg(theme::CONTROL_HOVER))
-                            .text_sm()
-                            .child(mode_label)
-                            .on_mouse_down(gpui::MouseButton::Left, {
-                                cx.listener(move |this: &mut Self, _event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>| {
+                        Button::new("local_maxima-threshold_control")
+                            .label(mode_label)
+                            .on_click({
+                                cx.listener(move |this: &mut Self, _event: &gpui::ClickEvent, window: &mut Window, cx: &mut Context<Self>| {
                                     this.toggle_threshold_mode(window, cx);
                                 })
                             }),
@@ -270,31 +265,13 @@ impl LocalMaximaView {
                     .child("Exclude Border:"),
             )
             .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .bg(if exclude_border {
-                        theme::SUCCESS
-                    } else {
-                        theme::DANGER
-                    })
-                    .cursor_pointer()
-                    .hover({
-                        move |style| {
-                            style.bg(if exclude_border {
-                                theme::SUCCESS_HOVER
-                            } else {
-                                theme::DANGER_HOVER
-                            })
-                        }
-                    })
-                    .text_sm()
-                    .child(if exclude_border { "Yes" } else { "No" })
-                    .on_mouse_down(gpui::MouseButton::Left, {
+                Button::new("local_maxima-exclude_border_control")
+                    .selected(exclude_border)
+                    .label(if exclude_border { "Yes" } else { "No" })
+                    .on_click({
                         cx.listener(
                             move |this: &mut Self,
-                                  _event: &MouseDownEvent,
+                                  _event: &gpui::ClickEvent,
                                   window: &mut Window,
                                   cx: &mut Context<Self>| {
                                 this.toggle_exclude_border(exclude_border, window, cx);
@@ -312,26 +289,19 @@ impl LocalMaximaView {
         exclude_border: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
-            .px_3()
-            .py_2()
-            .bg(theme::CONTROL)
-            .cursor_pointer()
-            .hover(|style| style.bg(theme::CONTROL_HOVER))
-            .rounded_md()
-            .text_sm()
-            .child(label)
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(
-                    move |this: &mut Self,
-                          _event: &MouseDownEvent,
-                          _window: &mut Window,
-                          _cx: &mut Context<Self>| {
-                        this.update_parameters(min_distance, threshold.clone(), exclude_border);
-                    },
-                ),
-            )
+        Button::new(gpui::ElementId::Name(
+            format!("render_preset_button-{label}").into(),
+        ))
+        .large()
+        .label(label)
+        .on_click(cx.listener(
+            move |this: &mut Self,
+                  _event: &gpui::ClickEvent,
+                  _window: &mut Window,
+                  _cx: &mut Context<Self>| {
+                this.update_parameters(min_distance, threshold.clone(), exclude_border);
+            },
+        ))
     }
 
     // Presets section component
@@ -395,8 +365,6 @@ impl LocalMaximaView {
 
 actions!([LocalMaximaToggleActivity]);
 
-impl_tool_view_basics!(LocalMaximaView, "Local Maxima");
-
 impl FrontendMessageHandler for LocalMaximaView {
     type State = LocalMaximaState;
 
@@ -455,25 +423,24 @@ impl Render for LocalMaximaView {
                     .flex_col()
                     .gap_3()
                     .bg(theme::WINDOW_BG)
-                    .size_full()
+                    .w_full()
                     .text_sm()
                     .p_4()
-                    .shadow_lg()
                     .text_color(theme::TEXT)
                     .child("Error: Unable to read local maxima state");
             }
         };
 
         div()
+            .key_context("LocalMaximaView")
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
             .bg(theme::WINDOW_BG)
-            .size_full()
+            .w_full()
             .text_sm()
             .p_4()
-            .shadow_lg()
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
@@ -486,7 +453,6 @@ impl Render for LocalMaximaView {
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
-            .child(self.render_header())
             .child(Self::render_status(&state, cx))
             .child(self.render_controls_section(cx, window))
             .child(Self::render_presets_section(cx))
@@ -494,29 +460,16 @@ impl Render for LocalMaximaView {
 }
 
 impl ToolFrontend for LocalMaximaView {
-    fn get_window_options(&self) -> WindowOptions {
-        WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("Local Maxima")),
-                appears_transparent: false,
-                ..Default::default()
-            }),
-
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                size: size(px(320.), px(500.)),
-                origin: Point::new(px(750.), px(200.)),
-            })),
-
-            ..Default::default()
-        }
-    }
-
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;
         }
 
-        cx.bind_keys([KeyBinding::new("cmd-t", LocalMaximaToggleActivity, None)]);
+        cx.bind_keys([KeyBinding::new(
+            "cmd-t",
+            LocalMaximaToggleActivity,
+            Some("LocalMaximaView"),
+        )]);
 
         // Create and initialize ValueControl components
         let state = self

@@ -5,8 +5,7 @@ use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    App, Bounds, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div, prelude::*,
 };
 
 use crate::gui::ToggleButton;
@@ -297,25 +296,24 @@ impl Render for DecomposerView {
                     .flex_col()
                     .gap_3()
                     .bg(theme::WINDOW_BG)
-                    .size_full()
+                    .w_full()
                     .text_sm()
                     .p_4()
-                    .shadow_lg()
                     .text_color(theme::TEXT)
                     .child("Error: Unable to read Decomposer state");
             }
         };
 
         div()
+            .key_context("DecomposerView")
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
             .bg(theme::WINDOW_BG)
-            .size_full()
+            .w_full()
             .text_sm()
             .p_4()
-            .shadow_lg()
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
@@ -337,48 +335,28 @@ impl Render for DecomposerView {
             .on_action(cx.listener(Self::toggle_layer_7_action))
             .on_action(cx.listener(Self::toggle_layer_8_action))
             .on_action(cx.listener(Self::toggle_layer_9_action))
-            .child(self.render_header())
             .child(Self::render_status(&state, cx))
             .child(Self::render_layers_section(&state, cx))
     }
 }
 
-impl_tool_view_basics!(DecomposerView, "Decomposer");
-
 impl ToolFrontend for DecomposerView {
-    fn get_window_options(&self) -> WindowOptions {
-        WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("Decomposer")),
-                appears_transparent: false,
-                ..Default::default()
-            }),
-
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                size: size(px(250.), px(350.)),
-                origin: Point::new(px(200.), px(200.)),
-            })),
-
-            ..Default::default()
-        }
-    }
-
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;
         }
 
         cx.bind_keys([
-            KeyBinding::new("cmd-t", DecomposerToggleActivity, None),
-            KeyBinding::new("cmd-1", DecomposerToggleLayer1, None),
-            KeyBinding::new("cmd-2", DecomposerToggleLayer2, None),
-            KeyBinding::new("cmd-3", DecomposerToggleLayer3, None),
-            KeyBinding::new("cmd-4", DecomposerToggleLayer4, None),
-            KeyBinding::new("cmd-5", DecomposerToggleLayer5, None),
-            KeyBinding::new("cmd-6", DecomposerToggleLayer6, None),
-            KeyBinding::new("cmd-7", DecomposerToggleLayer7, None),
-            KeyBinding::new("cmd-8", DecomposerToggleLayer8, None),
-            KeyBinding::new("cmd-9", DecomposerToggleLayer9, None),
+            KeyBinding::new("cmd-t", DecomposerToggleActivity, Some("DecomposerView")),
+            KeyBinding::new("cmd-1", DecomposerToggleLayer1, Some("DecomposerView")),
+            KeyBinding::new("cmd-2", DecomposerToggleLayer2, Some("DecomposerView")),
+            KeyBinding::new("cmd-3", DecomposerToggleLayer3, Some("DecomposerView")),
+            KeyBinding::new("cmd-4", DecomposerToggleLayer4, Some("DecomposerView")),
+            KeyBinding::new("cmd-5", DecomposerToggleLayer5, Some("DecomposerView")),
+            KeyBinding::new("cmd-6", DecomposerToggleLayer6, Some("DecomposerView")),
+            KeyBinding::new("cmd-7", DecomposerToggleLayer7, Some("DecomposerView")),
+            KeyBinding::new("cmd-8", DecomposerToggleLayer8, Some("DecomposerView")),
+            KeyBinding::new("cmd-9", DecomposerToggleLayer9, Some("DecomposerView")),
         ]);
 
         self.process_messages(window, cx);

@@ -201,7 +201,6 @@ impl CellCounterMarkerFile {
             mode: CounterMode::Manual,
             active_tool: None,
             active_count_type: Some(self.marker_data.current_type),
-            filter_proxys: Vec::new(),
             review_current_index: 0,
             count_type_visibility,
             count_type_names,
