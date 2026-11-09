@@ -11,7 +11,8 @@ use strawberry_processing::{GpuImageProcessor, colorspace::GpuColorspaceConverte
 
 // Import all types from strawberry-types
 use strawberry_types::{
-    BackendToolType, FrontendMessage, OutputFrame, PipelineCommand, PipelineProgress, overlay,
+    BackendToolType, FrontendMessage, OutputFrame, PendingProcessing, PipelineCommand,
+    PipelineProgress, overlay,
 };
 
 // Import tool implementations from tools module
@@ -122,13 +123,14 @@ impl Pipeline {
         collection
     }
 
-    /// Process images through the pipeline starting from the given index
+    /// Process images through the pipeline starting from the given index.
+    ///
+    /// Callers must reconcile tool state first and include all resulting processing
+    /// requests when choosing `start_index`.
+    ///
     /// # Errors
     /// Returns an error if configuration, image processing, file I/O, or communication fails.
-    pub async fn process_from(&mut self, start_index: usize) -> anyhow::Result<()> {
-        let mut pending = Some(start_index);
-        self.reconcile_tools(&mut pending);
-        let start_index = pending.unwrap_or(start_index);
+    async fn process_from(&mut self, start_index: usize) -> anyhow::Result<()> {
         let start_time = std::time::Instant::now();
         println!("Got process_from command!");
         if self.input_images.is_empty() {
@@ -247,20 +249,6 @@ impl Pipeline {
         Ok(())
     }
 
-    async fn run_pipeline(&mut self, start_index: usize, error_context: &str) {
-        let result = self.process_from(start_index).await;
-        let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-            FrontendMessage::PipelineFinished,
-        ));
-        if let Err(e) = result {
-            let _ =
-                self.output_sender
-                    .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                        format!("{error_context}: {e}"),
-                    )));
-        }
-    }
-
     /// # Errors
     /// Returns an error if configuration, image processing, file I/O, or communication fails.
     #[expect(
@@ -270,7 +258,7 @@ impl Pipeline {
     pub async fn process_commands(&mut self) -> anyhow::Result<()> {
         let commands: Vec<_> =
             std::iter::from_fn(|| self.command_receiver.try_recv().ok()).collect();
-        let mut pending_processing_from = None;
+        let mut pending_processing_from = PendingProcessing::default();
 
         'commands: for cmd in commands {
             match &cmd {
@@ -381,7 +369,7 @@ impl Pipeline {
 
                     println!("Images loaded");
 
-                    request_processing(&mut pending_processing_from, 0);
+                    pending_processing_from.request_processing(0);
                 }
                 PipelineCommand::DiscoverBackend(backend_tool_type, sender) => {
                     let mut discovered = vec![];
@@ -470,7 +458,7 @@ impl Pipeline {
                     self.tool_manager.restore_tool_indices(&indices);
                     self.tool_manager.synchronize_enabled_history();
                     println!("CLI Pipeline load");
-                    request_processing(&mut pending_processing_from, 0);
+                    pending_processing_from.request_processing(0);
                 }
                 PipelineCommand::RegisterClickReceiver(click_sender) => {
                     self.click_receivers.push(click_sender.clone()); //TODO: Ehhhhh
@@ -530,16 +518,16 @@ impl Pipeline {
             )));
     }
 
-    fn reconcile_tools(&mut self, pending: &mut Option<usize>) {
+    fn reconcile_tools(&mut self, pending: &mut PendingProcessing) {
         for (index, tool) in self.tool_manager.tools.iter_mut().enumerate() {
             if tool.reconcile_state() {
-                request_processing(pending, index);
+                pending.request_processing(index);
             }
         }
     }
 
     /// A batch boundary: apply mutations, reconcile once, then process and publish.
-    async fn flush_processing(&mut self, pending: &mut Option<usize>) {
+    async fn flush_processing(&mut self, pending: &mut PendingProcessing) {
         // Keep draining other tools even when one rejects a message.
         for tool in &mut self.tool_manager.tools {
             if let Err(error) = tool.receive_messages() {
@@ -549,19 +537,25 @@ impl Pipeline {
             }
         }
         match self.tool_manager.receive_messages() {
-            Ok(true) => request_processing(pending, 0),
+            Ok(true) => pending.request_processing(0),
             Ok(false) => {}
             Err(error) => {
                 self.report_error("Tool manager communication error", &error);
                 // Earlier commands in the same batch may already have changed the order.
-                request_processing(pending, 0);
+                pending.request_processing(0);
             }
         }
         self.reconcile_tools(pending);
         if let Some(index) = pending.take()
             && !self.input_images.is_empty()
         {
-            self.run_pipeline(index, "Pipeline processing failed").await;
+            let result = self.process_from(index).await;
+            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
+                FrontendMessage::PipelineFinished,
+            ));
+            if let Err(error) = result {
+                self.report_error("Pipeline processing failed", &error);
+            }
         }
         for tool in &mut self.tool_manager.tools {
             if let Err(error) = tool.sync_frontend() {
@@ -571,8 +565,4 @@ impl Pipeline {
             }
         }
     }
-}
-
-fn request_processing(pending: &mut Option<usize>, from: usize) {
-    *pending = Some(pending.map_or(from, |index| index.min(from)));
 }
