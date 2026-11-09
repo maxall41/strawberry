@@ -68,7 +68,11 @@ pub trait ToolBackend: Send + Sync {
         anyhow::ensure!(variants.len() == 1, "Expected one tool state variant");
         let expected = serde_value::Value::String(format!("{:?}State", self.iam()));
         let Some(fields) = variants.remove(&expected) else {
-            anyhow::bail!("Expected {:?}State variant for {:?}", self.iam(), self.iam());
+            anyhow::bail!(
+                "Expected {:?}State variant for {:?}",
+                self.iam(),
+                self.iam()
+            );
         };
         let Some(current) = self.persisted_state_mut() else {
             return Ok(None);
