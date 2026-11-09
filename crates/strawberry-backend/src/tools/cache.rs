@@ -79,7 +79,7 @@ impl<TState: SyncState> ToolSync<TState> {
     }
 
     /// Returns (invalidate this cache, rerun the pipeline).
-    fn reconcile(&mut self, state: &TState) -> (bool, bool) {
+    pub(crate) fn reconcile(&mut self, state: &TState) -> (bool, bool) {
         let changed = self.reconciled.processing_differs(state);
         let process = changed && (self.reconciled.is_enabled() || state.is_enabled());
         self.acknowledge(state);
