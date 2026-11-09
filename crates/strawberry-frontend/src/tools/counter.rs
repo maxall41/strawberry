@@ -1,6 +1,5 @@
 use crate::gui::actions::actions;
 use crate::gui::{Button, ButtonVariant};
-use num_traits::ToPrimitive;
 
 use crate::gui::theme;
 // Implements UI for counter tool
@@ -14,14 +13,10 @@ use gpui::{
 };
 use rfd::FileDialog;
 
-use crate::gui::{
-    ToggleButton,
-    icon::Icon,
-    value_control::{ValueControl, ValueControlConfig},
-};
+use crate::gui::{ToggleButton, icon::Icon};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
-    CountData, CountMessage, CounterMode, CounterState, CounterTool, FilterProxy, PipelineCommand,
+    CountData, CountMessage, CounterMode, CounterState, CounterTool, PipelineCommand,
     PipelineObjectMessage, ToolState,
     consts::{CIRCLE_COLORS, image_rgba_to_gpui_rgba},
 };
@@ -1047,8 +1042,7 @@ impl CounterView {
         ui
     }
 
-    // Auto UI rendering (placeholder)
-    fn render_auto_ui(state: &CounterState, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_auto_ui(state: &CounterState) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
@@ -1075,181 +1069,6 @@ impl CounterView {
                             .child(format!("{}", state.auto_counts.len())),
                     ),
             )
-            .child(Self::render_filters_section(state, cx))
-    }
-
-    fn render_filters_section(
-        state: &CounterState,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .p_3()
-            .rounded_md()
-            .bg(theme::SURFACE_DEEP)
-            .child(
-                div()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_lg()
-                    .child("Filters"),
-            )
-            .when(state.filter_proxys.is_empty(), |el| {
-                el.child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::TEXT_MUTED)
-                        .child("No filters available"),
-                )
-            })
-            .when(!state.filter_proxys.is_empty(), |el| {
-                el.child(
-                    div().flex().flex_col().gap_2().children(
-                        state
-                            .filter_proxys
-                            .iter()
-                            .enumerate()
-                            .map(|(index, filter_proxy)| {
-                                Self::render_filter_item(filter_proxy, index, cx)
-                            }),
-                    ),
-                )
-            })
-    }
-
-    fn render_filter_item(
-        filter_proxy: &FilterProxy,
-        index: usize,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let is_enabled = filter_proxy.is_enabled;
-        let Ok(filter_index) = u16::try_from(index) else {
-            return div().into_any_element();
-        };
-
-        let is_size_filter = filter_proxy.name == "Filter by Size";
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_3()
-            .rounded_md()
-            .bg(if is_enabled {
-                theme::SURFACE_ALT
-            } else {
-                theme::SURFACE
-            })
-            .border_1()
-            .border_color(if is_enabled {
-                theme::SUCCESS
-            } else {
-                theme::CONTROL
-            })
-            .child(
-                Button::new(("count-filter", usize::from(filter_index)))
-                    .variant(ButtonVariant::Ghost)
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .child(filter_proxy.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .bg(if is_enabled {
-                                        theme::SUCCESS
-                                    } else {
-                                        theme::DANGER
-                                    })
-                                    .child(if is_enabled { "ACTIVE" } else { "DISABLED" }),
-                            ),
-                    )
-                    .on_click(cx.listener(
-                        move |this: &mut Self,
-                              _event: &gpui::ClickEvent,
-                              _window: &mut Window,
-                              _cx: &mut Context<Self>| {
-                            this.toggle_filter(filter_index, !is_enabled);
-                        },
-                    )),
-            )
-            .when(is_size_filter, |el| {
-                let Some(current_value) = filter_proxy.values.first().map_or(Some(10.0), |value| {
-                    value.to_f32().filter(|value| value.is_finite())
-                }) else {
-                    return el.child("Minimum object size cannot be displayed");
-                };
-
-                // Create a ValueControl for this filter
-                let control = cx.new(|cx| {
-                    ValueControl::new(
-                        format!("{current_value:.0}"),
-                        current_value,
-                        ValueControlConfig {
-                            label: "Minimum Object Size".to_string(),
-                            step: 1.0,
-                            id: format!("size_filter_{filter_index}"),
-                            min: 1.0,
-                            max: 10000.0,
-                        },
-                        cx,
-                    )
-                });
-
-                el.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .pt_2()
-                        .border_t_1()
-                        .border_color(theme::CONTROL)
-                        .child(control),
-                )
-            })
-            .into_any_element()
-    }
-
-    fn toggle_filter(&self, filter_index: u16, enabled: bool) {
-        let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => {
-                if let Some(index) = *guard {
-                    index
-                } else {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::ToggleFilter(
-                    filter_index,
-                    enabled,
-                )),
-            )) {
-                eprintln!("Failed to send toggle filter command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
-        }
     }
 
     fn render_review_ui(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
@@ -1553,7 +1372,7 @@ impl Render for CounterView {
             .child(Self::render_mode_toggle(&state, cx))
             .child(match state.mode {
                 CounterMode::Manual => div().child(self.render_manual_ui(&state, cx)),
-                CounterMode::Auto => div().child(Self::render_auto_ui(&state, cx)),
+                CounterMode::Auto => div().child(Self::render_auto_ui(&state)),
             })
             .child(
                 div()
