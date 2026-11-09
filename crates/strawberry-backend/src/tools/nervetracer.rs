@@ -1,6 +1,8 @@
 use num_traits::ToPrimitive;
 
-use crate::nervetracer::io::{export_nervetracer_to_xml_file, import_nervetracer_from_xml_file};
+use crate::nervetracer::io::{
+    export_nervetracer_to_xml_file, import_nervetracer_from_xml_file_into,
+};
 use std::sync::Arc;
 use strawberry_processing::nervetracer::create_path;
 
@@ -10,11 +12,6 @@ use strawberry_types::{
     PipelineObjectMessage, ToolBackend, ToolState,
     overlay::{OverlayElement, ToolOverlay},
 };
-
-/// Check if statechange requires reprocess.
-const fn nervetracer_output_differs(a: &NerveTracerState, b: &NerveTracerState) -> bool {
-    a.is_enabled != b.is_enabled || a.selected_image_index != b.selected_image_index
-}
 
 /// Trace positions are pixel indices; overlays align with the centers of those
 /// pixels. Keep this display offset out of stored and exported path coordinates.
@@ -30,9 +27,7 @@ pub struct NerveTracer {
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub index: usize,
-    pub cached_output: Option<Vec<Arc<image::RgbaImage>>>,
-    pub cached_state: Option<NerveTracerState>,
-    pub frontend_latest_state: Option<NerveTracerState>,
+    pub cache: crate::tools::cache::ToolCache<NerveTracerState>,
     pub cached_input: Option<Arc<image::RgbaImage>>,
 }
 
@@ -44,10 +39,8 @@ impl ToolBackend for NerveTracer {
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
     }
-    fn apply_state(&mut self, state: ToolState) {
-        if let ToolState::NerveTracerState(new_state) = state {
-            self.state = new_state;
-        }
+    fn persisted_state_mut(&mut self) -> Option<&mut dyn strawberry_types::PersistedState> {
+        Some(&mut self.state)
     }
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
@@ -149,9 +142,8 @@ impl ToolBackend for NerveTracer {
                             }
                         }
                         NerveTracerMessage::LoadTraces(path) => {
-                            match import_nervetracer_from_xml_file(&path) {
-                                Ok(loaded_state) => {
-                                    self.state = loaded_state;
+                            match import_nervetracer_from_xml_file_into(&path, &mut self.state) {
+                                Ok(()) => {
                                     self.global_sender.send(PipelineCommand::FrontendMessage(
                                         FrontendMessage::success(
                                             "Traces loaded successfully!".to_string(),
@@ -203,22 +195,6 @@ impl ToolBackend for NerveTracer {
             }
         }
 
-        let (changed, affects_output) = match self.frontend_latest_state.as_ref() {
-            Some(previous) => (
-                previous != &self.state,
-                nervetracer_output_differs(previous, &self.state),
-            ),
-            None => (true, true),
-        };
-
-        if changed {
-            if affects_output {
-                self.update_state()?;
-            } else {
-                self.sync_frontend()?;
-            }
-        }
-
         Ok(())
     }
 
@@ -230,12 +206,45 @@ impl ToolBackend for NerveTracer {
         self.index = index;
     }
 
-    fn valid_cached_output(&self) -> Option<Vec<Arc<image::RgbaImage>>> {
-        if self.cached_state.as_ref() == Some(&self.state) {
-            self.cached_output.clone()
-        } else {
-            None
+    fn reconcile_state(&mut self) -> bool {
+        let (invalidate, process) = self.cache.sync.reconcile(&self.state);
+        if invalidate {
+            self.invalidate_cache();
         }
+        process
+    }
+
+    fn acknowledge_processed_state(&mut self) {
+        self.cache.sync.acknowledge(&self.state);
+    }
+
+    fn valid_cached_output(&self) -> Option<Vec<Arc<image::RgbaImage>>> {
+        self.cache.valid_output(&self.state)
+    }
+
+    fn set_cached_output(&mut self, output: Vec<Arc<image::RgbaImage>>) {
+        self.cache.cached_output = Some(output);
+        self.cache.cached_state = Some(self.state.clone());
+    }
+
+    fn invalidate_cache(&mut self) {
+        self.cache.invalidate();
+        self.cached_input = None;
+    }
+
+    /// Push state to the frontend without discarding the cached image.
+    fn sync_frontend(&mut self) -> anyhow::Result<()> {
+        if !self.cache.sync.needs_frontend_sync(&self.state) {
+            return Ok(());
+        }
+        self.send_to_frontend(&PipelineCommand::FrontendMessage(
+            FrontendMessage::ReturnState(self.get_state()),
+        ))?;
+        self.cache.sync.frontend_latest_state = Some(self.state.clone());
+        self.command_sender
+            .send(PipelineCommand::RequestOverlays)
+            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {e}"))?;
+        Ok(())
     }
 
     fn get_overlays(&self) -> Option<crate::overlay::ToolOverlay> {
@@ -312,17 +321,6 @@ impl ToolBackend for NerveTracer {
             })
         }
     }
-
-    fn set_cached_output(&mut self, output: Vec<Arc<image::RgbaImage>>) {
-        self.cached_output = Some(output);
-        self.cached_state = Some(self.state.clone());
-    }
-
-    fn invalidate_cache(&mut self) {
-        self.cached_output = None;
-        self.cached_state = None;
-        self.cached_input = None;
-    }
 }
 
 impl NerveTracer {
@@ -336,47 +334,25 @@ impl NerveTracer {
         command_sender
             .send(PipelineCommand::RegisterClickReceiver(sender.clone()))
             .map_err(|e| anyhow::anyhow!("Failed to register click receiver: {e}"))?;
+        let state = NerveTracerState {
+            is_enabled: false,
+            paths: vec![],
+            current_path_segments: vec![],
+            first_point: None,
+            selected_image_index: 0,
+            total_images: 0,
+        };
         Ok(Self {
-            state: NerveTracerState {
-                is_enabled: false,
-                paths: vec![],
-                current_path_segments: vec![],
-                first_point: None,
-                selected_image_index: 0,
-                total_images: 0,
-            },
+            state: state.clone(),
             frontend_senders: Vec::new(),
             command_sender,
             global_sender,
             sender,
             receiver,
             index: 0,
-            cached_output: None,
-            cached_state: None,
-            frontend_latest_state: None,
+            cache: crate::tools::cache::ToolCache::new(&state),
             cached_input: None,
         })
-    }
-
-    /// Push state to the frontend without discarding the cached image.
-    fn sync_frontend(&mut self) -> anyhow::Result<()> {
-        self.send_to_frontend(&PipelineCommand::FrontendMessage(
-            FrontendMessage::ReturnState(self.get_state()),
-        ))?;
-        self.frontend_latest_state = Some(self.state.clone());
-        self.command_sender
-            .send(PipelineCommand::RequestOverlays)
-            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {e}"))?;
-        Ok(())
-    }
-
-    fn update_state(&mut self) -> anyhow::Result<()> {
-        self.invalidate_cache();
-        self.sync_frontend()?;
-        self.command_sender
-            .send(PipelineCommand::Refresh(self.index))
-            .map_err(|e| anyhow::anyhow!("Failed to send refresh command: {e}"))?;
-        Ok(())
     }
 
     fn send_to_frontend(&self, message: &PipelineCommand) -> anyhow::Result<()> {

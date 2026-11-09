@@ -29,12 +29,6 @@ impl ToolBackend for Decomposer {
         ToolState::DecomposerState(self.state.clone())
     }
 
-    fn apply_state(&mut self, state: ToolState) {
-        if let ToolState::DecomposerState(new_state) = state {
-            self.state = new_state;
-        }
-    }
-
     fn iam(&self) -> BackendToolType {
         BackendToolType::Decomposer
     }
@@ -151,17 +145,6 @@ impl ToolBackend for Decomposer {
             }
         }
 
-        if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
-            self.cache.cached_output = None;
-            self.cache.cached_state = None;
-            self.base
-                .send_to_frontend(&PipelineCommand::FrontendMessage(
-                    FrontendMessage::ReturnState(self.get_state()),
-                ))?;
-            self.base.trigger_refresh()?;
-            self.cache.frontend_latest_state = Some(self.state.clone());
-        }
-
         Ok(())
     }
 }
@@ -169,17 +152,17 @@ impl ToolBackend for Decomposer {
 impl Decomposer {
     #[must_use]
     pub fn new(
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
+        let state = DecomposerState {
+            is_enabled: false,
+            enabled_layers: vec![true; 3],
+        };
         Self {
-            state: DecomposerState {
-                is_enabled: false,
-                enabled_layers: vec![true; 3],
-            },
-            base: ToolBase::new(command_sender, global_sender),
-            cache: ToolCache::new(),
+            state: state.clone(),
+            base: ToolBase::new(global_sender),
+            cache: ToolCache::new(&state),
             compositer: GpuCompositor::new(gpu_image_processor.clone()),
             processor: GpuDecomposer::new(gpu_image_processor),
         }

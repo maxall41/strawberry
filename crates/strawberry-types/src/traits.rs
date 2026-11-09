@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use image::RgbaImage;
 use std::sync::Arc;
 
-use crate::{BackendToolType, PipelineCommand, ToolState, overlay::ToolOverlay};
+use crate::{
+    BackendToolType, PersistedState, PipelineCommand, PreparedStateUpdate, ToolState,
+    overlay::ToolOverlay,
+};
 
 /// Trait for image processing tools (backend)
 #[async_trait]
@@ -17,6 +20,17 @@ pub trait ToolBackend: Send + Sync {
     /// # Errors
     /// Returns an error if a command cannot be handled or a channel is disconnected.
     fn receive_messages(&mut self) -> anyhow::Result<()>;
+
+    /// Reconcile backend mutations against last known pipeline run; returns whether the pipeline needs processing.
+    fn reconcile_state(&mut self) -> bool;
+
+    /// Acknowledge state produced by latest processing run, without scheduling another pass.
+    fn acknowledge_processed_state(&mut self);
+
+    /// Publish frontend state independently of processing/cache validity.
+    /// # Errors
+    /// Returns an error if a communication channel is disconnected.
+    fn sync_frontend(&mut self) -> anyhow::Result<()>;
 
     /// Enable or disable this tool
     fn set_enabled(&mut self, enabled: bool);
@@ -41,8 +55,35 @@ pub trait ToolBackend: Send + Sync {
         true
     }
 
-    /// Apply state to the tool. Used during pipeline load.
-    fn apply_state(&mut self, state: ToolState);
+    /// Prepare parsed settings without changing live state.
+    /// # Errors
+    /// Returns an error if the wrapper is malformed or fields cannot be deserialized.
+    fn prepare_loaded_persisted_state<'a>(
+        &'a mut self,
+        loaded_state: serde_value::Value,
+    ) -> anyhow::Result<Option<PreparedStateUpdate<'a>>> {
+        let serde_value::Value::Map(mut variants) = loaded_state else {
+            anyhow::bail!("Expected an externally tagged tool state");
+        };
+        anyhow::ensure!(variants.len() == 1, "Expected one tool state variant");
+        let expected = serde_value::Value::String(format!("{:?}State", self.iam()));
+        let Some(fields) = variants.remove(&expected) else {
+            anyhow::bail!(
+                "Expected {:?}State variant for {:?}",
+                self.iam(),
+                self.iam()
+            );
+        };
+        let Some(current) = self.persisted_state_mut() else {
+            return Ok(None);
+        };
+        current.prepare_persisted_fields(fields).map(Some)
+    }
+
+    /// Expose the concrete state for loading, or `None` if loading is unsupported.
+    fn persisted_state_mut(&mut self) -> Option<&mut dyn PersistedState> {
+        None
+    }
 
     /// Set the tool's index in the pipeline
     fn set_index(&mut self, index: usize);

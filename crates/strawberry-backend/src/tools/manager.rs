@@ -28,27 +28,36 @@ pub(crate) fn serialize_pipeline_config(
     Ok(toml::to_string(&value)?)
 }
 
+/// Parsed pipeline settings. Concrete state deserialization is deferred to each tool to allow custom data handliing.
+#[derive(serde::Deserialize)]
+pub(crate) struct LoadedPipelineConfig {
+    pub(crate) tools: HashMap<String, serde_value::Value>,
+}
+
 pub(crate) fn deserialize_pipeline_config(
     content: &str,
-) -> anyhow::Result<(PipelineConfig, HashMap<String, u16>)> {
-    let value: toml::Value = toml::from_str(content)?;
-    let indices = value
-        .get("tools")
-        .and_then(toml::Value::as_table)
-        .into_iter()
-        .flatten()
+) -> anyhow::Result<(LoadedPipelineConfig, HashMap<String, u16>)> {
+    use serde_value::Value;
+    let config: LoadedPipelineConfig = toml::from_str(content)?;
+    let indices = config
+        .tools
+        .iter()
         .filter_map(|(name, tool)| {
-            let index = tool
-                .as_table()?
-                .values()
-                .next()?
-                .as_table()?
-                .get("index")?
-                .as_integer()?;
-            u16::try_from(index).ok().map(|index| (name.clone(), index))
+            let Value::Map(variants) = tool else {
+                return None;
+            };
+            let Value::Map(fields) = variants.values().next()? else {
+                return None;
+            };
+            let Value::I64(index) = fields.get(&Value::String("index".to_string()))? else {
+                return None;
+            };
+            u16::try_from(*index)
+                .ok()
+                .map(|index| (name.clone(), index))
         })
         .collect();
-    Ok((value.try_into()?, indices))
+    Ok((config, indices))
 }
 
 /// Orchestrates the pipeline's tools.
@@ -60,7 +69,6 @@ pub(crate) fn deserialize_pipeline_config(
 pub struct ToolManager {
     pub tools: Vec<Box<dyn ToolBackend>>,
     pub state: ManagerState,
-    pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
@@ -88,10 +96,60 @@ fn update_proxy_tools(
 }
 
 impl ToolManager {
+    /// Apply a loaded pipeline config to all tools.
+    pub(crate) fn apply_pipeline_config(
+        &mut self,
+        mut config: LoadedPipelineConfig,
+        indices: &HashMap<String, u16>,
+    ) -> anyhow::Result<()> {
+        // Presence in the file defines membership, including disabled tools.
+        let included = self
+            .tools
+            .iter()
+            .filter(|tool| config.tools.contains_key(&tool.iam().to_string()))
+            .map(|tool| tool.iam())
+            .collect();
+        let mut updates = Vec::new();
+        let mut loaded = Vec::with_capacity(self.tools.len());
+        for tool in &mut self.tools {
+            let name = format!("{:?}", tool.iam());
+            let update = match config.tools.remove(&name) {
+                Some(settings) => tool
+                    .prepare_loaded_persisted_state(settings)
+                    .map_err(|error| anyhow::anyhow!("Failed to load {name}: {error}"))?,
+                None => None,
+            };
+            loaded.push(update.is_some());
+            if let Some(update) = update {
+                updates.push(update);
+            }
+        }
+        // Check for unsupported tools
+        if !config.tools.is_empty() {
+            let mut unsupported_tools: Vec<_> = config.tools.keys().cloned().collect();
+            unsupported_tools.sort();
+            anyhow::bail!(
+                "Unsupported pipeline tools: {}",
+                unsupported_tools.join(", ")
+            );
+        }
+        // Apply updates seperately such that pipelines are never partially loaded if one tool fails to parse into concrete types.
+        for update in updates {
+            update();
+        }
+        for (tool, loaded) in self.tools.iter_mut().zip(loaded) {
+            if !loaded {
+                tool.set_enabled(false);
+            }
+        }
+        self.restore_tool_indices(indices);
+        self.included = included;
+        Ok(())
+    }
+
     #[must_use]
     pub fn new(
         mut input: Vec<Box<dyn ToolBackend>>,
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
@@ -113,7 +171,6 @@ impl ToolManager {
             },
             tools: input,
             frontend_senders: Vec::new(),
-            command_sender,
             global_sender,
             sender,
             receiver,
@@ -137,37 +194,35 @@ impl ToolManager {
 
     /// Adding appends the tool, including when restoring a removed tool.
     /// An existing item keeps its enabled state and position in the stack.
-    fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<()> {
+    fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<bool> {
         let Some(index) = self.tools.iter().position(|tool| tool.iam() == *kind) else {
             anyhow::bail!("Unknown pipeline tool: {kind}");
         };
         if self.included.contains(kind) {
-            return Ok(());
+            return Ok(false);
         }
         if let Some(tool) = self.tools.get_mut(index) {
             tool.set_enabled(true);
         }
         self.included.insert(kind.clone());
         self.move_tool(index, self.tools.len().saturating_sub(1));
-        self.command_sender.send(PipelineCommand::Refresh(0))?;
-        Ok(())
+        Ok(true)
     }
 
-    fn remove_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<()> {
+    fn remove_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<bool> {
         let Some(index) = self.tools.iter().position(|tool| tool.iam() == *kind) else {
             anyhow::bail!("Unknown pipeline tool: {kind}");
         };
         if !self.included.contains(kind)
             && !self.tools.get(index).is_some_and(|tool| tool.is_enabled())
         {
-            return Ok(());
+            return Ok(false);
         }
         if let Some(tool) = self.tools.get_mut(index) {
             tool.set_enabled(false);
         }
         self.included.remove(kind);
-        self.command_sender.send(PipelineCommand::Refresh(0))?;
-        Ok(())
+        Ok(true)
     }
 
     fn pipeline_config(&self) -> anyhow::Result<(PipelineConfig, HashMap<String, u16>)> {
@@ -188,27 +243,6 @@ impl ToolManager {
         Ok((PipelineConfig { tools: configs }, indices))
     }
 
-    pub(crate) fn apply_pipeline_config(
-        &mut self,
-        config: &PipelineConfig,
-        indices: &HashMap<String, u16>,
-    ) {
-        for tool in &mut self.tools {
-            tool.set_enabled(false);
-            if let Some(state) = config.tools.get(&tool.iam().to_string()) {
-                tool.apply_state(state.clone());
-            }
-        }
-        self.restore_tool_indices(indices);
-        // Presence in the file defines membership, including disabled tools.
-        self.included = self
-            .tools
-            .iter()
-            .filter(|tool| config.tools.contains_key(&tool.iam().to_string()))
-            .map(|tool| tool.iam())
-            .collect();
-    }
-
     pub(crate) fn restore_tool_indices(&mut self, indices: &HashMap<String, u16>) {
         if indices.is_empty() {
             return;
@@ -227,7 +261,7 @@ impl ToolManager {
 
     /// Automatically include tools enabled outside Add Tool. Existing stack items
     /// keep their position when disabled or enabled again.
-    fn move_newly_enabled_tools_to_end(&mut self) {
+    fn move_newly_enabled_tools_to_end(&mut self) -> bool {
         let mut retained = Vec::with_capacity(self.tools.len());
         let mut added = Vec::new();
         for tool in self.tools.drain(..) {
@@ -243,6 +277,7 @@ impl ToolManager {
         if order_changed {
             self.reindex_tools();
         }
+        order_changed
     }
 
     #[must_use]
@@ -268,7 +303,8 @@ impl ToolManager {
         clippy::too_many_lines,
         reason = "Command dispatch as one function is cleaner"
     )]
-    pub fn receive_messages(&mut self) -> anyhow::Result<()> {
+    pub fn receive_messages(&mut self) -> anyhow::Result<bool> {
+        let mut processing_required = false;
         let commands: Vec<PipelineCommand> =
             std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
 
@@ -284,8 +320,12 @@ impl ToolManager {
                         self.state.is_enabled = value;
                     }
                     PipelineObjectMessage::ManagerMessage(message) => match message {
-                        ManagerMessage::AddTool(kind) => self.add_tool(&kind)?,
-                        ManagerMessage::RemoveTool(kind) => self.remove_tool(&kind)?,
+                        ManagerMessage::AddTool(kind) => {
+                            processing_required |= self.add_tool(&kind)?;
+                        }
+                        ManagerMessage::RemoveTool(kind) => {
+                            processing_required |= self.remove_tool(&kind)?;
+                        }
                         ManagerMessage::SavePipeline(path) => {
                             let (pipeline_config, indices) = self.pipeline_config()?;
                             let toml_string =
@@ -343,13 +383,9 @@ impl ToolManager {
                                     }
                                 };
 
-                            self.apply_pipeline_config(&pipeline_config, &indices);
+                            self.apply_pipeline_config(pipeline_config, &indices)?;
 
-                            self.command_sender
-                                .send(PipelineCommand::Refresh(0))
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Failed to send refresh command: {e}")
-                                })?;
+                            processing_required = true;
 
                             self.global_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::success(
@@ -373,12 +409,11 @@ impl ToolManager {
                                 return Err(anyhow::anyhow!(error_msg));
                             }
 
+                            if start_idx == new_idx.min(self.tools.len().saturating_sub(1)) {
+                                continue;
+                            }
                             self.move_tool(start_idx, new_idx);
-                            self.command_sender
-                                .send(PipelineCommand::Refresh(0))
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Failed to send refresh command: {e}")
-                                })?;
+                            processing_required = true;
                         }
                     },
                     _ => {}
@@ -387,7 +422,7 @@ impl ToolManager {
             }
         }
 
-        self.move_newly_enabled_tools_to_end();
+        processing_required |= self.move_newly_enabled_tools_to_end();
 
         let new_proxy_tools = update_proxy_tools(&self.tools, &self.included);
         if new_proxy_tools != self.state.proxy_tools {
@@ -398,7 +433,7 @@ impl ToolManager {
             self.update_state()?;
         }
 
-        Ok(())
+        Ok(processing_required)
     }
 
     fn update_state(&mut self) -> anyhow::Result<()> {

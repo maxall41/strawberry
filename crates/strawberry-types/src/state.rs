@@ -50,6 +50,8 @@ pub struct PipelineConfig {
 pub struct CompositorState {
     pub is_enabled: bool,
     pub enabled_layers: Vec<bool>,
+    /// Don't include runtime layer metadata in persisted state
+    #[serde(skip)]
     pub real_layers_len: usize,
 }
 
@@ -81,6 +83,8 @@ pub struct NerveTracerState {
     pub current_path_segments: Vec<PathSegment>,
     pub first_point: Option<(u64, u64)>,
     pub selected_image_index: usize,
+    /// Don't include runtime image count metadata in persisted state
+    #[serde(skip)]
     pub total_images: usize,
 }
 
@@ -188,4 +192,29 @@ pub enum ToolState {
     DecomposerState(DecomposerState),
     WatershedState(WatershedState),
     NerveTracerState(NerveTracerState),
+}
+
+/// A validated state update that takes effect only when invoked.
+pub type PreparedStateUpdate<'a> = Box<dyn FnOnce() + 'a>;
+
+/// Object-safe access to a concrete state struct's Serde in-place update.
+pub trait PersistedState {
+    /// Prepares a state update, retaining fields marked `serde(skip)`. The returned closure must be executed for the state update to take place.
+    /// # Errors
+    /// Returns an error if the fields cannot be deserialized; leaves state unchanged.
+    fn prepare_persisted_fields<'a>(
+        &'a mut self,
+        fields: serde_value::Value,
+    ) -> anyhow::Result<PreparedStateUpdate<'a>>;
+}
+
+impl<T: Clone + serde::de::DeserializeOwned> PersistedState for T {
+    fn prepare_persisted_fields<'a>(
+        &'a mut self,
+        fields: serde_value::Value,
+    ) -> anyhow::Result<PreparedStateUpdate<'a>> {
+        let mut merged = self.clone();
+        T::deserialize_in_place(fields, &mut merged)?;
+        Ok(Box::new(move || *self = merged))
+    }
 }

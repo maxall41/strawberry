@@ -15,6 +15,7 @@ flume = "0.12"
 async-trait = "0.1.91"
 lutz = "1.4.1"
 serde = "1.0.229"
+serde-value = "0.7"
 quick-xml = { version = "0.41.0", features = ["serialize"] }
 toml = "1.1.4"
 
