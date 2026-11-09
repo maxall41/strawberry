@@ -7,8 +7,8 @@ use num_traits::ToPrimitive;
 
 use anyhow::Result;
 use commands::{
-    OpenFile, PalettePaste, PalleteCommand, Quit, SaveImage, ToggleCommandPalette, ToggleSidebar,
-    ZoomFit, ZoomIn, ZoomOut,
+    OpenFile, PalleteCommand, Quit, SaveImage, ToggleCommandPalette, ToggleSidebar, ZoomFit,
+    ZoomIn, ZoomOut,
 };
 use gpui::{
     Animation, AnimationExt, App, AppContext, AssetSource, Bounds, Context, Entity, ExternalPaths,
@@ -19,6 +19,7 @@ use gpui::{
 };
 use gui::busy::{BusyOverlay, set_pipeline_busy};
 use gui::feedback::FeedbackModal;
+use gui::generic_picker::PickerPaste;
 use gui::icon::Icon;
 use gui::palette::{CommandPalette, PaletteDismissed};
 use gui::sidebar::{ToolSelected, ToolSidebar};
@@ -1172,7 +1173,7 @@ async fn main() -> Result<()> {
                 KeyBinding::new("cmd-alt-b", ToggleSidebar, None),
                 KeyBinding::new("f", ZoomFit, Some("PrimaryViewer")),
                 KeyBinding::new("secondary-p", ToggleCommandPalette, None),
-                KeyBinding::new("secondary-v", PalettePaste, Some("CommandPalette")),
+                KeyBinding::new("secondary-v", PickerPaste, Some("SearchPicker")),
                 KeyBinding::new("+", ZoomIn, Some("PrimaryViewer && !CommandPalette")),
                 KeyBinding::new("-", ZoomOut, Some("PrimaryViewer && !CommandPalette")),
             ]);

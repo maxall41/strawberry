@@ -32,7 +32,6 @@ actions!([
     OpenFile,
     SaveImage,
     ToggleCommandPalette,
-    PalettePaste,
 ]);
 
 actions!([
