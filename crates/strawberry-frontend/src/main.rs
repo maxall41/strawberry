@@ -1,11 +1,14 @@
 // wgpu auto-trait checks exceed the default compiler recursion depth.
 #![recursion_limit = "256"]
 
+use crate::gui::{Button, ButtonVariant};
+
 use num_traits::ToPrimitive;
 
 use anyhow::Result;
 use commands::{
-    OpenFile, PalettePaste, PalleteCommand, Quit, SaveImage, ToggleCommandPalette, ZoomIn, ZoomOut,
+    OpenFile, PalleteCommand, Quit, SaveImage, ToggleCommandPalette, ToggleSidebar, ZoomFit,
+    ZoomIn, ZoomOut,
 };
 use gpui::{
     Animation, AnimationExt, App, AppContext, AssetSource, Bounds, Context, Entity, ExternalPaths,
@@ -16,7 +19,13 @@ use gpui::{
 };
 use gui::busy::{BusyOverlay, set_pipeline_busy};
 use gui::feedback::FeedbackModal;
+use gui::generic_picker::PickerPaste;
+use gui::icon::Icon;
 use gui::palette::{CommandPalette, PaletteDismissed};
+use gui::sidebar::{ToolSelected, ToolSidebar};
+use gui::workspace::{
+    SIDEBAR_GRIP_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TOOLBAR_HEIGHT, WorkspaceLayout,
+};
 use image::{Frame, RgbaImage};
 use rfd::FileDialog;
 use std::path::PathBuf;
@@ -104,9 +113,97 @@ struct PrimaryViewer {
     busy_overlay: Entity<BusyOverlay>,
     palette: Option<Entity<CommandPalette>>,
     commands: Rc<[PalleteCommand]>,
+    sidebar: Entity<ToolSidebar>,
+    layout: WorkspaceLayout,
 }
 
 impl PrimaryViewer {
+    fn canvas_size(&self, window: &Window) -> gpui::Size<Pixels> {
+        self.layout.canvas_size(window.viewport_size())
+    }
+
+    fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
+        self.layout.sidebar_visible = !self.layout.sidebar_visible;
+        self.pressed_keys.clear();
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    fn fit_image(&mut self, _: &ZoomFit, window: &mut Window, cx: &mut Context<Self>) {
+        let viewport = self.canvas_size(window);
+        let width = f32::from(Pixels::from(self.original_width));
+        let height = f32::from(Pixels::from(self.original_height));
+        self.zoom_level = ((f32::from(viewport.width) - 48.0) / width.max(1.0))
+            .min((f32::from(viewport.height) - 48.0) / height.max(1.0))
+            .clamp(0.01, 50.0);
+        self.pan_x = width.mul_add(-self.zoom_level, f32::from(viewport.width)) / 2.0;
+        self.pan_y = height.mul_add(-self.zoom_level, f32::from(viewport.height)) / 2.0;
+        cx.notify();
+    }
+
+    fn render_toolbar(&self) -> impl IntoElement + use<> {
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .h(px(TOOLBAR_HEIGHT))
+            .px_3()
+            .border_b_1()
+            .border_color(gui::theme::BORDER_MUTED)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(workspace_button("open-images", "Open", OpenFile))
+                    .child(workspace_button("save-image", "Export", SaveImage)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(workspace_icon_button(
+                        "zoom-out",
+                        Icon::minus(),
+                        "Zoom out",
+                        ZoomOut,
+                    ))
+                    .child(
+                        div()
+                            .w(px(48.))
+                            .text_center()
+                            .text_xs()
+                            .text_color(gui::theme::TEXT_MUTED)
+                            .child(format!("{:.0}%", self.zoom_level * 100.0)),
+                    )
+                    .child(workspace_icon_button(
+                        "zoom-in",
+                        Icon::plus(),
+                        "Zoom in",
+                        ZoomIn,
+                    ))
+                    .child(workspace_button("zoom-fit", "Fit", ZoomFit))
+                    .child(div().mx_2().h(px(16.)).w(px(1.)).bg(gui::theme::BORDER))
+                    .child(workspace_button(
+                        "commands",
+                        "Commands  ⌘P",
+                        ToggleCommandPalette,
+                    ))
+                    .child(workspace_button(
+                        "toggle-properties",
+                        if self.layout.sidebar_visible {
+                            "Hide inspector"
+                        } else {
+                            "Show inspector"
+                        },
+                        ToggleSidebar,
+                    )),
+            )
+    }
+
     pub fn process_messages(&self, window: &Window, cx: &Context<Self>) {
         let mut receiver = self.command_receiver.resubscribe();
         let mut output_frames = self.output_frame_receiver.clone();
@@ -381,7 +478,7 @@ impl PrimaryViewer {
     }
 
     fn adjust_pan_for_center_zoom(&mut self, window: &Window, old_zoom: f32, new_zoom: f32) {
-        let viewport = window.viewport_size();
+        let viewport = self.canvas_size(window);
         let center = Point::new(
             px(f32::from(viewport.width) / 2.0),
             px(f32::from(viewport.height) / 2.0),
@@ -424,7 +521,8 @@ impl PrimaryViewer {
         // Clamp zoom level to reasonable bounds
         self.zoom_level = self.zoom_level.clamp(0.1, 50.0);
 
-        self.adjust_pan_around_point(event.position, old_zoom, self.zoom_level);
+        let canvas_position = WorkspaceLayout::canvas_position(event.position);
+        self.adjust_pan_around_point(canvas_position, old_zoom, self.zoom_level);
         cx.notify();
     }
 
@@ -499,7 +597,7 @@ impl PrimaryViewer {
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Don't handle keys as panning when pallete is open.
-        if self.palette.is_some() {
+        if self.palette.is_some() || !self.focus_handle.is_focused(window) {
             return;
         }
         if event.keystroke.modifiers.modified() {
@@ -525,6 +623,7 @@ impl PrimaryViewer {
 
     fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette.take().is_some() {
+            self.focus_handle.focus(window, cx);
             cx.notify();
             return;
         }
@@ -532,10 +631,15 @@ impl PrimaryViewer {
 
         let commands = self.commands.clone();
         let palette = cx.new(|cx| CommandPalette::new(commands, cx));
-        cx.subscribe(&palette, |viewer, _palette, _: &PaletteDismissed, cx| {
-            viewer.palette = None;
-            cx.notify();
-        })
+        cx.subscribe_in(
+            &palette,
+            window,
+            |viewer, _palette, _: &PaletteDismissed, window, cx| {
+                viewer.palette = None;
+                viewer.focus_handle.focus(window, cx);
+                cx.notify();
+            },
+        )
         .detach();
 
         window.focus(&palette.read(cx).focus_handle(cx), cx);
@@ -578,8 +682,8 @@ impl PrimaryViewer {
             .then_some((x, y))
     }
 
-    // Helper to convert image coords to screen coords
-    const fn image_to_screen_coords(&self, img_x: f32, img_y: f32) -> (f32, f32) {
+    // Convert image coordinates to positions relative to the image canvas.
+    const fn image_to_canvas_coords(&self, img_x: f32, img_y: f32) -> (f32, f32) {
         (
             img_x.mul_add(self.zoom_level, self.pan_x),
             img_y.mul_add(self.zoom_level, self.pan_y),
@@ -596,7 +700,7 @@ impl PrimaryViewer {
                 color,
                 style,
             } => {
-                let (screen_x, screen_y) = self.image_to_screen_coords(*x, *y);
+                let (screen_x, screen_y) = self.image_to_canvas_coords(*x, *y);
                 let screen_radius = radius * self.zoom_level;
                 let gpui_color =
                     rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
@@ -630,7 +734,7 @@ impl PrimaryViewer {
                 radius,
                 color,
             } => {
-                let (screen_x, screen_y) = self.image_to_screen_coords(*x, *y);
+                let (screen_x, screen_y) = self.image_to_canvas_coords(*x, *y);
                 let screen_radius = radius * self.zoom_level;
                 let gpui_color =
                     rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
@@ -655,17 +759,17 @@ impl PrimaryViewer {
 
                 let screen_stroke = stroke_width * self.zoom_level;
 
-                // Convert image coordinates to screen coordinates
-                let screen_points: Vec<(f32, f32)> = points
+                // Polyline adds its paint bounds' origin when drawing to the window.
+                let canvas_points: Vec<(f32, f32)> = points
                     .iter()
-                    .map(|(x, y)| self.image_to_screen_coords(*x, *y))
+                    .map(|(x, y)| self.image_to_canvas_coords(*x, *y))
                     .collect();
 
                 // Convert RGBA array to gpui::Rgba
                 let gpui_color =
                     rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
 
-                gui::polyline::Polyline::new(screen_points, gpui_color, px(screen_stroke))
+                gui::polyline::Polyline::new(canvas_points, gpui_color, px(screen_stroke))
                     .into_element()
             }
             _ => div(), // Placeholder for other element types not yet implemented
@@ -685,22 +789,20 @@ impl Render for PrimaryViewer {
         reason = "Keep declarative GPUI layout and its event bindings together"
     )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.last_viewport_size = Some(window.viewport_size());
-
-        // Handle snap if needed
-        if let Some((x, y)) = self.snap_target.take() {
-            let viewport = window.viewport_size();
-            let viewport_center_x = px(f32::from(viewport.width) / 2.0);
-            let viewport_center_y = px(f32::from(viewport.height) / 2.0);
-
-            // Calculate pan to center the position
-            self.pan_x = f32::mul_add(x, -self.zoom_level, f32::from(viewport_center_x));
-            self.pan_y = f32::mul_add(y, -self.zoom_level, f32::from(viewport_center_y));
+        let viewport = self.canvas_size(window);
+        if let Some(previous) = self.last_viewport_size {
+            // Preserve the image point at the center when resizing or hiding properties.
+            self.pan_x += (f32::from(viewport.width) - f32::from(previous.width)) / 2.0;
+            self.pan_y += (f32::from(viewport.height) - f32::from(previous.height)) / 2.0;
         }
+        self.last_viewport_size = Some(viewport);
 
-        // Keep the canvas focused for pan/zoom keys as long as command palette is not open.
-        if self.palette.is_none() {
-            window.focus(&self.focus_handle(cx), cx);
+        if let Some((x, y)) = self.snap_target.take() {
+            self.pan_x = x.mul_add(-self.zoom_level, f32::from(viewport.width) / 2.0);
+            self.pan_y = y.mul_add(-self.zoom_level, f32::from(viewport.height) / 2.0);
+        }
+        if !self.focus_handle.is_focused(window) {
+            self.pressed_keys.clear();
         }
 
         let activity_status = self.activity.as_ref().filter(|a| a.shown).map(|a| {
@@ -787,19 +889,23 @@ impl Render for PrimaryViewer {
                 },
             ),
         );
-        div()
-            .id("main")
+        let canvas = div()
+            .id("image-canvas")
+            .relative()
             .key_context("PrimaryViewer")
             .track_focus(&self.focus_handle(cx))
-            .focusable()
-            .size_full()
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .bg(gui::theme::CANVAS)
             .overflow_hidden()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.focus_handle.focus(window, cx);
+                }),
+            )
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
-            .on_action(cx.listener(Self::handle_zoom_in))
-            .on_action(cx.listener(Self::handle_zoom_out))
-            .on_action(cx.listener(Self::handle_open_file))
-            .on_action(cx.listener(Self::handle_save_image))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
             .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
@@ -833,10 +939,10 @@ impl Render for PrimaryViewer {
                         .flex_col()
                         .items_center()
                         .justify_center()
-                        .gap_1()
+                        .gap_3()
                         .text_color(gui::theme::TEXT_MUTED)
-                        .child(div().text_lg().child("Drop images here"))
-                        .child(div().text_sm().child("or press ⌘L to open files")),
+                        .child(div().text_sm().child("Drop images here to get started"))
+                        .child(workspace_button("empty-open", "Open  ⌘L", OpenFile)),
                 )
             })
             .children(self.toasts.iter().enumerate().map(|(index, toast)| {
@@ -890,10 +996,122 @@ impl Render for PrimaryViewer {
                         .text_color(gui::theme::TEXT_MUTED)
                         .child(status),
                 )
-            })
-            // Pallete added as last child to ensure that it paints above other elements.
+            });
+
+        div()
+            .id("workspace")
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .bg(gui::theme::WINDOW_BG)
+            .text_color(gui::theme::TEXT)
+            .on_action(cx.listener(Self::handle_open_file))
+            .on_action(cx.listener(Self::handle_save_image))
+            .on_action(cx.listener(Self::handle_zoom_in))
+            .on_action(cx.listener(Self::handle_zoom_out))
+            .on_action(cx.listener(Self::fit_image))
+            .on_action(cx.listener(Self::toggle_sidebar))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                if this.layout.resizing_sidebar {
+                    if event.dragging() {
+                        let maximum = (f32::from(window.viewport_size().width) - 240.0)
+                            .clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
+                        this.layout.sidebar_width = (f32::from(window.viewport_size().width)
+                            - f32::from(event.position.x))
+                        .clamp(SIDEBAR_MIN_WIDTH, maximum);
+                    } else {
+                        this.layout.resizing_sidebar = false;
+                    }
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.layout.resizing_sidebar {
+                        this.layout.resizing_sidebar = false;
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(self.render_toolbar())
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(canvas),
+                    )
+                    .when(self.layout.sidebar_visible, |el| {
+                        el.child(
+                            div()
+                                .id("sidebar-resize")
+                                .w(px(SIDEBAR_GRIP_WIDTH))
+                                .h_full()
+                                .flex_none()
+                                .bg(if self.layout.resizing_sidebar {
+                                    gui::theme::ACCENT
+                                } else {
+                                    gui::theme::WINDOW_BG
+                                })
+                                .cursor_col_resize()
+                                .hover(|style| style.bg(gui::theme::ACCENT))
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.layout.resizing_sidebar = true;
+                                        this.pressed_keys.clear();
+                                        cx.notify();
+                                    }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w(px(self.layout.sidebar_width))
+                                .h_full()
+                                .flex_none()
+                                .child(self.sidebar.clone()),
+                        )
+                    }),
+            )
+            // Paint the command palette over the complete workspace.
             .when_some(self.palette.clone(), gpui::ParentElement::child)
     }
+}
+
+fn workspace_button(
+    id: &'static str,
+    label: &'static str,
+    action: impl gpui::Action,
+) -> impl IntoElement {
+    Button::new(id)
+        .variant(ButtonVariant::Ghost)
+        .compact()
+        .label(label)
+        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+}
+
+fn workspace_icon_button(
+    id: &'static str,
+    icon: Icon,
+    label: &'static str,
+    action: impl gpui::Action,
+) -> impl IntoElement {
+    Button::new(id)
+        .variant(ButtonVariant::Ghost)
+        .compact()
+        .icon(icon, label)
+        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }
 
 /// "`RollingBall`" (a `BackendToolType` debug name) -> "Rolling Ball".
@@ -946,17 +1164,16 @@ async fn main() -> Result<()> {
             base: manifest_dir.join("examples"),
         })
         .run(move |cx: &mut App| {
-            let commands =
-                commands::install(cx, view_sender.clone(), &view_recv, image_directory.clone());
-
             cx.on_action(|_: &Quit, cx| cx.quit());
 
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-l", OpenFile, None),
                 KeyBinding::new("cmd-s", SaveImage, None),
+                KeyBinding::new("cmd-alt-b", ToggleSidebar, None),
+                KeyBinding::new("f", ZoomFit, Some("PrimaryViewer")),
                 KeyBinding::new("secondary-p", ToggleCommandPalette, None),
-                KeyBinding::new("secondary-v", PalettePaste, Some("CommandPalette")),
+                KeyBinding::new("secondary-v", PickerPaste, Some("SearchPicker")),
                 KeyBinding::new("+", ZoomIn, Some("PrimaryViewer && !CommandPalette")),
                 KeyBinding::new("-", ZoomOut, Some("PrimaryViewer && !CommandPalette")),
             ]);
@@ -974,6 +1191,7 @@ async fn main() -> Result<()> {
             ]);
 
             let window_options = WindowOptions {
+                window_min_size: Some(size(px(960.), px(540.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::from("Strawberry")),
                     appears_transparent: false,
@@ -981,7 +1199,7 @@ async fn main() -> Result<()> {
                 }),
 
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
-                    size: size(px(1100.), px(600.)),
+                    size: size(px(1280.), px(800.)),
                     origin: Point::new(px(200.), px(200.)),
                 })),
 
@@ -1007,6 +1225,14 @@ async fn main() -> Result<()> {
 
             let primary_viewer_image_dir = image_directory.clone();
             let main_window = cx.open_window(window_options, |window, cx| {
+                let sidebar = cx.new(|cx| ToolSidebar::new(view_sender.clone(), window, cx));
+                let commands = commands::install(
+                    cx,
+                    &sidebar,
+                    view_sender.clone(),
+                    &view_recv,
+                    image_directory.clone(),
+                );
                 let raw_primary_viewer = PrimaryViewer {
                     focus_handle: cx.focus_handle(),
                     zoom_level: 1.0,
@@ -1032,9 +1258,20 @@ async fn main() -> Result<()> {
                     busy_overlay: cx.new(|cx| BusyOverlay::new(false, cx)),
                     palette: None,
                     commands,
+                    sidebar: sidebar.clone(),
+                    layout: WorkspaceLayout::default(),
                 };
 
                 let viewer = cx.new(|cx| {
+                    cx.subscribe(
+                        &sidebar,
+                        |viewer: &mut PrimaryViewer, _, _: &ToolSelected, cx| {
+                            viewer.layout.sidebar_visible = true;
+                            viewer.pressed_keys.clear();
+                            cx.notify();
+                        },
+                    )
+                    .detach();
                     raw_primary_viewer.process_messages(window, cx);
                     raw_primary_viewer
                 });

@@ -14,71 +14,8 @@ use strawberry_types::consts::CIRCLE_COLORS;
 use strawberry_types::overlay::{CircleStyle, OverlayElement, ToolOverlay};
 use strawberry_types::{
     BackendToolType, CountData, CountMessage, CounterMode, CounterState, CounterTool,
-    FilterMessage, FilterProxy, FrontendMessage, PipelineCommand, PipelineObjectMessage,
-    ToolBackend, ToolState,
+    FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolBackend, ToolState,
 };
-
-pub struct SizeFilter {
-    pub is_enabled: bool,
-    pub min_size: u16,
-}
-
-impl Filter for SizeFilter {
-    fn is_enabled(&self) -> bool {
-        self.is_enabled
-    }
-    fn name(&self) -> &'static str {
-        "Filter by Size"
-    }
-    fn process(&self, counts: &[CountData]) -> Vec<CountData> {
-        let mut out = counts.to_vec();
-        out.retain(|count| count.size > self.min_size);
-        out
-    }
-    fn receive_message(&mut self, message: &FilterMessage) {
-        match message {
-            FilterMessage::ConfigureSizeFilter(min_size) => {
-                self.min_size = *min_size;
-            }
-        }
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.is_enabled = enabled;
-    }
-    fn get_values(&self) -> Vec<f64> {
-        vec![f64::from(self.min_size)]
-    }
-}
-
-impl SizeFilter {
-    #[must_use]
-    pub const fn new(min_size: u16) -> Self {
-        Self {
-            is_enabled: false,
-            min_size,
-        }
-    }
-}
-
-pub trait Filter: Send + Sync {
-    fn is_enabled(&self) -> bool;
-    fn name(&self) -> &str;
-    fn process(&self, counts: &[CountData]) -> Vec<CountData>;
-    fn receive_message(&mut self, message: &FilterMessage);
-    fn set_enabled(&mut self, enabled: bool);
-    fn get_values(&self) -> Vec<f64>;
-}
-
-fn update_filter_proxys(input: &Vec<Box<dyn Filter>>) -> Vec<FilterProxy> {
-    input
-        .iter()
-        .map(|filter| FilterProxy {
-            name: filter.name().to_string(),
-            is_enabled: filter.is_enabled(),
-            values: filter.get_values(),
-        })
-        .collect()
-}
 
 // Image wrapper for lutz algorithm
 struct BinaryImageWrapper<'a> {
@@ -123,7 +60,6 @@ pub struct Counter {
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
-    pub filters: Vec<Box<dyn Filter>>,
     pub index: usize,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub cache: crate::tools::cache::ToolCache<CounterState>,
@@ -175,12 +111,6 @@ impl ToolBackend for Counter {
                             ),
                             size: u16::try_from(blob_pixels.len()).unwrap_or(u16::MAX),
                         });
-                    }
-                }
-
-                for filter in &self.filters {
-                    if filter.is_enabled() {
-                        self.state.auto_counts = filter.process(&self.state.auto_counts);
                     }
                 }
             }
@@ -353,24 +283,6 @@ impl ToolBackend for Counter {
                         }
                         CountMessage::SetMode(new_mode) => {
                             self.state.mode = new_mode;
-                        }
-                        CountMessage::FilterMessage(message) => {
-                            for filter in &mut self.filters {
-                                filter.receive_message(&message);
-                            }
-                        }
-                        CountMessage::ToggleFilter(filter_index, enabled) => {
-                            let index = usize::from(filter_index);
-                            if index >= self.filters.len() {
-                                return Err(anyhow::anyhow!(
-                                    "Filter index {} out of bounds (max: {})",
-                                    index,
-                                    self.filters.len()
-                                ));
-                            }
-                            if let Some(filter) = self.filters.get_mut(index) {
-                                filter.set_enabled(enabled);
-                            }
                         }
                         CountMessage::SaveCounts(file) => {
                             // Use the utils::io module to export to XML
@@ -561,11 +473,6 @@ impl ToolBackend for Counter {
             }
         }
 
-        let new_filter_proxys = update_filter_proxys(&self.filters);
-        if new_filter_proxys != self.state.filter_proxys {
-            self.state.filter_proxys = new_filter_proxys;
-        }
-
         Ok(())
     }
 
@@ -689,9 +596,6 @@ impl Counter {
             .send(PipelineCommand::RegisterClickReceiver(sender.clone()))
             .map_err(|e| anyhow::anyhow!("Failed to register click receiver: {e}"))?;
 
-        let filters: Vec<Box<dyn Filter>> = vec![Box::new(SizeFilter::new(10))];
-        let filter_proxys = update_filter_proxys(&filters);
-
         let state = CounterState {
             is_enabled: false,
             manual_counts: HashMap::new(),
@@ -700,7 +604,6 @@ impl Counter {
             active_tool: None,
             active_count_type: None,
             review_current_index: 0,
-            filter_proxys,
             count_type_visibility: HashMap::new(),
             count_type_names: HashMap::new(),
         };
@@ -708,7 +611,6 @@ impl Counter {
             state: state.clone(),
             frontend_senders: vec![],
             index: 0,
-            filters,
             command_sender,
             sender,
             receiver,

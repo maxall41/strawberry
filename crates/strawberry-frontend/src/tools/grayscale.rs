@@ -3,8 +3,7 @@ use crate::gui::theme;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    App, Bounds, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Point, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::*, px, size,
+    App, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div, prelude::*,
 };
 
 use crate::gui::ToggleButton;
@@ -107,7 +106,6 @@ impl GrayscaleView {
 actions!([GrayscaleToggleActivity]);
 
 // Use macro to implement common tool methods
-impl_tool_view_basics!(GrayscaleView, "Grayscale");
 
 impl Render for GrayscaleView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -120,25 +118,24 @@ impl Render for GrayscaleView {
                     .flex_col()
                     .gap_3()
                     .bg(theme::WINDOW_BG)
-                    .size_full()
+                    .w_full()
                     .text_sm()
                     .p_4()
-                    .shadow_lg()
                     .text_color(theme::TEXT)
                     .child("Error: Unable to read grayscale state");
             }
         };
 
         div()
+            .key_context("GrayscaleView")
             .track_focus(&self.focus_handle(cx))
             .flex()
             .flex_col()
             .gap_3()
             .bg(theme::WINDOW_BG)
-            .size_full()
+            .w_full()
             .text_sm()
             .p_4()
-            .shadow_lg()
             .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
@@ -151,35 +148,21 @@ impl Render for GrayscaleView {
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
-            .child(self.render_header())
             .child(Self::render_status(&state, cx))
     }
 }
 
 impl ToolFrontend for GrayscaleView {
-    fn get_window_options(&self) -> WindowOptions {
-        WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("Grayscale")),
-                appears_transparent: false,
-                ..Default::default()
-            }),
-
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                size: size(px(280.), px(200.)),
-                origin: Point::new(px(750.), px(200.)),
-            })),
-
-            ..Default::default()
-        }
-    }
-
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;
         }
 
-        cx.bind_keys([KeyBinding::new("cmd-t", GrayscaleToggleActivity, None)]);
+        cx.bind_keys([KeyBinding::new(
+            "cmd-t",
+            GrayscaleToggleActivity,
+            Some("GrayscaleView"),
+        )]);
 
         self.process_messages(window, cx);
     }
