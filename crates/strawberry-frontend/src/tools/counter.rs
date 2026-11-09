@@ -1047,7 +1047,7 @@ impl CounterView {
             .flex()
             .flex_col()
             .gap_3()
-            .p_3()
+            .py_3()
             .child(
                 div()
                     .font_weight(gpui::FontWeight::BOLD)
