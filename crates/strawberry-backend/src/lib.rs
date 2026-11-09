@@ -534,7 +534,7 @@ impl Pipeline {
         }
     }
 
-    /// A batch boundary: apply mutations, reconcile once, then process and publish.
+    /// A batch boundary: apply received mutations, reconcile tool state with last pipeline run, then process and publish frames if needed.
     async fn flush_processing(&mut self, pending: &mut PendingProcessing) {
         // Keep draining other tools even when one rejects a message.
         for tool in &mut self.tool_manager.tools {
