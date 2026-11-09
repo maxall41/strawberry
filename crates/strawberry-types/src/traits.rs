@@ -52,8 +52,17 @@ pub trait ToolBackend: Send + Sync {
         true
     }
 
-    /// Apply state to the tool. Used during pipeline load.
-    fn apply_state(&mut self, state: ToolState);
+    /// Apply persisted settings while preserving fields marked `serde(skip)`.
+    /// # Errors
+    /// Returns an error if the settings cannot be serialized or deserialized.
+    fn apply_loaded_persisted_state(&mut self, loaded_state: ToolState) -> anyhow::Result<()> {
+        let merged = self.get_state().with_persisted_settings(loaded_state)?;
+        self.replace_state(merged);
+        Ok(())
+    }
+
+    /// Replace the state snapshot prepared by `apply_state`.
+    fn replace_state(&mut self, state: ToolState);
 
     /// Set the tool's index in the pipeline
     fn set_index(&mut self, index: usize);

@@ -313,7 +313,7 @@ impl ToolManager {
                             for tool in &mut self.tools {
                                 let tool_name = format!("{:?}", tool.iam());
                                 if let Some(config) = pipeline_config.tools.get(&tool_name) {
-                                    tool.apply_state(config.clone());
+                                    tool.apply_loaded_persisted_state(config.clone())?;
                                 }
                             }
                             self.restore_tool_indices(&indices);

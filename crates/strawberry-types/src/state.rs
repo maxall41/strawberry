@@ -49,6 +49,8 @@ pub struct PipelineConfig {
 pub struct CompositorState {
     pub is_enabled: bool,
     pub enabled_layers: Vec<bool>,
+    /// Don't include runtime layer metadata in persisted state
+    #[serde(skip)]
     pub real_layers_len: usize,
 }
 
@@ -80,6 +82,8 @@ pub struct NerveTracerState {
     pub current_path_segments: Vec<PathSegment>,
     pub first_point: Option<(u64, u64)>,
     pub selected_image_index: usize,
+    /// Don't include runtime image count metadata in persisted state
+    #[serde(skip)]
     pub total_images: usize,
 }
 
@@ -187,4 +191,50 @@ pub enum ToolState {
     DecomposerState(DecomposerState),
     WatershedState(WatershedState),
     NerveTracerState(NerveTracerState),
+}
+
+impl ToolState {
+    /// Apply persisted fields to this snapshot, retaining current state fields marked `serde(skip)`.
+    /// # Errors
+    /// Returns an error if the settings cannot be serialized or deserialized.
+    pub fn with_persisted_settings(mut self, settings: Self) -> anyhow::Result<Self> {
+        fn merge<T: Serialize + serde::de::DeserializeOwned>(
+            current: &mut T,
+            settings: T,
+        ) -> anyhow::Result<()> {
+            T::deserialize_in_place(serde_value::to_value(settings)?, current)?;
+            Ok(())
+        }
+
+        // Serde derives in-place updates for structs, but not enums. Dispatch to
+        // the concrete state so its skipped fields retain their current values.
+        macro_rules! merge_variants {
+            ($($variant:ident),* $(,)?) => {
+                match settings {
+                    $(Self::$variant(settings) => {
+                        if let Self::$variant(current) = &mut self {
+                            merge(current, settings)?;
+                        }
+                    })*
+                }
+            };
+        }
+        merge_variants!(
+            CompositorState,
+            ContrastState,
+            GaussianBlurState,
+            GrayscaleState,
+            LocalMaximaState,
+            ManagerState,
+            MorphologyState,
+            RollingBallState,
+            SobelState,
+            ThresholdState,
+            CounterState,
+            DecomposerState,
+            WatershedState,
+            NerveTracerState,
+        );
+        Ok(self)
+    }
 }

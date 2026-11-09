@@ -460,7 +460,7 @@ impl Pipeline {
                     for tool in &mut self.tool_manager.tools {
                         let tool_name = format!("{:?}", tool.iam());
                         if let Some(config) = pipeline_config.tools.get(&tool_name) {
-                            tool.apply_state(config.clone());
+                            tool.apply_loaded_persisted_state(config.clone())?;
                         }
                     }
                     self.tool_manager.restore_tool_indices(&indices);

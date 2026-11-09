@@ -26,7 +26,7 @@ impl ToolBackend for Compositor {
         ToolState::CompositorState(self.state.clone())
     }
 
-    fn apply_state(&mut self, state: ToolState) {
+    fn replace_state(&mut self, state: ToolState) {
         if let ToolState::CompositorState(new_state) = state {
             self.state = new_state;
         }

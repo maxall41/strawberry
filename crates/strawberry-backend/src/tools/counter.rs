@@ -136,7 +136,7 @@ impl ToolBackend for Counter {
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
-    fn apply_state(&mut self, _state: ToolState) {}
+    fn replace_state(&mut self, _state: ToolState) {}
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
     }
