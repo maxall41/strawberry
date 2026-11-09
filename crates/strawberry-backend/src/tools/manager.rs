@@ -60,7 +60,6 @@ pub(crate) fn deserialize_pipeline_config(
 pub struct ToolManager {
     pub tools: Vec<Box<dyn ToolBackend>>,
     pub state: ManagerState,
-    pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
@@ -88,7 +87,6 @@ impl ToolManager {
     #[must_use]
     pub fn new(
         mut input: Vec<Box<dyn ToolBackend>>,
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     ) -> Self {
         let (sender, receiver) = flume::unbounded();
@@ -107,7 +105,6 @@ impl ToolManager {
             },
             tools: input,
             frontend_senders: Vec::new(),
-            command_sender,
             global_sender,
             sender,
             receiver,
@@ -159,7 +156,7 @@ impl ToolManager {
     }
 
     /// Move tools that became enabled during this cycle to the end of the pipeline.
-    fn move_newly_enabled_tools_to_end(&mut self) {
+    fn move_newly_enabled_tools_to_end(&mut self) -> bool {
         let mut retained_tools = Vec::with_capacity(self.tools.len());
         let mut retained_enabled = Vec::with_capacity(self.previous_enabled.len());
         let mut retained_ever_enabled = Vec::with_capacity(self.ever_enabled.len());
@@ -195,6 +192,7 @@ impl ToolManager {
         if order_changed {
             self.reindex_tools();
         }
+        order_changed
     }
 
     #[must_use]
@@ -220,7 +218,8 @@ impl ToolManager {
         clippy::too_many_lines,
         reason = "Command dispatch as one function is cleaner"
     )]
-    pub fn receive_messages(&mut self) -> anyhow::Result<()> {
+    pub fn receive_messages(&mut self) -> anyhow::Result<bool> {
+        let mut processing_required = false;
         let commands: Vec<PipelineCommand> =
             std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
 
@@ -314,17 +313,13 @@ impl ToolManager {
                             for tool in &mut self.tools {
                                 let tool_name = format!("{:?}", tool.iam());
                                 if let Some(config) = pipeline_config.tools.get(&tool_name) {
-                                    tool.apply_state(config.clone());
+                                    tool.apply_loaded_persisted_state(config.clone())?;
                                 }
                             }
                             self.restore_tool_indices(&indices);
                             self.synchronize_enabled_history();
 
-                            self.command_sender
-                                .send(PipelineCommand::Refresh(0))
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Failed to send refresh command: {e}")
-                                })?;
+                            processing_required = true;
 
                             self.global_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::success(
@@ -348,6 +343,9 @@ impl ToolManager {
                                 return Err(anyhow::anyhow!(error_msg));
                             }
 
+                            if start_idx == new_idx.min(self.tools.len().saturating_sub(1)) {
+                                continue;
+                            }
                             let tool = self.tools.remove(start_idx);
                             let was_enabled = self.previous_enabled.remove(start_idx);
                             let was_ever_enabled = self.ever_enabled.remove(start_idx);
@@ -359,11 +357,7 @@ impl ToolManager {
                             // Reassign indices to all tools after reordering
                             self.reindex_tools();
 
-                            self.command_sender
-                                .send(PipelineCommand::Refresh(0))
-                                .map_err(|e| {
-                                    anyhow::anyhow!("Failed to send refresh command: {e}")
-                                })?;
+                            processing_required = true;
                         }
                     },
                     _ => {}
@@ -372,7 +366,7 @@ impl ToolManager {
             }
         }
 
-        self.move_newly_enabled_tools_to_end();
+        processing_required |= self.move_newly_enabled_tools_to_end();
 
         let new_proxy_tools = update_proxy_tools(&self.tools);
         if new_proxy_tools != self.state.proxy_tools {
@@ -383,7 +377,7 @@ impl ToolManager {
             self.update_state()?;
         }
 
-        Ok(())
+        Ok(processing_required)
     }
 
     fn update_state(&mut self) -> anyhow::Result<()> {

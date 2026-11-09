@@ -26,7 +26,7 @@ impl ToolBackend for Threshold {
         ToolState::ThresholdState(self.state.clone())
     }
 
-    fn apply_state(&mut self, state: ToolState) {
+    fn replace_state(&mut self, state: ToolState) {
         if let ToolState::ThresholdState(new_state) = state {
             self.state = new_state;
         }
@@ -83,17 +83,6 @@ impl ToolBackend for Threshold {
             }
         }
 
-        if self.cache.frontend_latest_state.as_ref() != Some(&self.state) {
-            self.cache.cached_output = None;
-            self.cache.cached_state = None;
-            self.base
-                .send_to_frontend(&PipelineCommand::FrontendMessage(
-                    FrontendMessage::ReturnState(self.get_state()),
-                ))?;
-            self.base.trigger_refresh()?;
-            self.cache.frontend_latest_state = Some(self.state.clone());
-        }
-
         Ok(())
     }
 }
@@ -101,17 +90,17 @@ impl ToolBackend for Threshold {
 impl Threshold {
     #[must_use]
     pub fn new(
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
         gpu_image_processor: Arc<GpuImageProcessor>,
     ) -> Self {
+        let state = ThresholdState {
+            is_enabled: false,
+            threshold_value: 0.5,
+        };
         Self {
-            state: ThresholdState {
-                is_enabled: false,
-                threshold_value: 0.5,
-            },
-            base: ToolBase::new(command_sender, global_sender),
-            cache: ToolCache::new(),
+            state: state.clone(),
+            base: ToolBase::new(global_sender),
+            cache: ToolCache::new(&state),
             processor: GpuThreshold::new(gpu_image_processor),
         }
     }

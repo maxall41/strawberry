@@ -3,7 +3,6 @@ use strawberry_types::PipelineCommand;
 /// Common infrastructure shared by all tools
 /// Use composition: tools embed this struct as a field
 pub struct ToolBase {
-    pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     pub sender: flume::Sender<PipelineCommand>,
     pub receiver: flume::Receiver<PipelineCommand>,
@@ -13,13 +12,9 @@ pub struct ToolBase {
 
 impl ToolBase {
     #[must_use]
-    pub fn new(
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    ) -> Self {
+    pub fn new(global_sender: tokio::sync::broadcast::Sender<PipelineCommand>) -> Self {
         let (sender, receiver) = flume::unbounded();
         Self {
-            command_sender,
             global_sender,
             sender,
             receiver,
@@ -43,19 +38,10 @@ impl ToolBase {
     pub fn collect_commands(&self) -> Vec<PipelineCommand> {
         std::iter::from_fn(|| self.receiver.try_recv().ok()).collect()
     }
-
-    /// # Errors
-    /// Returns an error if a command fails or a communication channel is disconnected.
-    pub fn trigger_refresh(&self) -> anyhow::Result<()> {
-        self.command_sender
-            .send(PipelineCommand::Refresh(self.index))
-            .map(|_| ())
-            .map_err(|e| anyhow::anyhow!("Failed to send refresh: {e}"))
-    }
 }
 
 /// Macro to implement the repetitive parts of `ToolBackend` trait
-/// Tools only need to implement: `process()`, `receive_messages()`, `get_state()`, `apply_state()`, `iam()`
+/// Tools only need to implement: `process()`, `receive_messages()`, `get_state()`, `replace_state()`, `iam()`
 #[macro_export]
 macro_rules! impl_tool_backend_basics {
     ($tool_type:ty) => {
@@ -86,12 +72,35 @@ macro_rules! impl_tool_backend_basics {
             self.base.index = index;
         }
 
-        fn valid_cached_output(&self) -> Option<Vec<std::sync::Arc<image::RgbaImage>>> {
-            if self.cache.cached_state.as_ref() == Some(&self.state) {
-                self.cache.cached_output.clone()
-            } else {
-                None
+        $crate::impl_tool_cache!();
+
+        fn sync_frontend(&mut self) -> anyhow::Result<()> {
+            if self.cache.sync.needs_frontend_sync(&self.state) {
+                self.base
+                    .send_to_frontend(&strawberry_types::PipelineCommand::FrontendMessage(
+                        strawberry_types::FrontendMessage::ReturnState(self.get_state()),
+                    ))?;
+                self.cache.sync.frontend_latest_state = Some(self.state.clone());
             }
+            Ok(())
+        }
+    };
+}
+
+/// Shared cache and reconciliation lifecycle, also used by interactive tools.
+#[macro_export]
+macro_rules! impl_tool_cache {
+    () => {
+        fn reconcile_state(&mut self) -> bool {
+            self.cache.reconcile(&self.state)
+        }
+
+        fn acknowledge_processed_state(&mut self) {
+            self.cache.sync.acknowledge(&self.state);
+        }
+
+        fn valid_cached_output(&self) -> Option<Vec<std::sync::Arc<image::RgbaImage>>> {
+            self.cache.valid_output(&self.state)
         }
 
         fn set_cached_output(&mut self, output: Vec<std::sync::Arc<image::RgbaImage>>) {
@@ -100,8 +109,7 @@ macro_rules! impl_tool_backend_basics {
         }
 
         fn invalidate_cache(&mut self) {
-            self.cache.cached_output = None;
-            self.cache.cached_state = None;
+            self.cache.invalidate();
         }
     };
 }
