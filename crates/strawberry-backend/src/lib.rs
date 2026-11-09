@@ -453,18 +453,13 @@ impl Pipeline {
                         }
                     };
 
-                    // A loaded pipeline replaces the active configuration.
-                    for tool in &mut self.tool_manager.tools {
-                        tool.set_enabled(false);
+                    if let Err(error) = self
+                        .tool_manager
+                        .apply_pipeline_config(pipeline_config, &indices)
+                    {
+                        self.report_error("Failed to load pipeline", &error);
+                        continue 'commands;
                     }
-                    for tool in &mut self.tool_manager.tools {
-                        let tool_name = format!("{:?}", tool.iam());
-                        if let Some(config) = pipeline_config.tools.get(&tool_name) {
-                            tool.apply_loaded_persisted_state(config.clone())?;
-                        }
-                    }
-                    self.tool_manager.restore_tool_indices(&indices);
-                    self.tool_manager.synchronize_enabled_history();
                     println!("CLI Pipeline load");
                     pending_processing_from.request_processing(0);
                 }

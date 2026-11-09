@@ -26,12 +26,6 @@ impl ToolBackend for Threshold {
         ToolState::ThresholdState(self.state.clone())
     }
 
-    fn replace_state(&mut self, state: ToolState) {
-        if let ToolState::ThresholdState(new_state) = state {
-            self.state = new_state;
-        }
-    }
-
     fn iam(&self) -> BackendToolType {
         BackendToolType::Threshold
     }

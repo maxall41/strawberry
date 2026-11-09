@@ -26,12 +26,6 @@ impl ToolBackend for GaussianBlur {
         ToolState::GaussianBlurState(self.state.clone())
     }
 
-    fn replace_state(&mut self, state: ToolState) {
-        if let ToolState::GaussianBlurState(new_state) = state {
-            self.state = new_state;
-        }
-    }
-
     fn iam(&self) -> BackendToolType {
         BackendToolType::GaussianBlur
     }

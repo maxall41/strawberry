@@ -193,48 +193,27 @@ pub enum ToolState {
     NerveTracerState(NerveTracerState),
 }
 
-impl ToolState {
-    /// Apply persisted fields to this snapshot, retaining current state fields marked `serde(skip)`.
-    /// # Errors
-    /// Returns an error if the settings cannot be serialized or deserialized.
-    pub fn with_persisted_settings(mut self, settings: Self) -> anyhow::Result<Self> {
-        fn merge<T: Serialize + serde::de::DeserializeOwned>(
-            current: &mut T,
-            settings: T,
-        ) -> anyhow::Result<()> {
-            T::deserialize_in_place(serde_value::to_value(settings)?, current)?;
-            Ok(())
-        }
+/// A validated state update that takes effect only when invoked.
+pub type PreparedStateUpdate<'a> = Box<dyn FnOnce() + 'a>;
 
-        // Serde derives in-place updates for structs, but not enums. Dispatch to
-        // the concrete state so its skipped fields retain their current values.
-        macro_rules! merge_variants {
-            ($($variant:ident),* $(,)?) => {
-                match settings {
-                    $(Self::$variant(settings) => {
-                        if let Self::$variant(current) = &mut self {
-                            merge(current, settings)?;
-                        }
-                    })*
-                }
-            };
-        }
-        merge_variants!(
-            CompositorState,
-            ContrastState,
-            GaussianBlurState,
-            GrayscaleState,
-            LocalMaximaState,
-            ManagerState,
-            MorphologyState,
-            RollingBallState,
-            SobelState,
-            ThresholdState,
-            CounterState,
-            DecomposerState,
-            WatershedState,
-            NerveTracerState,
-        );
-        Ok(self)
+/// Object-safe access to a concrete state struct's Serde in-place update.
+pub trait PersistedState {
+    /// Prepares a state update, retaining fields marked `serde(skip)`. The returned closure must be executed for the state update to take place.
+    /// # Errors
+    /// Returns an error if the fields cannot be deserialized; leaves state unchanged.
+    fn prepare_persisted_fields<'a>(
+        &'a mut self,
+        fields: serde_value::Value,
+    ) -> anyhow::Result<PreparedStateUpdate<'a>>;
+}
+
+impl<T: Clone + serde::de::DeserializeOwned> PersistedState for T {
+    fn prepare_persisted_fields<'a>(
+        &'a mut self,
+        fields: serde_value::Value,
+    ) -> anyhow::Result<PreparedStateUpdate<'a>> {
+        let mut merged = self.clone();
+        T::deserialize_in_place(fields, &mut merged)?;
+        Ok(Box::new(move || *self = merged))
     }
 }

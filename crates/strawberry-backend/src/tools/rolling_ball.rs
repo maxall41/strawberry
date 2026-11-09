@@ -26,12 +26,6 @@ impl ToolBackend for RollingBall {
         ToolState::RollingBallState(self.state.clone())
     }
 
-    fn replace_state(&mut self, state: ToolState) {
-        if let ToolState::RollingBallState(new_state) = state {
-            self.state = new_state;
-        }
-    }
-
     fn iam(&self) -> BackendToolType {
         BackendToolType::RollingBall
     }
