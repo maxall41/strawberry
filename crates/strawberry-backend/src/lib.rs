@@ -7,7 +7,9 @@ use image::{ImageReader, RgbaImage};
 use tokio::sync::{broadcast, watch};
 
 use anyhow::anyhow;
-use strawberry_processing::{GpuImageProcessor, colorspace::GpuColorspaceConverter};
+use strawberry_processing::{
+    GpuImageProcessor, colorspace::GpuColorspaceConverter, compositor::GpuCompositor,
+};
 
 // Import all types from strawberry-types
 use strawberry_types::{
@@ -60,6 +62,8 @@ pub struct Pipeline {
     last_output: Option<Arc<RgbaImage>>,
     /// Colorspace conversions
     colorspace_converter: GpuColorspaceConverter,
+    /// Composite all remaining layers independently, if the user compositor is disabled and multiple images remain.
+    fallback_compositor: GpuCompositor,
 }
 
 impl Pipeline {
@@ -106,6 +110,7 @@ impl Pipeline {
             input_images: vec![],
             click_receivers: vec![],
             last_output: None,
+            fallback_compositor: GpuCompositor::new(gpu_image_processor.clone()),
             colorspace_converter: GpuColorspaceConverter::new(gpu_image_processor),
         };
 
@@ -209,11 +214,14 @@ impl Pipeline {
                 .tool_manager
                 .tools
                 .iter_mut()
-                .find(|tool| tool.iam() == BackendToolType::Compositor)
+                .find(|tool| tool.iam() == BackendToolType::Compositor && tool.is_enabled())
             {
                 let result = compositor_tool.process(&mut images).await;
                 compositor_tool.acknowledge_processed_state();
                 result?;
+            } else {
+                let composited = self.fallback_compositor.composite_images(&images).await?;
+                images = vec![Arc::new(composited)];
             }
         }
 

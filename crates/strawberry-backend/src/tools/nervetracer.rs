@@ -201,7 +201,31 @@ impl ToolBackend for NerveTracer {
         self.index = index;
     }
 
-    crate::impl_tool_cache!();
+    fn reconcile_state(&mut self) -> bool {
+        let (invalidate, process) = self.cache.sync.reconcile(&self.state);
+        if invalidate {
+            self.invalidate_cache();
+        }
+        process
+    }
+
+    fn acknowledge_processed_state(&mut self) {
+        self.cache.sync.acknowledge(&self.state);
+    }
+
+    fn valid_cached_output(&self) -> Option<Vec<Arc<image::RgbaImage>>> {
+        self.cache.valid_output(&self.state)
+    }
+
+    fn set_cached_output(&mut self, output: Vec<Arc<image::RgbaImage>>) {
+        self.cache.cached_output = Some(output);
+        self.cache.cached_state = Some(self.state.clone());
+    }
+
+    fn invalidate_cache(&mut self) {
+        self.cache.invalidate();
+        self.cached_input = None;
+    }
 
     /// Push state to the frontend without discarding the cached image.
     fn sync_frontend(&mut self) -> anyhow::Result<()> {
