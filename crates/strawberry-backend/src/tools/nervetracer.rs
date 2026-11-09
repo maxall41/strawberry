@@ -31,7 +31,7 @@ impl ToolBackend for NerveTracer {
     fn get_sender(&self) -> flume::Sender<PipelineCommand> {
         self.sender.clone()
     }
-    fn apply_state(&mut self, state: ToolState) {
+    fn replace_state(&mut self, state: ToolState) {
         if let ToolState::NerveTracerState(new_state) = state {
             self.state = new_state;
         }
@@ -138,7 +138,9 @@ impl ToolBackend for NerveTracer {
                         NerveTracerMessage::LoadTraces(path) => {
                             match import_nervetracer_from_xml_file(&path) {
                                 Ok(loaded_state) => {
-                                    self.state = loaded_state;
+                                    self.apply_loaded_persisted_state(
+                                        ToolState::NerveTracerState(loaded_state),
+                                    )?;
                                     self.global_sender.send(PipelineCommand::FrontendMessage(
                                         FrontendMessage::success(
                                             "Traces loaded successfully!".to_string(),

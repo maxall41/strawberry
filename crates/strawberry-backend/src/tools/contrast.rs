@@ -26,7 +26,7 @@ impl ToolBackend for Contrast {
         ToolState::ContrastState(self.state.clone())
     }
 
-    fn apply_state(&mut self, state: ToolState) {
+    fn replace_state(&mut self, state: ToolState) {
         if let ToolState::ContrastState(new_state) = state {
             self.state = new_state;
         }
