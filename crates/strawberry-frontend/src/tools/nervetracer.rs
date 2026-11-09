@@ -306,6 +306,7 @@ impl NerveTracerView {
                     .rounded_md()
                     .h(px(150.))
                     .overflow_scroll()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .when(state.current_path_segments.is_empty(), |el| {
                         el.child(
                             div()
@@ -398,6 +399,7 @@ impl NerveTracerView {
                     .rounded_md()
                     .h(px(150.))
                     .overflow_scroll()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .when(state.paths.is_empty(), |el| {
                         el.child(
                             div()
@@ -515,8 +517,6 @@ impl NerveTracerView {
             .child(
                 Button::new("save-button")
                     .variant(ButtonVariant::Success)
-                    .large()
-                    .flex_1()
                     .label("Save")
                     .tooltip_text("⌘S")
                     .on_click(cx.listener(
@@ -531,8 +531,6 @@ impl NerveTracerView {
             .child(
                 Button::new("load-button")
                     .variant(ButtonVariant::Primary)
-                    .large()
-                    .flex_1()
                     .label("Load")
                     .tooltip_text("⌘L")
                     .on_click(cx.listener(

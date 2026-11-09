@@ -668,11 +668,11 @@ impl CounterView {
     }
 
     // Subheader component
-    fn render_subheader() -> impl IntoElement + use<> {
+    fn render_subheader(text: String) -> impl IntoElement + use<> {
         div()
             .text_lg()
             .font_weight(gpui::FontWeight::BOLD)
-            .child("Counts:")
+            .child(text)
     }
 
     // Status component showing enabled/disabled state
@@ -723,6 +723,11 @@ impl CounterView {
             .unwrap_or_default();
         let color =
             image_rgba_to_gpui_rgba(CIRCLE_COLORS.get(ii).copied().unwrap_or(CIRCLE_COLORS[0]));
+        let selection_color = if is_selected {
+            color
+        } else {
+            theme::CONTROL_HOVER
+        };
         div()
             .flex()
             .items_center()
@@ -798,15 +803,9 @@ impl CounterView {
                         })
                     })
                     .rounded_full()
-                    .bg(if is_selected {
-                        color
-                    } else {
-                        theme::CONTROL_HOVER
-                    })
-                    .when(!is_selected, |el| {
-                        el.cursor_pointer()
-                            .hover(|style| style.bg(theme::lighten(theme::CONTROL_HOVER, 0.15)))
-                    })
+                    .bg(selection_color)
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(theme::lighten(selection_color, 0.15)))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(
@@ -971,11 +970,11 @@ impl CounterView {
     fn render_storage_buttons(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
+            .items_center()
             .gap_2()
             .child(
                 Button::new("save-button")
                     .variant(ButtonVariant::Success)
-                    .large()
                     .label("Save")
                     .tooltip_text("⌘S")
                     .on_click(cx.listener(
@@ -990,7 +989,6 @@ impl CounterView {
             .child(
                 Button::new("load-button")
                     .variant(ButtonVariant::Primary)
-                    .large()
                     .label("Load")
                     .tooltip_text("⌘L")
                     .on_click(cx.listener(
@@ -1019,7 +1017,7 @@ impl CounterView {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(Self::render_subheader())
+                    .child(Self::render_subheader("Counts:".to_string()))
                     .when(!state.manual_counts.is_empty(), |el| {
                         el.child(self.render_count_types_list(cx))
                     })
@@ -1047,11 +1045,11 @@ impl CounterView {
             .flex()
             .flex_col()
             .gap_3()
-            .py_3()
+            .pb_3()
             .child(
                 div()
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child("Auto Detection"),
+                    .child(Self::render_subheader("Automatic Detection".to_string())),
             )
             .child(
                 div()
@@ -1377,6 +1375,7 @@ impl Render for CounterView {
             .child(
                 div()
                     .flex()
+                    .items_center()
                     .justify_between()
                     .mt_auto()
                     .child(Self::render_storage_buttons(cx))
@@ -1384,7 +1383,6 @@ impl Render for CounterView {
                         this.child(
                             Button::new("copy-to-manual")
                                 .variant(ButtonVariant::Primary)
-                                .large()
                                 .label("Copy to Manual")
                                 .on_click(cx.listener(
                                     |this: &mut Self,
