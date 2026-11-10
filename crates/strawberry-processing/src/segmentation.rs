@@ -1,4 +1,3 @@
-//! GPU feature extraction and CPU random-forest pixel classification.
 use crate::{
     GpuImageProcessor,
     float_filters::GpuFloatFilters,
@@ -12,8 +11,8 @@ use smartcore::{
     },
     linalg::basic::matrix::DenseMatrix,
 };
+use std::io::Write;
 use std::{collections::BTreeMap, path::Path, sync::Arc};
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureConfig {
     pub rgb: bool,
@@ -81,7 +80,7 @@ impl Default for ForestConfig {
         Self {
             trees: 100,
             depth: 20,
-            seed: 42,
+            seed: 100,
         }
     }
 }
@@ -154,26 +153,15 @@ impl SegmentationModel {
         Ok(model)
     }
 }
-/// Write beside the destination then rename, preserving an existing artifact on failure.
+
 pub fn write_artifact(path: &Path, bytes: &[u8]) -> Result<()> {
-    use std::io::Write;
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(format!(".{}.tmp", std::process::id()));
-    let temporary = std::path::PathBuf::from(temporary);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&temporary)?;
-    let result = (|| {
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temporary);
-    }
-    result
+        .open(&path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
 }
 
 pub struct FeatureExtractor {
