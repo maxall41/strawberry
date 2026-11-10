@@ -254,15 +254,15 @@ impl AutomaticSegmentationView {
     fn feature_controls(&self, s: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
         let mut section = tool_panel::section("Features");
         for (label, enabled) in [
-            ("Gaussian blur", !s.features.gaussian.is_empty()),
+            ("Gaussian blur", s.features.gaussian),
             ("Sobel", s.features.sobel),
-            ("Difference of Gaussians", !s.features.dog.is_empty()),
+            ("Difference of Gaussians", s.features.dog),
         ] {
             let mut features = s.features.clone();
             match label {
-                "Gaussian blur" => features.gaussian = if enabled { vec![] } else { vec![1.0] },
+                "Gaussian blur" => features.gaussian = !enabled,
                 "Sobel" => features.sobel = !enabled,
-                _ => features.dog = if enabled { vec![] } else { vec![(1.0, 2.0)] },
+                _ => features.dog = !enabled,
             }
             section = section.child(
                 ToggleButton::new(label.into(), enabled, move |this: &mut Self, _, _, _| {

@@ -13,6 +13,8 @@ use strawberry_types::{
     *,
 };
 
+const DATA_VERSION: u32 = 1;
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Sample {
     width: u32,
@@ -455,7 +457,7 @@ impl AutomaticSegmentation {
             M::SaveDataset(path) => write_artifact(
                 &path,
                 &serde_json::to_vec(&Dataset {
-                    version: 1,
+                    version: DATA_VERSION,
                     samples: self.samples.clone(),
                     features: self.state.features.clone(),
                     forest: self.state.forest.clone(),
@@ -463,7 +465,7 @@ impl AutomaticSegmentation {
             )?,
             M::LoadDataset(path) => {
                 let data: Dataset = serde_json::from_slice(&std::fs::read(path)?)?;
-                ensure!(data.version == 1, "Unsupported dataset version");
+                ensure!(data.version == DATA_VERSION, "Unsupported dataset version");
                 if data.features.count() > 0 {
                     data.features.validate()?;
                 }

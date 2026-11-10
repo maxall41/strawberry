@@ -12,61 +12,46 @@ use smartcore::{
     linalg::basic::matrix::DenseMatrix,
 };
 use std::io::Write;
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
+
+const MODEL_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureConfig {
     pub rgb: bool,
-    pub gaussian: Vec<f32>,
+    pub gaussian: bool,
     pub sobel: bool,
-    pub dog: Vec<(f32, f32)>,
+    pub dog: bool,
 }
 impl Default for FeatureConfig {
     fn default() -> Self {
         Self {
             rgb: false,
-            gaussian: vec![1.0],
+            gaussian: true,
             sobel: true,
-            dog: vec![(1.0, 2.0)],
+            dog: true,
         }
     }
 }
 impl FeatureConfig {
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.count() > 0 && self.count() <= 96,
-            "Choose between 1 and 96 features"
-        );
-        for sigma in self
-            .gaussian
-            .iter()
-            .copied()
-            .chain(self.dog.iter().flat_map(|&(a, b)| [a, b]))
-        {
-            ensure!(
-                sigma.is_finite() && sigma > 0.0 && sigma <= 64.0,
-                "Sigma must be in (0,64]"
-            );
-        }
-        for &(a, b) in &self.dog {
-            ensure!(a < b, "DoG requires small sigma < large sigma");
-        }
+        ensure!(self.count() > 0, "Choose at least one feature");
         Ok(())
     }
     #[must_use]
     pub fn count(&self) -> usize {
-        (self.gaussian.len() + usize::from(self.sobel) + self.dog.len())
+        (usize::from(self.gaussian) + usize::from(self.sobel) + usize::from(self.dog))
             * if self.rgb { 3 } else { 1 }
     }
     fn halo(&self) -> usize {
-        let sigma = self
-            .gaussian
-            .iter()
-            .copied()
-            .chain(self.dog.iter().flat_map(|&(a, b)| [a, b]))
-            .fold(0.0, f32::max);
-        num_traits::ToPrimitive::to_usize(&(sigma * 3.0).ceil())
-            .unwrap_or(192)
-            .max(1)
+        // Gaussian kernels use a radius of three times sigma; Sobel uses one pixel.
+        if self.dog {
+            6
+        } else if self.gaussian {
+            3
+        } else {
+            1
+        }
     }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -129,7 +114,7 @@ impl SegmentationModel {
                 .with_seed(parameters.seed),
         )?;
         Ok(Self {
-            version: 1,
+            version: MODEL_VERSION,
             features,
             parameters,
             forest,
@@ -147,7 +132,10 @@ impl SegmentationModel {
     }
     pub fn load(path: &Path) -> Result<Self> {
         let model: Self = serde_json::from_slice(&std::fs::read(path)?)?;
-        ensure!(model.version == 1, "Unsupported segmentation model version");
+        ensure!(
+            model.version == MODEL_VERSION,
+            "Unsupported segmentation model version"
+        );
         model.features.validate()?;
         model.predict(&vec![vec![0.0; model.features.count()]])?;
         Ok(model)
@@ -206,46 +194,22 @@ impl FeatureExtractor {
         let mut columns = Vec::new();
         for channel in if features.rgb { vec![1, 2, 3] } else { vec![0] } {
             let plane = self.filters.channel(&input, channel).await?;
-            let mut gaussian = BTreeMap::new();
-            for sigma in features
-                .gaussian
-                .iter()
-                .copied()
-                .chain(features.dog.iter().flat_map(|&(a, b)| [a, b]))
-            {
-                if !gaussian.contains_key(&sigma.to_bits()) {
-                    gaussian.insert(
-                        sigma.to_bits(),
-                        self.filters.gaussian(w, h, &plane, sigma).await?,
-                    );
+            let mut dog = None;
+            if features.gaussian || features.dog {
+                let small = self.filters.gaussian(w, h, &plane, 1.0).await?;
+                if features.dog {
+                    let large = self.filters.gaussian(w, h, &plane, 2.0).await?;
+                    dog = Some(self.filters.difference(w, h, &small, &large).await?);
                 }
-            }
-            for sigma in &features.gaussian {
-                columns.push(
-                    gaussian
-                        .get(&sigma.to_bits())
-                        .ok_or_else(|| anyhow::anyhow!("Missing Gaussian"))?
-                        .clone(),
-                );
+                if features.gaussian {
+                    columns.push(small);
+                }
             }
             if features.sobel {
                 columns.push(self.filters.sobel(w, h, &plane).await?);
             }
-            for &(a, b) in &features.dog {
-                columns.push(
-                    self.filters
-                        .difference(
-                            w,
-                            h,
-                            gaussian
-                                .get(&a.to_bits())
-                                .ok_or_else(|| anyhow::anyhow!("Missing Gaussian"))?,
-                            gaussian
-                                .get(&b.to_bits())
-                                .ok_or_else(|| anyhow::anyhow!("Missing Gaussian"))?,
-                        )
-                        .await?,
-                );
+            if let Some(dog) = dog {
+                columns.push(dog);
             }
         }
         let mut rows = Vec::new();
