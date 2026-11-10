@@ -1,13 +1,13 @@
 use crate::gui::actions::actions;
-use crate::gui::theme;
 use crate::gui::{Button, ButtonVariant};
+use crate::gui::{theme, tool_panel};
 // Implements UI for nerve tracer tool
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use gpui::{
-    App, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div, prelude::*, px,
+    App, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div, prelude::*,
 };
 use rfd::FileDialog;
 
@@ -23,6 +23,8 @@ pub struct NerveTracerView {
     pub state: Arc<RwLock<NerveTracerState>>,
     pub last_directory: Arc<RwLock<Option<PathBuf>>>,
     pub base: crate::tools::base::ToolBase,
+    segments_scroll: gpui::ScrollHandle,
+    paths_scroll: gpui::ScrollHandle,
 }
 
 impl Focusable for NerveTracerView {
@@ -39,6 +41,8 @@ impl NerveTracerView {
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(NerveTracerState::default())),
+            segments_scroll: gpui::ScrollHandle::new(),
+            paths_scroll: gpui::ScrollHandle::new(),
             last_directory: Arc::new(RwLock::new(None)),
             base: crate::tools::base::ToolBase::new(
                 command_sender,
@@ -235,312 +239,161 @@ impl NerveTracerView {
             },
         )
         .with_keyboard_shortcut("⌘T")
+        .with_no_margin()
         .render(cx)
     }
 
-    // Image selector component
     fn render_image_selector(
         state: &NerveTracerState,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        if state.total_images <= 1 {
-            return div();
-        }
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child("Source Image:"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_1()
-                    .flex_wrap()
-                    .children((0..state.total_images).map(|i| {
-                        let is_selected = i == state.selected_image_index;
-                        Button::new(("trace-image", i))
-                            .selected(is_selected)
-                            .label(format!("{}", i.saturating_add(1)))
-                            .on_click(cx.listener(
-                                move |this: &mut Self,
-                                      _event: &gpui::ClickEvent,
-                                      _window: &mut Window,
-                                      _cx: &mut Context<Self>| {
-                                    this.set_selected_image(i);
-                                },
-                            ))
-                    })),
-            )
+        tool_panel::section("Input layer").child(div().flex().gap_1().flex_wrap().children(
+            (0..state.total_images).map(|i| {
+                Button::new(("trace-image", i))
+                    .compact()
+                    .selected(i == state.selected_image_index)
+                    .label(format!("{}", i.saturating_add(1)))
+                    .on_click(cx.listener(move |this, _, _, _| this.set_selected_image(i)))
+            }),
+        ))
     }
 
-    // Segments section
     fn render_segments_section(
+        &self,
         state: &NerveTracerState,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_lg()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .mb_2()
-                    .child("Segments:"),
-            )
-            .child(
-                div()
-                    .id("segments-list")
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .p_3()
-                    .bg(theme::SURFACE)
-                    .rounded_md()
-                    .h(px(150.))
-                    .overflow_scroll()
-                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                    .when(state.current_path_segments.is_empty(), |el| {
-                        el.child(
+        let mut list = tool_panel::list("segments-list", &self.segments_scroll);
+        if state.current_path_segments.is_empty() {
+            list = list.child(tool_panel::empty("No segments"));
+        }
+        for (i, _) in state.current_path_segments.iter().enumerate() {
+            list =
+                list.child(
+                    tool_panel::row()
+                        .child(
                             div()
-                                .text_sm()
-                                .text_color(theme::TEXT_MUTED)
-                                .child("No segments yet. Click on the image to create segments."),
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .child(format!("Segment {}", i.saturating_add(1))),
                         )
-                    })
-                    .when(!state.current_path_segments.is_empty(), |el| {
-                        el.children(state.current_path_segments.iter().enumerate().map(
-                            |(idx, segment)| Self::render_segment_item(idx, segment.len(), cx),
-                        ))
-                    }),
-            )
+                        .child(
+                            Button::new(("delete-segment", i))
+                                .variant(ButtonVariant::Delete)
+                                .aria_label("Delete segment")
+                                .tooltip_text("Delete segment")
+                                .on_click(cx.listener(move |this, _, _, _| {
+                                    this.delete_uncommitted_segment(i)
+                                })),
+                        ),
+                );
+        }
+        tool_panel::section("Current path").child(list).child(
+            Button::new("commit-segments")
+                .variant(ButtonVariant::Success)
+                .large()
+                .w_full()
+                .label("Commit path")
+                .disabled(state.current_path_segments.is_empty())
+                .tooltip_text("Commit segments to a path (⌘C)")
+                .on_click(cx.listener(|this, _, _, _| this.commit_segments())),
+        )
     }
 
-    // Individual segment item
-    fn render_segment_item(
-        segment_id: usize,
-        point_count: usize,
-        cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .p_2()
-            .bg(theme::CONTROL)
-            .rounded_md()
-            .child(div().flex_1().child(format!(
-                "Segment {:03} ({} points)",
-                segment_id.saturating_add(1),
-                point_count
-            )))
-            .child(
-                Button::new(("delete-segment", segment_id))
-                    .variant(ButtonVariant::Delete)
-                    .aria_label("Delete segment")
-                    .on_click(cx.listener(
-                        move |this: &mut Self,
-                              _event: &gpui::ClickEvent,
-                              _window: &mut Window,
-                              _cx: &mut Context<Self>| {
-                            this.delete_uncommitted_segment(segment_id);
-                        },
-                    )),
-            )
-    }
-
-    // Add to path button
-    fn render_add_to_path_button(
-        state: &NerveTracerState,
-        cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
-        Button::new("commit-segments")
-            .variant(ButtonVariant::Primary)
-            .large()
-            .w_full()
-            .my_2()
-            .label("Commit")
-            .disabled(state.current_path_segments.is_empty())
-            .tooltip_text("Commit segments to a path (⌘C)")
-            .on_click(cx.listener(|this, _, _, _| this.commit_segments()))
-    }
-
-    // Paths section
     fn render_paths_section(
+        &self,
         state: &NerveTracerState,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_lg()
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .mb_2()
-                    .child("Paths:"),
-            )
-            .child(
-                div()
-                    .id("paths-list")
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .p_3()
-                    .bg(theme::SURFACE)
-                    .rounded_md()
-                    .h(px(150.))
-                    .overflow_scroll()
-                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                    .when(state.paths.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .text_sm()
-                                .text_color(theme::TEXT_MUTED)
-                                .child("No paths yet. Create segments and add them to a path."),
-                        )
-                    })
-                    .when(!state.paths.is_empty(), |el| {
-                        el.children(
-                            state
-                                .paths
-                                .iter()
-                                .enumerate()
-                                .map(|(path_idx, path)| Self::render_path_item(path_idx, path, cx)),
-                        )
-                    }),
-            )
-    }
-
-    // Individual path item (tree parent)
-    fn render_path_item(
-        path_id: usize,
-        path: &[Vec<(u64, u64)>],
-        cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .mb_2()
-            .child(
-                // Path header
+        let mut list = tool_panel::list("paths-list", &self.paths_scroll);
+        if state.paths.is_empty() {
+            list = list.child(tool_panel::empty("No paths"));
+        }
+        for (path_id, path) in state.paths.iter().enumerate() {
+            list = list.child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
-                    .justify_between()
-                    .p_2()
-                    .bg(theme::CONTROL)
-                    .rounded_md()
+                    .gap_2()
+                    .px_2()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(theme::BORDER_MUTED)
+                    .bg(theme::SURFACE_ALT)
                     .child(
                         div()
                             .flex_1()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child(format!("Path {:03}", path_id.saturating_add(1))),
+                            .min_w_0()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(format!("Path {}", path_id.saturating_add(1))),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(theme::TEXT_MUTED)
+                            .child(format!("{} segments", path.len())),
                     )
                     .child(
                         Button::new(("delete-path", path_id))
                             .variant(ButtonVariant::Delete)
                             .aria_label("Delete path")
-                            .on_click(cx.listener(
-                                move |this: &mut Self,
-                                      _event: &gpui::ClickEvent,
-                                      _window: &mut Window,
-                                      _cx: &mut Context<Self>| {
-                                    this.delete_path(path_id);
-                                },
-                            )),
+                            .tooltip_text("Delete path")
+                            .on_click(cx.listener(move |this, _, _, _| this.delete_path(path_id))),
                     ),
-            )
-            .child(
-                // Path segments (children, indented)
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .pl_4()
-                    .children(path.iter().enumerate().map(|(segment_idx, segment)| {
-                        Self::render_path_segment_item(path_id, segment_idx, segment.len(), cx)
-                    })),
-            )
+            );
+            for (segment_id, _) in path.iter().enumerate() {
+                list = list.child(
+                    tool_panel::row()
+                        .pl_4()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .child(format!("Segment {}", segment_id.saturating_add(1))),
+                        )
+                        .child(
+                            Button::new(gpui::ElementId::Name(
+                                format!("delete-path-{path_id}-segment-{segment_id}").into(),
+                            ))
+                            .variant(ButtonVariant::Delete)
+                            .aria_label("Delete path segment")
+                            .tooltip_text("Delete path segment")
+                            .on_click(cx.listener(
+                                move |this, _, _, _| this.delete_path_segment(path_id, segment_id),
+                            )),
+                        ),
+                );
+            }
+        }
+        tool_panel::section("Paths")
+            .child(list)
+            .child(Self::render_storage_buttons(cx))
     }
 
-    // Individual segment within a path (tree child)
-    fn render_path_segment_item(
-        path_id: usize,
-        segment_id: usize,
-        point_count: usize,
-        cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .p_2()
-            .bg(theme::CONTROL)
-            .rounded_md()
-            .child(div().flex_1().child(format!(
-                "Segment {:03} ({} points)",
-                segment_id.saturating_add(1),
-                point_count
-            )))
-            .child(
-                Button::new(gpui::ElementId::Name(
-                    format!("delete-path-{path_id}-segment-{segment_id}").into(),
-                ))
-                .variant(ButtonVariant::Delete)
-                .aria_label("Delete path segment")
-                .on_click(cx.listener(
-                    move |this: &mut Self,
-                          _event: &gpui::ClickEvent,
-                          _window: &mut Window,
-                          _cx: &mut Context<Self>| {
-                        this.delete_path_segment(path_id, segment_id);
-                    },
-                )),
-            )
-    }
-
-    // Storage buttons (Save/Load)
     fn render_storage_buttons(cx: &Context<Self>) -> impl IntoElement + use<> {
-        div()
-            .flex()
-            .gap_2()
+        tool_panel::file_actions()
             .child(
-                Button::new("save-button")
-                    .variant(ButtonVariant::Success)
-                    .label("Save")
-                    .tooltip_text("⌘S")
-                    .on_click(cx.listener(
-                        |this: &mut Self,
-                         _event: &gpui::ClickEvent,
-                         window: &mut Window,
-                         cx: &mut Context<Self>| {
-                            this.save_traces(window, cx);
-                        },
-                    )),
+                Button::new("trace-load")
+                    .compact()
+                    .flex_1()
+                    .min_w_0()
+                    .label("Load traces")
+                    .tooltip_text("⌘L")
+                    .on_click(cx.listener(|this, _, window, cx| this.load_traces(window, cx))),
             )
             .child(
-                Button::new("load-button")
-                    .variant(ButtonVariant::Primary)
-                    .label("Load")
-                    .tooltip_text("⌘L")
-                    .on_click(cx.listener(
-                        |this: &mut Self,
-                         _event: &gpui::ClickEvent,
-                         window: &mut Window,
-                         cx: &mut Context<Self>| {
-                            this.load_traces(window, cx);
-                        },
-                    )),
+                Button::new("trace-save")
+                    .compact()
+                    .flex_1()
+                    .min_w_0()
+                    .label("Save traces")
+                    .tooltip_text("⌘S")
+                    .on_click(cx.listener(|this, _, window, cx| this.save_traces(window, cx))),
             )
     }
 }
@@ -594,17 +447,9 @@ impl Render for NerveTracerView {
             }
         };
 
-        div()
+        tool_panel::panel()
             .key_context("NerveTracerView")
             .track_focus(&self.focus_handle(cx))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .bg(theme::WINDOW_BG)
-            .w_full()
-            .text_sm()
-            .p_4()
-            .text_color(theme::TEXT)
             .on_mouse_down(gpui::MouseButton::Left, {
                 cx.listener(
                     move |this: &mut Self,
@@ -620,11 +465,11 @@ impl Render for NerveTracerView {
             .on_action(cx.listener(Self::save_traces_action))
             .on_action(cx.listener(Self::load_traces_action))
             .child(Self::render_status(&state, cx))
-            .child(Self::render_image_selector(&state, cx))
-            .child(Self::render_segments_section(&state, cx))
-            .child(Self::render_add_to_path_button(&state, cx))
-            .child(Self::render_paths_section(&state, cx))
-            .child(div().mt_auto().child(Self::render_storage_buttons(cx)))
+            .when(state.total_images > 1, |el| {
+                el.child(Self::render_image_selector(&state, cx))
+            })
+            .child(self.render_segments_section(&state, cx))
+            .child(self.render_paths_section(&state, cx))
     }
 }
 
