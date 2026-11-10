@@ -1,3 +1,4 @@
+use crate::gui::tool_panel;
 use crate::{
     gui::{
         Button, ButtonVariant, ToggleButton,
@@ -19,6 +20,7 @@ pub struct AutomaticSegmentationView {
     pub base: super::base::ToolBase,
     controls: BTreeMap<String, Entity<ValueControl>>,
     show_forest: bool,
+    annotations_scroll: gpui::ScrollHandle,
 }
 impl Focusable for AutomaticSegmentationView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -40,6 +42,7 @@ impl AutomaticSegmentationView {
             ),
             controls: BTreeMap::new(),
             show_forest: false,
+            annotations_scroll: gpui::ScrollHandle::new(),
         }
     }
     fn send(&self, message: M) {
@@ -60,26 +63,6 @@ impl AutomaticSegmentationView {
             .label(label)
             .on_click(cx.listener(move |this, _, _, _| this.send(message.clone())))
     }
-    fn section(title: &'static str) -> gpui::Div {
-        div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .gap_3()
-            .w_full()
-            .min_w_0()
-            .p_3()
-            .bg(theme::SURFACE)
-            .border_1()
-            .border_color(theme::BORDER_MUTED)
-            .rounded_lg()
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(title),
-            )
-    }
     fn file_button(
         &self,
         id: &'static str,
@@ -97,19 +80,7 @@ impl AutomaticSegmentationView {
     }
     fn annotations(&self, s: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
         let count: usize = s.samples.iter().map(|sample| sample.strokes.len()).sum();
-        let mut list = div()
-            .id("segmentation-annotations")
-            .flex()
-            .flex_col()
-            .w_full()
-            .min_w_0()
-            .max_h(gpui::px(240.0))
-            .overflow_y_scroll()
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .border_1()
-            .border_color(theme::BORDER)
-            .rounded_md()
-            .bg(theme::SURFACE_DEEP);
+        let mut list = tool_panel::list("segmentation-annotations", &self.annotations_scroll);
         if count == 0 {
             list = list.child(
                 div()
@@ -170,16 +141,7 @@ impl AutomaticSegmentationView {
                     theme::DANGER
                 };
                 let selected = s.selected_stroke == Some((i, j)) && s.preview == Some(i);
-                let row = div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py_1()
-                    .min_w_0()
-                    .border_b_1()
-                    .border_color(theme::BORDER_MUTED)
+                let row = tool_panel::row()
                     .bg(if selected {
                         theme::SURFACE_ALT
                     } else {
@@ -252,7 +214,7 @@ impl AutomaticSegmentationView {
                 list = list.child(row);
             }
         }
-        let mut section = Self::section("Training annotations")
+        let mut section = tool_panel::section("Training annotations")
             .child(
                 div()
                     .flex()
@@ -280,10 +242,7 @@ impl AutomaticSegmentationView {
             )
             .child(list);
         section = section.child(
-            div()
-                .flex()
-                .gap_2()
-                .min_w_0()
+            tool_panel::file_actions()
                 .child(self.file_button("segmentation-load-data", "Load dataset", false, true, cx))
                 .child(
                     self.file_button("segmentation-save-data", "Save dataset", true, true, cx)
@@ -293,7 +252,7 @@ impl AutomaticSegmentationView {
         section
     }
     fn feature_controls(&self, s: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
-        let mut section = Self::section("Features");
+        let mut section = tool_panel::section("Features");
         for (label, enabled) in [
             ("Gaussian blur", !s.features.gaussian.is_empty()),
             ("Sobel", s.features.sobel),
@@ -313,12 +272,7 @@ impl AutomaticSegmentationView {
                 .render(cx),
             );
         }
-        let mut channels = div()
-            .flex()
-            .gap_1()
-            .p_1()
-            .rounded_md()
-            .bg(theme::SURFACE_DEEP);
+        let mut channels = tool_panel::segmented();
         for (rgb, label) in [(false, "Luminance"), (true, "RGB")] {
             let mut features = s.features.clone();
             features.rgb = rgb;
@@ -481,12 +435,7 @@ impl Render for AutomaticSegmentationView {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let enabled = s.is_enabled;
-        let mut modes = div()
-            .flex()
-            .gap_1()
-            .p_1()
-            .rounded_md()
-            .bg(theme::SURFACE_DEEP);
+        let mut modes = tool_panel::segmented();
         for (training, label) in [(true, "Training"), (false, "Inference")] {
             modes = modes.child(
                 self.button(
@@ -501,16 +450,7 @@ impl Render for AutomaticSegmentationView {
                 .min_w_0(),
             );
         }
-        let mut panel = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .min_w_0()
-            .gap_4()
-            .p_4()
-            .text_sm()
-            .text_color(theme::TEXT)
-            .bg(theme::WINDOW_BG)
+        let mut panel = tool_panel::panel()
             .child(
                 ToggleButton::new(
                     "Enabled".into(),
@@ -531,27 +471,26 @@ impl Render for AutomaticSegmentationView {
             .child(modes);
         if s.total_layers > 1 {
             panel = panel.child(
-                Self::section("Input layer").child(div().flex().flex_wrap().gap_1().children(
-                    (0..s.total_layers).map(|i| {
-                        self.button(
-                            ("segmentation-layer", i),
-                            format!("{}", i.saturating_add(1)),
-                            M::Layer(i),
-                            cx,
-                        )
-                        .compact()
-                        .selected(i == s.selected_layer)
-                    }),
-                )),
+                tool_panel::section("Input layer").child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .children((0..s.total_layers).map(|i| {
+                            self.button(
+                                ("segmentation-layer", i),
+                                format!("{}", i.saturating_add(1)),
+                                M::Layer(i),
+                                cx,
+                            )
+                            .compact()
+                            .selected(i == s.selected_layer)
+                        })),
+                ),
             );
         }
         if s.training {
-            let mut brushes = div()
-                .flex()
-                .gap_1()
-                .p_1()
-                .rounded_md()
-                .bg(theme::SURFACE_DEEP);
+            let mut brushes = tool_panel::segmented();
             for (label, selected, message) in [
                 ("Foreground", !s.eraser && s.foreground, M::Foreground(true)),
                 (
@@ -587,7 +526,7 @@ impl Render for AutomaticSegmentationView {
             );
             panel = panel
                 .child(
-                    Self::section("Annotate")
+                    tool_panel::section("Annotate")
                         .child(brushes)
                         .child(radius)
                         .child(
@@ -610,7 +549,7 @@ impl Render for AutomaticSegmentationView {
                 )
                 .child(self.annotations(&s, cx))
                 .child(self.feature_controls(&s, cx));
-            let mut classifier = Self::section("Classifier").child(
+            let mut classifier = tool_panel::section("Classifier").child(
                 Button::new("segmentation-forest-settings")
                     .variant(ButtonVariant::Ghost)
                     .compact()
@@ -661,7 +600,7 @@ impl Render for AutomaticSegmentationView {
             );
         }
         let mut model =
-            Self::section("Model").child(
+            tool_panel::section("Model").child(
                 div()
                     .flex()
                     .items_center()
@@ -692,10 +631,7 @@ impl Render for AutomaticSegmentationView {
         }
         panel = panel.child(
             model.child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .min_w_0()
+                tool_panel::file_actions()
                     .child(self.file_button(
                         "segmentation-load-model",
                         "Load model",
