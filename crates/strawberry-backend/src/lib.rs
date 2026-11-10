@@ -27,6 +27,7 @@ use crate::tools::nervetracer::NerveTracer;
 
 pub mod counter;
 pub mod nervetracer;
+mod pipeline_io;
 pub mod tools;
 
 /// Helper macros for tool registration
@@ -442,33 +443,7 @@ impl Pipeline {
                     }
                 }
                 PipelineCommand::CLILoadPipeline(path) => {
-                    let config = std::fs::read_to_string(path)
-                        .map_err(|e| anyhow!("Failed to read pipeline file: {e}"))
-                        .and_then(|toml_content| {
-                            tools::manager::deserialize_pipeline_config(&toml_content)
-                                .map_err(|e| anyhow!("Failed to parse pipeline TOML: {e}"))
-                        });
-
-                    let (mut pipeline_config, indices) = match config {
-                        Ok(config) => config,
-                        Err(e) => {
-                            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::error(e.to_string()),
-                            ));
-                            continue 'commands;
-                        }
-                    };
-
-                    if let Err(error) =
-                        tools::manager::resolve_segmentation_model(&mut pipeline_config, path, true)
-                    {
-                        self.report_error("Failed to load segmentation model", &error);
-                        continue 'commands;
-                    }
-                    if let Err(error) = self
-                        .tool_manager
-                        .apply_pipeline_config(pipeline_config, &indices)
-                    {
+                    if let Err(error) = self.tool_manager.load_pipeline(path, true) {
                         self.report_error("Failed to load pipeline", &error);
                         continue 'commands;
                     }

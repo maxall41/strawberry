@@ -189,9 +189,9 @@ impl ToolSidebar {
 
     fn pipeline_file(save: bool, window: &Window, cx: &Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
-            let dialog = FileDialog::new().add_filter("Pipeline", &["toml"]);
+            let dialog = FileDialog::new().add_filter("Strawberry pipeline", &["sbp"]);
             let file = if save {
-                dialog.save_file()
+                dialog.set_file_name("pipeline.sbp").save_file()
             } else {
                 dialog.pick_file()
             };

@@ -128,10 +128,16 @@ impl SegmentationModel {
         Ok(self.forest.predict(&DenseMatrix::from_2d_vec(rows)?)?)
     }
     pub fn save(&self, path: &Path) -> Result<()> {
-        crate::segmentation::write_artifact(path, &serde_json::to_vec(self)?)
+        crate::segmentation::write_artifact(path, &self.to_bytes()?)
     }
     pub fn load(path: &Path) -> Result<Self> {
-        let model: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        Self::from_bytes(&std::fs::read(path)?)
+    }
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let model: Self = serde_json::from_slice(bytes)?;
         ensure!(
             model.version == MODEL_VERSION,
             "Unsupported segmentation model version"
