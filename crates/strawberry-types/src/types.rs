@@ -18,6 +18,30 @@ impl PendingProcessing {
     }
 }
 
+pub struct ReconcilliationTicket {
+    pub index: Option<usize>,
+}
+
+pub struct ValidReconcilliationTicket {
+    index: usize,
+}
+
+impl ReconcilliationTicket {
+    pub fn validate(&self) -> Option<ValidReconcilliationTicket> {
+        if let Some(index) = self.index {
+            Some(ValidReconcilliationTicket { index: index })
+        } else {
+            None
+        }
+    }
+}
+
+impl ValidReconcilliationTicket {
+    pub fn take(&self) -> usize {
+        self.index
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BackendToolType {
     Compositor,

@@ -14,7 +14,7 @@ use strawberry_processing::{
 // Import all types from strawberry-types
 use strawberry_types::{
     BackendToolType, FrontendMessage, OutputFrame, PendingProcessing, PipelineCommand,
-    PipelineProgress, overlay,
+    PipelineProgress, ReconcilliationTicket, ValidReconcilliationTicket, overlay,
 };
 
 // Import tool implementations from tools module
@@ -135,13 +135,14 @@ impl Pipeline {
     ///
     /// # Errors
     /// Returns an error if configuration, image processing, file I/O, or communication fails.
-    async fn process_from(&mut self, start_index: usize) -> anyhow::Result<()> {
+    async fn process_from(&mut self, ticket: ValidReconcilliationTicket) -> anyhow::Result<()> {
         let start_time = std::time::Instant::now();
         println!("Got process_from command!");
         if self.input_images.is_empty() {
             return Err(anyhow!("No input images provided"));
         }
 
+        let start_index = ticket.take();
         let mut earliest_processing_index = start_index;
         let mut resume_images = None;
 
@@ -521,11 +522,14 @@ impl Pipeline {
             )));
     }
 
-    fn reconcile_tools(&mut self, pending: &mut PendingProcessing) {
+    fn reconcile_tools(&mut self, pending: &mut PendingProcessing) -> ReconcilliationTicket {
         for (index, tool) in self.tool_manager.tools.iter_mut().enumerate() {
             if tool.reconcile_state() {
                 pending.request_processing(index);
             }
+        }
+        ReconcilliationTicket {
+            index: pending.take(),
         }
     }
 
@@ -548,11 +552,10 @@ impl Pipeline {
                 pending.request_processing(0);
             }
         }
-        self.reconcile_tools(pending);
-        if let Some(index) = pending.take()
+        if let Some(ticket) = self.reconcile_tools(pending).validate()
             && !self.input_images.is_empty()
         {
-            let result = self.process_from(index).await;
+            let result = self.process_from(ticket).await;
             let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
                 FrontendMessage::PipelineFinished,
             ));
