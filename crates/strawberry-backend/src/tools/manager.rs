@@ -1,101 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    path::Path,
+};
+
+use crate::pipeline_io::{self, LoadedPipeline};
 
 use strawberry_types::{
     BackendToolType, FrontendMessage, ManagerMessage, ManagerState, PipelineCommand,
-    PipelineConfig, PipelineObjectMessage, ToolBackend, ToolProxy, ToolState,
+    PipelineConfig, PipelineObjectMessage, ToolAssets, ToolBackend, ToolProxy, ToolState,
 };
-
-pub(crate) fn serialize_pipeline_config(
-    config: &PipelineConfig,
-    indices: &HashMap<String, u16>,
-) -> anyhow::Result<String> {
-    let mut value = toml::Value::try_from(config)?;
-    if let Some(tools) = value.get_mut("tools").and_then(toml::Value::as_table_mut) {
-        for (name, tool) in tools {
-            let Some(index) = indices.get(name) else {
-                continue;
-            };
-            let Some(state) = tool
-                .as_table_mut()
-                .and_then(|variants| variants.iter_mut().next().map(|(_, value)| value))
-                .and_then(toml::Value::as_table_mut)
-            else {
-                continue;
-            };
-            state.insert("index".to_string(), toml::Value::Integer((*index).into()));
-        }
-    }
-    Ok(toml::to_string(&value)?)
-}
-
-/// Parsed pipeline settings. Concrete state deserialization is deferred to each tool to allow custom data handliing.
-#[derive(serde::Deserialize)]
-pub(crate) struct LoadedPipelineConfig {
-    pub(crate) tools: HashMap<String, serde_value::Value>,
-}
-
-pub(crate) fn deserialize_pipeline_config(
-    content: &str,
-) -> anyhow::Result<(LoadedPipelineConfig, HashMap<String, u16>)> {
-    use serde_value::Value;
-    let config: LoadedPipelineConfig = toml::from_str(content)?;
-    let indices = config
-        .tools
-        .iter()
-        .filter_map(|(name, tool)| {
-            let Value::Map(variants) = tool else {
-                return None;
-            };
-            let Value::Map(fields) = variants.values().next()? else {
-                return None;
-            };
-            let Value::I64(index) = fields.get(&Value::String("index".to_string()))? else {
-                return None;
-            };
-            u16::try_from(*index)
-                .ok()
-                .map(|index| (name.clone(), index))
-        })
-        .collect();
-    Ok((config, indices))
-}
-
-pub(crate) fn resolve_segmentation_model(
-    config: &mut LoadedPipelineConfig,
-    pipeline: &std::path::Path,
-    cli: bool,
-) -> anyhow::Result<()> {
-    use serde_value::Value;
-    let Some(Value::Map(variants)) = config.tools.get_mut("AutomaticSegmentation") else {
-        return Ok(());
-    };
-    let Some(Value::Map(fields)) = variants.values_mut().next() else {
-        return Ok(());
-    };
-    let key = Value::String("model_path".into());
-    if let Some(Value::String(path)) = fields.get_mut(&key) {
-        let source = std::path::Path::new(path);
-        if source.is_relative() {
-            *path = pipeline
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join(source)
-                .to_string_lossy()
-                .into_owned();
-        }
-    }
-    if cli {
-        let enabled = fields.get(&Value::String("is_enabled".into())) == Some(&Value::Bool(true));
-        if enabled {
-            anyhow::ensure!(
-                matches!(fields.get(&key), Some(Value::String(_))),
-                "CLI segmentation requires a saved model path"
-            );
-            fields.insert(Value::String("training".into()), Value::Bool(false));
-        }
-    }
-    Ok(())
-}
 
 /// Orchestrates the pipeline's tools.
 ///
@@ -133,11 +46,26 @@ fn update_proxy_tools(
 }
 
 impl ToolManager {
+    pub(crate) fn load_pipeline(&mut self, path: &Path, cli: bool) -> anyhow::Result<()> {
+        self.apply_pipeline_config(pipeline_io::load(path)?, cli)
+    }
+
+    fn save_pipeline(&self, path: &Path) -> anyhow::Result<()> {
+        let (config, indices) = self.pipeline_config()?;
+        let mut assets = BTreeMap::new();
+        for tool in &self.tools {
+            if self.included.contains(&tool.iam()) {
+                assets.insert(tool.iam().to_string(), tool.pipeline_assets()?);
+            }
+        }
+        pipeline_io::save(path, &config, &indices, &assets)
+    }
+
     /// Apply a loaded pipeline config to all tools.
     pub(crate) fn apply_pipeline_config(
         &mut self,
-        mut config: LoadedPipelineConfig,
-        indices: &HashMap<String, u16>,
+        mut config: LoadedPipeline,
+        cli: bool,
     ) -> anyhow::Result<()> {
         // Presence in the file defines membership, including disabled tools.
         let included = self
@@ -148,11 +76,16 @@ impl ToolManager {
             .collect();
         let mut updates = Vec::new();
         let mut loaded = Vec::with_capacity(self.tools.len());
+        let empty_assets = ToolAssets::new();
         for tool in &mut self.tools {
             let name = format!("{:?}", tool.iam());
             let update = match config.tools.remove(&name) {
                 Some(settings) => tool
-                    .prepare_loaded_persisted_state(settings)
+                    .prepare_loaded_persisted_state(
+                        settings,
+                        config.assets.get(&name).unwrap_or(&empty_assets),
+                        cli,
+                    )
                     .map_err(|error| anyhow::anyhow!("Failed to load {name}: {error}"))?,
                 None => None,
             };
@@ -179,7 +112,7 @@ impl ToolManager {
                 tool.set_enabled(false);
             }
         }
-        self.restore_tool_indices(indices);
+        self.restore_tool_indices(&config.indices);
         self.included = included;
         Ok(())
     }
@@ -364,28 +297,13 @@ impl ToolManager {
                             processing_required |= self.remove_tool(&kind)?;
                         }
                         ManagerMessage::SavePipeline(path) => {
-                            let (pipeline_config, indices) = self.pipeline_config()?;
-                            let toml_string =
-                                match serialize_pipeline_config(&pipeline_config, &indices) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        self.global_sender.send(
-                                            PipelineCommand::FrontendMessage(
-                                                FrontendMessage::error(format!(
-                                                    "Failed to serialize pipeline: {e}"
-                                                )),
-                                            ),
-                                        )?;
-                                        return Err(anyhow::anyhow!(e));
-                                    }
-                                };
-                            if let Err(e) = std::fs::write(&path, toml_string) {
+                            if let Err(error) = self.save_pipeline(&path) {
                                 self.global_sender.send(PipelineCommand::FrontendMessage(
                                     FrontendMessage::error(format!(
-                                        "Failed to save pipeline to file: {e}"
+                                        "Failed to save pipeline: {error:#}"
                                     )),
                                 ))?;
-                                return Err(anyhow::anyhow!("Failed to write to file: {e}"));
+                                return Err(error);
                             }
                             self.global_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::success(
@@ -394,34 +312,14 @@ impl ToolManager {
                             ))?;
                         }
                         ManagerMessage::LoadPipeline(path) => {
-                            let toml_content = match std::fs::read_to_string(&path) {
-                                Ok(content) => content,
-                                Err(e) => {
-                                    self.global_sender.send(PipelineCommand::FrontendMessage(
-                                        FrontendMessage::error(format!(
-                                            "Failed to read pipeline file: {e}"
-                                        )),
-                                    ))?;
-                                    return Err(anyhow::anyhow!("Failed to read file: {e}"));
-                                }
-                            };
-                            let (mut pipeline_config, indices) =
-                                match deserialize_pipeline_config(&toml_content) {
-                                    Ok(config) => config,
-                                    Err(e) => {
-                                        self.global_sender.send(
-                                            PipelineCommand::FrontendMessage(
-                                                FrontendMessage::error(format!(
-                                                    "Failed to parse pipeline file: {e}"
-                                                )),
-                                            ),
-                                        )?;
-                                        return Err(anyhow::anyhow!("Failed to parse TOML: {e}"));
-                                    }
-                                };
-
-                            resolve_segmentation_model(&mut pipeline_config, &path, false)?;
-                            self.apply_pipeline_config(pipeline_config, &indices)?;
+                            if let Err(error) = self.load_pipeline(&path, false) {
+                                self.global_sender.send(PipelineCommand::FrontendMessage(
+                                    FrontendMessage::error(format!(
+                                        "Failed to load pipeline: {error:#}"
+                                    )),
+                                ))?;
+                                return Err(error);
+                            }
 
                             processing_required = true;
 

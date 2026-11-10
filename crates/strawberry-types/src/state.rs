@@ -207,6 +207,7 @@ pub struct AutomaticSegmentationState {
     pub total_layers: usize,
     pub features: FeatureConfig,
     pub forest: ForestConfig,
+    #[serde(skip)]
     pub model_path: Option<PathBuf>,
     #[serde(skip)]
     pub samples: Vec<AnnotationSummary>,

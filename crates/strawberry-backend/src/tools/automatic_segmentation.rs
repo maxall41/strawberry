@@ -14,6 +14,7 @@ use strawberry_types::{
 };
 
 const DATA_VERSION: u32 = 1;
+const MODEL_ASSET: &str = "model.json";
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Sample {
@@ -28,7 +29,7 @@ impl Sample {
             .ok_or_else(|| anyhow::anyhow!("Invalid training image dimensions"))
     }
 }
-/// Replay paint in order. Visibility affects display only, never training labels.
+/// Replay annotation strokes deterministically, producing a BTreeMap mapping (y,x) to a label
 fn rasterize<'a>(
     width: u32,
     height: u32,
@@ -145,7 +146,6 @@ pub struct AutomaticSegmentation {
     extractor: Arc<FeatureExtractor>,
     model: Option<Arc<SegmentationModel>>,
     inference_cache: Option<InferenceCache>,
-    loaded_path: Option<std::path::PathBuf>,
     samples: Vec<Sample>,
     input: Option<Arc<RgbaImage>>,
     current: Option<usize>,
@@ -172,7 +172,6 @@ impl AutomaticSegmentation {
             extractor: Arc::new(FeatureExtractor::new(gpu)),
             model: None,
             inference_cache: None,
-            loaded_path: None,
             samples: vec![],
             input: None,
             current: None,
@@ -443,7 +442,6 @@ impl AutomaticSegmentation {
                     .ok_or_else(|| anyhow::anyhow!("Train or load a model first"))?
                     .save(&path)?;
                 self.state.model_path = Some(path.clone());
-                self.loaded_path = Some(path);
             }
             M::LoadModel(path) => {
                 let model = SegmentationModel::load(&path)?;
@@ -452,7 +450,6 @@ impl AutomaticSegmentation {
                 self.model = Some(Arc::new(model));
                 self.state.model_ready = true;
                 self.state.model_path = Some(path.clone());
-                self.loaded_path = Some(path);
             }
             M::SaveDataset(path) => write_artifact(
                 &path,
@@ -558,6 +555,46 @@ impl AutomaticSegmentation {
 #[async_trait]
 impl ToolBackend for AutomaticSegmentation {
     crate::impl_tool_backend_basics!(AutomaticSegmentation);
+    fn pipeline_assets(&self) -> Result<ToolAssets> {
+        let mut assets = ToolAssets::new();
+        if let Some(model) = &self.model {
+            assets.insert(MODEL_ASSET.into(), model.to_bytes()?);
+        }
+        Ok(assets)
+    }
+    fn prepare_loaded_fields<'a>(
+        &'a mut self,
+        fields: serde_value::Value,
+        assets: &ToolAssets,
+        cli: bool,
+    ) -> Result<Option<PreparedStateUpdate<'a>>> {
+        let mut state = self.state.clone();
+        AutomaticSegmentationState::deserialize_in_place(fields, &mut state)?;
+        let model = assets
+            .get(MODEL_ASSET)
+            .map(|bytes| SegmentationModel::from_bytes(bytes))
+            .transpose()?;
+        if cli && state.is_enabled {
+            ensure!(
+                model.is_some(),
+                "CLI segmentation requires an embedded model"
+            );
+            state.training = false;
+        }
+        state.model_path = None;
+        state.model_ready = model.is_some();
+        state.busy = false;
+        state.revision = self.state.revision.wrapping_add(1);
+        Ok(Some(Box::new(move || {
+            self.state = state;
+            self.model = model.map(Arc::new);
+            self.inference_cache = None;
+            self.job = None;
+            self.stroke = None;
+            self.training_revision = self.training_revision.wrapping_add(1);
+            self.cache.invalidate();
+        })))
+    }
     fn iam(&self) -> BackendToolType {
         BackendToolType::AutomaticSegmentation
     }
@@ -593,14 +630,6 @@ impl ToolBackend for AutomaticSegmentation {
             }
             return Ok(());
         }
-        if self.state.model_path != self.loaded_path {
-            if let Some(path) = &self.state.model_path {
-                let model = SegmentationModel::load(path)?;
-                self.model = Some(Arc::new(model));
-                self.loaded_path = Some(path.clone());
-                self.state.model_ready = true;
-            }
-        }
         let Some(model) = self.model.clone() else {
             return Ok(());
         };
@@ -634,6 +663,7 @@ impl ToolBackend for AutomaticSegmentation {
         Ok(())
     }
     fn receive_messages(&mut self) -> Result<()> {
+        // Check results of a training job
         if let Some(result) = self.job.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.job = None;
             self.state.busy = false;
@@ -643,12 +673,12 @@ impl ToolBackend for AutomaticSegmentation {
                     self.model = Some(Arc::new(model));
                     self.state.model_ready = true;
                     self.state.model_path = None;
-                    self.loaded_path = None;
                     self.changed();
                 }
                 Err(error) => self.error(&error),
             }
         }
+        // Handle pipeline commands
         for message in self.base.collect_commands() {
             match message {
                 PipelineCommand::RequestState() => {

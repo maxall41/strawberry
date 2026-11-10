@@ -31,7 +31,7 @@ fn drain(receiver: &mut broadcast::Receiver<PipelineCommand>) {
     reason = "These are independent command-line switches"
 )]
 pub struct Args {
-    /// Pipeline configuration file to load (.toml format)
+    /// Strawberry pipeline archive to load (.sbp format)
     #[arg(short, long, value_name = "FILE")]
     pub pipeline: Option<PathBuf>,
 
