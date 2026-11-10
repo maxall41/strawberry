@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use strawberry_types::{
-    BackendToolType, FrontendMessage, ManagerMessage, ManagerState, PipelineCommand,
-    PipelineConfig, PipelineObjectMessage, ToolBackend, ToolProxy, ToolState,
+    BackendToolType, FrontendMessage, ManagerMessage, ManagerState, PendingProcessing,
+    PipelineCommand, PipelineConfig, PipelineObjectMessage, ToolBackend, ToolProxy, ToolState,
 };
 
 pub(crate) fn serialize_pipeline_config(
@@ -75,6 +75,8 @@ pub struct ToolManager {
     pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
     pub frontend_latest_state: Option<ManagerState>,
     included: HashSet<BackendToolType>,
+    /// Last reconciled processing order, before any new tool messages change enabled state.
+    processing_order: Vec<BackendToolType>,
 }
 
 fn update_proxy_tools(
@@ -163,6 +165,11 @@ impl ToolManager {
             .filter(|tool| tool.is_enabled())
             .map(|tool| tool.iam())
             .collect();
+        let processing_order = input
+            .iter()
+            .filter(|tool| tool.is_enabled() && tool.supports_processing())
+            .map(|tool| tool.iam())
+            .collect();
 
         Self {
             state: ManagerState {
@@ -176,6 +183,7 @@ impl ToolManager {
             receiver,
             frontend_latest_state: None,
             included,
+            processing_order,
         }
     }
 
@@ -194,35 +202,35 @@ impl ToolManager {
 
     /// Adding appends the tool, including when restoring a removed tool.
     /// An existing item keeps its enabled state and position in the stack.
-    fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<bool> {
+    fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<()> {
         let Some(index) = self.tools.iter().position(|tool| tool.iam() == *kind) else {
             anyhow::bail!("Unknown pipeline tool: {kind}");
         };
         if self.included.contains(kind) {
-            return Ok(false);
+            return Ok(());
         }
         if let Some(tool) = self.tools.get_mut(index) {
             tool.set_enabled(true);
         }
         self.included.insert(kind.clone());
         self.move_tool(index, self.tools.len().saturating_sub(1));
-        Ok(true)
+        Ok(())
     }
 
-    fn remove_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<bool> {
+    fn remove_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<()> {
         let Some(index) = self.tools.iter().position(|tool| tool.iam() == *kind) else {
             anyhow::bail!("Unknown pipeline tool: {kind}");
         };
         if !self.included.contains(kind)
             && !self.tools.get(index).is_some_and(|tool| tool.is_enabled())
         {
-            return Ok(false);
+            return Ok(());
         }
         if let Some(tool) = self.tools.get_mut(index) {
             tool.set_enabled(false);
         }
         self.included.remove(kind);
-        Ok(true)
+        Ok(())
     }
 
     fn pipeline_config(&self) -> anyhow::Result<(PipelineConfig, HashMap<String, u16>)> {
@@ -261,7 +269,7 @@ impl ToolManager {
 
     /// Automatically include tools enabled outside Add Tool. Existing stack items
     /// keep their position when disabled or enabled again.
-    fn move_newly_enabled_tools_to_end(&mut self) -> bool {
+    fn move_newly_enabled_tools_to_end(&mut self) {
         let mut retained = Vec::with_capacity(self.tools.len());
         let mut added = Vec::new();
         for tool in self.tools.drain(..) {
@@ -277,7 +285,6 @@ impl ToolManager {
         if order_changed {
             self.reindex_tools();
         }
-        order_changed
     }
 
     #[must_use]
@@ -297,14 +304,51 @@ impl ToolManager {
         self.frontend_senders.clear();
     }
 
+    /// Apply queued commands and schedule processing from the first changed stage.
     /// # Errors
     /// Returns an error if a command fails or a communication channel is disconnected.
+    pub fn receive_messages(&mut self, pending: &mut PendingProcessing) -> anyhow::Result<()> {
+        // Earlier commands can succeed before a later command fails; reconcile both outcomes.
+        let result = self.handle_messages();
+        self.move_newly_enabled_tools_to_end();
+        let processing_tools: Vec<_> = self
+            .tools
+            .iter()
+            .enumerate()
+            .filter(|(_, tool)| tool.is_enabled() && tool.supports_processing())
+            .map(|(index, tool)| (index, tool.iam()))
+            .collect();
+        let common_prefix = self
+            .processing_order
+            .iter()
+            .zip(&processing_tools)
+            .take_while(|(previous, (_, current))| *previous == current)
+            .count();
+        if common_prefix < self.processing_order.len() || common_prefix < processing_tools.len() {
+            // Removing the last stage only needs to republish the preceding cached output.
+            let index = processing_tools
+                .get(common_prefix)
+                .map_or(self.tools.len(), |(index, _)| *index);
+            pending.request_processing(index);
+        }
+        self.processing_order = processing_tools.into_iter().map(|(_, kind)| kind).collect();
+
+        let new_proxy_tools = update_proxy_tools(&self.tools, &self.included);
+        if new_proxy_tools != self.state.proxy_tools {
+            self.state.proxy_tools = new_proxy_tools;
+        }
+        result?;
+        if self.frontend_latest_state.as_ref() != Some(&self.state) {
+            self.update_state()?;
+        }
+        Ok(())
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "Command dispatch as one function is cleaner"
     )]
-    pub fn receive_messages(&mut self) -> anyhow::Result<bool> {
-        let mut processing_required = false;
+    fn handle_messages(&mut self) -> anyhow::Result<()> {
         let commands: Vec<PipelineCommand> =
             std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
 
@@ -321,10 +365,10 @@ impl ToolManager {
                     }
                     PipelineObjectMessage::ManagerMessage(message) => match message {
                         ManagerMessage::AddTool(kind) => {
-                            processing_required |= self.add_tool(&kind)?;
+                            self.add_tool(&kind)?;
                         }
                         ManagerMessage::RemoveTool(kind) => {
-                            processing_required |= self.remove_tool(&kind)?;
+                            self.remove_tool(&kind)?;
                         }
                         ManagerMessage::SavePipeline(path) => {
                             let (pipeline_config, indices) = self.pipeline_config()?;
@@ -385,8 +429,6 @@ impl ToolManager {
 
                             self.apply_pipeline_config(pipeline_config, &indices)?;
 
-                            processing_required = true;
-
                             self.global_sender.send(PipelineCommand::FrontendMessage(
                                 FrontendMessage::success(
                                     "Pipeline loaded successfully!".to_string(),
@@ -413,7 +455,6 @@ impl ToolManager {
                                 continue;
                             }
                             self.move_tool(start_idx, new_idx);
-                            processing_required = true;
                         }
                     },
                     _ => {}
@@ -422,18 +463,7 @@ impl ToolManager {
             }
         }
 
-        processing_required |= self.move_newly_enabled_tools_to_end();
-
-        let new_proxy_tools = update_proxy_tools(&self.tools, &self.included);
-        if new_proxy_tools != self.state.proxy_tools {
-            self.state.proxy_tools = new_proxy_tools;
-        }
-
-        if self.frontend_latest_state.as_ref() != Some(&self.state) {
-            self.update_state()?;
-        }
-
-        Ok(processing_required)
+        Ok(())
     }
 
     fn update_state(&mut self) -> anyhow::Result<()> {
