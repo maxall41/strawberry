@@ -510,7 +510,8 @@ impl Pipeline {
 
     fn reconcile_tools(&mut self, pending: &mut PendingProcessing) -> ReconcilliationTicket {
         for (index, tool) in self.tool_manager.tools.iter_mut().enumerate() {
-            if tool.reconcile_state() {
+            // The manager schedules removed stages; still reconcile disabled tools to clear stale caches.
+            if tool.reconcile_state() && tool.is_enabled() && tool.supports_processing() {
                 pending.request_processing(index);
             }
         }
@@ -529,14 +530,8 @@ impl Pipeline {
                 ));
             }
         }
-        match self.tool_manager.receive_messages() {
-            Ok(true) => pending.request_processing(0),
-            Ok(false) => {}
-            Err(error) => {
-                self.report_error("Tool manager communication error", &error);
-                // Earlier commands in the same batch may already have changed the order.
-                pending.request_processing(0);
-            }
+        if let Err(error) = self.tool_manager.receive_messages(pending) {
+            self.report_error("Tool manager communication error", &error);
         }
         if let Some(ticket) = self.reconcile_tools(pending).validate()
             && !self.input_images.is_empty()
