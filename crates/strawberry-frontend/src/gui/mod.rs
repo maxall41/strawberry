@@ -17,3 +17,5 @@ pub mod tooltip;
 
 pub mod sidebar;
 pub mod workspace;
+
+pub mod tool_panel;
