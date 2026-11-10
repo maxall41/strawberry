@@ -102,6 +102,7 @@ struct PrimaryViewer {
     display_image: ImageSource,
     img_coords: Arc<RwLock<Option<Bounds<Pixels>>>>,
     overlays: OverlayCollection,
+    annotation_images: std::collections::BTreeMap<(u32, u32), (Arc<RgbaImage>, Arc<RenderImage>)>,
     snap_target: Option<(f32, f32)>,
     toasts: Vec<Entity<FeedbackModal>>,
     last_viewport_size: Option<gpui::Size<Pixels>>,
@@ -284,6 +285,40 @@ impl PrimaryViewer {
                         this.show_output(image, window, cx);
                     }
                     if let Some(overlays) = latest_overlays {
+                        let masks: std::collections::BTreeMap<_, _> = overlays
+                            .all_elements()
+                            .filter_map(|element| match element {
+                                OverlayElement::ImageMask {
+                                    x,
+                                    y,
+                                    image: Some(image),
+                                } => Some(((*x, *y), image.clone())),
+                                _ => None,
+                            })
+                            .collect();
+                        this.annotation_images.retain(|key, (_, rendered)| {
+                            if masks.contains_key(key) {
+                                true
+                            } else {
+                                let _ = window.drop_image(rendered.clone());
+                                false
+                            }
+                        });
+                        for (key, mask) in masks {
+                            if this
+                                .annotation_images
+                                .get(&key)
+                                .is_some_and(|(old, _)| Arc::ptr_eq(old, &mask))
+                            {
+                                continue;
+                            }
+                            if let Some((_, old)) = this.annotation_images.remove(&key) {
+                                let _ = window.drop_image(old);
+                            }
+                            let rendered =
+                                Arc::new(RenderImage::new(vec![Frame::new((*mask).clone())]));
+                            this.annotation_images.insert(key, (mask, rendered));
+                        }
                         this.overlays = overlays;
                     }
                     if let Some((x, y)) = latest_snap {
@@ -693,6 +728,25 @@ impl PrimaryViewer {
     // Render a single overlay element
     fn render_overlay_element(&self, element: &OverlayElement) -> impl IntoElement + use<> {
         match element {
+            OverlayElement::ImageMask { x, y, .. } => {
+                let Some((mask, rendered)) = self.annotation_images.get(&(*x, *y)) else {
+                    return div();
+                };
+                let (x, y) = self.image_to_canvas_coords(
+                    num_traits::cast(*x).unwrap_or(0.0),
+                    num_traits::cast(*y).unwrap_or(0.0),
+                );
+                div().absolute().left(px(x)).top(px(y)).child(
+                    img(rendered.clone())
+                        .use_nearest_filter(true)
+                        .w(px(num_traits::cast::<u32, f32>(mask.width())
+                            .unwrap_or(0.0)
+                            * self.zoom_level))
+                        .h(px(num_traits::cast::<u32, f32>(mask.height())
+                            .unwrap_or(0.0)
+                            * self.zoom_level)),
+                )
+            }
             OverlayElement::Circle {
                 x,
                 y,
@@ -876,6 +930,12 @@ impl Render for PrimaryViewer {
             },
         ));
 
+        let img = img.on_mouse_up_out(
+            gpui::MouseButton::Left,
+            cx.listener(|this, _, _, _| {
+                let _ = this.command_sender.send(PipelineCommand::InteractionEnd);
+            }),
+        );
         let img = img.on_mouse_up(
             gpui::MouseButton::Left,
             cx.listener(
@@ -1247,6 +1307,7 @@ async fn main() -> Result<()> {
                     display_image: ImageSource::Render(img_data),
                     img_coords: Arc::new(RwLock::new(None)),
                     overlays: OverlayCollection::new(),
+                    annotation_images: std::collections::BTreeMap::new(),
                     snap_target: None,
                     toasts: vec![],
                     last_viewport_size: None,

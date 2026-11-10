@@ -158,3 +158,5 @@ pub fn spawn_message_processor<V: FrontendMessageHandler>(
     })
     .detach();
 }
+
+pub mod automatic_segmentation;

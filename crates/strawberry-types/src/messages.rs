@@ -2,6 +2,7 @@ use image::RgbaImage;
 use std::path::PathBuf;
 use std::sync::Arc;
 use strawberry_processing::local_maxima::ThresholdType;
+use strawberry_processing::segmentation::{FeatureConfig, ForestConfig};
 
 use super::{BackendToolType, ToolState};
 
@@ -67,6 +68,28 @@ pub enum WatershedMessage {
 }
 
 #[derive(Debug, Clone)]
+pub enum AutomaticSegmentationMessage {
+    Training(bool),
+    Foreground(bool),
+    Eraser(bool),
+    BrushRadius(u32),
+    Layer(usize),
+    Features(FeatureConfig),
+    Forest(ForestConfig),
+    Preview(Option<usize>),
+    SelectStroke(usize, usize),
+    Visibility(usize, usize),
+    DeleteStroke(usize, usize),
+    Undo,
+    Clear,
+    Train,
+    SaveModel(PathBuf),
+    LoadModel(PathBuf),
+    SaveDataset(PathBuf),
+    LoadDataset(PathBuf),
+}
+
+#[derive(Debug, Clone)]
 pub enum SobelMessage {
     SetThreshold(f32),
     ToggleThreshold(bool),
@@ -107,6 +130,7 @@ use crate::{CounterMode, CounterTool};
 
 #[derive(Debug, Clone)]
 pub enum PipelineObjectMessage {
+    AutomaticSegmentationMessage(crate::AutomaticSegmentationMessage),
     DecomposerMessage(DecomposerMessage),
     CompositorMessage(CompositorMessage),
     ContrastMessage(ContrastMessage),

@@ -35,6 +35,7 @@ actions!([
 ]);
 
 actions!([
+    AutomaticSegmentationSettings,
     CompositorSettings,
     ContrastSettings,
     CounterSettings,
@@ -231,6 +232,16 @@ pub fn install(
             tx.clone(),
             rx,
             RollingBallView::new,
+        ),
+        register_tool(
+            cx,
+            sidebar,
+            AutomaticSegmentationSettings,
+            "Automatic Segmentation",
+            BackendToolType::AutomaticSegmentation,
+            tx.clone(),
+            rx,
+            crate::tools::automatic_segmentation::AutomaticSegmentationView::new,
         ),
         register_tool(
             cx,

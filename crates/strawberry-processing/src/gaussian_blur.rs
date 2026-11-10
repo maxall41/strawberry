@@ -31,8 +31,9 @@ impl GpuGaussianBlur {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Gaussian Blur Shader"),
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                    "shaders/gaussian_blur.wgsl"
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(concat!(
+                    include_str!("shaders/gaussian_blur_math.wgsl"),
+                    include_str!("shaders/gaussian_blur.wgsl")
                 ))),
             });
 
