@@ -60,6 +60,43 @@ pub(crate) fn deserialize_pipeline_config(
     Ok((config, indices))
 }
 
+pub(crate) fn resolve_segmentation_model(
+    config: &mut LoadedPipelineConfig,
+    pipeline: &std::path::Path,
+    cli: bool,
+) -> anyhow::Result<()> {
+    use serde_value::Value;
+    let Some(Value::Map(variants)) = config.tools.get_mut("AutomaticSegmentation") else {
+        return Ok(());
+    };
+    let Some(Value::Map(fields)) = variants.values_mut().next() else {
+        return Ok(());
+    };
+    let key = Value::String("model_path".into());
+    if let Some(Value::String(path)) = fields.get_mut(&key) {
+        let source = std::path::Path::new(path);
+        if source.is_relative() {
+            *path = pipeline
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(source)
+                .to_string_lossy()
+                .into_owned();
+        }
+    }
+    if cli {
+        let enabled = fields.get(&Value::String("is_enabled".into())) == Some(&Value::Bool(true));
+        if enabled {
+            anyhow::ensure!(
+                matches!(fields.get(&key), Some(Value::String(_))),
+                "CLI segmentation requires a saved model path"
+            );
+            fields.insert(Value::String("training".into()), Value::Bool(false));
+        }
+    }
+    Ok(())
+}
+
 /// Orchestrates the pipeline's tools.
 ///
 /// Note that unlike the tools it manages,
@@ -368,7 +405,7 @@ impl ToolManager {
                                     return Err(anyhow::anyhow!("Failed to read file: {e}"));
                                 }
                             };
-                            let (pipeline_config, indices) =
+                            let (mut pipeline_config, indices) =
                                 match deserialize_pipeline_config(&toml_content) {
                                     Ok(config) => config,
                                     Err(e) => {
@@ -383,6 +420,7 @@ impl ToolManager {
                                     }
                                 };
 
+                            resolve_segmentation_model(&mut pipeline_config, &path, false)?;
                             self.apply_pipeline_config(pipeline_config, &indices)?;
 
                             processing_required = true;

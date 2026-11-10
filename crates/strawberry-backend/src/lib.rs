@@ -84,6 +84,11 @@ impl Pipeline {
 
         let tool_manager = ToolManager::new(
             vec![
+                Box::new(tools::automatic_segmentation::AutomaticSegmentation::new(
+                    command_tx.clone(),
+                    output_tx.clone(),
+                    gpu_image_processor.clone(),
+                )),
                 // GPU-accelerated tools
                 create_gpu_tool!(Compositor, output_tx, gpu_image_processor),
                 create_gpu_tool!(Contrast, output_tx, gpu_image_processor),
@@ -444,7 +449,7 @@ impl Pipeline {
                                 .map_err(|e| anyhow!("Failed to parse pipeline TOML: {e}"))
                         });
 
-                    let (pipeline_config, indices) = match config {
+                    let (mut pipeline_config, indices) = match config {
                         Ok(config) => config,
                         Err(e) => {
                             let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
@@ -454,6 +459,12 @@ impl Pipeline {
                         }
                     };
 
+                    if let Err(error) =
+                        tools::manager::resolve_segmentation_model(&mut pipeline_config, path, true)
+                    {
+                        self.report_error("Failed to load segmentation model", &error);
+                        continue 'commands;
+                    }
                     if let Err(error) = self
                         .tool_manager
                         .apply_pipeline_config(pipeline_config, &indices)

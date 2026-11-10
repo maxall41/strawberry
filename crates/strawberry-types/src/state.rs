@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
+use strawberry_processing::segmentation::{FeatureConfig, ForestConfig};
 use strawberry_processing::{local_maxima::ThresholdType, morphology::MorphologyOperation};
 
 // Counter-specific types
@@ -167,9 +169,85 @@ pub struct WatershedState {
     pub is_enabled: bool,
 }
 
+fn visible_default() -> bool {
+    true
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnnotationStroke {
+    #[serde(default = "visible_default")]
+    pub visible: bool,
+    pub foreground: bool,
+    pub erase: bool,
+    pub radius: u32,
+    pub points: Vec<(u32, u32)>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnnotationStrokeSummary {
+    pub foreground: bool,
+    pub erase: bool,
+    pub visible: bool,
+    pub point_count: usize,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnnotationSummary {
+    pub width: u32,
+    pub height: u32,
+    pub strokes: Vec<AnnotationStrokeSummary>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutomaticSegmentationState {
+    pub is_enabled: bool,
+    pub training: bool,
+    pub foreground: bool,
+    pub eraser: bool,
+    pub brush_radius: u32,
+    pub selected_layer: usize,
+    #[serde(skip)]
+    pub total_layers: usize,
+    pub features: FeatureConfig,
+    pub forest: ForestConfig,
+    pub model_path: Option<PathBuf>,
+    #[serde(skip)]
+    pub samples: Vec<AnnotationSummary>,
+    #[serde(skip)]
+    pub preview: Option<usize>,
+    #[serde(skip)]
+    pub selected_stroke: Option<(usize, usize)>,
+    #[serde(skip)]
+    pub busy: bool,
+    #[serde(skip)]
+    pub model_ready: bool,
+    #[serde(skip)]
+    pub revision: u64,
+}
+impl Default for AutomaticSegmentationState {
+    fn default() -> Self {
+        Self {
+            is_enabled: false,
+            training: true,
+            foreground: true,
+            eraser: false,
+            brush_radius: 5,
+            selected_layer: 0,
+            total_layers: 0,
+            features: FeatureConfig::default(),
+            forest: ForestConfig::default(),
+            model_path: None,
+            samples: vec![],
+            preview: None,
+            selected_stroke: None,
+            busy: false,
+            model_ready: false,
+            revision: 0,
+        }
+    }
+}
+
 /// Aggregated tool state enum
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolState {
+    AutomaticSegmentationState(crate::AutomaticSegmentationState),
     CompositorState(CompositorState),
     ContrastState(ContrastState),
     GaussianBlurState(GaussianBlurState),

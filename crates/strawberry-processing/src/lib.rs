@@ -198,3 +198,6 @@ impl GpuImageProcessor {
             .ok_or_else(|| anyhow::anyhow!("Failed to create image from GPU buffer data"))
     }
 }
+
+pub mod float_filters;
+pub mod segmentation;

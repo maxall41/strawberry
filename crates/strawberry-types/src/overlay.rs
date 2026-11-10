@@ -15,6 +15,13 @@ pub enum CircleStyle {
 /// Individual overlay elements that tools can emit
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OverlayElement {
+    /// A cached BGRA label overlay, rendered as one image rather than individual pixels.
+    ImageMask {
+        x: u32,
+        y: u32,
+        #[serde(skip)]
+        image: Option<std::sync::Arc<image::RgbaImage>>,
+    },
     Circle {
         x: f32,
         y: f32,

@@ -28,3 +28,5 @@ pub use rolling_ball::RollingBall;
 pub use sobel::Sobel;
 pub use threshold::Threshold;
 pub use watershed::Watershed;
+
+pub mod automatic_segmentation;

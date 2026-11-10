@@ -12,5 +12,8 @@ image = { git = "https://github.com/maxall41/image.git", branch = "single-channe
 flume = "0.12"
 serde = { version = "1.0", features = ["derive"] }
 
+smartcore = { version = "0.7", features = ["serde"] }
+serde_json = "1"
+
 [lints]
 workspace = true

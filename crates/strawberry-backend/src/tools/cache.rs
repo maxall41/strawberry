@@ -133,3 +133,17 @@ impl<TState: SyncState> ToolCache<TState> {
         self.cached_state = None;
     }
 }
+
+impl SyncState for strawberry_types::AutomaticSegmentationState {
+    fn is_enabled(&self) -> bool {
+        self.is_enabled
+    }
+    fn processing_differs(&self, other: &Self) -> bool {
+        self.is_enabled != other.is_enabled
+            || self.training != other.training
+            || self.selected_layer != other.selected_layer
+            || self.preview != other.preview
+            || self.revision != other.revision
+            || self.model_path != other.model_path
+    }
+}

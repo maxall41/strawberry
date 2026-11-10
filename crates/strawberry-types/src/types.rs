@@ -44,6 +44,7 @@ impl ValidReconcilliationTicket {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BackendToolType {
+    AutomaticSegmentation,
     Compositor,
     Counter,
     Contrast,
