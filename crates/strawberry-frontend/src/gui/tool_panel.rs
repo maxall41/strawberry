@@ -1,6 +1,6 @@
 //! Shared inspector layout for interactive annotation tools.
 use super::theme;
-use gpui::{Div, ElementId, ScrollHandle, Stateful, div, prelude::*, px};
+use gpui::{Div, ElementId, FocusHandle, ScrollHandle, Stateful, div, prelude::*, px};
 
 pub fn panel() -> Div {
     div()
@@ -66,6 +66,21 @@ pub fn list(id: impl Into<ElementId>, scroll: &ScrollHandle) -> Stateful<Div> {
         .border_color(theme::BORDER)
         .rounded_md()
         .bg(theme::SURFACE_DEEP)
+}
+
+/// Scope list interactions to their owning tool while preserving a child's own focus.
+pub fn list_for_tool(
+    id: impl Into<ElementId>,
+    scroll: &ScrollHandle,
+    owner: &FocusHandle,
+) -> Stateful<Div> {
+    let owner = owner.clone();
+    list(id, scroll).on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+        if !window.default_prevented() {
+            owner.focus(window, cx);
+        }
+        cx.stop_propagation();
+    })
 }
 
 pub fn row() -> Div {
