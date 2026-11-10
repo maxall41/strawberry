@@ -263,7 +263,11 @@ impl NerveTracerView {
         state: &NerveTracerState,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        let mut list = tool_panel::list("segments-list", &self.segments_scroll);
+        let mut list = tool_panel::list_for_tool(
+            "segments-list",
+            &self.segments_scroll,
+            &self.base.focus_handle,
+        );
         if state.current_path_segments.is_empty() {
             list = list.child(tool_panel::empty("No segments"));
         }
@@ -306,7 +310,8 @@ impl NerveTracerView {
         state: &NerveTracerState,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        let mut list = tool_panel::list("paths-list", &self.paths_scroll);
+        let mut list =
+            tool_panel::list_for_tool("paths-list", &self.paths_scroll, &self.base.focus_handle);
         if state.paths.is_empty() {
             list = list.child(tool_panel::empty("No paths"));
         }

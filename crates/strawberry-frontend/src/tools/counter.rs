@@ -713,7 +713,6 @@ impl CounterView {
                 })
                 .into()
             })
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
                 this.select_count_type(count_type_id, window, cx);
@@ -793,9 +792,11 @@ impl CounterView {
     fn render_count_types_list(
         state: &CounterState,
         scroll: &gpui::ScrollHandle,
+        owner: &FocusHandle,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        let mut list = tool_panel::list("counter-types-list", scroll).role(gpui::Role::RadioGroup);
+        let mut list = tool_panel::list_for_tool("counter-types-list", scroll, owner)
+            .role(gpui::Role::RadioGroup);
         if state.manual_counts.is_empty() {
             list = list.child(tool_panel::empty("No count types"));
         }
@@ -910,6 +911,7 @@ impl CounterView {
                     .child(Self::render_count_types_list(
                         state,
                         &self.count_types_scroll,
+                        &self.base.focus_handle,
                         cx,
                     ))
                     .child(Self::render_add_button(cx)),
