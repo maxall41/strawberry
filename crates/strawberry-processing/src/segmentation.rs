@@ -1,9 +1,9 @@
 use crate::{
     GpuImageProcessor,
     float_filters::GpuFloatFilters,
-    tiling::{TileConfig, TileGrid, extract_rgba_tile},
+    tiling::{TileConfig, TileGrid, TileInfo, extract_rgba_tile},
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use smartcore::{
@@ -15,6 +15,9 @@ use smartcore::{
 use std::{borrow::Cow, io::Write, path::Path, sync::Arc};
 
 const MODEL_VERSION: u32 = 1;
+const GAUSSIAN_SIGMA: f32 = 1.0;
+const DOG_SMALL_SIGMA: f32 = 1.0;
+const DOG_LARGE_SIGMA: f32 = 10.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureConfig {
@@ -43,15 +46,14 @@ impl FeatureConfig {
         (usize::from(self.gaussian) + usize::from(self.sobel) + usize::from(self.dog))
             * if self.rgb { 3 } else { 1 }
     }
-    fn halo(&self) -> usize {
-        // Gaussian kernels use a radius of three times sigma; Sobel uses one pixel.
+    fn halo(&self) -> Result<usize> {
+        let mut sigma = if self.gaussian { GAUSSIAN_SIGMA } else { 0.0 };
         if self.dog {
-            6
-        } else if self.gaussian {
-            3
-        } else {
-            1
+            sigma = sigma.max(DOG_SMALL_SIGMA).max(DOG_LARGE_SIGMA);
         }
+        // Gaussian kernels use a radius of three times sigma; Sobel uses one pixel.
+        let radius = (sigma * 3.0).ceil().max(if self.sobel { 1.0 } else { 0.0 });
+        num_traits::cast(radius).context("Invalid feature halo")
     }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -232,6 +234,65 @@ pub struct FeatureTile {
     pub height: u32,
     pub rows: Vec<Vec<f32>>,
 }
+
+impl FeatureTile {
+    fn from_columns(tile: &TileInfo, columns: &[Vec<f32>]) -> Result<Self> {
+        let offset_x = usize::try_from(
+            tile.core_x
+                .checked_sub(tile.x)
+                .context("Invalid tile core X")?,
+        )?;
+        let offset_y = usize::try_from(
+            tile.core_y
+                .checked_sub(tile.y)
+                .context("Invalid tile core Y")?,
+        )?;
+        let width = usize::try_from(tile.width)?;
+        let height = usize::try_from(tile.height)?;
+        let core_width = usize::try_from(tile.core_width)?;
+        let core_height = usize::try_from(tile.core_height)?;
+        ensure!(
+            core_width > 0
+                && core_height > 0
+                && offset_x
+                    .checked_add(core_width)
+                    .is_some_and(|end| end <= width)
+                && offset_y
+                    .checked_add(core_height)
+                    .is_some_and(|end| end <= height),
+            "Feature tile core lies outside tile"
+        );
+        let pixel_count = crate::pixel_count(tile.width, tile.height)?;
+        ensure!(
+            columns.iter().all(|column| column.len() == pixel_count),
+            "Invalid feature plane dimensions"
+        );
+
+        let count = crate::pixel_count(tile.core_width, tile.core_height)?;
+        let mut rows: Vec<_> = (0..count)
+            .map(|_| Vec::with_capacity(columns.len()))
+            .collect();
+        // Crop the halo from each plane and transpose into row-major pixel features.
+        for column in columns {
+            let values = column
+                .chunks_exact(width)
+                .skip(offset_y)
+                .take(core_height)
+                .flat_map(|row| row.iter().skip(offset_x).take(core_width));
+            for (row, value) in rows.iter_mut().zip(values) {
+                row.push(*value);
+            }
+        }
+        Ok(Self {
+            x: tile.core_x,
+            y: tile.core_y,
+            width: tile.core_width,
+            height: tile.core_height,
+            rows,
+        })
+    }
+}
+
 impl FeatureExtractor {
     #[must_use]
     pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
@@ -242,70 +303,58 @@ impl FeatureExtractor {
             config,
         }
     }
+    /// # Errors
+    /// Returns an error if no features are selected or their halo is invalid.
     pub fn tiles(
         &self,
         image: &image::RgbaImage,
         features: &FeatureConfig,
-    ) -> Result<Vec<crate::tiling::TileInfo>> {
+    ) -> Result<Vec<TileInfo>> {
         features.validate()?;
         let mut config = self.config;
-        config.overlap = features.halo();
+        config.overlap = features.halo()?;
         Ok(TileGrid::new(image.width(), image.height(), &config).tiles)
     }
+    /// # Errors
+    /// Returns an error for invalid features, tile dimensions, or GPU failures.
     pub async fn extract(
         &self,
         image: &image::RgbaImage,
         features: &FeatureConfig,
-        tile: &crate::tiling::TileInfo,
+        tile: &TileInfo,
     ) -> Result<FeatureTile> {
+        features.validate()?;
         let input = extract_rgba_tile(image, tile)?;
-        let (w, h) = input.dimensions();
-        let mut columns = Vec::new();
-        for channel in if features.rgb { vec![1, 2, 3] } else { vec![0] } {
+        let (width, height) = input.dimensions();
+        let channels: &[u32] = if features.rgb { &[1, 2, 3] } else { &[0] };
+        let mut columns = Vec::with_capacity(features.count());
+        for &channel in channels {
             let plane = self.filters.channel(&input, channel).await?;
-            let mut dog = None;
-            if features.gaussian || features.dog {
-                let small = self.filters.gaussian(w, h, &plane, 1.0).await?;
-                if features.dog {
-                    let large = self.filters.gaussian(w, h, &plane, 2.0).await?;
-                    dog = Some(self.filters.difference(w, h, &small, &large).await?);
-                }
-                if features.gaussian {
-                    columns.push(small);
-                }
+            if features.gaussian {
+                columns.push(
+                    self.filters
+                        .gaussian(width, height, &plane, GAUSSIAN_SIGMA)
+                        .await?,
+                );
             }
             if features.sobel {
-                columns.push(self.filters.sobel(w, h, &plane).await?);
+                columns.push(self.filters.sobel(width, height, &plane).await?);
             }
-            if let Some(dog) = dog {
-                columns.push(dog);
+            if features.dog {
+                columns.push(
+                    self.filters
+                        .difference_of_gaussians(
+                            width,
+                            height,
+                            &plane,
+                            DOG_SMALL_SIGMA,
+                            DOG_LARGE_SIGMA,
+                        )
+                        .await?,
+                );
             }
         }
-        let count = crate::pixel_count(tile.core_width, tile.core_height)?;
-        let rows = (0..count)
-            .map(|offset| {
-                let offset = u32::try_from(offset)?;
-                let x = offset % tile.core_width + tile.core_x - tile.x;
-                let y = offset / tile.core_width + tile.core_y - tile.y;
-                let index = usize::try_from(u64::from(y) * u64::from(w) + u64::from(x))?;
-                columns
-                    .iter()
-                    .map(|column| {
-                        column
-                            .get(index)
-                            .copied()
-                            .ok_or_else(|| anyhow::anyhow!("Feature tile index"))
-                    })
-                    .collect::<Result<Vec<_>>>()
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(FeatureTile {
-            x: tile.core_x,
-            y: tile.core_y,
-            width: tile.core_width,
-            height: tile.core_height,
-            rows,
-        })
+        FeatureTile::from_columns(tile, &columns)
     }
     pub async fn infer(
         &self,

@@ -64,3 +64,7 @@ Never edit the README, never create new markdown files/documentation.
 ## SVG and Icons
 
 Do NOT write custom SVG icons. Use phosphor icons instead: https://phosphoricons.com/. Do not use text as icons, unless explictly instructed to do so.
+
+## UI Text
+
+Do not add superflous text to the UI describing how the internals of Strawberry function, how to interpret results, or anything else not required to make the UI clear and readable.

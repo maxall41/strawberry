@@ -48,6 +48,7 @@ pub enum BackendToolType {
     Compositor,
     Counter,
     Contrast,
+    DifferenceOfGaussians,
     GaussianBlur,
     Grayscale,
     LocalMaxima,
