@@ -717,35 +717,35 @@ impl PrimaryViewer {
             .then_some((x, y))
     }
 
-    // Convert image coordinates to positions relative to the image canvas.
-    const fn image_to_canvas_coords(&self, img_x: f32, img_y: f32) -> (f32, f32) {
-        (
-            img_x.mul_add(self.zoom_level, self.pan_x),
-            img_y.mul_add(self.zoom_level, self.pan_y),
-        )
-    }
-
     // Render a single overlay element
     fn render_overlay_element(&self, element: &OverlayElement) -> impl IntoElement + use<> {
+        let image_width = num_traits::cast::<u32, f32>(self.original_width.max(1)).unwrap_or(1.);
+        let image_height = num_traits::cast::<u32, f32>(self.original_height.max(1)).unwrap_or(1.);
         match element {
             OverlayElement::ImageMask { x, y, .. } => {
                 let Some((mask, rendered)) = self.annotation_images.get(&(*x, *y)) else {
                     return div();
                 };
-                let (x, y) = self.image_to_canvas_coords(
-                    num_traits::cast(*x).unwrap_or(0.0),
-                    num_traits::cast(*y).unwrap_or(0.0),
-                );
-                div().absolute().left(px(x)).top(px(y)).child(
-                    img(rendered.clone())
-                        .use_nearest_filter(true)
-                        .w(px(num_traits::cast::<u32, f32>(mask.width())
-                            .unwrap_or(0.0)
-                            * self.zoom_level))
-                        .h(px(num_traits::cast::<u32, f32>(mask.height())
-                            .unwrap_or(0.0)
-                            * self.zoom_level)),
-                )
+                div()
+                    .absolute()
+                    .left(gpui::relative(
+                        num_traits::cast::<u32, f32>(*x).unwrap_or(0.) / image_width,
+                    ))
+                    .top(gpui::relative(
+                        num_traits::cast::<u32, f32>(*y).unwrap_or(0.) / image_height,
+                    ))
+                    .w(gpui::relative(
+                        num_traits::cast::<u32, f32>(mask.width()).unwrap_or(0.) / image_width,
+                    ))
+                    .h(gpui::relative(
+                        num_traits::cast::<u32, f32>(mask.height()).unwrap_or(0.) / image_height,
+                    ))
+                    .child(
+                        img(rendered.clone())
+                            .use_nearest_filter(true)
+                            .object_fit(gpui::ObjectFit::Fill)
+                            .size_full(),
+                    )
             }
             OverlayElement::Circle {
                 x,
@@ -754,8 +754,6 @@ impl PrimaryViewer {
                 color,
                 style,
             } => {
-                let (screen_x, screen_y) = self.image_to_canvas_coords(*x, *y);
-                let screen_radius = radius * self.zoom_level;
                 let gpui_color =
                     rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
 
@@ -764,20 +762,20 @@ impl PrimaryViewer {
                         let screen_width = width * self.zoom_level;
                         div()
                             .absolute()
-                            .left(px(screen_x - screen_radius))
-                            .top(px(screen_y - screen_radius))
-                            .w(px(screen_radius * 2.0))
-                            .h(px(screen_radius * 2.0))
+                            .left(gpui::relative((x - radius) / image_width))
+                            .top(gpui::relative((y - radius) / image_height))
+                            .w(gpui::relative(radius * 2.0 / image_width))
+                            .h(gpui::relative(radius * 2.0 / image_height))
                             .rounded_full()
                             .border(px(screen_width))
                             .border_color(gpui_color)
                     }
                     CircleStyle::Filled => div()
                         .absolute()
-                        .left(px(screen_x - screen_radius))
-                        .top(px(screen_y - screen_radius))
-                        .w(px(screen_radius * 2.0))
-                        .h(px(screen_radius * 2.0))
+                        .left(gpui::relative((x - radius) / image_width))
+                        .top(gpui::relative((y - radius) / image_height))
+                        .w(gpui::relative(radius * 2.0 / image_width))
+                        .h(gpui::relative(radius * 2.0 / image_height))
                         .rounded_full()
                         .bg(gpui_color),
                 }
@@ -788,17 +786,15 @@ impl PrimaryViewer {
                 radius,
                 color,
             } => {
-                let (screen_x, screen_y) = self.image_to_canvas_coords(*x, *y);
-                let screen_radius = radius * self.zoom_level;
                 let gpui_color =
                     rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
 
                 div()
                     .absolute()
-                    .left(px(screen_x - screen_radius))
-                    .top(px(screen_y - screen_radius))
-                    .w(px(screen_radius * 2.0))
-                    .h(px(screen_radius * 2.0))
+                    .left(gpui::relative((x - radius) / image_width))
+                    .top(gpui::relative((y - radius) / image_height))
+                    .w(gpui::relative(radius * 2.0 / image_width))
+                    .h(gpui::relative(radius * 2.0 / image_height))
                     .rounded_full()
                     .bg(gpui_color)
             }
@@ -813,17 +809,12 @@ impl PrimaryViewer {
 
                 let screen_stroke = stroke_width * self.zoom_level;
 
-                // Polyline adds its paint bounds' origin when drawing to the window.
-                let canvas_points: Vec<(f32, f32)> = points
-                    .iter()
-                    .map(|(x, y)| self.image_to_canvas_coords(*x, *y))
-                    .collect();
-
                 // Convert RGBA array to gpui::Rgba
                 let gpui_color =
                     rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
 
-                gui::polyline::Polyline::new(canvas_points, gpui_color, px(screen_stroke))
+                gui::polyline::Polyline::new(points.clone(), gpui_color, px(screen_stroke))
+                    .with_image_dimensions(self.original_width, self.original_height)
                     .into_element()
             }
             _ => div(), // Placeholder for other element types not yet implemented
@@ -869,12 +860,8 @@ impl Render for PrimaryViewer {
 
         let img = img(self.display_image.clone())
             .use_nearest_filter(true)
-            .w(px(
-                f32::from(gpui::Pixels::from(self.original_width)) * self.zoom_level
-            ))
-            .h(px(
-                f32::from(gpui::Pixels::from(self.original_height)) * self.zoom_level
-            ));
+            .object_fit(gpui::ObjectFit::Fill)
+            .size_full();
 
         let coords = img.coords.clone();
         self.img_coords = coords;
@@ -988,7 +975,19 @@ impl Render for PrimaryViewer {
                         .absolute()
                         .left(px(self.pan_x))
                         .top(px(self.pan_y))
-                        .child(img),
+                        .w(px(num_traits::cast::<u32, f32>(self.original_width)
+                            .unwrap_or(0.)
+                            * self.zoom_level))
+                        .h(px(num_traits::cast::<u32, f32>(self.original_height)
+                            .unwrap_or(0.)
+                            * self.zoom_level))
+                        // One layout establishes the image and every annotation's pixel grid.
+                        .child(img)
+                        .children(
+                            self.overlays
+                                .all_elements()
+                                .map(|element| self.render_overlay_element(element)),
+                        ),
                 )
             })
             .when(!self.image_loaded, |el| {
@@ -1012,11 +1011,6 @@ impl Render for PrimaryViewer {
                     .right(px(20.0))
                     .child(toast.clone())
             }))
-            .children(
-                self.overlays
-                    .all_elements()
-                    .map(|element| self.render_overlay_element(element)),
-            )
             .child(self.busy_overlay.clone())
             .when_some(activity_status, |el, status| {
                 el.child(

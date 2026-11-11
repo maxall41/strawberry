@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     path::Path,
 };
 
@@ -55,7 +55,7 @@ impl ToolManager {
 
     fn save_pipeline(&self, path: &Path) -> anyhow::Result<()> {
         let (config, indices) = self.pipeline_config()?;
-        let mut assets = BTreeMap::new();
+        let mut assets = HashMap::new();
         for tool in &self.tools {
             if self.included.contains(&tool.iam()) {
                 assets.insert(tool.iam().to_string(), tool.pipeline_assets()?);

@@ -9,16 +9,47 @@ use crate::{
     tools::{FrontendMessageHandler, spawn_message_processor},
 };
 use gpui::{App, Context, Entity, FocusHandle, Focusable, Window, div, prelude::*};
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, RwLock},
-};
-use strawberry_types::{AutomaticSegmentationMessage as M, *};
+use std::sync::{Arc, RwLock};
+use strawberry_types::*;
+
+#[derive(Clone, Copy)]
+enum ControlKind {
+    BrushRadius,
+    Trees,
+    Depth,
+}
+
+impl ControlKind {
+    const fn id(self) -> &'static str {
+        match self {
+            Self::BrushRadius => "segmentation-brush-radius",
+            Self::Trees => "segmentation-trees",
+            Self::Depth => "segmentation-depth",
+        }
+    }
+}
+
+#[derive(Default)]
+struct Controls {
+    brush_radius: Option<Entity<ValueControl>>,
+    trees: Option<Entity<ValueControl>>,
+    depth: Option<Entity<ValueControl>>,
+}
+
+impl Controls {
+    fn slot(&mut self, kind: ControlKind) -> &mut Option<Entity<ValueControl>> {
+        match kind {
+            ControlKind::BrushRadius => &mut self.brush_radius,
+            ControlKind::Trees => &mut self.trees,
+            ControlKind::Depth => &mut self.depth,
+        }
+    }
+}
 
 pub struct AutomaticSegmentationView {
     pub state: Arc<RwLock<AutomaticSegmentationState>>,
     pub base: super::base::ToolBase,
-    controls: BTreeMap<String, Entity<ValueControl>>,
+    controls: Controls,
     show_forest: bool,
     annotations_scroll: gpui::ScrollHandle,
 }
@@ -40,12 +71,12 @@ impl AutomaticSegmentationView {
                 BackendToolType::AutomaticSegmentation,
                 cx.focus_handle(),
             ),
-            controls: BTreeMap::new(),
+            controls: Controls::default(),
             show_forest: false,
             annotations_scroll: gpui::ScrollHandle::new(),
         }
     }
-    fn send(&self, message: M) {
+    fn send(&self, message: AutomaticSegmentationMessage) {
         if let Err(error) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::AutomaticSegmentationMessage(message),
         )) {
@@ -56,7 +87,7 @@ impl AutomaticSegmentationView {
         &self,
         id: impl Into<gpui::ElementId>,
         label: impl Into<gpui::SharedString>,
-        message: M,
+        message: AutomaticSegmentationMessage,
         cx: &Context<Self>,
     ) -> Button {
         Button::new(id)
@@ -68,7 +99,6 @@ impl AutomaticSegmentationView {
         id: &'static str,
         label: &'static str,
         save: bool,
-        dataset: bool,
         cx: &Context<Self>,
     ) -> Button {
         Button::new(id)
@@ -76,73 +106,28 @@ impl AutomaticSegmentationView {
             .flex_1()
             .min_w_0()
             .label(label)
-            .on_click(cx.listener(move |this, _, window, cx| this.file(save, dataset, window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.file(save, window, cx)))
     }
-    fn annotations(&self, s: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
-        let count: usize = s.samples.iter().map(|sample| sample.strokes.len()).sum();
+    fn annotations(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
         let mut list = tool_panel::list("segmentation-annotations", &self.annotations_scroll);
-        if count == 0 {
+        if state.annotations.is_empty() {
             list = list.child(
                 div()
-                    .flex_none()
                     .p_3()
                     .text_xs()
                     .text_color(theme::TEXT_MUTED)
                     .child("No annotations"),
             );
         }
-        for (i, sample) in s.samples.iter().enumerate() {
+        for (index, stroke) in state.annotations.iter().enumerate() {
+            let (name, color) = match stroke.kind {
+                AnnotationKind::Foreground => ("Foreground", theme::SUCCESS),
+                AnnotationKind::Background => ("Background", theme::DANGER),
+                AnnotationKind::Eraser => ("Eraser", theme::TEXT_MUTED),
+            };
             list = list.child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_2()
-                    .bg(theme::SURFACE_ALT)
-                    .border_b_1()
-                    .border_color(theme::BORDER_MUTED)
-                    .child(
-                        self.button(
-                            ("segmentation-image", i),
-                            format!("Image {}", i.saturating_add(1)),
-                            M::Preview(Some(i)),
-                            cx,
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .compact()
-                        .selected(s.preview == Some(i))
-                        .flex_1()
-                        .min_w_0()
-                        .justify_start(),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .text_color(theme::TEXT_MUTED)
-                            .child(format!("{} × {}", sample.width, sample.height)),
-                    ),
-            );
-            for (j, stroke) in sample.strokes.iter().enumerate() {
-                let name = if stroke.erase {
-                    "Eraser"
-                } else if stroke.foreground {
-                    "Foreground"
-                } else {
-                    "Background"
-                };
-                let color = if stroke.erase {
-                    theme::TEXT_MUTED
-                } else if stroke.foreground {
-                    theme::SUCCESS
-                } else {
-                    theme::DANGER
-                };
-                let selected = s.selected_stroke == Some((i, j)) && s.preview == Some(i);
-                let row = tool_panel::row()
-                    .bg(if selected {
+                tool_panel::row()
+                    .bg(if state.selected_stroke == Some(index) {
                         theme::SURFACE_ALT
                     } else {
                         theme::SURFACE_DEEP
@@ -150,106 +135,52 @@ impl AutomaticSegmentationView {
                     .child(
                         div()
                             .flex_none()
-                            .size(gpui::px(6.0))
+                            .size(gpui::px(6.))
                             .rounded_full()
                             .bg(color),
                     )
                     .child(
-                        Button::new(gpui::ElementId::Name(
-                            format!("segmentation-stroke-{i}-{j}").into(),
-                        ))
+                        self.button(
+                            ("segmentation-stroke", index),
+                            format!("{name} {}", index.saturating_add(1)),
+                            AutomaticSegmentationMessage::SelectStroke(index),
+                            cx,
+                        )
                         .variant(ButtonVariant::Ghost)
                         .compact()
                         .flex_1()
                         .min_w_0()
-                        .justify_start()
-                        .aria_label(format!("Select {name} annotation {}", j.saturating_add(1)))
-                        .child(
-                            div().flex().flex_col().items_start().min_w_0().child(
-                                div()
-                                    .text_xs()
-                                    .truncate()
-                                    .child(format!("{name} {}", j.saturating_add(1))),
-                            ),
-                        )
-                        .on_click(
-                            cx.listener(move |this, _, _, _| this.send(M::SelectStroke(i, j))),
-                        ),
+                        .justify_start(),
                     )
                     .child(
-                        Button::new(gpui::ElementId::Name(
-                            format!("segmentation-visible-{i}-{j}").into(),
-                        ))
-                        .variant(ButtonVariant::Ghost)
-                        .icon(
-                            if stroke.visible {
-                                Icon::eye_open()
-                            } else {
-                                Icon::eye_closed()
-                            },
-                            if stroke.visible {
-                                "Hide annotation"
-                            } else {
-                                "Show annotation"
-                            },
-                        )
-                        .tooltip_text(if stroke.visible {
-                            "Hide annotation"
-                        } else {
-                            "Show annotation"
-                        })
-                        .on_click(cx.listener(move |this, _, _, _| this.send(M::Visibility(i, j)))),
-                    )
-                    .child(
-                        Button::new(gpui::ElementId::Name(
-                            format!("segmentation-delete-{i}-{j}").into(),
-                        ))
-                        .variant(ButtonVariant::Delete)
-                        .aria_label("Delete annotation")
-                        .tooltip_text("Delete annotation")
-                        .on_click(
-                            cx.listener(move |this, _, _, _| this.send(M::DeleteStroke(i, j))),
-                        ),
-                    );
-                list = list.child(row);
-            }
-        }
-        let mut section = tool_panel::section("Training annotations")
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::TEXT_MUTED)
-                            .child(format!("{count} annotations")),
-                    )
-                    .when(s.preview.is_some(), |el| {
-                        el.child(
-                            self.button(
-                                "segmentation-current",
-                                "Current image",
-                                M::Preview(None),
-                                cx,
+                        Button::new(("segmentation-visible", index))
+                            .variant(ButtonVariant::Ghost)
+                            .icon(
+                                if stroke.visible {
+                                    Icon::eye_open()
+                                } else {
+                                    Icon::eye_closed()
+                                },
+                                "Toggle annotation visibility",
                             )
-                            .compact()
-                            .variant(ButtonVariant::Ghost),
-                        )
-                    }),
-            )
-            .child(list);
-        section = section.child(
-            tool_panel::file_actions()
-                .child(self.file_button("segmentation-load-data", "Load dataset", false, true, cx))
-                .child(
-                    self.file_button("segmentation-save-data", "Save dataset", true, true, cx)
-                        .disabled(count == 0),
-                ),
-        );
-        section
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.send(AutomaticSegmentationMessage::ToggleStrokeVisibility(
+                                    index,
+                                ))
+                            })),
+                    )
+                    .child(
+                        Button::new(("segmentation-delete", index))
+                            .variant(ButtonVariant::Delete)
+                            .aria_label("Delete annotation")
+                            .tooltip_text("Delete annotation")
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.send(AutomaticSegmentationMessage::DeleteStroke(index))
+                            })),
+                    ),
+            );
+        }
+        tool_panel::section("Training annotations").child(list)
     }
     fn feature_controls(&self, s: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
         let mut section = tool_panel::section("Features");
@@ -266,7 +197,7 @@ impl AutomaticSegmentationView {
             }
             section = section.child(
                 ToggleButton::new(label.into(), enabled, move |this: &mut Self, _, _, _| {
-                    this.send(M::Features(features.clone()))
+                    this.send(AutomaticSegmentationMessage::SetFeatures(features.clone()))
                 })
                 .with_no_margin()
                 .render(cx),
@@ -280,7 +211,7 @@ impl AutomaticSegmentationView {
                 self.button(
                     gpui::ElementId::Name(format!("segmentation-channel-{label}").into()),
                     label,
-                    M::Features(features),
+                    AutomaticSegmentationMessage::SetFeatures(features),
                     cx,
                 )
                 .variant(ButtonVariant::Ghost)
@@ -299,89 +230,84 @@ impl AutomaticSegmentationView {
             )
             .child(channels)
     }
-    fn file(&self, save: bool, dataset: bool, window: &Window, cx: &Context<Self>) {
+    fn file(&self, save: bool, window: &Window, cx: &Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
-            let dialog = rfd::FileDialog::new().add_filter(
-                if dataset {
-                    "Segmentation dataset"
-                } else {
-                    "Segmentation model"
-                },
-                &[if dataset {
-                    "strawberry-training"
-                } else {
-                    "strawberry-model"
-                }],
-            );
+            let dialog = rfd::FileDialog::new().add_filter("Segmentation model", &["sbm"]);
             let path = if save {
-                dialog.save_file()
+                dialog.set_file_name("model.sbm").save_file()
             } else {
                 dialog.pick_file()
             };
             if let Some(path) = path {
                 let _ = this.update(cx, |this, _| {
-                    this.send(match (save, dataset) {
-                        (true, true) => M::SaveDataset(path),
-                        (false, true) => M::LoadDataset(path),
-                        (true, false) => M::SaveModel(path),
-                        (false, false) => M::LoadModel(path),
-                    })
+                    this.send(if save {
+                        AutomaticSegmentationMessage::SaveModel(path)
+                    } else {
+                        AutomaticSegmentationMessage::LoadModel(path)
+                    });
                 });
             }
         })
         .detach();
     }
-    fn number(
+
+    fn integer_control(
         &mut self,
-        id: &str,
+        kind: ControlKind,
         label: &str,
-        value: f32,
-        min: f32,
-        max: f32,
-        step: f32,
+        value: u32,
+        min: u32,
+        max: u32,
         cx: &mut Context<Self>,
     ) -> Entity<ValueControl> {
-        if let Some(control) = self.controls.get(id) {
+        if let Some(control) = self.controls.slot(kind) {
             return control.clone();
         }
-        let key = id.to_string();
         let control = cx.new(|cx| {
-            ValueControl::new(
-                value.to_string(),
+            ValueControl::new_integer(
                 value,
                 ValueControlConfig {
-                    id: key.clone(),
+                    id: kind.id().into(),
                     label: label.into(),
-                    min,
-                    max,
-                    step,
+                    min: num_traits::cast(min).unwrap_or(0.),
+                    max: num_traits::cast(max).unwrap_or(0.),
+                    step: 1.,
                 },
                 cx,
             )
         });
-        cx.subscribe(&control, |this, _, event: &ValueControlEvent, _| {
-            let state = this
+        cx.subscribe(&control, move |this, _, event: &ValueControlEvent, _| {
+            let Some(integer) = num_traits::ToPrimitive::to_u32(&event.value) else {
+                return;
+            };
+            let mut forest = this
                 .state
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .forest
                 .clone();
-            let integer = num_traits::ToPrimitive::to_u32(&event.value).unwrap_or(1);
-            let mut forest = state.forest;
-            match event.id.as_str() {
-                "brush" => this.send(M::BrushRadius(integer)),
-                "trees" => {
-                    forest.trees = u16::try_from(integer).unwrap_or(100);
-                    this.send(M::Forest(forest));
+            match kind {
+                ControlKind::BrushRadius => {
+                    if let Ok(radius) = BrushRadius::try_from(integer) {
+                        this.send(AutomaticSegmentationMessage::SetBrushRadius(radius));
+                    }
                 }
-                "depth" => {
-                    forest.depth = u16::try_from(integer).unwrap_or(20);
-                    this.send(M::Forest(forest));
+                ControlKind::Trees => {
+                    if let Ok(trees) = u16::try_from(integer) {
+                        forest.trees = trees;
+                        this.send(AutomaticSegmentationMessage::SetForest(forest));
+                    }
                 }
-                _ => {}
+                ControlKind::Depth => {
+                    if let Ok(depth) = u16::try_from(integer) {
+                        forest.depth = depth;
+                        this.send(AutomaticSegmentationMessage::SetForest(forest));
+                    }
+                }
             }
         })
         .detach();
-        self.controls.insert(key, control.clone());
+        *self.controls.slot(kind) = Some(control.clone());
         control
     }
 }
@@ -404,17 +330,18 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
         }
     }
     fn on_state_changed(&mut self, state: &Self::State, cx: &mut Context<Self>) {
-        for (id, control) in &self.controls {
-            let value = match id.as_str() {
-                "brush" => num_traits::cast(state.brush_radius),
-                "trees" => Some(f32::from(state.forest.trees)),
-                "depth" => Some(f32::from(state.forest.depth)),
-                _ => None,
-            };
-            if let Some(value) = value {
+        for (kind, value) in [
+            (ControlKind::BrushRadius, state.brush_radius.get()),
+            (ControlKind::Trees, u32::from(state.forest.trees)),
+            (ControlKind::Depth, u32::from(state.forest.depth)),
+        ] {
+            if let Some(control) = self.controls.slot(kind) {
                 control.update(cx, |control, cx| {
-                    control.value = value;
-                    cx.notify();
+                    let value = num_traits::cast(value).unwrap_or(0.);
+                    if control.value != value {
+                        control.set_value(value);
+                        cx.notify();
+                    }
                 });
             }
         }
@@ -441,7 +368,7 @@ impl Render for AutomaticSegmentationView {
                 self.button(
                     gpui::ElementId::Name(format!("segmentation-mode-{label}").into()),
                     label,
-                    M::Training(training),
+                    AutomaticSegmentationMessage::SetTraining(training),
                     cx,
                 )
                 .variant(ButtonVariant::Ghost)
@@ -480,7 +407,7 @@ impl Render for AutomaticSegmentationView {
                             self.button(
                                 ("segmentation-layer", i),
                                 format!("{}", i.saturating_add(1)),
-                                M::Layer(i),
+                                AutomaticSegmentationMessage::SelectLayer(i),
                                 cx,
                             )
                             .compact()
@@ -491,15 +418,13 @@ impl Render for AutomaticSegmentationView {
         }
         if s.training {
             let mut brushes = tool_panel::segmented();
-            for (label, selected, message) in [
-                ("Foreground", !s.eraser && s.foreground, M::Foreground(true)),
-                (
-                    "Background",
-                    !s.eraser && !s.foreground,
-                    M::Foreground(false),
-                ),
-                ("Eraser", s.eraser, M::Eraser(true)),
+            for (label, kind) in [
+                ("Foreground", AnnotationKind::Foreground),
+                ("Background", AnnotationKind::Background),
+                ("Eraser", AnnotationKind::Eraser),
             ] {
+                let selected = s.brush == kind;
+                let message = AutomaticSegmentationMessage::SetBrush(kind);
                 brushes = brushes.child(
                     self.button(
                         gpui::ElementId::Name(format!("segmentation-brush-{label}").into()),
@@ -515,13 +440,12 @@ impl Render for AutomaticSegmentationView {
                     .min_w_0(),
                 );
             }
-            let radius = self.number(
-                "brush",
+            let radius = self.integer_control(
+                ControlKind::BrushRadius,
                 "Brush radius (px)",
-                num_traits::cast(s.brush_radius).unwrap_or(5.0),
-                1.0,
-                128.0,
-                1.0,
+                s.brush_radius.get(),
+                BrushRadius::MIN,
+                BrushRadius::MAX,
                 cx,
             );
             panel = panel
@@ -534,16 +458,26 @@ impl Render for AutomaticSegmentationView {
                                 .flex()
                                 .gap_2()
                                 .child(
-                                    self.button("segmentation-undo", "Undo stroke", M::Undo, cx)
-                                        .compact()
-                                        .flex_1()
-                                        .min_w_0(),
+                                    self.button(
+                                        "segmentation-undo",
+                                        "Undo stroke",
+                                        AutomaticSegmentationMessage::UndoStroke,
+                                        cx,
+                                    )
+                                    .compact()
+                                    .flex_1()
+                                    .min_w_0(),
                                 )
                                 .child(
-                                    self.button("segmentation-clear", "Clear image", M::Clear, cx)
-                                        .compact()
-                                        .flex_1()
-                                        .min_w_0(),
+                                    self.button(
+                                        "segmentation-clear",
+                                        "Clear image",
+                                        AutomaticSegmentationMessage::ClearAnnotations,
+                                        cx,
+                                    )
+                                    .compact()
+                                    .flex_1()
+                                    .min_w_0(),
                                 ),
                         ),
                 )
@@ -563,22 +497,20 @@ impl Render for AutomaticSegmentationView {
             );
             if self.show_forest {
                 classifier = classifier
-                    .child(self.number(
-                        "trees",
+                    .child(self.integer_control(
+                        ControlKind::Trees,
                         "Trees",
-                        f32::from(s.forest.trees),
-                        1.0,
-                        4096.0,
-                        1.0,
+                        u32::from(s.forest.trees),
+                        1,
+                        4096,
                         cx,
                     ))
-                    .child(self.number(
-                        "depth",
+                    .child(self.integer_control(
+                        ControlKind::Depth,
                         "Maximum depth",
-                        f32::from(s.forest.depth),
-                        1.0,
-                        256.0,
-                        1.0,
+                        u32::from(s.forest.depth),
+                        1,
+                        256,
                         cx,
                     ));
             }
@@ -592,10 +524,12 @@ impl Render for AutomaticSegmentationView {
                         .disabled(
                             s.busy
                                 || !s.is_enabled
-                                || s.samples.is_empty()
+                                || s.training_annotation_count == 0
                                 || s.features.count() == 0,
                         )
-                        .on_click(cx.listener(|this, _, _, _| this.send(M::Train))),
+                        .on_click(cx.listener(|this, _, _, _| {
+                            this.send(AutomaticSegmentationMessage::TrainModel)
+                        })),
                 ),
             );
         }
@@ -632,15 +566,9 @@ impl Render for AutomaticSegmentationView {
         panel = panel.child(
             model.child(
                 tool_panel::file_actions()
-                    .child(self.file_button(
-                        "segmentation-load-model",
-                        "Load model",
-                        false,
-                        false,
-                        cx,
-                    ))
+                    .child(self.file_button("segmentation-load-model", "Load model", false, cx))
                     .child(
-                        self.file_button("segmentation-save-model", "Save model", true, false, cx)
+                        self.file_button("segmentation-save-model", "Save model", true, cx)
                             .disabled(!s.model_ready),
                     ),
             ),

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use image::RgbaImage;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// Named files stored alongside a tool's configuration in a pipeline archive.
-pub type ToolAssets = BTreeMap<String, Vec<u8>>;
+pub type ToolAssets = HashMap<String, Vec<u8>>;
 
 /// Trait for image processing tools (backend)
 #[async_trait]

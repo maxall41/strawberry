@@ -4,7 +4,7 @@ use std::sync::Arc;
 use strawberry_processing::local_maxima::ThresholdType;
 use strawberry_processing::segmentation::{FeatureConfig, ForestConfig};
 
-use super::{BackendToolType, ToolState};
+use super::{AnnotationKind, BackendToolType, BrushRadius, ToolState};
 
 #[derive(Debug, Clone)]
 pub struct OutputFrame {
@@ -69,24 +69,20 @@ pub enum WatershedMessage {
 
 #[derive(Debug, Clone)]
 pub enum AutomaticSegmentationMessage {
-    Training(bool),
-    Foreground(bool),
-    Eraser(bool),
-    BrushRadius(u32),
-    Layer(usize),
-    Features(FeatureConfig),
-    Forest(ForestConfig),
-    Preview(Option<usize>),
-    SelectStroke(usize, usize),
-    Visibility(usize, usize),
-    DeleteStroke(usize, usize),
-    Undo,
-    Clear,
-    Train,
+    SetTraining(bool),
+    SetBrush(AnnotationKind),
+    SetBrushRadius(BrushRadius),
+    SelectLayer(usize),
+    SetFeatures(FeatureConfig),
+    SetForest(ForestConfig),
+    SelectStroke(usize),
+    ToggleStrokeVisibility(usize),
+    DeleteStroke(usize),
+    UndoStroke,
+    ClearAnnotations,
+    TrainModel,
     SaveModel(PathBuf),
     LoadModel(PathBuf),
-    SaveDataset(PathBuf),
-    LoadDataset(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -130,7 +126,7 @@ use crate::{CounterMode, CounterTool};
 
 #[derive(Debug, Clone)]
 pub enum PipelineObjectMessage {
-    AutomaticSegmentationMessage(crate::AutomaticSegmentationMessage),
+    AutomaticSegmentationMessage(AutomaticSegmentationMessage),
     DecomposerMessage(DecomposerMessage),
     CompositorMessage(CompositorMessage),
     ContrastMessage(ContrastMessage),

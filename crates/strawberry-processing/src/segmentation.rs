@@ -4,6 +4,7 @@ use crate::{
     tiling::{TileConfig, TileGrid, extract_rgba_tile},
 };
 use anyhow::{Result, ensure};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use smartcore::{
     ensemble::random_forest_classifier::{
@@ -15,6 +16,8 @@ use std::io::Write;
 use std::{path::Path, sync::Arc};
 
 const MODEL_VERSION: u32 = 1;
+// Bound concurrent feature matrices for both luminance and RGB extraction.
+const MAX_PARALLEL_TILES: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureConfig {
@@ -218,25 +221,24 @@ impl FeatureExtractor {
                 columns.push(dog);
             }
         }
-        let mut rows = Vec::new();
-        for y in 0..tile.core_height {
-            for x in 0..tile.core_width {
-                let index = usize::try_from(
-                    u64::from(y + tile.core_y - tile.y) * u64::from(w)
-                        + u64::from(x + tile.core_x - tile.x),
-                )?;
-                rows.push(
-                    columns
-                        .iter()
-                        .map(|c| {
-                            c.get(index)
-                                .copied()
-                                .ok_or_else(|| anyhow::anyhow!("Feature tile index"))
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                );
-            }
-        }
+        let count = crate::pixel_count(tile.core_width, tile.core_height)?;
+        let rows = (0..count)
+            .map(|offset| {
+                let offset = u32::try_from(offset)?;
+                let x = offset % tile.core_width + tile.core_x - tile.x;
+                let y = offset / tile.core_width + tile.core_y - tile.y;
+                let index = usize::try_from(u64::from(y) * u64::from(w) + u64::from(x))?;
+                columns
+                    .iter()
+                    .map(|column| {
+                        column
+                            .get(index)
+                            .copied()
+                            .ok_or_else(|| anyhow::anyhow!("Feature tile index"))
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(FeatureTile {
             x: tile.core_x,
             y: tile.core_y,
@@ -251,20 +253,33 @@ impl FeatureExtractor {
         model: &SegmentationModel,
     ) -> Result<image::RgbaImage> {
         let mut output = image::RgbaImage::new(image.width(), image.height());
-        for tile in self.tiles(image, &model.features)? {
-            let features = self.extract(image, &model.features, &tile).await?;
-            let labels = model.predict(&features.rows)?;
-            for ((x, y, pixel), label) in image::RgbaImage::new(features.width, features.height)
-                .enumerate_pixels()
-                .zip(labels)
-            {
-                let _ = pixel;
-                let value = if label == 1 { 255 } else { 0 };
-                output.put_pixel(
-                    features.x + x,
-                    features.y + y,
-                    image::Rgba([value, value, value, 255]),
-                );
+        let tiles = self.tiles(image, &model.features)?;
+        let batch_size = rayon::current_num_threads().clamp(1, MAX_PARALLEL_TILES);
+        for batch in tiles.chunks(batch_size) {
+            // Await GPU extraction before entering Rayon, which may run on this thread.
+            let features = futures::future::try_join_all(
+                batch
+                    .iter()
+                    .map(|tile| self.extract(image, &model.features, tile)),
+            )
+            .await?;
+            let predictions = features
+                .into_par_iter()
+                .map(|features| {
+                    let labels = model.predict(&features.rows)?;
+                    Ok((features.x, features.y, features.width, labels))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            for (x, y, width, labels) in predictions {
+                for (offset, label) in labels.into_iter().enumerate() {
+                    let offset = u32::try_from(offset)?;
+                    let value = if label == 1 { 255 } else { 0 };
+                    output.put_pixel(
+                        x + offset % width,
+                        y + offset / width,
+                        image::Rgba([value, value, value, 255]),
+                    );
+                }
             }
         }
         Ok(output)

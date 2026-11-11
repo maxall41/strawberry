@@ -9,6 +9,7 @@ use tokio::sync::broadcast;
 
 use crate::gui::sidebar::{ToolPanel, ToolRegistration, ToolSidebar};
 use crate::tools::FrontendMessageHandler;
+use crate::tools::automatic_segmentation::AutomaticSegmentationView;
 use crate::tools::compositor::CompositorView;
 use crate::tools::contrast::ContrastView;
 use crate::tools::counter::CounterView;
@@ -241,7 +242,7 @@ pub fn install(
             BackendToolType::AutomaticSegmentation,
             tx.clone(),
             rx,
-            crate::tools::automatic_segmentation::AutomaticSegmentationView::new,
+            AutomaticSegmentationView::new,
         ),
         register_tool(
             cx,

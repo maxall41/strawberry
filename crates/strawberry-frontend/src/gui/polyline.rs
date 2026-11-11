@@ -7,6 +7,7 @@ pub struct Polyline {
     points: Vec<(f32, f32)>,
     color: Rgba,
     stroke_width: Pixels,
+    image_dimensions: Option<(u32, u32)>,
 }
 
 impl Polyline {
@@ -15,7 +16,12 @@ impl Polyline {
             points,
             color,
             stroke_width,
+            image_dimensions: None,
         }
+    }
+    pub const fn with_image_dimensions(mut self, width: u32, height: u32) -> Self {
+        self.image_dimensions = Some((width, height));
+        self
     }
 }
 
@@ -52,11 +58,27 @@ impl IntoElement for Polyline {
             points,
             color,
             stroke_width,
+            image_dimensions,
         } = self;
         div().absolute().left_0().top_0().size_full().child(
             canvas(
                 |_, _, _| {},
                 move |bounds, (), window, _| {
+                    let points = if let Some((width, height)) = image_dimensions {
+                        let width = num_traits::cast::<u32, f32>(width.max(1)).unwrap_or(1.);
+                        let height = num_traits::cast::<u32, f32>(height.max(1)).unwrap_or(1.);
+                        points
+                            .into_iter()
+                            .map(|(x, y)| {
+                                (
+                                    x / width * f32::from(bounds.size.width),
+                                    y / height * f32::from(bounds.size.height),
+                                )
+                            })
+                            .collect()
+                    } else {
+                        points
+                    };
                     if let Some(path) = build_window_path(&points, bounds.origin, stroke_width) {
                         window.paint_path(path, color);
                     }
