@@ -373,9 +373,7 @@ impl AutomaticSegmentation {
                 self.annotation_masks.clear();
             }
             AutomaticSegmentationMessage::SetFeatures(value) => {
-                if value.count() > 0 {
-                    value.validate()?;
-                }
+                value.validate()?;
                 self.state.features = value;
                 self.edited();
             }

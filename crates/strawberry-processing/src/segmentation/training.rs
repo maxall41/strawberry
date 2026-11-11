@@ -128,7 +128,7 @@ impl TrainingData {
                 }
             }
         }
-        self.feature_count += 1 + features.context_features().count();
+        self.feature_count += features.context_features().count();
         Ok(())
     }
 
