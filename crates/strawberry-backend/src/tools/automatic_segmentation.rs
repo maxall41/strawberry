@@ -3,7 +3,10 @@ use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use image::RgbaImage;
 use serde::Deserialize;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 use strawberry_processing::{
     GpuImageProcessor,
     segmentation::{FeatureExtractor, SegmentationModel},
@@ -105,6 +108,36 @@ fn rasterize(sample: &Sample, width: u32, height: u32) -> BTreeMap<(u32, u32), u
         }
     }
     labels
+}
+
+fn select_training_pixels(
+    candidates: &[Vec<(usize, u32, u32)>; 2],
+    balance_classes: bool,
+) -> Result<HashMap<(usize, u32, u32), u8>> {
+    let minority_count = candidates.iter().map(Vec::len).min().unwrap_or(0);
+    ensure!(
+        minority_count > 0,
+        "Annotate both foreground and background before training"
+    );
+    let mut selected = HashMap::new();
+    for (label, class) in candidates.iter().enumerate() {
+        let count = if balance_classes {
+            minority_count
+        } else {
+            class.len()
+        };
+        for i in 0..count {
+            let index = if count == class.len() {
+                i
+            } else {
+                i * class.len() / count
+            };
+            if let Some(&key) = class.get(index) {
+                selected.insert(key, u8::try_from(label)?);
+            }
+        }
+    }
+    Ok(selected)
 }
 
 fn paint_mask(
@@ -307,25 +340,7 @@ impl AutomaticSegmentation {
                         }
                     }
                 }
-                let count = candidates
-                    .iter()
-                    .map(Vec::len)
-                    .min()
-                    .unwrap_or(0)
-                    .min(50_000);
-                ensure!(
-                    count > 0,
-                    "Annotate both foreground and background before training"
-                );
-                let mut selected = BTreeMap::new();
-                for (label, class) in candidates.iter().enumerate() {
-                    for i in 0..count {
-                        let index = i * class.len() / count;
-                        if let Some(&key) = class.get(index) {
-                            selected.insert(key, u8::try_from(label)?);
-                        }
-                    }
-                }
+                let selected = select_training_pixels(&candidates, forest.balance_classes)?;
                 let mut rows = Vec::new();
                 let mut labels = Vec::new();
                 for (index, image) in images.iter().enumerate() {
