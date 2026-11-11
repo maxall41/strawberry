@@ -12,12 +12,9 @@ use smartcore::{
     },
     linalg::basic::matrix::DenseMatrix,
 };
-use std::io::Write;
-use std::{path::Path, sync::Arc};
+use std::{borrow::Cow, io::Write, path::Path, sync::Arc};
 
 const MODEL_VERSION: u32 = 1;
-// Bound concurrent feature matrices for both luminance and RGB extraction.
-const MAX_PARALLEL_TILES: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureConfig {
@@ -58,10 +55,12 @@ impl FeatureConfig {
     }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ForestConfig {
     pub trees: u16,
     pub depth: u16,
     pub seed: u64,
+    pub input_scale: f32,
 }
 impl Default for ForestConfig {
     fn default() -> Self {
@@ -69,9 +68,75 @@ impl Default for ForestConfig {
             trees: 100,
             depth: 20,
             seed: 100,
+            input_scale: 1.0,
         }
     }
 }
+impl ForestConfig {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.trees > 0 && self.trees <= 4096 && self.depth > 0 && self.depth <= 256,
+            "Invalid forest parameters"
+        );
+        ensure!(
+            self.input_scale.is_finite() && (0.01..=1.0).contains(&self.input_scale),
+            "Input scale must be between 0.01 and 1.0"
+        );
+        Ok(())
+    }
+
+    /// Use the same image scale for training features and prediction features.
+    pub fn rescale_input<'a>(
+        &self,
+        image: &'a image::RgbaImage,
+    ) -> Result<Cow<'a, image::RgbaImage>> {
+        self.validate()?;
+        ensure!(
+            image.width() > 0 && image.height() > 0,
+            "Empty segmentation image"
+        );
+        if self.input_scale == 1.0 {
+            return Ok(Cow::Borrowed(image));
+        }
+        let dimension = |size| -> Result<u32> {
+            let scaled = (f64::from(size) * f64::from(self.input_scale))
+                .round()
+                .max(1.0);
+            num_traits::cast(scaled).ok_or_else(|| anyhow::anyhow!("Invalid scaled image size"))
+        };
+        Ok(Cow::Owned(image::imageops::resize(
+            image,
+            dimension(image.width())?,
+            dimension(image.height())?,
+            image::imageops::FilterType::Triangle,
+        )))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InferenceConfig {
+    pub max_parallel_tiles: u16,
+}
+
+impl Default for InferenceConfig {
+    fn default() -> Self {
+        Self {
+            max_parallel_tiles: 8,
+        }
+    }
+}
+
+impl InferenceConfig {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            (1..=256).contains(&self.max_parallel_tiles),
+            "Maximum parallel tiles must be between 1 and 256"
+        );
+        Ok(())
+    }
+}
+
 type Forest = RandomForestClassifier<f32, u8, DenseMatrix<f32>, Vec<u8>>;
 #[derive(Serialize, Deserialize)]
 pub struct SegmentationModel {
@@ -88,13 +153,7 @@ impl SegmentationModel {
         labels: Vec<u8>,
     ) -> Result<Self> {
         features.validate()?;
-        ensure!(
-            parameters.trees > 0
-                && parameters.trees <= 4096
-                && parameters.depth > 0
-                && parameters.depth <= 256,
-            "Invalid forest parameters"
-        );
+        parameters.validate()?;
         ensure!(
             rows.len() == labels.len()
                 && labels.contains(&0)
@@ -146,6 +205,7 @@ impl SegmentationModel {
             "Unsupported segmentation model version"
         );
         model.features.validate()?;
+        model.parameters.validate()?;
         model.predict(&vec![vec![0.0; model.features.count()]])?;
         Ok(model)
     }
@@ -251,10 +311,17 @@ impl FeatureExtractor {
         &self,
         image: &image::RgbaImage,
         model: &SegmentationModel,
+        config: &InferenceConfig,
     ) -> Result<image::RgbaImage> {
+        config.validate()?;
+        let original_dimensions = image.dimensions();
+        let scaled = model.parameters.rescale_input(image)?;
+        let image = scaled.as_ref();
         let mut output = image::RgbaImage::new(image.width(), image.height());
         let tiles = self.tiles(image, &model.features)?;
-        let batch_size = rayon::current_num_threads().clamp(1, MAX_PARALLEL_TILES);
+        // Bound concurrent feature matrices for both luminance and RGB extraction.
+        let batch_size =
+            rayon::current_num_threads().clamp(1, usize::from(config.max_parallel_tiles));
         for batch in tiles.chunks(batch_size) {
             // Await GPU extraction before entering Rayon, which may run on this thread.
             let features = futures::future::try_join_all(
@@ -282,6 +349,16 @@ impl FeatureExtractor {
                 }
             }
         }
-        Ok(output)
+        if output.dimensions() == original_dimensions {
+            Ok(output)
+        } else {
+            // Labels are categorical: interpolation would introduce nonbinary values.
+            Ok(image::imageops::resize(
+                &output,
+                original_dimensions.0,
+                original_dimensions.1,
+                image::imageops::FilterType::Nearest,
+            ))
+        }
     }
 }

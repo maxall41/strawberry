@@ -2,7 +2,7 @@ use image::RgbaImage;
 use std::path::PathBuf;
 use std::sync::Arc;
 use strawberry_processing::local_maxima::ThresholdType;
-use strawberry_processing::segmentation::{FeatureConfig, ForestConfig};
+use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, InferenceConfig};
 
 use super::{AnnotationKind, BackendToolType, BrushRadius, ToolState};
 
@@ -75,6 +75,7 @@ pub enum AutomaticSegmentationMessage {
     SelectLayer(usize),
     SetFeatures(FeatureConfig),
     SetForest(ForestConfig),
+    SetInference(InferenceConfig),
     SelectStroke(usize),
     ToggleStrokeVisibility(usize),
     DeleteStroke(usize),
