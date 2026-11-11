@@ -2,69 +2,97 @@ use super::{base::ToolBase, cache::ToolCache};
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use image::RgbaImage;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{collections::BTreeMap, sync::Arc};
 use strawberry_processing::{
     GpuImageProcessor,
-    segmentation::{FeatureExtractor, SegmentationModel, write_artifact},
+    segmentation::{FeatureExtractor, SegmentationModel},
 };
 use strawberry_types::{
     overlay::{CircleStyle, OverlayElement, ToolOverlay},
     *,
 };
 
-const DATA_VERSION: u32 = 1;
 const MODEL_ASSET: &str = "model.json";
+const MASK_TILE_SIZE: u32 = 256;
+const FOREGROUND_BGRA: [u8; 4] = [100, 220, 40, 150];
+const BACKGROUND_BGRA: [u8; 4] = [80, 70, 230, 150];
+const TRANSPARENT_BGRA: [u8; 4] = [0; 4];
+type MaskTiles = BTreeMap<(u32, u32), Arc<RgbaImage>>;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 struct Sample {
-    width: u32,
-    height: u32,
-    pixels: Vec<u8>,
+    image: Arc<RgbaImage>,
     strokes: Vec<AnnotationStroke>,
 }
-impl Sample {
-    fn image(&self) -> Result<RgbaImage> {
-        RgbaImage::from_raw(self.width, self.height, self.pixels.clone())
-            .ok_or_else(|| anyhow::anyhow!("Invalid training image dimensions"))
+
+fn annotation_color(kind: AnnotationKind) -> [u8; 4] {
+    match kind {
+        AnnotationKind::Foreground => FOREGROUND_BGRA,
+        AnnotationKind::Background => BACKGROUND_BGRA,
+        AnnotationKind::Eraser => TRANSPARENT_BGRA,
     }
 }
-/// Replay annotation strokes deterministically, producing a BTreeMap mapping (y,x) to a label
-fn rasterize<'a>(
+
+/// Visit horizontal spans of a circular dab, clipping once per row.
+fn brush_spans(
     width: u32,
     height: u32,
-    strokes: impl Iterator<Item = &'a AnnotationStroke>,
-) -> BTreeMap<(u32, u32), u8> {
+    x: u32,
+    y: u32,
+    radius: BrushRadius,
+    mut visit: impl FnMut(u32, u32, u32),
+) {
+    let radius = i64::from(radius.get());
+    let top = (i64::from(y) - radius).max(0);
+    let bottom = (i64::from(y) + radius).min(i64::from(height) - 1);
+    for row in top..=bottom {
+        let dy = row - i64::from(y);
+        let extent = (radius * radius - dy * dy).unsigned_abs().isqrt();
+        let extent = i64::try_from(extent).unwrap_or(0);
+        let left = (i64::from(x) - extent).max(0);
+        let right = (i64::from(x) + extent + 1).min(i64::from(width));
+        if let (Ok(row), Ok(left), Ok(right)) = (
+            u32::try_from(row),
+            u32::try_from(left),
+            u32::try_from(right),
+        ) {
+            visit(row, left, right);
+        }
+    }
+}
+
+/// Replay circular dabs in stroke order so erasers remove earlier labels.
+fn rasterize(sample: &Sample) -> BTreeMap<(u32, u32), u8> {
     let mut labels = BTreeMap::new();
-    for stroke in strokes {
+    for stroke in &sample.strokes {
         for &(x, y) in &stroke.points {
-            let radius = i64::from(stroke.radius.min(128));
-            for dy in -radius..=radius {
-                for dx in -radius..=radius {
-                    if dx * dx + dy * dy > radius * radius {
-                        continue;
-                    }
-                    let px = i64::from(x) + dx;
-                    let py = i64::from(y) + dy;
-                    if px < 0 || py < 0 || px >= i64::from(width) || py >= i64::from(height) {
-                        continue;
-                    }
-                    if let (Ok(px), Ok(py)) = (u32::try_from(px), u32::try_from(py)) {
-                        if stroke.erase {
-                            labels.remove(&(py, px));
-                        } else {
-                            labels.insert((py, px), u8::from(stroke.foreground));
+            brush_spans(
+                sample.image.width(),
+                sample.image.height(),
+                x,
+                y,
+                stroke.radius,
+                |row, left, right| {
+                    for column in left..right {
+                        match stroke.kind {
+                            AnnotationKind::Eraser => {
+                                labels.remove(&(row, column));
+                            }
+                            kind => {
+                                labels.insert(
+                                    (row, column),
+                                    u8::from(kind == AnnotationKind::Foreground),
+                                );
+                            }
                         }
                     }
-                }
-            }
+                },
+            );
         }
     }
     labels
 }
-
-const MASK_TILE_SIZE: u32 = 256;
-type MaskTiles = BTreeMap<(u32, u32), Arc<RgbaImage>>;
 
 fn paint_mask(
     tiles: &mut MaskTiles,
@@ -72,48 +100,33 @@ fn paint_mask(
     height: u32,
     x: u32,
     y: u32,
-    radius: u32,
+    radius: BrushRadius,
     color: [u8; 4],
 ) {
-    let radius = i64::from(radius.min(128));
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            if dx * dx + dy * dy > radius * radius {
-                continue;
-            }
-            let (Ok(x), Ok(y)) = (
-                u32::try_from(i64::from(x) + dx),
-                u32::try_from(i64::from(y) + dy),
-            ) else {
-                continue;
-            };
-            if x >= width || y >= height {
-                continue;
-            }
+    brush_spans(width, height, x, y, radius, |row, left, right| {
+        let mut column = left;
+        while column < right {
             let origin = (
-                x / MASK_TILE_SIZE * MASK_TILE_SIZE,
-                y / MASK_TILE_SIZE * MASK_TILE_SIZE,
+                column / MASK_TILE_SIZE * MASK_TILE_SIZE,
+                row / MASK_TILE_SIZE * MASK_TILE_SIZE,
             );
-            if color[3] == 0 && !tiles.contains_key(&origin) {
-                continue;
+            let end = right.min(origin.0 + MASK_TILE_SIZE);
+            if color != TRANSPARENT_BGRA || tiles.contains_key(&origin) {
+                let tile = tiles.entry(origin).or_insert_with(|| {
+                    Arc::new(RgbaImage::new(
+                        (width - origin.0).min(MASK_TILE_SIZE),
+                        (height - origin.1).min(MASK_TILE_SIZE),
+                    ))
+                });
+                // Take copy-on-write ownership once per row segment, rather than once per pixel.
+                let tile = Arc::make_mut(tile);
+                for px in column..end {
+                    tile.put_pixel(px - origin.0, row - origin.1, image::Rgba(color));
+                }
             }
-            let tile = tiles.entry(origin).or_insert_with(|| {
-                Arc::new(RgbaImage::new(
-                    (width - origin.0).min(MASK_TILE_SIZE),
-                    (height - origin.1).min(MASK_TILE_SIZE),
-                ))
-            });
-            Arc::make_mut(tile).put_pixel(x - origin.0, y - origin.1, image::Rgba(color));
+            column = end;
         }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct Dataset {
-    version: u32,
-    samples: Vec<Sample>,
-    features: strawberry_processing::segmentation::FeatureConfig,
-    forest: strawberry_processing::segmentation::ForestConfig,
+    });
 }
 
 /// Retain the expensive prediction independently of the pipeline's enabled/bypass cache.
@@ -151,6 +164,7 @@ pub struct AutomaticSegmentation {
     current: Option<usize>,
     stroke: Option<AnnotationStroke>,
     annotation_masks: MaskTiles,
+    overlays_dirty: bool,
     job: Option<flume::Receiver<Result<SegmentationModel>>>,
 }
 impl AutomaticSegmentation {
@@ -177,25 +191,20 @@ impl AutomaticSegmentation {
             current: None,
             stroke: None,
             annotation_masks: BTreeMap::new(),
+            overlays_dirty: false,
             job: None,
         }
     }
     fn rebuild_mask(&mut self) {
         let mut tiles = MaskTiles::new();
-        if let Some(sample) = self.active().and_then(|i| self.samples.get(i)) {
+        if let Some(sample) = self.current.and_then(|i| self.samples.get(i)) {
             for stroke in sample.strokes.iter().filter(|s| s.visible) {
-                let color = if stroke.erase {
-                    [0; 4]
-                } else if stroke.foreground {
-                    [100, 220, 40, 150]
-                } else {
-                    [80, 70, 230, 150]
-                };
+                let color = annotation_color(stroke.kind);
                 for &(x, y) in &stroke.points {
                     paint_mask(
                         &mut tiles,
-                        sample.width,
-                        sample.height,
+                        sample.image.width(),
+                        sample.image.height(),
                         x,
                         y,
                         stroke.radius,
@@ -214,43 +223,36 @@ impl AutomaticSegmentation {
         self.annotation_masks = tiles;
     }
     fn changed(&mut self) {
-        let _ = self.commands.send(PipelineCommand::RequestOverlays);
-        self.state.revision = self.state.revision.wrapping_add(1);
-        self.state.samples = self
-            .samples
-            .iter()
-            .map(|s| AnnotationSummary {
-                width: s.width,
-                height: s.height,
-                strokes: s
+        self.overlays_dirty = true;
+        self.state.training_annotation_count =
+            self.samples.iter().map(|sample| sample.strokes.len()).sum();
+        self.state.annotations = self
+            .current
+            .and_then(|i| self.samples.get(i))
+            .map(|sample| {
+                sample
                     .strokes
                     .iter()
                     .map(|stroke| AnnotationStrokeSummary {
-                        foreground: stroke.foreground,
-                        erase: stroke.erase,
+                        kind: stroke.kind,
                         visible: stroke.visible,
-                        point_count: stroke.points.len(),
                     })
-                    .collect(),
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
     }
     fn edited(&mut self) {
         self.training_revision = self.training_revision.wrapping_add(1);
+        self.state.selected_stroke = None;
         self.changed();
     }
-    fn active(&self) -> Option<usize> {
-        self.state.preview.or(self.current)
-    }
     fn ensure_sample(&mut self) -> Option<usize> {
-        if let Some(index) = self.active() {
+        if let Some(index) = self.current {
             return Some(index);
         }
         let image = self.input.as_ref()?;
         self.samples.push(Sample {
-            width: image.width(),
-            height: image.height(),
-            pixels: image.as_raw().clone(),
+            image: image.clone(),
             strokes: vec![],
         });
         let index = self.samples.len().checked_sub(1)?;
@@ -280,7 +282,7 @@ impl AutomaticSegmentation {
             let result = futures::executor::block_on(async move {
                 let mut candidates = [Vec::new(), Vec::new()];
                 for (image_index, sample) in samples.iter().enumerate() {
-                    let labels = rasterize(sample.width, sample.height, sample.strokes.iter());
+                    let labels = rasterize(sample);
                     for ((y, x), label) in labels {
                         if let Some(class) = candidates.get_mut(usize::from(label)) {
                             class.push((image_index, x, y));
@@ -309,7 +311,7 @@ impl AutomaticSegmentation {
                 let mut rows = Vec::new();
                 let mut labels = Vec::new();
                 for (index, sample) in samples.iter().enumerate() {
-                    let image = sample.image()?;
+                    let image = &sample.image;
                     for tile in extractor.tiles(&image, &features)? {
                         let x = tile.core_x;
                         let y = tile.core_y;
@@ -344,149 +346,95 @@ impl AutomaticSegmentation {
         Ok(())
     }
     fn handle(&mut self, message: AutomaticSegmentationMessage) -> Result<()> {
-        use AutomaticSegmentationMessage as M;
-        let refresh_mask = matches!(
-            &message,
-            M::Preview(_)
-                | M::SelectStroke(..)
-                | M::Visibility(..)
-                | M::DeleteStroke(..)
-                | M::Undo
-                | M::Clear
-                | M::LoadDataset(_)
-                | M::Layer(_)
-                | M::Training(_)
-        );
         match message {
-            M::Training(value) => {
+            AutomaticSegmentationMessage::SetTraining(value) => {
                 self.state.training = value;
-                self.state.preview = None;
                 self.stroke = None;
+                self.rebuild_mask();
             }
-            M::Foreground(value) => {
-                self.state.foreground = value;
-                self.state.eraser = false;
-            }
-            M::Eraser(value) => self.state.eraser = value,
-            M::BrushRadius(value) => self.state.brush_radius = value.clamp(1, 128),
-            M::Layer(value) => {
-                self.state.preview = None;
+            AutomaticSegmentationMessage::SetBrush(kind) => self.state.brush = kind,
+            AutomaticSegmentationMessage::SetBrushRadius(value) => self.state.brush_radius = value,
+            AutomaticSegmentationMessage::SelectLayer(value) => {
+                if self.state.selected_layer == value {
+                    return Ok(());
+                }
                 self.state.selected_stroke = None;
                 self.state.selected_layer = value;
                 self.input = None;
                 self.current = None;
                 self.stroke = None;
+                self.annotation_masks.clear();
             }
-            M::Features(value) => {
+            AutomaticSegmentationMessage::SetFeatures(value) => {
                 if value.count() > 0 {
                     value.validate()?;
                 }
                 self.state.features = value;
                 self.edited();
             }
-            M::Forest(value) => {
+            AutomaticSegmentationMessage::SetForest(value) => {
                 self.state.forest = value;
                 self.edited();
             }
-            M::Preview(index) => {
+            AutomaticSegmentationMessage::SelectStroke(index) => {
                 ensure!(
-                    index.is_none_or(|i| i < self.samples.len()),
-                    "Unknown training image"
-                );
-                self.state.preview = index;
-                self.state.selected_stroke = None;
-                self.stroke = None;
-            }
-            M::SelectStroke(image, stroke) => {
-                ensure!(
-                    self.samples
-                        .get(image)
-                        .is_some_and(|s| stroke < s.strokes.len()),
+                    self.current
+                        .and_then(|i| self.samples.get(i))
+                        .is_some_and(|sample| index < sample.strokes.len()),
                     "Unknown stroke"
                 );
-                self.state.preview = Some(image);
-                self.state.selected_stroke = Some((image, stroke));
+                self.state.selected_stroke = Some(index);
             }
-            M::Visibility(image, stroke) => {
+            AutomaticSegmentationMessage::ToggleStrokeVisibility(index) => {
                 if let Some(stroke) = self
-                    .samples
-                    .get_mut(image)
-                    .and_then(|s| s.strokes.get_mut(stroke))
+                    .current
+                    .and_then(|i| self.samples.get_mut(i))
+                    .and_then(|sample| sample.strokes.get_mut(index))
                 {
                     stroke.visible = !stroke.visible;
                 }
+                self.rebuild_mask();
             }
-            M::DeleteStroke(image, stroke) => {
-                if let Some(sample) = self.samples.get_mut(image) {
-                    ensure!(stroke < sample.strokes.len(), "Unknown annotation");
-                    sample.strokes.remove(stroke);
+            AutomaticSegmentationMessage::DeleteStroke(index) => {
+                if let Some(sample) = self.current.and_then(|i| self.samples.get_mut(i)) {
+                    ensure!(index < sample.strokes.len(), "Unknown annotation");
+                    sample.strokes.remove(index);
                 }
                 self.edited();
+                self.rebuild_mask();
             }
-            M::Undo => {
-                if let Some(sample) = self.active().and_then(|i| self.samples.get_mut(i)) {
+            AutomaticSegmentationMessage::UndoStroke => {
+                if let Some(sample) = self.current.and_then(|i| self.samples.get_mut(i)) {
                     sample.strokes.pop();
                 }
                 self.edited();
+                self.rebuild_mask();
             }
-            M::Clear => {
-                if let Some(sample) = self.active().and_then(|i| self.samples.get_mut(i)) {
+            AutomaticSegmentationMessage::ClearAnnotations => {
+                if let Some(sample) = self.current.and_then(|i| self.samples.get_mut(i)) {
                     sample.strokes.clear();
                 }
                 self.edited();
+                self.rebuild_mask();
             }
-            M::Train => self.start_training()?,
-            M::SaveModel(path) => {
+            AutomaticSegmentationMessage::TrainModel => self.start_training()?,
+            AutomaticSegmentationMessage::SaveModel(path) => {
                 self.model
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("Train or load a model first"))?
                     .save(&path)?;
-                self.state.model_path = Some(path.clone());
+                self.state.model_path = Some(path);
             }
-            M::LoadModel(path) => {
+            AutomaticSegmentationMessage::LoadModel(path) => {
                 let model = SegmentationModel::load(&path)?;
                 self.training_revision = self.training_revision.wrapping_add(1);
                 self.state.features = model.features.clone();
+                self.state.forest = model.parameters.clone();
                 self.model = Some(Arc::new(model));
                 self.state.model_ready = true;
-                self.state.model_path = Some(path.clone());
+                self.state.model_path = Some(path);
+                self.state.model_revision = self.state.model_revision.wrapping_add(1);
             }
-            M::SaveDataset(path) => write_artifact(
-                &path,
-                &serde_json::to_vec(&Dataset {
-                    version: DATA_VERSION,
-                    samples: self.samples.clone(),
-                    features: self.state.features.clone(),
-                    forest: self.state.forest.clone(),
-                })?,
-            )?,
-            M::LoadDataset(path) => {
-                let data: Dataset = serde_json::from_slice(&std::fs::read(path)?)?;
-                ensure!(data.version == DATA_VERSION, "Unsupported dataset version");
-                if data.features.count() > 0 {
-                    data.features.validate()?;
-                }
-                for sample in &data.samples {
-                    sample.image()?;
-                    ensure!(
-                        sample.strokes.iter().all(|s| s.radius > 0
-                            && s.radius <= 128
-                            && s.points
-                                .iter()
-                                .all(|&(x, y)| x < sample.width && y < sample.height)),
-                        "Invalid annotation"
-                    );
-                }
-                self.samples = data.samples;
-                self.state.features = data.features;
-                self.state.forest = data.forest;
-                self.current = None;
-                self.state.preview = None;
-                self.edited();
-            }
-        }
-        if refresh_mask {
-            self.rebuild_mask();
         }
         self.changed();
         Ok(())
@@ -495,23 +443,29 @@ impl AutomaticSegmentation {
         let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
             return;
         };
-        let Some(index) = self.active() else {
+        let Some(index) = self.current else {
             return;
         };
         let Some(sample) = self.samples.get(index) else {
             return;
         };
-        if x >= sample.width || y >= sample.height {
+        if x >= sample.image.width() || y >= sample.image.height() {
             return;
         }
-        let (width, height) = (sample.width, sample.height);
-        let _ = self.commands.send(PipelineCommand::RequestOverlays);
+        let (width, height) = sample.image.dimensions();
+        self.overlays_dirty = true;
         if let Some(stroke) = &mut self.stroke {
             let first_new = stroke.points.len();
             if let Some(&(a, b)) = stroke.points.last() {
                 let dx = i64::from(x) - i64::from(a);
                 let dy = i64::from(y) - i64::from(b);
-                let steps = dx.unsigned_abs().max(dy.unsigned_abs()).max(1);
+                let distance = dx.unsigned_abs().max(dy.unsigned_abs());
+                if distance == 0 {
+                    return;
+                }
+                // Circular dabs overlap with half-radius spacing, independent of cursor speed.
+                let spacing = u64::from(stroke.radius.get().div_ceil(2));
+                let steps = distance.div_ceil(spacing);
                 for i in 1..=steps {
                     if let (Ok(px), Ok(py)) = (
                         u32::try_from(
@@ -531,13 +485,7 @@ impl AutomaticSegmentation {
             } else {
                 stroke.points.push((x, y));
             }
-            let color = if stroke.erase {
-                [0; 4]
-            } else if stroke.foreground {
-                [100, 220, 40, 150]
-            } else {
-                [80, 70, 230, 150]
-            };
+            let color = annotation_color(stroke.kind);
             for &(x, y) in stroke.points.iter().skip(first_new) {
                 paint_mask(
                     &mut self.annotation_masks,
@@ -550,6 +498,76 @@ impl AutomaticSegmentation {
                 );
             }
         }
+    }
+    fn finish_training(&mut self) {
+        if let Some(result) = self.job.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.job = None;
+            self.state.busy = false;
+            match result {
+                Ok(_) if self.job_revision != self.training_revision || !self.state.is_enabled => {}
+                Ok(model) => {
+                    self.model = Some(Arc::new(model));
+                    self.state.model_ready = true;
+                    self.state.model_path = None;
+                    self.state.model_revision = self.state.model_revision.wrapping_add(1);
+                    self.changed();
+                }
+                Err(error) => self.error(&error),
+            }
+        }
+    }
+
+    fn receive_commands(&mut self) -> Result<()> {
+        for message in self.base.collect_commands() {
+            match message {
+                PipelineCommand::RequestState() => {
+                    self.base
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
+                            FrontendMessage::ReturnState(self.get_state()),
+                        ))?
+                }
+                PipelineCommand::PipelineObject(PipelineObjectMessage::ToggleActive(value)) => {
+                    self.state.is_enabled = value;
+                    self.stroke = None;
+                }
+                PipelineCommand::PipelineObject(
+                    PipelineObjectMessage::AutomaticSegmentationMessage(message),
+                ) => {
+                    if let Err(error) = self.handle(message) {
+                        self.error(&error);
+                    }
+                }
+                PipelineCommand::InteractionStart(x, y)
+                    if self.state.is_enabled && self.state.training =>
+                {
+                    if self.ensure_sample().is_some() {
+                        self.stroke = Some(AnnotationStroke {
+                            visible: true,
+                            kind: self.state.brush,
+                            radius: self.state.brush_radius,
+                            points: vec![],
+                        });
+                        self.add_point(x, y);
+                    }
+                }
+                PipelineCommand::InteractionMove(x, y) if self.stroke.is_some() => {
+                    self.add_point(x, y)
+                }
+                PipelineCommand::InteractionEnd => {
+                    if let Some(stroke) = self.stroke.take() {
+                        if !stroke.points.is_empty() {
+                            if let Some(sample) = self.current.and_then(|i| self.samples.get_mut(i))
+                            {
+                                sample.strokes.push(stroke);
+                            }
+                            self.edited();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 }
 #[async_trait]
@@ -584,7 +602,8 @@ impl ToolBackend for AutomaticSegmentation {
         state.model_path = None;
         state.model_ready = model.is_some();
         state.busy = false;
-        state.revision = self.state.revision.wrapping_add(1);
+        state.model_revision = self.state.model_revision.wrapping_add(1);
+
         Ok(Some(Box::new(move || {
             self.state = state;
             self.model = model.map(Arc::new);
@@ -593,6 +612,7 @@ impl ToolBackend for AutomaticSegmentation {
             self.stroke = None;
             self.training_revision = self.training_revision.wrapping_add(1);
             self.cache.invalidate();
+            self.changed();
         })))
     }
     fn iam(&self) -> BackendToolType {
@@ -616,18 +636,16 @@ impl ToolBackend for AutomaticSegmentation {
         {
             self.annotation_masks.clear();
             self.input = Some(image.clone());
-            self.current = None;
+            self.current = self
+                .samples
+                .iter()
+                .position(|sample| Arc::ptr_eq(&sample.image, &image));
             self.stroke = None;
-            if self.state.preview.is_some() {
-                self.rebuild_mask();
-            }
+            self.state.selected_stroke = None;
+            self.rebuild_mask();
+            self.changed();
         }
         if self.state.training {
-            if let Some(sample) = self.state.preview.and_then(|i| self.samples.get(i)) {
-                if let Some(layer) = images.get_mut(self.state.selected_layer) {
-                    *layer = Arc::new(sample.image()?);
-                }
-            }
             return Ok(());
         }
         let Some(model) = self.model.clone() else {
@@ -663,72 +681,10 @@ impl ToolBackend for AutomaticSegmentation {
         Ok(())
     }
     fn receive_messages(&mut self) -> Result<()> {
-        // Check results of a training job
-        if let Some(result) = self.job.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.job = None;
-            self.state.busy = false;
-            match result {
-                Ok(_) if self.job_revision != self.training_revision || !self.state.is_enabled => {}
-                Ok(model) => {
-                    self.model = Some(Arc::new(model));
-                    self.state.model_ready = true;
-                    self.state.model_path = None;
-                    self.changed();
-                }
-                Err(error) => self.error(&error),
-            }
-        }
-        // Handle pipeline commands
-        for message in self.base.collect_commands() {
-            match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(self.get_state()),
-                        ))?
-                }
-                PipelineCommand::PipelineObject(PipelineObjectMessage::ToggleActive(value)) => {
-                    self.state.is_enabled = value;
-                    self.stroke = None;
-                }
-                PipelineCommand::PipelineObject(
-                    PipelineObjectMessage::AutomaticSegmentationMessage(message),
-                ) => {
-                    if let Err(error) = self.handle(message) {
-                        self.error(&error);
-                    }
-                }
-                PipelineCommand::InteractionStart(x, y)
-                    if self.state.is_enabled && self.state.training =>
-                {
-                    if self.ensure_sample().is_some() {
-                        self.stroke = Some(AnnotationStroke {
-                            visible: true,
-                            foreground: self.state.foreground,
-                            erase: self.state.eraser,
-                            radius: self.state.brush_radius,
-                            points: vec![],
-                        });
-                        self.add_point(x, y);
-                    }
-                }
-                PipelineCommand::InteractionMove(x, y) if self.stroke.is_some() => {
-                    self.add_point(x, y)
-                }
-                PipelineCommand::InteractionEnd => {
-                    if let Some(stroke) = self.stroke.take() {
-                        if !stroke.points.is_empty() {
-                            if let Some(sample) =
-                                self.active().and_then(|i| self.samples.get_mut(i))
-                            {
-                                sample.strokes.push(stroke);
-                            }
-                            self.edited();
-                        }
-                    }
-                }
-                _ => {}
-            }
+        self.finish_training();
+        self.receive_commands()?;
+        if std::mem::take(&mut self.overlays_dirty) {
+            let _ = self.commands.send(PipelineCommand::RequestOverlays);
         }
         Ok(())
     }
@@ -736,7 +692,7 @@ impl ToolBackend for AutomaticSegmentation {
         if !self.state.is_enabled || !self.state.training {
             return None;
         }
-        let sample = self.active().and_then(|i| self.samples.get(i))?;
+        let sample = self.current.and_then(|i| self.samples.get(i))?;
         let mut elements: Vec<_> = self
             .annotation_masks
             .iter()
@@ -746,18 +702,16 @@ impl ToolBackend for AutomaticSegmentation {
                 image: Some(image.clone()),
             })
             .collect();
-        if let Some((image, stroke)) = self.state.selected_stroke {
-            if Some(image) == self.active() {
-                if let Some(stroke) = sample.strokes.get(stroke) {
-                    if let Some(&(x, y)) = stroke.points.first() {
-                        elements.push(OverlayElement::Circle {
-                            x: num_traits::cast::<u32, f32>(x).unwrap_or(0.0) + 0.5,
-                            y: num_traits::cast::<u32, f32>(y).unwrap_or(0.0) + 0.5,
-                            radius: num_traits::cast(stroke.radius).unwrap_or(1.0),
-                            color: [255, 255, 255, 255],
-                            style: CircleStyle::Selected { width: 1.0 },
-                        });
-                    }
+        if let Some(index) = self.state.selected_stroke {
+            if let Some(stroke) = sample.strokes.get(index) {
+                if let Some(&(x, y)) = stroke.points.first() {
+                    elements.push(OverlayElement::Circle {
+                        x: num_traits::cast::<u32, f32>(x).unwrap_or(0.0) + 0.5,
+                        y: num_traits::cast::<u32, f32>(y).unwrap_or(0.0) + 0.5,
+                        radius: num_traits::cast(stroke.radius.get()).unwrap_or(1.0),
+                        color: [255, 255, 255, 255],
+                        style: CircleStyle::Selected { width: 1.0 },
+                    });
                 }
             }
         }

@@ -142,8 +142,6 @@ impl SyncState for strawberry_types::AutomaticSegmentationState {
         self.is_enabled != other.is_enabled
             || self.training != other.training
             || self.selected_layer != other.selected_layer
-            || self.preview != other.preview
-            || self.revision != other.revision
-            || self.model_path != other.model_path
+            || self.model_revision != other.model_revision
     }
 }

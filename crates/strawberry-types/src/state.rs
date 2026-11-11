@@ -169,39 +169,77 @@ pub struct WatershedState {
     pub is_enabled: bool,
 }
 
-fn visible_default() -> bool {
-    true
+/// A brush radius validated when reading messages or saved pipeline settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct BrushRadius(u32);
+
+impl BrushRadius {
+    pub const MIN: u32 = 1;
+    pub const MAX: u32 = 128;
+
+    pub const fn get(self) -> u32 {
+        self.0
+    }
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+
+impl Default for BrushRadius {
+    fn default() -> Self {
+        Self(5)
+    }
+}
+
+impl TryFrom<u32> for BrushRadius {
+    type Error = String;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        if (Self::MIN..=Self::MAX).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(format!(
+                "Brush radius must be in {}..={}",
+                Self::MIN,
+                Self::MAX
+            ))
+        }
+    }
+}
+
+impl From<BrushRadius> for u32 {
+    fn from(radius: BrushRadius) -> Self {
+        radius.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AnnotationKind {
+    #[default]
+    Foreground,
+    Background,
+    Eraser,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct AnnotationStroke {
-    #[serde(default = "visible_default")]
     pub visible: bool,
-    pub foreground: bool,
-    pub erase: bool,
-    pub radius: u32,
+    pub kind: AnnotationKind,
+    pub radius: BrushRadius,
     pub points: Vec<(u32, u32)>,
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct AnnotationStrokeSummary {
-    pub foreground: bool,
-    pub erase: bool,
+    pub kind: AnnotationKind,
     pub visible: bool,
-    pub point_count: usize,
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AnnotationSummary {
-    pub width: u32,
-    pub height: u32,
-    pub strokes: Vec<AnnotationStrokeSummary>,
-}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AutomaticSegmentationState {
     pub is_enabled: bool,
     pub training: bool,
-    pub foreground: bool,
-    pub eraser: bool,
-    pub brush_radius: u32,
+    pub brush: AnnotationKind,
+    pub brush_radius: BrushRadius,
     pub selected_layer: usize,
     #[serde(skip)]
     pub total_layers: usize,
@@ -210,37 +248,38 @@ pub struct AutomaticSegmentationState {
     #[serde(skip)]
     pub model_path: Option<PathBuf>,
     #[serde(skip)]
-    pub samples: Vec<AnnotationSummary>,
+    pub annotations: Vec<AnnotationStrokeSummary>,
     #[serde(skip)]
-    pub preview: Option<usize>,
+    pub training_annotation_count: usize,
     #[serde(skip)]
-    pub selected_stroke: Option<(usize, usize)>,
+    pub selected_stroke: Option<usize>,
     #[serde(skip)]
     pub busy: bool,
     #[serde(skip)]
     pub model_ready: bool,
+    /// Invalidates pipeline output only when the trained or loaded model changes.
     #[serde(skip)]
-    pub revision: u64,
+    pub model_revision: u64,
 }
+
 impl Default for AutomaticSegmentationState {
     fn default() -> Self {
         Self {
             is_enabled: false,
             training: true,
-            foreground: true,
-            eraser: false,
-            brush_radius: 5,
+            brush: AnnotationKind::default(),
+            brush_radius: BrushRadius::default(),
             selected_layer: 0,
             total_layers: 0,
             features: FeatureConfig::default(),
             forest: ForestConfig::default(),
             model_path: None,
-            samples: vec![],
-            preview: None,
+            annotations: vec![],
+            training_annotation_count: 0,
             selected_stroke: None,
             busy: false,
             model_ready: false,
-            revision: 0,
+            model_revision: 0,
         }
     }
 }
