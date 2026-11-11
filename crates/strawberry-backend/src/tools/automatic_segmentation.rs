@@ -452,6 +452,7 @@ impl AutomaticSegmentation {
                 self.training_revision = self.training_revision.wrapping_add(1);
                 self.state.features = model.features.clone();
                 self.state.forest = model.parameters.clone();
+                self.state.oob_error = model.oob_error;
                 self.model = Some(Arc::new(model));
                 self.state.model_ready = true;
                 self.state.model_path = Some(path);
@@ -528,6 +529,7 @@ impl AutomaticSegmentation {
             match result {
                 Ok(_) if self.job_revision != self.training_revision || !self.state.is_enabled => {}
                 Ok(model) => {
+                    self.state.oob_error = model.oob_error;
                     self.model = Some(Arc::new(model));
                     self.state.model_ready = true;
                     self.state.model_path = None;
@@ -625,6 +627,7 @@ impl ToolBackend for AutomaticSegmentation {
         }
         state.model_path = None;
         state.model_ready = model.is_some();
+        state.oob_error = model.as_ref().and_then(|model| model.oob_error);
         state.busy = false;
         state.model_revision = self.state.model_revision.wrapping_add(1);
 

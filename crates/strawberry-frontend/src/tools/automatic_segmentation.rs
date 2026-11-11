@@ -627,6 +627,14 @@ impl Render for AutomaticSegmentationView {
                             .child(if s.model_ready { "Ready" } else { "Not loaded" }),
                     ),
             );
+        if let Some(error) = s.oob_error {
+            model = model.child(
+                div()
+                    .text_xs()
+                    .text_color(theme::TEXT_MUTED)
+                    .child(format!("OOB Error: {:.2}%", error * 100.0)),
+            );
+        }
         if let Some(name) = s.model_path.as_ref().and_then(|p| p.file_name()) {
             model = model.child(
                 div()

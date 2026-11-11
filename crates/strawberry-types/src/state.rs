@@ -275,6 +275,8 @@ pub struct AutomaticSegmentationState {
     pub busy: bool,
     #[serde(skip)]
     pub model_ready: bool,
+    #[serde(skip)]
+    pub oob_error: Option<f64>,
     /// Invalidates pipeline output only when the trained or loaded model changes.
     #[serde(skip)]
     pub model_revision: u64,
@@ -298,6 +300,7 @@ impl Default for AutomaticSegmentationState {
             selected_stroke: None,
             busy: false,
             model_ready: false,
+            oob_error: None,
             model_revision: 0,
         }
     }

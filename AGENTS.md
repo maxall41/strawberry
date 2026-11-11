@@ -68,3 +68,7 @@ Do NOT write custom SVG icons. Use phosphor icons instead: https://phosphoricons
 ## UI Text
 
 Do not add superflous text to the UI describing how the internals of Strawberry function, how to interpret results, or anything else not required to make the UI clear and readable.
+
+## Reviewing
+
+- Make sure code is not being excessivley duplicated: if a method is defined to perform a task but is not being used in liue of custom code; flag this. This instruction, however, should not be interpreted to excess: DRY is only true up to a point and should not be taken as a maxim.
