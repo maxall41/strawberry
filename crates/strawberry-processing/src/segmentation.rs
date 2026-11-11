@@ -145,6 +145,8 @@ pub struct SegmentationModel {
     version: u32,
     pub features: FeatureConfig,
     pub parameters: ForestConfig,
+    #[serde(skip)]
+    pub oob_error: Option<f64>,
     forest: Forest,
 }
 impl SegmentationModel {
@@ -175,12 +177,21 @@ impl SegmentationModel {
             RandomForestClassifierParameters::default()
                 .with_n_trees(parameters.trees)
                 .with_max_depth(parameters.depth)
+                .with_keep_samples(true)
                 .with_seed(parameters.seed),
         )?;
+        let oob_predictions = forest.predict_oob(&matrix)?;
+        let oob_error = 1.0 - smartcore::metrics::accuracy(&labels, &oob_predictions);
+        println!(
+            "Segmentation training OOB error: {:.2}% ({} training samples)",
+            oob_error * 100.0,
+            labels.len(),
+        );
         Ok(Self {
             version: MODEL_VERSION,
             features,
             parameters,
+            oob_error: Some(oob_error),
             forest,
         })
     }
