@@ -10,7 +10,41 @@ use crate::{
 };
 use gpui::{App, Context, Entity, FocusHandle, Focusable, Window, div, prelude::*};
 use std::sync::{Arc, RwLock};
+use strawberry_processing::segmentation::FeatureConfig;
 use strawberry_types::*;
+
+#[derive(Clone, Copy)]
+enum SigmaKind {
+    Gaussian,
+    DogSmall,
+    DogLarge,
+}
+
+impl SigmaKind {
+    const fn id(self) -> &'static str {
+        match self {
+            Self::Gaussian => "segmentation-gaussian-sigma",
+            Self::DogSmall => "segmentation-dog-small-sigma",
+            Self::DogLarge => "segmentation-dog-large-sigma",
+        }
+    }
+
+    fn parameters(self, features: &FeatureConfig) -> (f32, f32, f32) {
+        match self {
+            Self::Gaussian => (features.gaussian_sigma, 0.1, 64.0),
+            Self::DogSmall => (
+                features.dog_small_sigma,
+                0.1,
+                (features.dog_large_sigma - 0.1).max(0.1),
+            ),
+            Self::DogLarge => (
+                features.dog_large_sigma,
+                (features.dog_small_sigma + 0.1).min(64.0),
+                64.0,
+            ),
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum ControlKind {
@@ -38,9 +72,20 @@ struct Controls {
     depth: Option<Entity<ValueControl>>,
     input_scale: Option<Entity<ValueControl>>,
     max_parallel_tiles: Option<Entity<ValueControl>>,
+    gaussian_sigma: Option<Entity<ValueControl>>,
+    dog_small_sigma: Option<Entity<ValueControl>>,
+    dog_large_sigma: Option<Entity<ValueControl>>,
 }
 
 impl Controls {
+    fn sigma_slot(&mut self, kind: SigmaKind) -> &mut Option<Entity<ValueControl>> {
+        match kind {
+            SigmaKind::Gaussian => &mut self.gaussian_sigma,
+            SigmaKind::DogSmall => &mut self.dog_small_sigma,
+            SigmaKind::DogLarge => &mut self.dog_large_sigma,
+        }
+    }
+
     fn slot(&mut self, kind: ControlKind) -> &mut Option<Entity<ValueControl>> {
         match kind {
             ControlKind::BrushRadius => &mut self.brush_radius,
@@ -55,6 +100,9 @@ pub struct AutomaticSegmentationView {
     pub state: Arc<RwLock<AutomaticSegmentationState>>,
     pub base: super::base::ToolBase,
     controls: Controls,
+    show_features: bool,
+    show_gaussian_settings: bool,
+    show_dog_settings: bool,
     show_forest: bool,
     annotations_scroll: gpui::ScrollHandle,
 }
@@ -77,6 +125,9 @@ impl AutomaticSegmentationView {
                 cx.focus_handle(),
             ),
             controls: Controls::default(),
+            show_features: false,
+            show_gaussian_settings: false,
+            show_dog_settings: false,
             show_forest: false,
             annotations_scroll: gpui::ScrollHandle::new(),
         }
@@ -187,8 +238,37 @@ impl AutomaticSegmentationView {
         }
         tool_panel::section("Training annotations").child(list)
     }
-    fn feature_controls(&self, s: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
-        let mut section = tool_panel::section("Features");
+    fn feature_controls(
+        &mut self,
+        s: &AutomaticSegmentationState,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let disclosure_width = gpui::px(28.);
+        let mut section = tool_panel::section_with_header(
+            Button::new("segmentation-feature-settings")
+                .variant(ButtonVariant::Ghost)
+                .w_full()
+                .justify_start()
+                .px_0()
+                .gap_1()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(
+                    div()
+                        .w(disclosure_width)
+                        .flex_none()
+                        .flex()
+                        .justify_center()
+                        .child(Icon::disclosure(self.show_features)),
+                )
+                .label("Features")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.show_features = !this.show_features;
+                    cx.notify();
+                })),
+        );
+        if !self.show_features {
+            return section;
+        }
         for (label, enabled) in [
             ("Gaussian blur", s.features.gaussian),
             ("Sobel", s.features.sobel),
@@ -202,13 +282,86 @@ impl AutomaticSegmentationView {
                 "Difference of Gaussians" => features.dog = !enabled,
                 _ => features.hessian = !enabled,
             }
-            section = section.child(
-                ToggleButton::new(label.into(), enabled, move |this: &mut Self, _, _, _| {
-                    this.send(AutomaticSegmentationMessage::SetFeatures(features.clone()))
-                })
-                .with_no_margin()
-                .render(cx),
-            );
+            let expanded = match label {
+                "Gaussian blur" => Some(self.show_gaussian_settings),
+                "Difference of Gaussians" => Some(self.show_dog_settings),
+                _ => None,
+            };
+            let mut disclosure = div().size(disclosure_width).flex_none();
+            if let Some(expanded) = expanded {
+                disclosure = disclosure.child(
+                    Button::new(gpui::ElementId::Name(
+                        format!("segmentation-feature-{label}").into(),
+                    ))
+                    .variant(ButtonVariant::Ghost)
+                    .icon(Icon::disclosure(expanded), format!("{label} settings"))
+                    .w(disclosure_width)
+                    .min_w(disclosure_width)
+                    .aria_expanded(expanded)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        match label {
+                            "Gaussian blur" => {
+                                this.show_gaussian_settings = !this.show_gaussian_settings
+                            }
+                            _ => this.show_dog_settings = !this.show_dog_settings,
+                        }
+                        cx.notify();
+                    })),
+                );
+            }
+            let row = div()
+                .flex()
+                .items_center()
+                .px(gpui::px(1.))
+                .gap_1()
+                .child(disclosure)
+                .child(
+                    div().flex_1().min_w_0().child(
+                        ToggleButton::new(
+                            label.into(),
+                            enabled,
+                            move |this: &mut Self, _, _, _| {
+                                this.send(AutomaticSegmentationMessage::SetFeatures(
+                                    features.clone(),
+                                ))
+                            },
+                        )
+                        .with_no_margin()
+                        .render(cx),
+                    ),
+                );
+            let mut feature = div().flex().flex_col().gap_2().child(row);
+            if expanded == Some(true) {
+                let mut settings = div().flex().flex_col().gap_2().pl_8();
+                match label {
+                    "Gaussian blur" => {
+                        settings = settings.child(self.sigma_control(
+                            SigmaKind::Gaussian,
+                            "Gaussian sigma (px)",
+                            &s.features,
+                            cx,
+                        ));
+                    }
+                    "Difference of Gaussians" => {
+                        settings = settings
+                            .child(self.sigma_control(
+                                SigmaKind::DogSmall,
+                                "Small sigma (px)",
+                                &s.features,
+                                cx,
+                            ))
+                            .child(self.sigma_control(
+                                SigmaKind::DogLarge,
+                                "Large sigma (px)",
+                                &s.features,
+                                cx,
+                            ));
+                    }
+                    _ => {}
+                }
+                feature = feature.child(settings);
+            }
+            section = section.child(feature);
         }
         let mut channels = tool_panel::segmented();
         for (rgb, label) in [(false, "Luminance"), (true, "RGB")] {
@@ -288,6 +441,50 @@ impl AutomaticSegmentationView {
         })
         .detach();
         self.controls.input_scale = Some(control.clone());
+        control
+    }
+
+    fn sigma_control(
+        &mut self,
+        kind: SigmaKind,
+        label: &str,
+        features: &FeatureConfig,
+        cx: &mut Context<Self>,
+    ) -> Entity<ValueControl> {
+        if let Some(control) = self.controls.sigma_slot(kind) {
+            return control.clone();
+        }
+        let (value, min, max) = kind.parameters(features);
+        let control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{value:.2}"),
+                value,
+                ValueControlConfig {
+                    id: kind.id().into(),
+                    label: label.into(),
+                    min,
+                    max,
+                    step: 0.1,
+                },
+                cx,
+            )
+        });
+        cx.subscribe(&control, move |this, _, event: &ValueControlEvent, _| {
+            let mut features = this
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .features
+                .clone();
+            match kind {
+                SigmaKind::Gaussian => features.gaussian_sigma = event.value,
+                SigmaKind::DogSmall => features.dog_small_sigma = event.value,
+                SigmaKind::DogLarge => features.dog_large_sigma = event.value,
+            }
+            this.send(AutomaticSegmentationMessage::SetFeatures(features));
+        })
+        .detach();
+        *self.controls.sigma_slot(kind) = Some(control.clone());
         control
     }
 
@@ -382,6 +579,21 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
         }
     }
     fn on_state_changed(&mut self, state: &Self::State, cx: &mut Context<Self>) {
+        for kind in [
+            SigmaKind::Gaussian,
+            SigmaKind::DogSmall,
+            SigmaKind::DogLarge,
+        ] {
+            if let Some(control) = self.controls.sigma_slot(kind) {
+                let (value, min, max) = kind.parameters(&state.features);
+                control.update(cx, |control, cx| {
+                    control.config.min = min;
+                    control.config.max = max;
+                    control.set_value(value);
+                    cx.notify();
+                });
+            }
+        }
         for (kind, value) in [
             (ControlKind::BrushRadius, state.brush_radius.get()),
             (ControlKind::Trees, u32::from(state.forest.trees)),
@@ -612,12 +824,7 @@ impl Render for AutomaticSegmentationView {
                         .large()
                         .w_full()
                         .label(if s.busy { "Training…" } else { "Train model" })
-                        .disabled(
-                            s.busy
-                                || !s.is_enabled
-                                || s.training_annotation_count == 0
-                                || s.features.count() == 0,
-                        )
+                        .disabled(s.busy || !s.is_enabled || s.training_annotation_count == 0)
                         .on_click(cx.listener(|this, _, _, _| {
                             this.send(AutomaticSegmentationMessage::TrainModel)
                         })),

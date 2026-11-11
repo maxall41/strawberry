@@ -16,6 +16,15 @@ pub fn panel() -> Div {
 }
 
 pub fn section(title: &'static str) -> Div {
+    section_with_header(
+        div()
+            .text_sm()
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .child(title),
+    )
+}
+
+pub fn section_with_header(header: impl IntoElement) -> Div {
     div()
         .flex()
         .flex_col()
@@ -28,12 +37,7 @@ pub fn section(title: &'static str) -> Div {
         .border_1()
         .border_color(theme::BORDER_MUTED)
         .rounded_lg()
-        .child(
-            div()
-                .text_sm()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(title),
-        )
+        .child(header)
 }
 
 pub fn segmented() -> Div {

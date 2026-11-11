@@ -16,10 +16,11 @@ mod training;
 use cache::FeatureCache;
 use training::TrainingData;
 
-const MODEL_VERSION: u32 = 1;
+const MODEL_VERSION: u32 = 2;
 const GAUSSIAN_SIGMA: f32 = 1.0;
 const DOG_SMALL_SIGMA: f32 = 1.0;
 const DOG_LARGE_SIGMA: f32 = 10.0;
+const HESSIAN_SIGMA: f32 = 1.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureConfig {
@@ -28,6 +29,9 @@ pub struct FeatureConfig {
     pub sobel: bool,
     pub dog: bool,
     pub hessian: bool,
+    pub gaussian_sigma: f32,
+    pub dog_small_sigma: f32,
+    pub dog_large_sigma: f32,
 }
 impl Default for FeatureConfig {
     fn default() -> Self {
@@ -37,30 +41,50 @@ impl Default for FeatureConfig {
             sobel: true,
             dog: true,
             hessian: true,
+            gaussian_sigma: GAUSSIAN_SIGMA,
+            dog_small_sigma: DOG_SMALL_SIGMA,
+            dog_large_sigma: DOG_LARGE_SIGMA,
         }
     }
 }
 impl FeatureConfig {
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.count() > 0, "Choose at least one feature");
+        for (name, sigma) in [
+            ("Gaussian", self.gaussian_sigma),
+            ("DoG small", self.dog_small_sigma),
+            ("DoG large", self.dog_large_sigma),
+        ] {
+            ensure!(
+                sigma.is_finite() && (0.1..=64.0).contains(&sigma),
+                "{name} sigma must be between 0.1 and 64"
+            );
+        }
+        ensure!(
+            self.dog_small_sigma < self.dog_large_sigma,
+            "DoG requires small sigma < large sigma"
+        );
         Ok(())
     }
     #[must_use]
     pub fn count(&self) -> usize {
-        (usize::from(self.gaussian)
+        (1 + usize::from(self.gaussian)
             + usize::from(self.sobel)
             + usize::from(self.dog)
             + 2 * usize::from(self.hessian))
             * if self.rgb { 3 } else { 1 }
     }
     fn halo(&self) -> Result<usize> {
-        let mut sigma = if self.gaussian { GAUSSIAN_SIGMA } else { 0.0 };
+        let mut sigma = if self.gaussian {
+            self.gaussian_sigma
+        } else {
+            0.0
+        };
         if self.dog {
-            sigma = sigma.max(DOG_SMALL_SIGMA).max(DOG_LARGE_SIGMA);
+            sigma = sigma.max(self.dog_small_sigma).max(self.dog_large_sigma);
         }
         // Hessian differences need one pixel beyond the Gaussian smoothing radius.
         let hessian_radius = if self.hessian {
-            (GAUSSIAN_SIGMA * 3.0).ceil() + 1.0
+            (HESSIAN_SIGMA * 3.0).ceil() + 1.0
         } else {
             0.0
         };
@@ -224,7 +248,7 @@ impl SegmentationModel {
     fn prediction_feature_count(&self) -> usize {
         self.features.count()
             + if self.parameters.autocontext {
-                1 + self.features.context_features().count()
+                self.features.context_features().count()
             } else {
                 0
             }
@@ -505,27 +529,41 @@ impl FeatureExtractor {
         let channels: &[u32] = if features.rgb { &[1, 2, 3] } else { &[0] };
         let mut columns = Vec::with_capacity(features.count());
         for &channel in channels {
+            let channel_start = columns.len();
             let plane = self.filters.channel(&input, channel).await?;
-            if features.gaussian || features.hessian {
-                let smoothed = self
-                    .filters
-                    .gaussian(width, height, &plane, GAUSSIAN_SIGMA)
-                    .await?;
-                let hessian = if features.hessian {
-                    Some(
+            let gaussian = if features.gaussian {
+                Some(
+                    self.filters
+                        .gaussian(width, height, &plane, features.gaussian_sigma)
+                        .await?,
+                )
+            } else {
+                None
+            };
+            let hessian = if features.hessian {
+                let smoothed = match gaussian.as_deref() {
+                    Some(smoothed) if features.gaussian_sigma == HESSIAN_SIGMA => {
+                        Cow::Borrowed(smoothed)
+                    }
+                    _ => Cow::Owned(
                         self.filters
-                            .hessian_eigenvalues(width, height, &smoothed)
+                            .gaussian(width, height, &plane, HESSIAN_SIGMA)
                             .await?,
-                    )
-                } else {
-                    None
+                    ),
                 };
-                if features.gaussian {
-                    columns.push(smoothed);
-                }
-                if let Some(eigenvalues) = hessian {
-                    columns.extend(eigenvalues);
-                }
+                Some(
+                    self.filters
+                        .hessian_eigenvalues(width, height, &smoothed)
+                        .await?,
+                )
+            } else {
+                None
+            };
+            if let Some(smoothed) = gaussian {
+                columns.push(smoothed);
+            }
+            if let Some(eigenvalues) = hessian {
+                columns.extend(eigenvalues);
             }
             if features.sobel {
                 columns.push(self.filters.sobel(width, height, &plane).await?);
@@ -537,12 +575,14 @@ impl FeatureExtractor {
                             width,
                             height,
                             &plane,
-                            DOG_SMALL_SIGMA,
-                            DOG_LARGE_SIGMA,
+                            features.dog_small_sigma,
+                            features.dog_large_sigma,
                         )
                         .await?,
                 );
             }
+            // Raw intensity is always first; move it after the filters finish borrowing it.
+            columns.insert(channel_start, plane);
         }
         FeatureTile::from_columns(tile, &columns)
     }
@@ -553,15 +593,7 @@ impl FeatureExtractor {
         features: &FeatureConfig,
         tile: &TileInfo,
     ) -> Result<FeatureTile> {
-        let mut data = self
-            .extract(context, &features.context_features(), tile)
-            .await?;
-        for (offset, row) in data.rows.iter_mut().enumerate() {
-            let offset = u32::try_from(offset)?;
-            let pixel =
-                context.get_pixel(data.x + offset % data.width, data.y + offset / data.width);
-            row.insert(0, f32::from(pixel.0[0]) / 255.0);
-        }
-        Ok(data)
+        self.extract(context, &features.context_features(), tile)
+            .await
     }
 }
