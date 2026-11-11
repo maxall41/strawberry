@@ -1,7 +1,7 @@
 use strawberry_types::{
-    CompositorState, ContrastState, CounterState, DecomposerState, GaussianBlurState,
-    GrayscaleState, LocalMaximaState, MorphologyState, NerveTracerState, RollingBallState,
-    SobelState, ThresholdState, WatershedState,
+    CompositorState, ContrastState, CounterState, DecomposerState, DifferenceOfGaussiansState,
+    GaussianBlurState, GrayscaleState, LocalMaximaState, MorphologyState, NerveTracerState,
+    RollingBallState, SobelState, ThresholdState, WatershedState,
 };
 
 pub trait SyncState: Clone + PartialEq {
@@ -24,6 +24,7 @@ macro_rules! processing_states {
 }
 processing_states!(
     ContrastState,
+    DifferenceOfGaussiansState,
     GaussianBlurState,
     GrayscaleState,
     LocalMaximaState,

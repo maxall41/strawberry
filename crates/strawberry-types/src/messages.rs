@@ -33,6 +33,12 @@ pub enum GaussianBlurMessage {
 }
 
 #[derive(Debug, Clone)]
+pub enum DifferenceOfGaussiansMessage {
+    SetSmallSigma(f32),
+    SetLargeSigma(f32),
+}
+
+#[derive(Debug, Clone)]
 pub enum LocalMaximaMessage {
     SetParameters(u32, ThresholdType, bool), // min_distance, threshold, exclude_border
 }
@@ -131,6 +137,7 @@ pub enum PipelineObjectMessage {
     DecomposerMessage(DecomposerMessage),
     CompositorMessage(CompositorMessage),
     ContrastMessage(ContrastMessage),
+    DifferenceOfGaussiansMessage(DifferenceOfGaussiansMessage),
     GaussianBlurMessage(GaussianBlurMessage),
     LocalMaximaMessage(LocalMaximaMessage),
     MorphologyMessage(MorphologyMessage),

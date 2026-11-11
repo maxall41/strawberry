@@ -14,6 +14,7 @@ use crate::tools::compositor::CompositorView;
 use crate::tools::contrast::ContrastView;
 use crate::tools::counter::CounterView;
 use crate::tools::decomposer::DecomposerView;
+use crate::tools::difference_of_gaussians::DifferenceOfGaussiansView;
 use crate::tools::gaussian_blur::GaussianBlurView;
 use crate::tools::grayscale::GrayscaleView;
 use crate::tools::local_maxima::LocalMaximaView;
@@ -40,6 +41,7 @@ actions!([
     CompositorSettings,
     ContrastSettings,
     CounterSettings,
+    DifferenceOfGaussiansSettings,
     GaussianBlurSettings,
     GrayscaleSettings,
     ThresholdSettings,
@@ -183,6 +185,16 @@ pub fn install(
             tx.clone(),
             rx,
             GaussianBlurView::new,
+        ),
+        register_tool(
+            cx,
+            sidebar,
+            DifferenceOfGaussiansSettings,
+            "Difference of Gaussians",
+            BackendToolType::DifferenceOfGaussians,
+            tx.clone(),
+            rx,
+            DifferenceOfGaussiansView::new,
         ),
         register_tool(
             cx,

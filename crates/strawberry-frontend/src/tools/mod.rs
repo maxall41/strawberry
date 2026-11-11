@@ -11,6 +11,7 @@ pub mod compositor;
 pub mod contrast;
 pub mod counter;
 pub mod decomposer;
+pub mod difference_of_gaussians;
 pub mod gaussian_blur;
 pub mod grayscale;
 pub mod local_maxima;

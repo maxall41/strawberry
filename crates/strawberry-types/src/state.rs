@@ -63,6 +63,23 @@ pub struct GaussianBlurState {
     pub is_enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DifferenceOfGaussiansState {
+    pub small_sigma: f32,
+    pub large_sigma: f32,
+    pub is_enabled: bool,
+}
+
+impl Default for DifferenceOfGaussiansState {
+    fn default() -> Self {
+        Self {
+            small_sigma: 1.0,
+            large_sigma: 2.0,
+            is_enabled: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrayscaleState {
     pub is_enabled: bool,
@@ -292,6 +309,7 @@ pub enum ToolState {
     AutomaticSegmentationState(crate::AutomaticSegmentationState),
     CompositorState(CompositorState),
     ContrastState(ContrastState),
+    DifferenceOfGaussiansState(DifferenceOfGaussiansState),
     GaussianBlurState(GaussianBlurState),
     GrayscaleState(GrayscaleState),
     LocalMaximaState(LocalMaximaState),
