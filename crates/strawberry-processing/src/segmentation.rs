@@ -25,6 +25,7 @@ pub struct FeatureConfig {
     pub gaussian: bool,
     pub sobel: bool,
     pub dog: bool,
+    pub hessian: bool,
 }
 impl Default for FeatureConfig {
     fn default() -> Self {
@@ -33,6 +34,7 @@ impl Default for FeatureConfig {
             gaussian: true,
             sobel: true,
             dog: true,
+            hessian: true,
         }
     }
 }
@@ -43,7 +45,10 @@ impl FeatureConfig {
     }
     #[must_use]
     pub fn count(&self) -> usize {
-        (usize::from(self.gaussian) + usize::from(self.sobel) + usize::from(self.dog))
+        (usize::from(self.gaussian)
+            + usize::from(self.sobel)
+            + usize::from(self.dog)
+            + 2 * usize::from(self.hessian))
             * if self.rgb { 3 } else { 1 }
     }
     fn halo(&self) -> Result<usize> {
@@ -51,8 +56,16 @@ impl FeatureConfig {
         if self.dog {
             sigma = sigma.max(DOG_SMALL_SIGMA).max(DOG_LARGE_SIGMA);
         }
-        // Gaussian kernels use a radius of three times sigma; Sobel uses one pixel.
-        let radius = (sigma * 3.0).ceil().max(if self.sobel { 1.0 } else { 0.0 });
+        // Hessian differences need one pixel beyond the Gaussian smoothing radius.
+        let hessian_radius = if self.hessian {
+            (GAUSSIAN_SIGMA * 3.0).ceil() + 1.0
+        } else {
+            0.0
+        };
+        let radius = (sigma * 3.0)
+            .ceil()
+            .max(if self.sobel { 1.0 } else { 0.0 })
+            .max(hessian_radius);
         num_traits::cast(radius).context("Invalid feature halo")
     }
 }
@@ -63,6 +76,7 @@ pub struct ForestConfig {
     pub depth: u16,
     pub seed: u64,
     pub input_scale: f32,
+    pub balance_classes: bool,
 }
 impl Default for ForestConfig {
     fn default() -> Self {
@@ -71,6 +85,7 @@ impl Default for ForestConfig {
             depth: 20,
             seed: 100,
             input_scale: 1.0,
+            balance_classes: false,
         }
     }
 }
@@ -341,12 +356,26 @@ impl FeatureExtractor {
         let mut columns = Vec::with_capacity(features.count());
         for &channel in channels {
             let plane = self.filters.channel(&input, channel).await?;
-            if features.gaussian {
-                columns.push(
-                    self.filters
-                        .gaussian(width, height, &plane, GAUSSIAN_SIGMA)
-                        .await?,
-                );
+            if features.gaussian || features.hessian {
+                let smoothed = self
+                    .filters
+                    .gaussian(width, height, &plane, GAUSSIAN_SIGMA)
+                    .await?;
+                let hessian = if features.hessian {
+                    Some(
+                        self.filters
+                            .hessian_eigenvalues(width, height, &smoothed)
+                            .await?,
+                    )
+                } else {
+                    None
+                };
+                if features.gaussian {
+                    columns.push(smoothed);
+                }
+                if let Some(eigenvalues) = hessian {
+                    columns.extend(eigenvalues);
+                }
             }
             if features.sobel {
                 columns.push(self.filters.sobel(width, height, &plane).await?);

@@ -59,7 +59,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         output[index] = total / weight_sum;
     } else if uniforms.operation == 2u {
         output[index] = sobel_magnitude(i32(id.x), i32(id.y));
-    } else {
+    } else if uniforms.operation == 3u {
         output[index] = difference_of_gaussians(bitcast<f32>(input[index]), second[index]);
+    } else if uniforms.operation == 4u {
+        output[index] = hessian_eigenvalues(i32(id.x), i32(id.y))[uniforms.channel];
     }
 }

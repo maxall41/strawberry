@@ -193,12 +193,14 @@ impl AutomaticSegmentationView {
             ("Gaussian blur", s.features.gaussian),
             ("Sobel", s.features.sobel),
             ("Difference of Gaussians", s.features.dog),
+            ("Hessian", s.features.hessian),
         ] {
             let mut features = s.features.clone();
             match label {
                 "Gaussian blur" => features.gaussian = !enabled,
                 "Sobel" => features.sobel = !enabled,
-                _ => features.dog = !enabled,
+                "Difference of Gaussians" => features.dog = !enabled,
+                _ => features.hessian = !enabled,
             }
             section = section.child(
                 ToggleButton::new(label.into(), enabled, move |this: &mut Self, _, _, _| {
@@ -575,7 +577,25 @@ impl Render for AutomaticSegmentationView {
                         256,
                         cx,
                     ))
-                    .child(self.input_scale_control(s.forest.input_scale, cx));
+                    .child(self.input_scale_control(s.forest.input_scale, cx))
+                    .child(
+                        ToggleButton::new(
+                            "Balance classes".into(),
+                            s.forest.balance_classes,
+                            move |this: &mut Self, _, _, _| {
+                                let mut forest = this
+                                    .state
+                                    .read()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .forest
+                                    .clone();
+                                forest.balance_classes = !forest.balance_classes;
+                                this.send(AutomaticSegmentationMessage::SetForest(forest));
+                            },
+                        )
+                        .with_no_margin()
+                        .render(cx),
+                    );
             }
             panel = panel.child(
                 classifier.child(

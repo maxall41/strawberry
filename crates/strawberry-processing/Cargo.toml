@@ -14,7 +14,7 @@ serde = { version = "1.0", features = ["derive"] }
 
 rayon = "1.12"
 futures = "0.3"
-smartcore = { version = "0.7", features = ["serde"] }
+smartcore = { git = "https://github.com/maxall41/smartcore.git", branch = "parallel", features = ["serde"] }
 serde_json = "1"
 
 [lints]

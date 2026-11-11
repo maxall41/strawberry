@@ -30,6 +30,7 @@ impl GpuFloatFilters {
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(concat!(
                     include_str!("shaders/gaussian_blur_math.wgsl"),
                     include_str!("shaders/sobel_math.wgsl"),
+                    include_str!("shaders/hessian_math.wgsl"),
                     include_str!("shaders/difference_of_gaussians.wgsl"),
                     include_str!("shaders/float_filters.wgsl")
                 ))),
@@ -188,6 +189,30 @@ impl GpuFloatFilters {
     pub async fn sobel(&self, width: u32, height: u32, input: &[f32]) -> Result<Vec<f32>> {
         self.run(width, height, bytemuck::cast_slice(input), &[], 2, 0, 1.0)
             .await
+    }
+    /// Signed Hessian eigenvalues in descending order, using central differences.
+    /// Pass a Gaussian-smoothed plane to obtain smoothed image curvature.
+    pub async fn hessian_eigenvalues(
+        &self,
+        width: u32,
+        height: u32,
+        input: &[f32],
+    ) -> Result<[Vec<f32>; 2]> {
+        let mut eigenvalues = [Vec::new(), Vec::new()];
+        for (channel, output) in (0..2).zip(&mut eigenvalues) {
+            *output = self
+                .run(
+                    width,
+                    height,
+                    bytemuck::cast_slice(input),
+                    &[],
+                    4,
+                    channel,
+                    1.0,
+                )
+                .await?;
+        }
+        Ok(eigenvalues)
     }
     /// Compute a signed difference of Gaussians for any floating-point plane.
     pub async fn difference_of_gaussians(
