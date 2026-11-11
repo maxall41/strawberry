@@ -17,6 +17,7 @@ enum ControlKind {
     BrushRadius,
     Trees,
     Depth,
+    MaxParallelTiles,
 }
 
 impl ControlKind {
@@ -25,6 +26,7 @@ impl ControlKind {
             Self::BrushRadius => "segmentation-brush-radius",
             Self::Trees => "segmentation-trees",
             Self::Depth => "segmentation-depth",
+            Self::MaxParallelTiles => "segmentation-max-parallel-tiles",
         }
     }
 }
@@ -34,6 +36,8 @@ struct Controls {
     brush_radius: Option<Entity<ValueControl>>,
     trees: Option<Entity<ValueControl>>,
     depth: Option<Entity<ValueControl>>,
+    input_scale: Option<Entity<ValueControl>>,
+    max_parallel_tiles: Option<Entity<ValueControl>>,
 }
 
 impl Controls {
@@ -42,6 +46,7 @@ impl Controls {
             ControlKind::BrushRadius => &mut self.brush_radius,
             ControlKind::Trees => &mut self.trees,
             ControlKind::Depth => &mut self.depth,
+            ControlKind::MaxParallelTiles => &mut self.max_parallel_tiles,
         }
     }
 }
@@ -251,6 +256,39 @@ impl AutomaticSegmentationView {
         .detach();
     }
 
+    fn input_scale_control(&mut self, value: f32, cx: &mut Context<Self>) -> Entity<ValueControl> {
+        if let Some(control) = &self.controls.input_scale {
+            return control.clone();
+        }
+        let control = cx.new(|cx| {
+            ValueControl::new(
+                format!("{value:.2}"),
+                value,
+                ValueControlConfig {
+                    id: "segmentation-input-scale".into(),
+                    label: "Input scale multiplier".into(),
+                    min: 0.01,
+                    max: 1.0,
+                    step: 0.05,
+                },
+                cx,
+            )
+        });
+        cx.subscribe(&control, |this, _, event: &ValueControlEvent, _| {
+            let mut forest = this
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .forest
+                .clone();
+            forest.input_scale = event.value;
+            this.send(AutomaticSegmentationMessage::SetForest(forest));
+        })
+        .detach();
+        self.controls.input_scale = Some(control.clone());
+        control
+    }
+
     fn integer_control(
         &mut self,
         kind: ControlKind,
@@ -304,6 +342,18 @@ impl AutomaticSegmentationView {
                         this.send(AutomaticSegmentationMessage::SetForest(forest));
                     }
                 }
+                ControlKind::MaxParallelTiles => {
+                    if let Ok(limit) = u16::try_from(integer) {
+                        let mut inference = this
+                            .state
+                            .read()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .inference
+                            .clone();
+                        inference.max_parallel_tiles = limit;
+                        this.send(AutomaticSegmentationMessage::SetInference(inference));
+                    }
+                }
             }
         })
         .detach();
@@ -334,6 +384,10 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
             (ControlKind::BrushRadius, state.brush_radius.get()),
             (ControlKind::Trees, u32::from(state.forest.trees)),
             (ControlKind::Depth, u32::from(state.forest.depth)),
+            (
+                ControlKind::MaxParallelTiles,
+                u32::from(state.inference.max_parallel_tiles),
+            ),
         ] {
             if let Some(control) = self.controls.slot(kind) {
                 control.update(cx, |control, cx| {
@@ -344,6 +398,14 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
                     }
                 });
             }
+        }
+        if let Some(control) = &self.controls.input_scale {
+            control.update(cx, |control, cx| {
+                if control.value != state.forest.input_scale {
+                    control.set_value(state.forest.input_scale);
+                    cx.notify();
+                }
+            });
         }
     }
 }
@@ -512,7 +574,8 @@ impl Render for AutomaticSegmentationView {
                         1,
                         256,
                         cx,
-                    ));
+                    ))
+                    .child(self.input_scale_control(s.forest.input_scale, cx));
             }
             panel = panel.child(
                 classifier.child(
@@ -532,6 +595,17 @@ impl Render for AutomaticSegmentationView {
                         })),
                 ),
             );
+        } else {
+            panel = panel.child(tool_panel::section("Inference settings").child(
+                self.integer_control(
+                    ControlKind::MaxParallelTiles,
+                    "Maximum parallel tiles",
+                    u32::from(s.inference.max_parallel_tiles),
+                    1,
+                    256,
+                    cx,
+                ),
+            ));
         }
         let mut model =
             tool_panel::section("Model").child(

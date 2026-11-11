@@ -63,8 +63,17 @@ fn brush_spans(
 }
 
 /// Replay circular dabs in stroke order so erasers remove earlier labels.
-fn rasterize(sample: &Sample) -> BTreeMap<(u32, u32), u8> {
+fn rasterize(sample: &Sample, width: u32, height: u32) -> BTreeMap<(u32, u32), u8> {
     let mut labels = BTreeMap::new();
+    // Map original brush pixels to the feature image while retaining stroke/eraser order.
+    let scaled_x = |x| {
+        u32::try_from(u64::from(x) * u64::from(width) / u64::from(sample.image.width()))
+            .unwrap_or_default()
+    };
+    let scaled_y = |y| {
+        u32::try_from(u64::from(y) * u64::from(height) / u64::from(sample.image.height()))
+            .unwrap_or_default()
+    };
     for stroke in &sample.strokes {
         for &(x, y) in &stroke.points {
             brush_spans(
@@ -74,7 +83,11 @@ fn rasterize(sample: &Sample) -> BTreeMap<(u32, u32), u8> {
                 y,
                 stroke.radius,
                 |row, left, right| {
-                    for column in left..right {
+                    if left >= right {
+                        return;
+                    }
+                    let row = scaled_y(row);
+                    for column in scaled_x(left)..=scaled_x(right - 1) {
                         match stroke.kind {
                             AnnotationKind::Eraser => {
                                 labels.remove(&(row, column));
@@ -270,6 +283,7 @@ impl AutomaticSegmentation {
     fn start_training(&mut self) -> Result<()> {
         ensure!(self.job.is_none(), "Training is already running");
         self.state.features.validate()?;
+        self.state.forest.validate()?;
         let samples = self.samples.clone();
         let features = self.state.features.clone();
         let forest = self.state.forest.clone();
@@ -280,9 +294,13 @@ impl AutomaticSegmentation {
         self.state.busy = true;
         tokio::task::spawn_blocking(move || {
             let result = futures::executor::block_on(async move {
+                let images = samples
+                    .iter()
+                    .map(|sample| forest.rescale_input(&sample.image))
+                    .collect::<Result<Vec<_>>>()?;
                 let mut candidates = [Vec::new(), Vec::new()];
-                for (image_index, sample) in samples.iter().enumerate() {
-                    let labels = rasterize(sample);
+                for (image_index, (sample, image)) in samples.iter().zip(&images).enumerate() {
+                    let labels = rasterize(sample, image.width(), image.height());
                     for ((y, x), label) in labels {
                         if let Some(class) = candidates.get_mut(usize::from(label)) {
                             class.push((image_index, x, y));
@@ -310,8 +328,7 @@ impl AutomaticSegmentation {
                 }
                 let mut rows = Vec::new();
                 let mut labels = Vec::new();
-                for (index, sample) in samples.iter().enumerate() {
-                    let image = &sample.image;
+                for (index, image) in images.iter().enumerate() {
                     for tile in extractor.tiles(&image, &features)? {
                         let x = tile.core_x;
                         let y = tile.core_y;
@@ -373,8 +390,13 @@ impl AutomaticSegmentation {
                 self.edited();
             }
             AutomaticSegmentationMessage::SetForest(value) => {
+                value.validate()?;
                 self.state.forest = value;
                 self.edited();
+            }
+            AutomaticSegmentationMessage::SetInference(value) => {
+                value.validate()?;
+                self.state.inference = value;
             }
             AutomaticSegmentationMessage::SelectStroke(index) => {
                 ensure!(
@@ -588,6 +610,8 @@ impl ToolBackend for AutomaticSegmentation {
     ) -> Result<Option<PreparedStateUpdate<'a>>> {
         let mut state = self.state.clone();
         AutomaticSegmentationState::deserialize_in_place(fields, &mut state)?;
+        state.forest.validate()?;
+        state.inference.validate()?;
         let model = assets
             .get(MODEL_ASSET)
             .map(|bytes| SegmentationModel::from_bytes(bytes))
@@ -661,9 +685,14 @@ impl ToolBackend for AutomaticSegmentation {
             let extractor = self.extractor.clone();
             let worker_image = image.clone();
             let worker_model = model.clone();
+            let inference = self.state.inference.clone();
             let output = Arc::new(
                 tokio::task::spawn_blocking(move || {
-                    futures::executor::block_on(extractor.infer(&worker_image, &worker_model))
+                    futures::executor::block_on(extractor.infer(
+                        &worker_image,
+                        &worker_model,
+                        &inference,
+                    ))
                 })
                 .await??,
             );

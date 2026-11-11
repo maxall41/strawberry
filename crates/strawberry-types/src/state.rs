@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use strawberry_processing::segmentation::{FeatureConfig, ForestConfig};
+use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, InferenceConfig};
 use strawberry_processing::{local_maxima::ThresholdType, morphology::MorphologyOperation};
 
 // Counter-specific types
@@ -245,6 +245,7 @@ pub struct AutomaticSegmentationState {
     pub total_layers: usize,
     pub features: FeatureConfig,
     pub forest: ForestConfig,
+    pub inference: InferenceConfig,
     #[serde(skip)]
     pub model_path: Option<PathBuf>,
     #[serde(skip)]
@@ -273,6 +274,7 @@ impl Default for AutomaticSegmentationState {
             total_layers: 0,
             features: FeatureConfig::default(),
             forest: ForestConfig::default(),
+            inference: InferenceConfig::default(),
             model_path: None,
             annotations: vec![],
             training_annotation_count: 0,
