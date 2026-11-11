@@ -577,11 +577,15 @@ impl Render for AutomaticSegmentationView {
                         256,
                         cx,
                     ))
-                    .child(self.input_scale_control(s.forest.input_scale, cx))
-                    .child(
+                    .child(self.input_scale_control(s.forest.input_scale, cx));
+                for (label, enabled) in [
+                    ("Balance classes", s.forest.balance_classes),
+                    ("Auto-context", s.forest.autocontext),
+                ] {
+                    classifier = classifier.child(
                         ToggleButton::new(
-                            "Balance classes".into(),
-                            s.forest.balance_classes,
+                            label.into(),
+                            enabled,
                             move |this: &mut Self, _, _, _| {
                                 let mut forest = this
                                     .state
@@ -589,13 +593,17 @@ impl Render for AutomaticSegmentationView {
                                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                                     .forest
                                     .clone();
-                                forest.balance_classes = !forest.balance_classes;
+                                match label {
+                                    "Auto-context" => forest.autocontext = !forest.autocontext,
+                                    _ => forest.balance_classes = !forest.balance_classes,
+                                }
                                 this.send(AutomaticSegmentationMessage::SetForest(forest));
                             },
                         )
                         .with_no_margin()
                         .render(cx),
                     );
+                }
             }
             panel = panel.child(
                 classifier.child(

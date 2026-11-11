@@ -7,12 +7,14 @@ use anyhow::{Context, Result, ensure};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use smartcore::{
-    ensemble::random_forest_classifier::{
-        RandomForestClassifier, RandomForestClassifierParameters,
-    },
-    linalg::basic::matrix::DenseMatrix,
+    ensemble::random_forest_classifier::RandomForestClassifier, linalg::basic::matrix::DenseMatrix,
 };
-use std::{borrow::Cow, io::Write, path::Path, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, io::Write, path::Path, sync::Arc};
+
+mod cache;
+mod training;
+use cache::FeatureCache;
+use training::TrainingData;
 
 const MODEL_VERSION: u32 = 1;
 const GAUSSIAN_SIGMA: f32 = 1.0;
@@ -68,6 +70,13 @@ impl FeatureConfig {
             .max(hessian_radius);
         num_traits::cast(radius).context("Invalid feature halo")
     }
+
+    fn context_features(&self) -> Self {
+        Self {
+            rgb: false,
+            ..self.clone()
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -77,6 +86,7 @@ pub struct ForestConfig {
     pub seed: u64,
     pub input_scale: f32,
     pub balance_classes: bool,
+    pub autocontext: bool,
 }
 impl Default for ForestConfig {
     fn default() -> Self {
@@ -86,6 +96,7 @@ impl Default for ForestConfig {
             seed: 100,
             input_scale: 1.0,
             balance_classes: false,
+            autocontext: false,
         }
     }
 }
@@ -145,6 +156,10 @@ impl Default for InferenceConfig {
 }
 
 impl InferenceConfig {
+    fn batch_size(&self) -> usize {
+        rayon::current_num_threads().clamp(1, usize::from(self.max_parallel_tiles))
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             (1..=256).contains(&self.max_parallel_tiles),
@@ -162,61 +177,187 @@ pub struct SegmentationModel {
     pub parameters: ForestConfig,
     #[serde(skip)]
     pub oob_error: Option<f64>,
-    forest: Forest,
+    first_stage_forest: Forest,
+    second_stage_forest: Option<Forest>,
 }
 impl SegmentationModel {
-    pub fn train(
+    /// Train a complete model from labeled pixels in images at the configured input scale.
+    pub async fn train(
         features: FeatureConfig,
         parameters: ForestConfig,
-        rows: Vec<Vec<f32>>,
-        labels: Vec<u8>,
+        extractor: &FeatureExtractor,
+        images: &[Cow<'_, image::RgbaImage>],
+        selected: &HashMap<(usize, u32, u32), u8>,
+        inference: &InferenceConfig,
     ) -> Result<Self> {
         features.validate()?;
         parameters.validate()?;
-        ensure!(
-            rows.len() == labels.len()
-                && labels.contains(&0)
-                && labels.contains(&1)
-                && labels.iter().all(|&v| v <= 1),
-            "Training requires foreground and background samples"
-        );
-        ensure!(
-            rows.iter()
-                .all(|r| r.len() == features.count() && r.iter().all(|v| v.is_finite())),
-            "Invalid training feature matrix"
-        );
-        let matrix = DenseMatrix::from_2d_vec(&rows)?;
-        let forest = Forest::fit(
-            &matrix,
-            &labels,
-            RandomForestClassifierParameters::default()
-                .with_n_trees(parameters.trees)
-                .with_max_depth(parameters.depth)
-                .with_keep_samples(true)
-                .with_seed(parameters.seed),
-        )?;
-        let oob_predictions = forest.predict_oob(&matrix)?;
-        let oob_error = 1.0 - smartcore::metrics::accuracy(&labels, &oob_predictions);
-        println!(
-            "Segmentation training OOB error: {:.2}% ({} training samples)",
-            oob_error * 100.0,
-            labels.len(),
-        );
+        inference.validate()?;
+        let mut data = TrainingData::extract(
+            extractor,
+            &features,
+            images,
+            selected,
+            parameters.autocontext,
+        )
+        .await?;
+        let (first_stage_forest, mut oob_error) = data.fit(&parameters)?;
+        let second_stage_forest = if parameters.autocontext {
+            data.add_context(&first_stage_forest, extractor, &features, images, inference)
+                .await?;
+            let (forest, error) = data.fit(&parameters)?;
+            oob_error = error;
+            Some(forest)
+        } else {
+            None
+        };
         Ok(Self {
             version: MODEL_VERSION,
             features,
             parameters,
             oob_error: Some(oob_error),
-            forest,
+            first_stage_forest,
+            second_stage_forest,
         })
     }
-    pub fn predict(&self, rows: &Vec<Vec<f32>>) -> Result<Vec<u8>> {
-        ensure!(
-            rows.iter().all(|r| r.len() == self.features.count()),
-            "Feature mismatch"
-        );
-        Ok(self.forest.predict(&DenseMatrix::from_2d_vec(rows)?)?)
+
+    fn prediction_feature_count(&self) -> usize {
+        self.features.count()
+            + if self.parameters.autocontext {
+                1 + self.features.context_features().count()
+            } else {
+                0
+            }
     }
+
+    /// Predict a segmentation using the stages selected when this model was trained.
+    pub async fn predict(
+        &self,
+        extractor: &FeatureExtractor,
+        image: &image::RgbaImage,
+        config: &InferenceConfig,
+    ) -> Result<image::RgbaImage> {
+        config.validate()?;
+        let original_dimensions = image.dimensions();
+        let scaled = self.parameters.rescale_input(image)?;
+        let image = scaled.as_ref();
+        let tiles = extractor.tiles(image, &self.features)?;
+        let mut cache = if self.second_stage_forest.is_some() {
+            Some(FeatureCache::new(self.features.count())?)
+        } else {
+            None
+        };
+        let mut output = Self::predict_batches(
+            &self.first_stage_forest,
+            image.dimensions(),
+            self.features.count(),
+            config,
+            &tiles,
+            async |batch: &[TileInfo]| {
+                // Finish GPU work before predict_batches enters Rayon.
+                let data = futures::future::try_join_all(
+                    batch
+                        .iter()
+                        .map(|tile| extractor.extract(image, &self.features, tile)),
+                )
+                .await?;
+                if let Some(cache) = &mut cache {
+                    for (tile, features) in batch.iter().zip(&data) {
+                        cache.store(0, tile, features, Vec::new())?;
+                    }
+                }
+                Ok(data)
+            },
+        )
+        .await?;
+        if let (Some(forest), Some(mut cache)) = (&self.second_stage_forest, cache) {
+            let context = output;
+            let indices = cache.image_tiles(0);
+            output = Self::predict_batches(
+                forest,
+                image.dimensions(),
+                self.prediction_feature_count(),
+                config,
+                &indices,
+                async |batch: &[usize]| {
+                    let context_tasks = batch
+                        .iter()
+                        .map(|&index| {
+                            let entry = cache.tiles.get(index).context("Missing cached tile")?;
+                            Ok(extractor.extract_context(&context, &self.features, &entry.tile))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let context_data = futures::future::try_join_all(context_tasks).await?;
+                    let mut data = cache.load_batch(batch)?;
+                    for (tile, context_tile) in data.iter_mut().zip(context_data) {
+                        for (row, context_row) in tile.rows.iter_mut().zip(context_tile.rows) {
+                            row.extend(context_row);
+                        }
+                    }
+                    Ok(data)
+                },
+            )
+            .await?;
+        }
+        if output.dimensions() == original_dimensions {
+            Ok(output)
+        } else {
+            Ok(image::imageops::resize(
+                &output,
+                original_dimensions.0,
+                original_dimensions.1,
+                image::imageops::FilterType::Nearest,
+            ))
+        }
+    }
+
+    async fn predict_batches<T>(
+        forest: &Forest,
+        dimensions: (u32, u32),
+        feature_count: usize,
+        config: &InferenceConfig,
+        tiles: &[T],
+        mut load_batch: impl AsyncFnMut(&[T]) -> Result<Vec<FeatureTile>>,
+    ) -> Result<image::RgbaImage> {
+        let mut output = image::RgbaImage::new(dimensions.0, dimensions.1);
+        for batch in tiles.chunks(config.batch_size()) {
+            let data = load_batch(batch).await?;
+            Self::predict_tiles(forest, data, feature_count, &mut output)?;
+        }
+        Ok(output)
+    }
+
+    fn predict_tiles(
+        forest: &Forest,
+        tiles: Vec<FeatureTile>,
+        feature_count: usize,
+        output: &mut image::RgbaImage,
+    ) -> Result<()> {
+        let predictions = tiles
+            .into_par_iter()
+            .map(|tile| {
+                ensure!(
+                    tile.rows.iter().all(|row| row.len() == feature_count),
+                    "Feature mismatch"
+                );
+                let labels = forest.predict(&DenseMatrix::from_2d_vec(&tile.rows)?)?;
+                Ok((tile.x, tile.y, tile.width, labels))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (x, y, width, labels) in predictions {
+            for (offset, label) in labels.into_iter().enumerate() {
+                let offset = u32::try_from(offset)?;
+                let value = if label == 1 { 255 } else { 0 };
+                output.put_pixel(
+                    x + offset % width,
+                    y + offset / width,
+                    image::Rgba([value, value, value, 255]),
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub fn save(&self, path: &Path) -> Result<()> {
         crate::segmentation::write_artifact(path, &self.to_bytes()?)
     }
@@ -224,18 +365,27 @@ impl SegmentationModel {
         Self::from_bytes(&std::fs::read(path)?)
     }
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        self.validate()?;
         Ok(serde_json::to_vec(self)?)
     }
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let model: Self = serde_json::from_slice(bytes)?;
+        model.validate()?;
+        Ok(model)
+    }
+
+    fn validate(&self) -> Result<()> {
         ensure!(
-            model.version == MODEL_VERSION,
+            self.version == MODEL_VERSION,
             "Unsupported segmentation model version"
         );
-        model.features.validate()?;
-        model.parameters.validate()?;
-        model.predict(&vec![vec![0.0; model.features.count()]])?;
-        Ok(model)
+        self.features.validate()?;
+        self.parameters.validate()?;
+        ensure!(
+            self.parameters.autocontext == self.second_stage_forest.is_some(),
+            "Auto-context setting does not match the saved forests"
+        );
+        Ok(())
     }
 }
 
@@ -396,58 +546,22 @@ impl FeatureExtractor {
         }
         FeatureTile::from_columns(tile, &columns)
     }
-    pub async fn infer(
+
+    async fn extract_context(
         &self,
-        image: &image::RgbaImage,
-        model: &SegmentationModel,
-        config: &InferenceConfig,
-    ) -> Result<image::RgbaImage> {
-        config.validate()?;
-        let original_dimensions = image.dimensions();
-        let scaled = model.parameters.rescale_input(image)?;
-        let image = scaled.as_ref();
-        let mut output = image::RgbaImage::new(image.width(), image.height());
-        let tiles = self.tiles(image, &model.features)?;
-        // Bound concurrent feature matrices for both luminance and RGB extraction.
-        let batch_size =
-            rayon::current_num_threads().clamp(1, usize::from(config.max_parallel_tiles));
-        for batch in tiles.chunks(batch_size) {
-            // Await GPU extraction before entering Rayon, which may run on this thread.
-            let features = futures::future::try_join_all(
-                batch
-                    .iter()
-                    .map(|tile| self.extract(image, &model.features, tile)),
-            )
+        context: &image::RgbaImage,
+        features: &FeatureConfig,
+        tile: &TileInfo,
+    ) -> Result<FeatureTile> {
+        let mut data = self
+            .extract(context, &features.context_features(), tile)
             .await?;
-            let predictions = features
-                .into_par_iter()
-                .map(|features| {
-                    let labels = model.predict(&features.rows)?;
-                    Ok((features.x, features.y, features.width, labels))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            for (x, y, width, labels) in predictions {
-                for (offset, label) in labels.into_iter().enumerate() {
-                    let offset = u32::try_from(offset)?;
-                    let value = if label == 1 { 255 } else { 0 };
-                    output.put_pixel(
-                        x + offset % width,
-                        y + offset / width,
-                        image::Rgba([value, value, value, 255]),
-                    );
-                }
-            }
+        for (offset, row) in data.rows.iter_mut().enumerate() {
+            let offset = u32::try_from(offset)?;
+            let pixel =
+                context.get_pixel(data.x + offset % data.width, data.y + offset / data.width);
+            row.insert(0, f32::from(pixel.0[0]) / 255.0);
         }
-        if output.dimensions() == original_dimensions {
-            Ok(output)
-        } else {
-            // Labels are categorical: interpolation would introduce nonbinary values.
-            Ok(image::imageops::resize(
-                &output,
-                original_dimensions.0,
-                original_dimensions.1,
-                image::imageops::FilterType::Nearest,
-            ))
-        }
+        Ok(data)
     }
 }

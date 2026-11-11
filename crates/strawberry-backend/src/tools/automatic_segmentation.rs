@@ -17,6 +17,7 @@ use strawberry_types::{
 };
 
 const MODEL_ASSET: &str = "model.json";
+
 const MASK_TILE_SIZE: u32 = 256;
 const FOREGROUND_BGRA: [u8; 4] = [100, 220, 40, 150];
 const BACKGROUND_BGRA: [u8; 4] = [80, 70, 230, 150];
@@ -320,6 +321,7 @@ impl AutomaticSegmentation {
         let samples = self.samples.clone();
         let features = self.state.features.clone();
         let forest = self.state.forest.clone();
+        let inference = self.state.inference.clone();
         let extractor = self.extractor.clone();
         self.job_revision = self.training_revision;
         let (tx, rx) = flume::bounded(1);
@@ -341,37 +343,10 @@ impl AutomaticSegmentation {
                     }
                 }
                 let selected = select_training_pixels(&candidates, forest.balance_classes)?;
-                let mut rows = Vec::new();
-                let mut labels = Vec::new();
-                for (index, image) in images.iter().enumerate() {
-                    for tile in extractor.tiles(&image, &features)? {
-                        let x = tile.core_x;
-                        let y = tile.core_y;
-                        if !selected.keys().any(|&(i, px, py)| {
-                            i == index
-                                && px >= x
-                                && px < x + tile.core_width
-                                && py >= y
-                                && py < y + tile.core_height
-                        }) {
-                            continue;
-                        }
-                        let data = extractor.extract(&image, &features, &tile).await?;
-                        for (offset, row) in data.rows.into_iter().enumerate() {
-                            let offset = u32::try_from(offset)?;
-                            let key = (
-                                index,
-                                data.x + offset % data.width,
-                                data.y + offset / data.width,
-                            );
-                            if let Some(&label) = selected.get(&key) {
-                                rows.push(row);
-                                labels.push(label);
-                            }
-                        }
-                    }
-                }
-                SegmentationModel::train(features, forest, rows, labels)
+                SegmentationModel::train(
+                    features, forest, &extractor, &images, &selected, &inference,
+                )
+                .await
             });
             let _ = tx.send(result);
         });
@@ -706,9 +681,9 @@ impl ToolBackend for AutomaticSegmentation {
             let inference = self.state.inference.clone();
             let output = Arc::new(
                 tokio::task::spawn_blocking(move || {
-                    futures::executor::block_on(extractor.infer(
+                    futures::executor::block_on(worker_model.predict(
+                        &extractor,
                         &worker_image,
-                        &worker_model,
                         &inference,
                     ))
                 })
