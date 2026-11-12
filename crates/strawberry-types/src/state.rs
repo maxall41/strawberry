@@ -202,7 +202,7 @@ impl BrushRadius {
 
 impl Default for BrushRadius {
     fn default() -> Self {
-        Self(5)
+        Self(1)
     }
 }
 
@@ -255,6 +255,8 @@ pub struct AnnotationStrokeSummary {
 pub struct AutomaticSegmentationState {
     pub is_enabled: bool,
     pub training: bool,
+    pub show_overlay: bool,
+    pub overlay_opacity: u8,
     pub brush: AnnotationKind,
     pub brush_radius: BrushRadius,
     pub selected_layer: usize,
@@ -287,6 +289,8 @@ impl Default for AutomaticSegmentationState {
         Self {
             is_enabled: false,
             training: true,
+            show_overlay: false,
+            overlay_opacity: 30,
             brush: AnnotationKind::default(),
             brush_radius: BrushRadius::default(),
             selected_layer: 0,

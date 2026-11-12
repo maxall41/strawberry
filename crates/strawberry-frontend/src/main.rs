@@ -102,7 +102,7 @@ struct PrimaryViewer {
     display_image: ImageSource,
     img_coords: Arc<RwLock<Option<Bounds<Pixels>>>>,
     overlays: OverlayCollection,
-    annotation_images: std::collections::BTreeMap<(u32, u32), (Arc<RgbaImage>, Arc<RenderImage>)>,
+    annotation_images: std::collections::HashMap<usize, (Arc<RgbaImage>, Arc<RenderImage>)>,
     snap_target: Option<(f32, f32)>,
     toasts: Vec<Entity<FeedbackModal>>,
     last_viewport_size: Option<gpui::Size<Pixels>>,
@@ -285,14 +285,13 @@ impl PrimaryViewer {
                         this.show_output(image, window, cx);
                     }
                     if let Some(overlays) = latest_overlays {
-                        let masks: std::collections::BTreeMap<_, _> = overlays
+                        let masks: std::collections::HashMap<_, _> = overlays
                             .all_elements()
-                            .filter_map(|element| match element {
+                            .enumerate()
+                            .filter_map(|(index, element)| match element {
                                 OverlayElement::ImageMask {
-                                    x,
-                                    y,
-                                    image: Some(image),
-                                } => Some(((*x, *y), image.clone())),
+                                    image: Some(image), ..
+                                } => Some((index, image.clone())),
                                 _ => None,
                             })
                             .collect();
@@ -718,16 +717,20 @@ impl PrimaryViewer {
     }
 
     // Render a single overlay element
-    fn render_overlay_element(&self, element: &OverlayElement) -> impl IntoElement + use<> {
+    fn render_overlay_element(
+        &self,
+        (index, element): (usize, &OverlayElement),
+    ) -> impl IntoElement + use<> {
         let image_width = num_traits::cast::<u32, f32>(self.original_width.max(1)).unwrap_or(1.);
         let image_height = num_traits::cast::<u32, f32>(self.original_height.max(1)).unwrap_or(1.);
         match element {
-            OverlayElement::ImageMask { x, y, .. } => {
-                let Some((mask, rendered)) = self.annotation_images.get(&(*x, *y)) else {
+            OverlayElement::ImageMask { x, y, opacity, .. } => {
+                let Some((mask, rendered)) = self.annotation_images.get(&index) else {
                     return div();
                 };
                 div()
                     .absolute()
+                    .opacity(*opacity)
                     .left(gpui::relative(
                         num_traits::cast::<u32, f32>(*x).unwrap_or(0.) / image_width,
                     ))
@@ -986,6 +989,7 @@ impl Render for PrimaryViewer {
                         .children(
                             self.overlays
                                 .all_elements()
+                                .enumerate()
                                 .map(|element| self.render_overlay_element(element)),
                         ),
                 )
@@ -1301,7 +1305,7 @@ async fn main() -> Result<()> {
                     display_image: ImageSource::Render(img_data),
                     img_coords: Arc::new(RwLock::new(None)),
                     overlays: OverlayCollection::new(),
-                    annotation_images: std::collections::BTreeMap::new(),
+                    annotation_images: std::collections::HashMap::new(),
                     snap_target: None,
                     toasts: vec![],
                     last_viewport_size: None,

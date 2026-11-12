@@ -183,6 +183,7 @@ struct InferenceCache {
     input: Arc<RgbaImage>,
     model: Arc<SegmentationModel>,
     output: Arc<RgbaImage>,
+    overlay: Option<Arc<RgbaImage>>,
 }
 
 impl InferenceCache {
@@ -358,6 +359,10 @@ impl AutomaticSegmentation {
                 self.state.training = value;
                 self.stroke = None;
                 self.rebuild_mask();
+            }
+            AutomaticSegmentationMessage::SetShowOverlay(value) => self.state.show_overlay = value,
+            AutomaticSegmentationMessage::SetOverlayOpacity(value) => {
+                self.state.overlay_opacity = value.min(100);
             }
             AutomaticSegmentationMessage::SetBrush(kind) => self.state.brush = kind,
             AutomaticSegmentationMessage::SetBrushRadius(value) => self.state.brush_radius = value,
@@ -602,6 +607,7 @@ impl ToolBackend for AutomaticSegmentation {
         AutomaticSegmentationState::deserialize_in_place(fields, &mut state)?;
         state.forest.validate()?;
         state.inference.validate()?;
+        state.overlay_opacity = state.overlay_opacity.min(100);
         let model = assets
             .get(MODEL_ASSET)
             .map(|bytes| SegmentationModel::from_bytes(bytes))
@@ -660,7 +666,7 @@ impl ToolBackend for AutomaticSegmentation {
             self.rebuild_mask();
             self.changed();
         }
-        if self.state.training {
+        if self.state.training && !self.state.show_overlay {
             return Ok(());
         }
         let Some(model) = self.model.clone() else {
@@ -692,9 +698,31 @@ impl ToolBackend for AutomaticSegmentation {
                 input: image,
                 model,
                 output: output.clone(),
+                overlay: None,
             });
             output
         };
+        if self.state.training {
+            if let Some(cached) = &mut self.inference_cache {
+                cached.overlay.get_or_insert_with(|| {
+                    Arc::new(RgbaImage::from_fn(
+                        output.width(),
+                        output.height(),
+                        |x, y| {
+                            let image::Rgba([label, ..]) = *output.get_pixel(x, y);
+                            let [blue, green, red, _] = FOREGROUND_BGRA;
+                            image::Rgba(if label == 0 {
+                                TRANSPARENT_BGRA
+                            } else {
+                                [blue, green, red, 255]
+                            })
+                        },
+                    ))
+                });
+            }
+            self.overlays_dirty = true;
+            return Ok(());
+        }
         if let Some(layer) = images.get_mut(self.state.selected_layer) {
             *layer = output;
         }
@@ -712,26 +740,46 @@ impl ToolBackend for AutomaticSegmentation {
         if !self.state.is_enabled || !self.state.training {
             return None;
         }
-        let sample = self.current.and_then(|i| self.samples.get(i))?;
-        let mut elements: Vec<_> = self
-            .annotation_masks
-            .iter()
-            .map(|(&(x, y), image)| OverlayElement::ImageMask {
+        let mut elements = Vec::new();
+        if self.state.show_overlay {
+            if let Some(cached) = self.inference_cache.as_ref().filter(|cached| {
+                self.input
+                    .as_ref()
+                    .zip(self.model.as_ref())
+                    .is_some_and(|(image, model)| {
+                        cached.matches(self.state.selected_layer, image, model)
+                    })
+            }) {
+                if let Some(overlay) = &cached.overlay {
+                    elements.push(OverlayElement::ImageMask {
+                        x: 0,
+                        y: 0,
+                        opacity: f32::from(self.state.overlay_opacity) / 100.,
+                        image: Some(overlay.clone()),
+                    });
+                }
+            }
+        }
+        elements.extend(self.annotation_masks.iter().map(|(&(x, y), image)| {
+            OverlayElement::ImageMask {
                 x,
                 y,
+                opacity: 1.,
                 image: Some(image.clone()),
-            })
-            .collect();
-        if let Some(index) = self.state.selected_stroke {
-            if let Some(stroke) = sample.strokes.get(index) {
-                if let Some(&(x, y)) = stroke.points.first() {
-                    elements.push(OverlayElement::Circle {
-                        x: num_traits::cast::<u32, f32>(x).unwrap_or(0.0) + 0.5,
-                        y: num_traits::cast::<u32, f32>(y).unwrap_or(0.0) + 0.5,
-                        radius: num_traits::cast(stroke.radius.get()).unwrap_or(1.0),
-                        color: [255, 255, 255, 255],
-                        style: CircleStyle::Selected { width: 1.0 },
-                    });
+            }
+        }));
+        if let Some(sample) = self.current.and_then(|i| self.samples.get(i)) {
+            if let Some(index) = self.state.selected_stroke {
+                if let Some(stroke) = sample.strokes.get(index) {
+                    if let Some(&(x, y)) = stroke.points.first() {
+                        elements.push(OverlayElement::Circle {
+                            x: num_traits::cast::<u32, f32>(x).unwrap_or(0.0) + 0.5,
+                            y: num_traits::cast::<u32, f32>(y).unwrap_or(0.0) + 0.5,
+                            radius: num_traits::cast(stroke.radius.get()).unwrap_or(1.0),
+                            color: [255, 255, 255, 255],
+                            style: CircleStyle::Selected { width: 1.0 },
+                        });
+                    }
                 }
             }
         }

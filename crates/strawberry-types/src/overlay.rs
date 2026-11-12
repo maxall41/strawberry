@@ -19,6 +19,7 @@ pub enum OverlayElement {
     ImageMask {
         x: u32,
         y: u32,
+        opacity: f32,
         #[serde(skip)]
         image: Option<std::sync::Arc<image::RgbaImage>>,
     },
