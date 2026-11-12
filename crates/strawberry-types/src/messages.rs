@@ -78,6 +78,8 @@ pub enum AutomaticSegmentationMessage {
     SetTraining(bool),
     SetShowOverlay(bool),
     SetOverlayOpacity(u8),
+    ToggleThreshold(bool),
+    SetThreshold(f32),
     SetBrush(AnnotationKind),
     SetBrushRadius(BrushRadius),
     SelectLayer(usize),

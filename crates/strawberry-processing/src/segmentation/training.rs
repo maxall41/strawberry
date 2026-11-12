@@ -98,7 +98,7 @@ impl TrainingData {
             if indices.is_empty() {
                 continue;
             }
-            // Include unlabeled neighbors when constructing the context mask.
+            // Include unlabeled neighbors when constructing the probability context map.
             let context = SegmentationModel::predict_batches(
                 first_stage_forest,
                 image.dimensions(),

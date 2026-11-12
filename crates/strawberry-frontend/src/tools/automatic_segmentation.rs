@@ -55,6 +55,12 @@ enum ControlKind {
     MaxParallelTiles,
 }
 
+#[derive(Clone, Copy)]
+enum FloatControlKind {
+    InputScale,
+    Threshold,
+}
+
 impl ControlKind {
     const fn id(self) -> &'static str {
         match self {
@@ -74,6 +80,7 @@ struct Controls {
     trees: Option<Entity<ValueControl>>,
     depth: Option<Entity<ValueControl>>,
     input_scale: Option<Entity<ValueControl>>,
+    threshold: Option<Entity<ValueControl>>,
     max_parallel_tiles: Option<Entity<ValueControl>>,
     gaussian_sigma: Option<Entity<ValueControl>>,
     dog_small_sigma: Option<Entity<ValueControl>>,
@@ -81,6 +88,13 @@ struct Controls {
 }
 
 impl Controls {
+    fn float_slot(&mut self, kind: FloatControlKind) -> &mut Option<Entity<ValueControl>> {
+        match kind {
+            FloatControlKind::InputScale => &mut self.input_scale,
+            FloatControlKind::Threshold => &mut self.threshold,
+        }
+    }
+
     fn sigma_slot(&mut self, kind: SigmaKind) -> &mut Option<Entity<ValueControl>> {
         match kind {
             SigmaKind::Gaussian => &mut self.gaussian_sigma,
@@ -415,36 +429,58 @@ impl AutomaticSegmentationView {
         .detach();
     }
 
-    fn input_scale_control(&mut self, value: f32, cx: &mut Context<Self>) -> Entity<ValueControl> {
-        if let Some(control) = &self.controls.input_scale {
+    fn float_control(
+        &mut self,
+        kind: FloatControlKind,
+        value: f32,
+        cx: &mut Context<Self>,
+    ) -> Entity<ValueControl> {
+        if let Some(control) = self.controls.float_slot(kind) {
             return control.clone();
         }
+        let (id, label, min, step) = match kind {
+            FloatControlKind::InputScale => (
+                "segmentation-input-scale",
+                "Input scale multiplier",
+                0.01,
+                0.05,
+            ),
+            FloatControlKind::Threshold => ("segmentation-threshold", "Threshold", 0.0, 0.01),
+        };
         let control = cx.new(|cx| {
             ValueControl::new(
                 format!("{value:.2}"),
                 value,
                 ValueControlConfig {
-                    id: "segmentation-input-scale".into(),
-                    label: "Input scale multiplier".into(),
-                    min: 0.01,
+                    id: id.into(),
+                    label: label.into(),
+                    min,
                     max: 1.0,
-                    step: 0.05,
+                    step,
                 },
                 cx,
             )
         });
-        cx.subscribe(&control, |this, _, event: &ValueControlEvent, _| {
-            let mut forest = this
-                .state
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .forest
-                .clone();
-            forest.input_scale = event.value;
-            this.send(AutomaticSegmentationMessage::SetForest(forest));
-        })
+        cx.subscribe(
+            &control,
+            move |this, _, event: &ValueControlEvent, _| match kind {
+                FloatControlKind::InputScale => {
+                    let mut forest = this
+                        .state
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .forest
+                        .clone();
+                    forest.input_scale = event.value;
+                    this.send(AutomaticSegmentationMessage::SetForest(forest));
+                }
+                FloatControlKind::Threshold => {
+                    this.send(AutomaticSegmentationMessage::SetThreshold(event.value))
+                }
+            },
+        )
         .detach();
-        self.controls.input_scale = Some(control.clone());
+        *self.controls.float_slot(kind) = Some(control.clone());
         control
     }
 
@@ -626,13 +662,18 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
                 });
             }
         }
-        if let Some(control) = &self.controls.input_scale {
-            control.update(cx, |control, cx| {
-                if control.value != state.forest.input_scale {
-                    control.set_value(state.forest.input_scale);
-                    cx.notify();
-                }
-            });
+        for (kind, value) in [
+            (FloatControlKind::InputScale, state.forest.input_scale),
+            (FloatControlKind::Threshold, state.threshold_value),
+        ] {
+            if let Some(control) = self.controls.float_slot(kind) {
+                control.update(cx, |control, cx| {
+                    if control.value != value {
+                        control.set_value(value);
+                        cx.notify();
+                    }
+                });
+            }
         }
     }
 }
@@ -825,7 +866,11 @@ impl Render for AutomaticSegmentationView {
                         256,
                         cx,
                     ))
-                    .child(self.input_scale_control(s.forest.input_scale, cx));
+                    .child(self.float_control(
+                        FloatControlKind::InputScale,
+                        s.forest.input_scale,
+                        cx,
+                    ));
                 for (label, enabled) in [
                     ("Balance classes", s.forest.balance_classes),
                     ("Auto-context", s.forest.autocontext),
@@ -867,16 +912,36 @@ impl Render for AutomaticSegmentationView {
                 ),
             );
         } else {
-            panel = panel.child(tool_panel::section("Inference settings").child(
-                self.integer_control(
+            let mut inference = tool_panel::section("Inference settings")
+                .child(self.integer_control(
                     ControlKind::MaxParallelTiles,
                     "Maximum parallel tiles",
                     u32::from(s.inference.max_parallel_tiles),
                     1,
                     256,
                     cx,
-                ),
-            ));
+                ))
+                .child(
+                    ToggleButton::new(
+                        "Thresholding".into(),
+                        s.use_threshold,
+                        move |this: &mut Self, _, _, _| {
+                            this.send(AutomaticSegmentationMessage::ToggleThreshold(
+                                !s.use_threshold,
+                            ));
+                        },
+                    )
+                    .with_no_margin()
+                    .render(cx),
+                );
+            if s.use_threshold {
+                inference = inference.child(self.float_control(
+                    FloatControlKind::Threshold,
+                    s.threshold_value,
+                    cx,
+                ));
+            }
+            panel = panel.child(inference);
         }
         let mut model =
             tool_panel::section("Model").child(
