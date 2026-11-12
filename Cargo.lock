@@ -5219,7 +5219,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 [[package]]
 name = "smartcore"
 version = "0.7.0"
-source = "git+https://github.com/maxall41/smartcore.git?branch=parallel#7619eaa3f1719119347775942d147357cc480278"
+source = "git+https://github.com/maxall41/smartcore.git?branch=parallel#830ba6d16cad482dbddc2b0a6db6d01954937ebb"
 dependencies = [
  "approx",
  "cfg-if",

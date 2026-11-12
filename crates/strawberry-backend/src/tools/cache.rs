@@ -143,6 +143,9 @@ impl SyncState for strawberry_types::AutomaticSegmentationState {
         self.is_enabled != other.is_enabled
             || self.training != other.training
             || (self.training && self.show_overlay != other.show_overlay)
+            || (!self.training
+                && (self.use_threshold != other.use_threshold
+                    || (self.use_threshold && self.threshold_value != other.threshold_value)))
             || self.selected_layer != other.selected_layer
             || self.model_revision != other.model_revision
     }

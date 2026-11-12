@@ -10,6 +10,7 @@ use std::{
 use strawberry_processing::{
     GpuImageProcessor,
     segmentation::{FeatureExtractor, SegmentationModel},
+    threshold::GpuThreshold,
 };
 use strawberry_types::{
     overlay::{CircleStyle, OverlayElement, ToolOverlay},
@@ -205,6 +206,7 @@ pub struct AutomaticSegmentation {
     training_revision: u64,
     job_revision: u64,
     extractor: Arc<FeatureExtractor>,
+    threshold: GpuThreshold,
     model: Option<Arc<SegmentationModel>>,
     inference_cache: Option<InferenceCache>,
     samples: Vec<Sample>,
@@ -231,7 +233,8 @@ impl AutomaticSegmentation {
             cache: ToolCache::new(&state),
             state,
             base,
-            extractor: Arc::new(FeatureExtractor::new(gpu)),
+            extractor: Arc::new(FeatureExtractor::new(gpu.clone())),
+            threshold: GpuThreshold::new(gpu),
             model: None,
             inference_cache: None,
             samples: vec![],
@@ -363,6 +366,16 @@ impl AutomaticSegmentation {
             AutomaticSegmentationMessage::SetShowOverlay(value) => self.state.show_overlay = value,
             AutomaticSegmentationMessage::SetOverlayOpacity(value) => {
                 self.state.overlay_opacity = value.min(100);
+            }
+            AutomaticSegmentationMessage::ToggleThreshold(value) => {
+                self.state.use_threshold = value
+            }
+            AutomaticSegmentationMessage::SetThreshold(value) => {
+                ensure!(
+                    value.is_finite() && (0.0..=1.0).contains(&value),
+                    "Threshold must be between 0 and 1"
+                );
+                self.state.threshold_value = value;
             }
             AutomaticSegmentationMessage::SetBrush(kind) => self.state.brush = kind,
             AutomaticSegmentationMessage::SetBrushRadius(value) => self.state.brush_radius = value,
@@ -608,6 +621,10 @@ impl ToolBackend for AutomaticSegmentation {
         state.forest.validate()?;
         state.inference.validate()?;
         state.overlay_opacity = state.overlay_opacity.min(100);
+        ensure!(
+            state.threshold_value.is_finite() && (0.0..=1.0).contains(&state.threshold_value),
+            "Threshold must be between 0 and 1"
+        );
         let model = assets
             .get(MODEL_ASSET)
             .map(|bytes| SegmentationModel::from_bytes(bytes))
@@ -709,13 +726,9 @@ impl ToolBackend for AutomaticSegmentation {
                         output.width(),
                         output.height(),
                         |x, y| {
-                            let image::Rgba([label, ..]) = *output.get_pixel(x, y);
+                            let image::Rgba([probability, ..]) = *output.get_pixel(x, y);
                             let [blue, green, red, _] = FOREGROUND_BGRA;
-                            image::Rgba(if label == 0 {
-                                TRANSPARENT_BGRA
-                            } else {
-                                [blue, green, red, 255]
-                            })
+                            image::Rgba([blue, green, red, probability])
                         },
                     ))
                 });
@@ -724,7 +737,15 @@ impl ToolBackend for AutomaticSegmentation {
             return Ok(());
         }
         if let Some(layer) = images.get_mut(self.state.selected_layer) {
-            *layer = output;
+            *layer = if self.state.use_threshold {
+                Arc::new(
+                    self.threshold
+                        .apply_threshold(&output, self.state.threshold_value)
+                        .await?,
+                )
+            } else {
+                output
+            };
         }
         Ok(())
     }

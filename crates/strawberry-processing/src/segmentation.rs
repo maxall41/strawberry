@@ -7,7 +7,8 @@ use anyhow::{Context, Result, ensure};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use smartcore::{
-    ensemble::random_forest_classifier::RandomForestClassifier, linalg::basic::matrix::DenseMatrix,
+    ensemble::random_forest_classifier::RandomForestClassifier,
+    linalg::basic::{arrays::Array, matrix::DenseMatrix},
 };
 use std::{borrow::Cow, collections::HashMap, io::Write, path::Path, sync::Arc};
 
@@ -16,7 +17,7 @@ mod training;
 use cache::FeatureCache;
 use training::TrainingData;
 
-const MODEL_VERSION: u32 = 2;
+const MODEL_VERSION: u32 = 1;
 const GAUSSIAN_SIGMA: f32 = 1.0;
 const DOG_SMALL_SIGMA: f32 = 1.0;
 const DOG_LARGE_SIGMA: f32 = 10.0;
@@ -254,7 +255,7 @@ impl SegmentationModel {
             }
     }
 
-    /// Predict a segmentation using the stages selected when this model was trained.
+    /// Predict foreground probabilities, encoded as grayscale values from 0 to 255.
     pub async fn predict(
         &self,
         extractor: &FeatureExtractor,
@@ -364,14 +365,25 @@ impl SegmentationModel {
                     tile.rows.iter().all(|row| row.len() == feature_count),
                     "Feature mismatch"
                 );
-                let labels = forest.predict(&DenseMatrix::from_2d_vec(&tile.rows)?)?;
-                Ok((tile.x, tile.y, tile.width, labels))
+                let probabilities = forest.predict_proba(&DenseMatrix::from_2d_vec(&tile.rows)?)?;
+                // Training requires both labels (0 = background, 1 = foreground).
+                ensure!(
+                    probabilities.shape() == (tile.rows.len(), 2),
+                    "Invalid probability matrix"
+                );
+                Ok((tile.x, tile.y, tile.width, probabilities))
             })
             .collect::<Result<Vec<_>>>()?;
-        for (x, y, width, labels) in predictions {
-            for (offset, label) in labels.into_iter().enumerate() {
-                let offset = u32::try_from(offset)?;
-                let value = if label == 1 { 255 } else { 0 };
+        for (x, y, width, probabilities) in predictions {
+            for row in 0..probabilities.shape().0 {
+                let probability = *probabilities.get((row, 1));
+                ensure!(
+                    probability.is_finite() && (0.0..=1.0).contains(&probability),
+                    "Invalid foreground probability"
+                );
+                let value = num_traits::cast::<f32, u8>((probability * 255.0).round())
+                    .context("Invalid probability pixel")?;
+                let offset = u32::try_from(row)?;
                 output.put_pixel(
                     x + offset % width,
                     y + offset / width,
@@ -399,10 +411,6 @@ impl SegmentationModel {
     }
 
     fn validate(&self) -> Result<()> {
-        ensure!(
-            self.version == MODEL_VERSION,
-            "Unsupported segmentation model version"
-        );
         self.features.validate()?;
         self.parameters.validate()?;
         ensure!(
