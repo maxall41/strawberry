@@ -49,6 +49,7 @@ impl SigmaKind {
 #[derive(Clone, Copy)]
 enum ControlKind {
     BrushRadius,
+    OverlayOpacity,
     Trees,
     Depth,
     MaxParallelTiles,
@@ -58,6 +59,7 @@ impl ControlKind {
     const fn id(self) -> &'static str {
         match self {
             Self::BrushRadius => "segmentation-brush-radius",
+            Self::OverlayOpacity => "segmentation-overlay-opacity",
             Self::Trees => "segmentation-trees",
             Self::Depth => "segmentation-depth",
             Self::MaxParallelTiles => "segmentation-max-parallel-tiles",
@@ -68,6 +70,7 @@ impl ControlKind {
 #[derive(Default)]
 struct Controls {
     brush_radius: Option<Entity<ValueControl>>,
+    overlay_opacity: Option<Entity<ValueControl>>,
     trees: Option<Entity<ValueControl>>,
     depth: Option<Entity<ValueControl>>,
     input_scale: Option<Entity<ValueControl>>,
@@ -89,6 +92,7 @@ impl Controls {
     fn slot(&mut self, kind: ControlKind) -> &mut Option<Entity<ValueControl>> {
         match kind {
             ControlKind::BrushRadius => &mut self.brush_radius,
+            ControlKind::OverlayOpacity => &mut self.overlay_opacity,
             ControlKind::Trees => &mut self.trees,
             ControlKind::Depth => &mut self.depth,
             ControlKind::MaxParallelTiles => &mut self.max_parallel_tiles,
@@ -524,6 +528,11 @@ impl AutomaticSegmentationView {
                 .forest
                 .clone();
             match kind {
+                ControlKind::OverlayOpacity => {
+                    if let Ok(opacity) = u8::try_from(integer) {
+                        this.send(AutomaticSegmentationMessage::SetOverlayOpacity(opacity));
+                    }
+                }
                 ControlKind::BrushRadius => {
                     if let Ok(radius) = BrushRadius::try_from(integer) {
                         this.send(AutomaticSegmentationMessage::SetBrushRadius(radius));
@@ -596,6 +605,10 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
         }
         for (kind, value) in [
             (ControlKind::BrushRadius, state.brush_radius.get()),
+            (
+                ControlKind::OverlayOpacity,
+                u32::from(state.overlay_opacity),
+            ),
             (ControlKind::Trees, u32::from(state.forest.trees)),
             (ControlKind::Depth, u32::from(state.forest.depth)),
             (
@@ -693,6 +706,29 @@ impl Render for AutomaticSegmentationView {
             );
         }
         if s.training {
+            panel = panel.child(
+                ToggleButton::new(
+                    "Show Overlay".into(),
+                    s.show_overlay,
+                    move |this: &mut Self, _, _, _| {
+                        this.send(AutomaticSegmentationMessage::SetShowOverlay(
+                            !s.show_overlay,
+                        ));
+                    },
+                )
+                .with_no_margin()
+                .render(cx),
+            );
+            if s.show_overlay {
+                panel = panel.child(self.integer_control(
+                    ControlKind::OverlayOpacity,
+                    "Overlay opacity (%)",
+                    u32::from(s.overlay_opacity),
+                    0,
+                    100,
+                    cx,
+                ));
+            }
             let mut brushes = tool_panel::segmented();
             for (label, kind) in [
                 ("Foreground", AnnotationKind::Foreground),

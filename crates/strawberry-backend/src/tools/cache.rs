@@ -142,6 +142,7 @@ impl SyncState for strawberry_types::AutomaticSegmentationState {
     fn processing_differs(&self, other: &Self) -> bool {
         self.is_enabled != other.is_enabled
             || self.training != other.training
+            || (self.training && self.show_overlay != other.show_overlay)
             || self.selected_layer != other.selected_layer
             || self.model_revision != other.model_revision
     }

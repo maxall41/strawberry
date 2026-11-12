@@ -76,6 +76,8 @@ pub enum WatershedMessage {
 #[derive(Debug, Clone)]
 pub enum AutomaticSegmentationMessage {
     SetTraining(bool),
+    SetShowOverlay(bool),
+    SetOverlayOpacity(u8),
     SetBrush(AnnotationKind),
     SetBrushRadius(BrushRadius),
     SelectLayer(usize),
