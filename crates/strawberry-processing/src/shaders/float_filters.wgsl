@@ -63,5 +63,47 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         output[index] = difference_of_gaussians(bitcast<f32>(input[index]), second[index]);
     } else if uniforms.operation == 4u {
         output[index] = hessian_eigenvalues(i32(id.x), i32(id.y))[uniforms.channel];
+    } else if uniforms.operation == 5u {
+        membrane_projections(id.xy, index);
     }
+}
+
+fn membrane_projections(position: vec2<u32>, index: u32) {
+    var responses: array<f32, 30>;
+    var offset = 0u;
+    var sum = 0.0;
+    var mean = 0.0;
+    var squared_deviations = 0.0;
+    for (var angle = 0u; angle < 30u; angle++) {
+        let count = u32(second[offset]);
+        offset++;
+        var response = 0.0;
+        for (var sample = 0u; sample < count; sample++) {
+            let dx = i32(second[offset]);
+            let dy = i32(second[offset + 1u]);
+            offset += 2u;
+            response += sample_luminance(i32(position.x) + dx, i32(position.y) + dy);
+        }
+        response /= f32(count);
+        sum += response;
+        let delta = response - mean;
+        mean += delta / f32(angle + 1u);
+        squared_deviations += delta * (response - mean);
+        var insertion = angle;
+        while insertion > 0u {
+            if responses[insertion - 1u] <= response {
+                break;
+            }
+            responses[insertion] = responses[insertion - 1u];
+            insertion--;
+        }
+        responses[insertion] = response;
+    }
+    let stride = uniforms.width * uniforms.height;
+    output[index] = sum;
+    output[stride + index] = sum / 30.0;
+    output[2u * stride + index] = sqrt(max(squared_deviations / 29.0, 0.0));
+    output[3u * stride + index] = (responses[14] + responses[15]) * 0.5;
+    output[4u * stride + index] = responses[29];
+    output[5u * stride + index] = responses[0];
 }

@@ -815,13 +815,15 @@ impl AutomaticSegmentationView {
             ("Sobel", s.features.sobel),
             ("Difference of Gaussians", s.features.dog),
             ("Hessian", s.features.hessian),
+            ("Membrane projections", s.features.membrane),
         ] {
             let mut features = s.features.clone();
             match label {
                 "Gaussian blur" => features.gaussian = !enabled,
                 "Sobel" => features.sobel = !enabled,
                 "Difference of Gaussians" => features.dog = !enabled,
-                _ => features.hessian = !enabled,
+                "Hessian" => features.hessian = !enabled,
+                _ => features.membrane = !enabled,
             }
             let expanded = match label {
                 "Gaussian blur" => Some(self.show_gaussian_settings),
