@@ -266,7 +266,7 @@ impl TryFrom<String> for ClassId {
     }
 }
 
-pub type StrokeId = u64;
+pub type StrokeId = usize;
 /// Index of an input image retained by the segmentation tool.
 pub type SampleId = usize;
 pub type AnnotationsBySample = HashMap<SampleId, BTreeMap<StrokeId, AnnotationStroke>>;
