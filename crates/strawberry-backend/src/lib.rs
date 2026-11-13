@@ -28,6 +28,7 @@ use crate::tools::nervetracer::NerveTracer;
 pub mod counter;
 pub mod nervetracer;
 mod pipeline_io;
+mod segmentation;
 pub mod tools;
 
 /// Helper macros for tool registration

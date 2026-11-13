@@ -1,10 +1,14 @@
 use super::{base::ToolBase, cache::ToolCache};
+use crate::segmentation::{
+    AnnotationMask, TrainingSample, append_stroke_points, render_class_mask,
+    render_class_prediction, train,
+};
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::Arc,
 };
 use strawberry_processing::{
@@ -18,12 +22,6 @@ use strawberry_types::{
 
 const MODEL_ASSET: &str = "model.json";
 
-const MASK_TILE_SIZE: u32 = 256;
-const TRANSPARENT_BGRA: BgraColor = BgraColor::TRANSPARENT;
-// The viewer caches masks by overlay index, so rebuilds must emit tiles in a stable order.
-type MaskTiles = BTreeMap<(u32, u32), Arc<RgbaImage>>;
-
-#[derive(Clone)]
 struct Sample {
     image: Arc<RgbaImage>,
 }
@@ -73,172 +71,28 @@ fn validate_classes(classes: &SegmentationClasses) -> Result<()> {
     );
     Ok(())
 }
+fn annotation_visible(
+    state: &AutomaticSegmentationState,
+    kind: AnnotationKind,
+    stroke: &AnnotationStroke,
+) -> bool {
+    stroke.visible
+        && match kind {
+            AnnotationKind::Paint(id) => {
+                !state.hidden_classes.contains(&id)
+                    && (!state.preview_selected || state.active_class == id)
+            }
+            AnnotationKind::Eraser => true,
+        }
+}
+
 fn annotation_color(kind: AnnotationKind, classes: &SegmentationClasses) -> BgraColor {
     match kind {
         AnnotationKind::Paint(id) => classes
             .get(&id)
-            .map_or(TRANSPARENT_BGRA, |class| class.bgra(150)),
-        AnnotationKind::Eraser => TRANSPARENT_BGRA,
+            .map_or(BgraColor::TRANSPARENT, |class| class.bgra(150)),
+        AnnotationKind::Eraser => BgraColor::TRANSPARENT,
     }
-}
-
-fn render_class_prediction(planes: &[image::GrayImage], colors: &[BgraColor]) -> RgbaImage {
-    let (width, height) = planes[0].dimensions();
-    RgbaImage::from_fn(width, height, |x, y| {
-        let mut winner = 0;
-        for index in 1..planes.len() {
-            if planes[index].get_pixel(x, y)[0] > planes[winner].get_pixel(x, y)[0] {
-                winner = index;
-            }
-        }
-        colors[winner].into_pixel()
-    })
-}
-
-/// Visit horizontal spans of a circular dab, clipping once per row.
-fn brush_spans(
-    width: u32,
-    height: u32,
-    x: u32,
-    y: u32,
-    radius: BrushRadius,
-    mut visit: impl FnMut(u32, u32, u32),
-) {
-    let radius = i64::from(radius.get());
-    let top = (i64::from(y) - radius).max(0);
-    let bottom = (i64::from(y) + radius).min(i64::from(height) - 1);
-    for row in top..=bottom {
-        let dy = row - i64::from(y);
-        let extent = (radius * radius - dy * dy).unsigned_abs().isqrt();
-        let extent = i64::try_from(extent).unwrap_or(0);
-        let left = (i64::from(x) - extent).max(0);
-        let right = (i64::from(x) + extent + 1).min(i64::from(width));
-        if let (Ok(row), Ok(left), Ok(right)) = (
-            u32::try_from(row),
-            u32::try_from(left),
-            u32::try_from(right),
-        ) {
-            visit(row, left, right);
-        }
-    }
-}
-
-/// Replay circular dabs in stroke order so erasers remove earlier labels.
-fn rasterize(
-    image: &RgbaImage,
-    width: u32,
-    height: u32,
-    sample: SampleId,
-    annotations: &AutomaticSegmentationState,
-) -> BTreeMap<(u32, u32), u8> {
-    let mut labels = BTreeMap::new();
-    let classes: Vec<_> = annotations.classes.keys().copied().collect();
-    // Map original brush pixels to the feature image while retaining stroke/eraser order.
-    let scaled_x = |x| {
-        u32::try_from(u64::from(x) * u64::from(width) / u64::from(image.width()))
-            .unwrap_or_default()
-    };
-    let scaled_y = |y| {
-        u32::try_from(u64::from(y) * u64::from(height) / u64::from(image.height()))
-            .unwrap_or_default()
-    };
-    for (_, (kind, stroke)) in annotations.ordered_annotations(sample) {
-        for &(x, y) in stroke.points.iter() {
-            brush_spans(
-                image.width(),
-                image.height(),
-                x,
-                y,
-                stroke.radius,
-                |row, left, right| {
-                    if left >= right {
-                        return;
-                    }
-                    let row = scaled_y(row);
-                    for column in scaled_x(left)..=scaled_x(right - 1) {
-                        match kind {
-                            AnnotationKind::Eraser => {
-                                labels.remove(&(row, column));
-                            }
-                            AnnotationKind::Paint(id) => {
-                                labels.insert(
-                                    (row, column),
-                                    classes
-                                        .iter()
-                                        .position(|&class| class == id)
-                                        .expect("validated stroke class")
-                                        as u8,
-                                );
-                            }
-                        }
-                    }
-                },
-            );
-        }
-    }
-    labels
-}
-
-fn select_training_pixels(
-    candidates: &[Vec<(usize, u32, u32)>],
-    balance_classes: bool,
-) -> Result<HashMap<(usize, u32, u32), u8>> {
-    let minority_count = candidates.iter().map(Vec::len).min().unwrap_or(0);
-    ensure!(minority_count > 0, "Annotate every class before training");
-    let mut selected = HashMap::new();
-    for (label, class) in candidates.iter().enumerate() {
-        let count = if balance_classes {
-            minority_count
-        } else {
-            class.len()
-        };
-        for i in 0..count {
-            let index = if count == class.len() {
-                i
-            } else {
-                i * class.len() / count
-            };
-            if let Some(&key) = class.get(index) {
-                selected.insert(key, u8::try_from(label)?);
-            }
-        }
-    }
-    Ok(selected)
-}
-
-fn paint_mask(
-    tiles: &mut MaskTiles,
-    width: u32,
-    height: u32,
-    x: u32,
-    y: u32,
-    radius: BrushRadius,
-    color: BgraColor,
-) {
-    brush_spans(width, height, x, y, radius, |row, left, right| {
-        let mut column = left;
-        while column < right {
-            let origin = (
-                column / MASK_TILE_SIZE * MASK_TILE_SIZE,
-                row / MASK_TILE_SIZE * MASK_TILE_SIZE,
-            );
-            let end = right.min(origin.0 + MASK_TILE_SIZE);
-            if color != TRANSPARENT_BGRA || tiles.contains_key(&origin) {
-                let tile = tiles.entry(origin).or_insert_with(|| {
-                    Arc::new(RgbaImage::new(
-                        (width - origin.0).min(MASK_TILE_SIZE),
-                        (height - origin.1).min(MASK_TILE_SIZE),
-                    ))
-                });
-                // Take copy-on-write ownership once per row segment, rather than once per pixel.
-                let tile = Arc::make_mut(tile);
-                for px in column..end {
-                    tile.put_pixel(px - origin.0, row - origin.1, color.into_pixel());
-                }
-            }
-            column = end;
-        }
-    });
 }
 
 /// Retain the expensive prediction independently of the pipeline's enabled/bypass cache.
@@ -286,7 +140,7 @@ pub struct AutomaticSegmentation {
     input: Option<Arc<RgbaImage>>,
     current: Option<SampleId>,
     stroke: Option<PendingStroke>,
-    annotation_masks: MaskTiles,
+    annotation_masks: AnnotationMask,
     overlays_dirty: bool,
     job: Option<flume::Receiver<Result<(SegmentationModel, Vec<ClassId>)>>>,
 }
@@ -315,7 +169,7 @@ impl AutomaticSegmentation {
             input: None,
             current: None,
             stroke: None,
-            annotation_masks: MaskTiles::new(),
+            annotation_masks: AnnotationMask::default(),
             overlays_dirty: false,
             job: None,
         }
@@ -364,30 +218,15 @@ impl AutomaticSegmentation {
     }
     fn render_prediction(&self, planes: &[image::GrayImage]) -> RgbaImage {
         if self.state.output_mode == SegmentationOutputMode::ClassMask {
-            let (width, height) = planes[0].dimensions();
             let plane = self
                 .model_class_ids
                 .iter()
-                .position(|&id| id == self.state.output_class)
-                .and_then(|index| planes.get(index));
-            return RgbaImage::from_fn(width, height, |x, y| {
-                let probability = plane.map_or(0, |plane| plane.get_pixel(x, y)[0]);
-                let value = if self.state.use_threshold {
-                    if plane.is_some()
-                        && f32::from(probability) / 255. >= self.state.threshold_value
-                    {
-                        255
-                    } else {
-                        0
-                    }
-                } else {
-                    probability
-                };
-                RgbColor::new(value, value, value)
-                    .with_alpha(255)
-                    .to_bgra()
-                    .into_pixel()
-            });
+                .position(|&id| id == self.state.output_class);
+            let threshold = self
+                .state
+                .use_threshold
+                .then_some(self.state.threshold_value);
+            return render_class_mask(planes, plane, threshold);
         }
         let colors: Vec<_> = self
             .model_class_ids
@@ -433,44 +272,21 @@ impl AutomaticSegmentation {
         }
     }
     fn rebuild_mask(&mut self) {
-        let mut tiles = MaskTiles::new();
         if let Some((index, sample)) = self
             .current
             .and_then(|index| self.samples.get(index).map(|sample| (index, sample)))
         {
-            for (_, (kind, stroke)) in self.state.ordered_annotations(index) {
-                if !stroke.visible {
-                    continue;
-                }
-                if let AnnotationKind::Paint(id) = kind {
-                    if self.state.hidden_classes.contains(&id)
-                        || (self.state.preview_selected && self.state.active_class != id)
-                    {
-                        continue;
-                    }
-                }
-                let color = annotation_color(kind, &self.state.classes);
-                for &(x, y) in stroke.points.iter() {
-                    paint_mask(
-                        &mut tiles,
-                        sample.image.width(),
-                        sample.image.height(),
-                        x,
-                        y,
-                        stroke.radius,
-                        color,
-                    );
-                }
-            }
+            let strokes = self.state.ordered_annotations(index);
+            self.annotation_masks.rebuild(
+                sample.image.dimensions(),
+                strokes.into_values().filter_map(|(kind, stroke)| {
+                    annotation_visible(&self.state, kind, stroke)
+                        .then(|| (stroke, annotation_color(kind, &self.state.classes)))
+                }),
+            );
+        } else {
+            self.annotation_masks.clear();
         }
-        for (key, tile) in &mut tiles {
-            if let Some(old) = self.annotation_masks.get(key) {
-                if old == tile {
-                    *tile = old.clone();
-                }
-            }
-        }
-        self.annotation_masks = tiles;
     }
     fn changed(&mut self) {
         self.overlays_dirty = true;
@@ -520,8 +336,20 @@ impl AutomaticSegmentation {
         self.state.forest.validate()?;
         validate_classes(&self.state.classes)?;
         let classes: Vec<_> = self.state.classes.keys().copied().collect();
-        let samples = self.samples.clone();
-        let annotations = self.state.clone();
+        let samples: Vec<_> = self
+            .samples
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| TrainingSample {
+                image: sample.image.clone(),
+                annotations: self
+                    .state
+                    .ordered_annotations(index)
+                    .into_values()
+                    .map(|(kind, stroke)| (kind, stroke.clone()))
+                    .collect(),
+            })
+            .collect();
         let features = self.state.features.clone();
         let forest = self.state.forest.clone();
         let inference = self.state.inference.clone();
@@ -532,30 +360,8 @@ impl AutomaticSegmentation {
         self.state.busy = true;
         tokio::task::spawn_blocking(move || {
             let result = futures::executor::block_on(async move {
-                let images = samples
-                    .iter()
-                    .map(|sample| forest.rescale_input(&sample.image))
-                    .collect::<Result<Vec<_>>>()?;
-                let mut candidates = vec![Vec::new(); classes.len()];
-                for (image_index, (sample, image)) in samples.iter().zip(&images).enumerate() {
-                    let labels = rasterize(
-                        &sample.image,
-                        image.width(),
-                        image.height(),
-                        image_index,
-                        &annotations,
-                    );
-                    for ((y, x), label) in labels {
-                        if let Some(class) = candidates.get_mut(usize::from(label)) {
-                            class.push((image_index, x, y));
-                        }
-                    }
-                }
-                let selected = select_training_pixels(&candidates, forest.balance_classes)?;
-                let model = SegmentationModel::train(
-                    features, forest, &extractor, &images, &selected, &inference,
-                )
-                .await?;
+                let model =
+                    train(&samples, &classes, features, forest, &inference, &extractor).await?;
                 Ok((model, classes))
             });
             let _ = tx.send(result);
@@ -769,55 +575,17 @@ impl AutomaticSegmentation {
         let (width, height) = sample.image.dimensions();
         self.overlays_dirty = true;
         if let Some(stroke) = &mut self.stroke {
-            let first_new = stroke.stroke.points.len();
-            if let Some(&(a, b)) = stroke.stroke.points.last() {
-                let dx = i64::from(x) - i64::from(a);
-                let dy = i64::from(y) - i64::from(b);
-                let distance = dx.unsigned_abs().max(dy.unsigned_abs());
-                if distance == 0 {
-                    return;
-                }
-                // Circular dabs overlap with half-radius spacing, independent of cursor speed.
-                let spacing = u64::from(stroke.stroke.radius.get().div_ceil(2));
-                let steps = distance.div_ceil(spacing);
-                for i in 1..=steps {
-                    if let (Ok(px), Ok(py)) = (
-                        u32::try_from(
-                            i64::from(a)
-                                + dx * i64::try_from(i).unwrap_or(0)
-                                    / i64::try_from(steps).unwrap_or(1),
-                        ),
-                        u32::try_from(
-                            i64::from(b)
-                                + dy * i64::try_from(i).unwrap_or(0)
-                                    / i64::try_from(steps).unwrap_or(1),
-                        ),
-                    ) {
-                        Arc::make_mut(&mut stroke.stroke.points).push((px, py));
-                    }
-                }
-            } else {
-                Arc::make_mut(&mut stroke.stroke.points).push((x, y));
+            let appended =
+                append_stroke_points(&mut stroke.stroke.points, (x, y), stroke.stroke.radius);
+            if !annotation_visible(&self.state, stroke.kind, &stroke.stroke) {
+                return;
             }
-            if let AnnotationKind::Paint(id) = stroke.kind {
-                if self.state.hidden_classes.contains(&id)
-                    || (self.state.preview_selected && self.state.active_class != id)
-                {
-                    return;
-                }
-            }
-            let color = annotation_color(stroke.kind, &self.state.classes);
-            for &(x, y) in stroke.stroke.points.iter().skip(first_new) {
-                paint_mask(
-                    &mut self.annotation_masks,
-                    width,
-                    height,
-                    x,
-                    y,
-                    stroke.stroke.radius,
-                    color,
-                );
-            }
+            self.annotation_masks.paint(
+                (width, height),
+                &stroke.stroke.points[appended],
+                stroke.stroke.radius,
+                annotation_color(stroke.kind, &self.state.classes),
+            );
         }
     }
     fn finish_training(&mut self) {
