@@ -4,6 +4,17 @@ use anyhow::{Result, ensure};
 use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum FilterOperation {
+    Channel = 0,
+    Gaussian = 1,
+    Sobel = 2,
+    DifferenceOfGaussians = 3,
+    HessianEigenvalues = 4,
+    MembraneProjections = 5,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Params {
@@ -19,6 +30,7 @@ struct Params {
 pub struct GpuFloatFilters {
     gpu: Arc<GpuImageProcessor>,
     pipeline: wgpu::ComputePipeline,
+    membrane_kernels: Vec<f32>,
 }
 impl GpuFloatFilters {
     #[must_use]
@@ -45,7 +57,11 @@ impl GpuFloatFilters {
                 compilation_options: Default::default(),
                 cache: None,
             });
-        Self { gpu, pipeline }
+        Self {
+            gpu,
+            pipeline,
+            membrane_kernels: membrane_kernels(),
+        }
     }
     async fn run(
         &self,
@@ -53,7 +69,7 @@ impl GpuFloatFilters {
         height: u32,
         input: &[u8],
         second: &[f32],
-        operation: u32,
+        operation: FilterOperation,
         channel: u32,
         sigma: f32,
     ) -> Result<Vec<f32>> {
@@ -66,7 +82,11 @@ impl GpuFloatFilters {
                         .ok_or_else(|| anyhow::anyhow!("Image too large"))?,
             "Invalid filter input"
         );
-        let bytes = crate::buffer_size(count, 4)?;
+        let bytes_per_pixel = match operation {
+            FilterOperation::MembraneProjections => 24,
+            _ => 4,
+        };
+        let bytes = crate::buffer_size(count, bytes_per_pixel)?;
         ensure!(
             bytes <= u64::from(self.gpu.device.limits().max_storage_buffer_binding_size),
             "Tile exceeds GPU buffer limits"
@@ -103,7 +123,7 @@ impl GpuFloatFilters {
         let params = self.gpu.create_uniform_buffer(&Params {
             width,
             height,
-            operation,
+            operation: operation as u32,
             channel,
             sigma,
             radius: (sigma * 3.0).ceil(),
@@ -166,12 +186,37 @@ impl GpuFloatFilters {
             image.height(),
             image.as_raw(),
             &[],
-            0,
+            FilterOperation::Channel,
             channel,
             1.0,
         )
         .await
     }
+    pub async fn membrane_projections(
+        &self,
+        width: u32,
+        height: u32,
+        input: &[f32],
+    ) -> Result<[Vec<f32>; 6]> {
+        let values = self
+            .run(
+                width,
+                height,
+                bytemuck::cast_slice(input),
+                &self.membrane_kernels,
+                FilterOperation::MembraneProjections,
+                0,
+                1.0,
+            )
+            .await?;
+        let count = crate::pixel_count(width, height)?;
+        let mut projections = [const { Vec::new() }; 6];
+        for (plane, values) in projections.iter_mut().zip(values.chunks_exact(count)) {
+            *plane = values.to_vec();
+        }
+        Ok(projections)
+    }
+
     pub async fn gaussian(
         &self,
         width: u32,
@@ -183,12 +228,28 @@ impl GpuFloatFilters {
             sigma.is_finite() && sigma > 0.0 && sigma <= 64.0,
             "Sigma must be in (0,64]"
         );
-        self.run(width, height, bytemuck::cast_slice(input), &[], 1, 0, sigma)
-            .await
+        self.run(
+            width,
+            height,
+            bytemuck::cast_slice(input),
+            &[],
+            FilterOperation::Gaussian,
+            0,
+            sigma,
+        )
+        .await
     }
     pub async fn sobel(&self, width: u32, height: u32, input: &[f32]) -> Result<Vec<f32>> {
-        self.run(width, height, bytemuck::cast_slice(input), &[], 2, 0, 1.0)
-            .await
+        self.run(
+            width,
+            height,
+            bytemuck::cast_slice(input),
+            &[],
+            FilterOperation::Sobel,
+            0,
+            1.0,
+        )
+        .await
     }
     /// Signed Hessian eigenvalues in descending order, using central differences.
     /// Pass a Gaussian-smoothed plane to obtain smoothed image curvature.
@@ -206,7 +267,7 @@ impl GpuFloatFilters {
                     height,
                     bytemuck::cast_slice(input),
                     &[],
-                    4,
+                    FilterOperation::HessianEigenvalues,
                     channel,
                     1.0,
                 )
@@ -241,7 +302,40 @@ impl GpuFloatFilters {
         large: &[f32],
     ) -> Result<Vec<f32>> {
         ensure!(small.len() == large.len(), "DoG plane dimensions differ");
-        self.run(width, height, bytemuck::cast_slice(small), large, 3, 0, 1.0)
-            .await
+        self.run(
+            width,
+            height,
+            bytemuck::cast_slice(small),
+            large,
+            FilterOperation::DifferenceOfGaussians,
+            0,
+            1.0,
+        )
+        .await
     }
+}
+
+fn membrane_kernels() -> Vec<f32> {
+    let mut kernels = Vec::new();
+    for angle in 0..30 {
+        let (sin, cos) = (-f64::from(angle) * 6.0).to_radians().sin_cos();
+        let mut offsets = Vec::new();
+        let mut count = 0.0;
+        for y in -9i16..=9 {
+            for x in -9i16..=9 {
+                let source_x = f64::from(x) * cos - f64::from(y) * sin + 9.0;
+                let source_y = f64::from(x) * sin + f64::from(y) * cos + 9.0;
+                if (-0.01..19.0).contains(&source_x)
+                    && (-0.01..19.0).contains(&source_y)
+                    && source_x.round() == 9.0
+                {
+                    offsets.extend([f32::from(x), f32::from(y)]);
+                    count += 1.0;
+                }
+            }
+        }
+        kernels.push(count);
+        kernels.extend(offsets);
+    }
+    kernels
 }

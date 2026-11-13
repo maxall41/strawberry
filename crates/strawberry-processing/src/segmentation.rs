@@ -30,6 +30,7 @@ pub struct FeatureConfig {
     pub sobel: bool,
     pub dog: bool,
     pub hessian: bool,
+    pub membrane: bool,
     pub gaussian_sigma: f32,
     pub dog_small_sigma: f32,
     pub dog_large_sigma: f32,
@@ -42,6 +43,7 @@ impl Default for FeatureConfig {
             sobel: true,
             dog: true,
             hessian: true,
+            membrane: false,
             gaussian_sigma: GAUSSIAN_SIGMA,
             dog_small_sigma: DOG_SMALL_SIGMA,
             dog_large_sigma: DOG_LARGE_SIGMA,
@@ -71,7 +73,8 @@ impl FeatureConfig {
         (1 + usize::from(self.gaussian)
             + usize::from(self.sobel)
             + usize::from(self.dog)
-            + 2 * usize::from(self.hessian))
+            + 2 * usize::from(self.hessian)
+            + 6 * usize::from(self.membrane))
             * if self.rgb { 3 } else { 1 }
     }
     fn halo(&self) -> Result<usize> {
@@ -92,7 +95,8 @@ impl FeatureConfig {
         let radius = (sigma * 3.0)
             .ceil()
             .max(if self.sobel { 1.0 } else { 0.0 })
-            .max(hessian_radius);
+            .max(hessian_radius)
+            .max(if self.membrane { 9.0 } else { 0.0 });
         num_traits::cast(radius).context("Invalid feature halo")
     }
 
@@ -620,6 +624,13 @@ impl FeatureExtractor {
                             features.dog_small_sigma,
                             features.dog_large_sigma,
                         )
+                        .await?,
+                );
+            }
+            if features.membrane {
+                columns.extend(
+                    self.filters
+                        .membrane_projections(width, height, &plane)
                         .await?,
                 );
             }
