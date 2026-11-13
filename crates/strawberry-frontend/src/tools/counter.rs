@@ -30,6 +30,7 @@ pub struct CounterView {
     pub image_directory: Arc<RwLock<Option<PathBuf>>>,
     pub base: crate::tools::base::ToolBase,
     count_types_scroll: gpui::ScrollHandle,
+    count_type_focus: tool_panel::ListFocus<u16>,
 }
 
 impl Focusable for CounterView {
@@ -48,6 +49,7 @@ impl CounterView {
         Self {
             state: Arc::new(RwLock::new(CounterState::default())),
             count_types_scroll: gpui::ScrollHandle::new(),
+            count_type_focus: tool_panel::ListFocus::new(),
             next_count_type_id: Arc::new(RwLock::new(0)),
             last_directory: Arc::new(RwLock::new(None)),
             image_directory,
@@ -536,16 +538,19 @@ impl CounterView {
         cx.notify();
     }
 
+    fn sorted_count_type_ids(state: &CounterState) -> Vec<u16> {
+        let mut ids: Vec<_> = state.manual_counts.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
     fn select_count_type_by_position(&self, position: usize, window: &Window, cx: &Context<Self>) {
-        let Ok(state) = self.state.read() else {
-            return;
+        let count_type_id = match self.state.read() {
+            Ok(state) => Self::sorted_count_type_ids(&state).get(position).copied(),
+            Err(_) => return,
         };
 
-        let mut sorted_counts: Vec<_> = state.manual_counts.iter().collect();
-        sorted_counts.sort_by_key(|(id, _)| **id);
-
-        if let Some(&(&count_type_id, _)) = sorted_counts.get(position) {
-            drop(state); // Release the read lock before calling select_count_type
+        if let Some(count_type_id) = count_type_id {
             self.select_count_type(count_type_id, window, cx);
         }
     }
@@ -677,6 +682,7 @@ impl CounterView {
         is_selected: bool,
         is_visible: bool,
         position: usize,
+        row_focus: FocusHandle,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let index = usize::from(count_type_id)
@@ -702,8 +708,13 @@ impl CounterView {
             } else {
                 gpui::Toggled::False
             })
-            .focusable()
+            .track_focus(&row_focus)
             .cursor_pointer()
+            .bg(if is_selected {
+                theme::SURFACE_ALT
+            } else {
+                theme::SURFACE_DEEP
+            })
             .hover(|style| style.bg(theme::SURFACE_ALT))
             .focus_visible(|style| style.bg(theme::SURFACE_ALT))
             .tooltip(move |_, cx| {
@@ -779,21 +790,63 @@ impl CounterView {
         state: &CounterState,
         scroll: &gpui::ScrollHandle,
         owner: &FocusHandle,
+        list_focus: &tool_panel::ListFocus<u16>,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
+        let count_type_ids = Self::sorted_count_type_ids(state);
+        list_focus.sync(&count_type_ids, cx);
+        let count_types_scroll = scroll.clone();
         let mut list = tool_panel::list_for_tool("counter-types-list", scroll, owner)
-            .role(gpui::Role::RadioGroup);
+            .role(gpui::Role::RadioGroup)
+            .on_key_down(
+                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    let Some(direction) = tool_panel::ListDirection::from_key(event) else {
+                        return;
+                    };
+                    let selection = match this.state.read() {
+                        Ok(state) => {
+                            let ids = Self::sorted_count_type_ids(&state);
+                            let current = this
+                                .count_type_focus
+                                .focused_index(&ids, window)
+                                .or_else(|| {
+                                    state
+                                        .active_count_type
+                                        .and_then(|active| ids.iter().position(|&id| id == active))
+                                });
+                            let target = tool_panel::next_list_index(current, ids.len(), direction);
+                            drop(state);
+                            target
+                                .and_then(|target| ids.get(target).copied().map(|id| (target, id)))
+                        }
+                        Err(error) => {
+                            eprintln!("Failed to read state for count type navigation: {error}");
+                            None
+                        }
+                    };
+                    let Some((target, count_type_id)) = selection else {
+                        return;
+                    };
+                    this.select_count_type(count_type_id, window, cx);
+                    this.count_type_focus.focus(count_type_id, window, cx);
+                    count_types_scroll.scroll_to_item(target);
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            );
         if state.manual_counts.is_empty() {
             list = list.child(tool_panel::empty("No count types"));
         }
-        let mut types: Vec<_> = state.manual_counts.iter().collect();
-        types.sort_by_key(|(id, _)| **id);
-        for (position, (&id, counts)) in types.into_iter().enumerate() {
+        for (position, id) in count_type_ids.into_iter().enumerate() {
+            let Some(counts) = state.manual_counts.get(&id) else {
+                continue;
+            };
             let name = state
                 .count_type_names
                 .get(&id)
                 .cloned()
                 .unwrap_or_else(|| format!("Type {}", position.saturating_add(1)));
+            let row_focus = list_focus.handle(id, cx);
             list = list.child(Self::render_count_type_item(
                 id,
                 &name,
@@ -805,6 +858,7 @@ impl CounterView {
                     .copied()
                     .unwrap_or(true),
                 position,
+                row_focus,
                 cx,
             ));
         }
@@ -898,6 +952,7 @@ impl CounterView {
                         state,
                         &self.count_types_scroll,
                         &self.base.focus_handle,
+                        &self.count_type_focus,
                         cx,
                     ))
                     .child(Self::render_add_button(cx)),

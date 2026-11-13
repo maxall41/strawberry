@@ -129,6 +129,9 @@ pub struct AutomaticSegmentationView {
     classes_scroll: gpui::ScrollHandle,
     class_edit: Option<(ClassId, bool, String)>,
     class_edit_select_all: bool,
+    class_focus: tool_panel::ListFocus<ClassId>,
+    stroke_focus: tool_panel::ListFocus<StrokeId>,
+    output_class_focus: tool_panel::ListFocus<ClassId>,
 }
 impl Focusable for AutomaticSegmentationView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -161,6 +164,9 @@ impl AutomaticSegmentationView {
             classes_scroll: gpui::ScrollHandle::new(),
             class_edit: None,
             class_edit_select_all: false,
+            class_focus: tool_panel::ListFocus::new(),
+            stroke_focus: tool_panel::ListFocus::new(),
+            output_class_focus: tool_panel::ListFocus::new(),
         }
     }
     fn send(&self, message: AutomaticSegmentationMessage) {
@@ -305,12 +311,50 @@ impl AutomaticSegmentationView {
             }))
     }
     fn classes(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
+        let class_ids = state.classes.keys().copied().collect::<Vec<_>>();
+        self.class_focus.sync(&class_ids, cx);
         let mut list = tool_panel::list_for_tool(
             "segmentation-classes",
             &self.classes_scroll,
             &self.base.focus_handle,
-        );
-        for (&id, class) in &state.classes {
+        )
+        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+            let Some(direction) = tool_panel::ListDirection::from_key(event) else {
+                return;
+            };
+            let (class_ids, active_class) = {
+                let Ok(state) = this.state.read() else {
+                    return;
+                };
+                (
+                    state.classes.keys().copied().collect::<Vec<_>>(),
+                    state.active_class,
+                )
+            };
+            let current = this
+                .class_focus
+                .focused_index(&class_ids, window)
+                .or_else(|| class_ids.iter().position(|id| *id == active_class));
+            let Some(target) = tool_panel::next_list_index(current, class_ids.len(), direction)
+            else {
+                return;
+            };
+            let Some(&id) = class_ids.get(target) else {
+                return;
+            };
+            this.send(AutomaticSegmentationMessage::SetBrush(
+                AnnotationKind::Paint(id),
+            ));
+            this.class_edit = None;
+            this.class_focus.focus(id, window, cx);
+            this.classes_scroll.scroll_to_item(target);
+            cx.stop_propagation();
+            cx.notify();
+        }));
+        for &id in &class_ids {
+            let Some(class) = state.classes.get(&id) else {
+                continue;
+            };
             let selected = state.active_class == id;
             let name = class.name.clone();
             let color = class.color;
@@ -330,7 +374,7 @@ impl AutomaticSegmentationView {
                 } else {
                     gpui::Toggled::False
                 })
-                .focusable()
+                .track_focus(&self.class_focus.handle(id, cx))
                 .cursor_pointer()
                 .border_color(theme::BORDER_MUTED)
                 .bg(if selected {
@@ -339,7 +383,7 @@ impl AutomaticSegmentationView {
                     theme::SURFACE_DEEP
                 })
                 .hover(|style| style.bg(theme::SURFACE_ALT))
-                .focus_visible(|style| style.bg(theme::CONTROL))
+                .focus_visible(|style| style.bg(theme::SURFACE_ALT))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     if renaming {
@@ -566,7 +610,50 @@ impl AutomaticSegmentationView {
         }
     }
     fn annotations(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
-        let mut list = tool_panel::list("segmentation-annotations", &self.annotations_scroll);
+        let stroke_ids = state
+            .current_annotations()
+            .map(|(_, stroke_id, _)| stroke_id)
+            .collect::<Vec<_>>();
+        self.stroke_focus.sync(&stroke_ids, cx);
+        let mut list = tool_panel::list("segmentation-annotations", &self.annotations_scroll)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let Some(direction) = tool_panel::ListDirection::from_key(event) else {
+                    return;
+                };
+                let (stroke_ids, selected_stroke) = {
+                    let Ok(state) = this.state.read() else {
+                        return;
+                    };
+                    (
+                        state
+                            .current_annotations()
+                            .map(|(_, stroke_id, _)| stroke_id)
+                            .collect::<Vec<_>>(),
+                        state.selected_stroke,
+                    )
+                };
+                let current = this
+                    .stroke_focus
+                    .focused_index(&stroke_ids, window)
+                    .or_else(|| {
+                        stroke_ids
+                            .iter()
+                            .position(|id| Some(*id) == selected_stroke)
+                    });
+                let Some(target) =
+                    tool_panel::next_list_index(current, stroke_ids.len(), direction)
+                else {
+                    return;
+                };
+                let Some(&stroke_id) = stroke_ids.get(target) else {
+                    return;
+                };
+                this.send(AutomaticSegmentationMessage::SelectStroke(stroke_id));
+                this.stroke_focus.focus(stroke_id, window, cx);
+                this.annotations_scroll.scroll_to_item(target);
+                cx.stop_propagation();
+                cx.notify();
+            }));
         if state.current_annotations().next().is_none() {
             list = list.child(
                 div()
@@ -606,6 +693,7 @@ impl AutomaticSegmentationView {
                             AutomaticSegmentationMessage::SelectStroke(index),
                             cx,
                         )
+                        .focus_handle(&self.stroke_focus.handle(index, cx))
                         .variant(ButtonVariant::Ghost)
                         .compact()
                         .flex_1()
@@ -1393,8 +1481,18 @@ impl Render for AutomaticSegmentationView {
             }
             inference = inference.child(outputs);
             if s.output_mode == SegmentationOutputMode::ClassMask {
-                for (&id, class) in &s.classes {
-                    inference = inference.child(
+                let output_class_ids = s.classes.keys().copied().collect::<Vec<_>>();
+                self.output_class_focus.sync(&output_class_ids, cx);
+                let mut output_classes = div()
+                    .id("segmentation-output-classes")
+                    .flex()
+                    .flex_col()
+                    .gap_3();
+                for &id in &output_class_ids {
+                    let Some(class) = s.classes.get(&id) else {
+                        continue;
+                    };
+                    output_classes = output_classes.child(
                         self.button(
                             gpui::ElementId::Name(format!("output-class-{}", id).into()),
                             class.name.clone(),
@@ -1403,10 +1501,50 @@ impl Render for AutomaticSegmentationView {
                         )
                         .compact()
                         .variant(ButtonVariant::Ghost)
+                        .focus_handle(&self.output_class_focus.handle(id, cx))
                         .selected(s.output_class == id)
                         .justify_start(),
                     );
                 }
+                let output_classes = output_classes.on_key_down(cx.listener(
+                    |this, event: &gpui::KeyDownEvent, window, cx| {
+                        let Some(direction) = tool_panel::ListDirection::from_key(event) else {
+                            return;
+                        };
+                        let (current_output_class_ids, output_class) = {
+                            let Ok(state) = this.state.read() else {
+                                return;
+                            };
+                            (
+                                state.classes.keys().copied().collect::<Vec<_>>(),
+                                state.output_class,
+                            )
+                        };
+                        let current = this
+                            .output_class_focus
+                            .focused_index(&current_output_class_ids, window)
+                            .or_else(|| {
+                                current_output_class_ids
+                                    .iter()
+                                    .position(|id| *id == output_class)
+                            });
+                        let Some(target) = tool_panel::next_list_index(
+                            current,
+                            current_output_class_ids.len(),
+                            direction,
+                        ) else {
+                            return;
+                        };
+                        let Some(&id) = current_output_class_ids.get(target) else {
+                            return;
+                        };
+                        this.send(AutomaticSegmentationMessage::SetOutputClass(id));
+                        this.output_class_focus.focus(id, window, cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                    },
+                ));
+                inference = inference.child(output_classes);
                 inference = inference.child(
                     ToggleButton::new(
                         "Thresholding".into(),

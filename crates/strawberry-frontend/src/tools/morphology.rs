@@ -2,7 +2,7 @@ use crate::gui::Button;
 use crate::gui::actions::actions;
 use num_traits::ToPrimitive;
 
-use crate::gui::theme;
+use crate::gui::{theme, tool_panel};
 // Implements UI for morphology tool
 
 use std::sync::{Arc, RwLock};
@@ -26,6 +26,7 @@ pub struct MorphologyView {
     pub state: Arc<RwLock<MorphologyState>>,
     pub element_size_control: Option<Entity<ValueControl>>,
     pub base: crate::tools::base::ToolBase,
+    operation_focus: tool_panel::ListFocus<usize>,
 }
 
 impl Focusable for MorphologyView {
@@ -35,6 +36,13 @@ impl Focusable for MorphologyView {
 }
 
 impl MorphologyView {
+    const OPERATIONS: [(MorphologyOperation, &'static str); 4] = [
+        (MorphologyOperation::Dilation, "Dilation"),
+        (MorphologyOperation::Erosion, "Erosion"),
+        (MorphologyOperation::Opening, "Opening"),
+        (MorphologyOperation::Closing, "Closing"),
+    ];
+
     pub fn new(
         _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
         command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -43,6 +51,7 @@ impl MorphologyView {
         Self {
             state: Arc::new(RwLock::new(MorphologyState::default())),
             element_size_control: None,
+            operation_focus: tool_panel::ListFocus::new(),
             base: crate::tools::base::ToolBase::new(
                 command_sender,
                 strawberry_types::BackendToolType::Morphology,
@@ -154,6 +163,53 @@ impl MorphologyView {
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut choices = div()
+            .id("morphology-operation-choices")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let Some(direction) = tool_panel::ListDirection::from_key(event) else {
+                    return;
+                };
+                let target = match this.state.read() {
+                    Ok(state) => {
+                        let operation_ids = (0..Self::OPERATIONS.len()).collect::<Vec<_>>();
+                        let current = this
+                            .operation_focus
+                            .focused_index(&operation_ids, window)
+                            .or_else(|| {
+                                Self::OPERATIONS
+                                    .iter()
+                                    .position(|(operation, _)| *operation == state.operation)
+                            });
+                        tool_panel::next_list_index(current, Self::OPERATIONS.len(), direction)
+                    }
+                    Err(error) => {
+                        eprintln!("Failed to read state for operation navigation: {error}");
+                        None
+                    }
+                };
+                let Some(target) = target else {
+                    return;
+                };
+                this.set_operation(Self::OPERATIONS[target].0, window, cx);
+                this.operation_focus.focus(target, window, cx);
+                cx.stop_propagation();
+                cx.notify();
+            }));
+        let operation_ids = (0..Self::OPERATIONS.len()).collect::<Vec<_>>();
+        self.operation_focus.sync(&operation_ids, cx);
+        for (index, &(operation, label)) in Self::OPERATIONS.iter().enumerate() {
+            let focus = self.operation_focus.handle(index, cx);
+            choices = choices.child(Self::render_operation_button(
+                label.to_string(),
+                operation,
+                state.operation == operation,
+                focus,
+                cx,
+            ));
+        }
         div()
             .flex()
             .flex_col()
@@ -163,47 +219,20 @@ impl MorphologyView {
                     .font_weight(gpui::FontWeight::BOLD)
                     .child("Operation:"),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(Self::render_operation_button(
-                        "Dilation".to_string(),
-                        MorphologyOperation::Dilation,
-                        state.operation == MorphologyOperation::Dilation,
-                        cx,
-                    ))
-                    .child(Self::render_operation_button(
-                        "Erosion".to_string(),
-                        MorphologyOperation::Erosion,
-                        state.operation == MorphologyOperation::Erosion,
-                        cx,
-                    ))
-                    .child(Self::render_operation_button(
-                        "Opening".to_string(),
-                        MorphologyOperation::Opening,
-                        state.operation == MorphologyOperation::Opening,
-                        cx,
-                    ))
-                    .child(Self::render_operation_button(
-                        "Closing".to_string(),
-                        MorphologyOperation::Closing,
-                        state.operation == MorphologyOperation::Closing,
-                        cx,
-                    )),
-            )
+            .child(choices)
     }
 
     fn render_operation_button(
         label: String,
         operation: MorphologyOperation,
         is_selected: bool,
+        focus: FocusHandle,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         Button::new(gpui::ElementId::Name(
             format!("render_operation_button-{label}").into(),
         ))
+        .focus_handle(&focus)
         .selected(is_selected)
         .label(label)
         .on_click(cx.listener(
