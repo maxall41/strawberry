@@ -4,7 +4,10 @@ use std::sync::Arc;
 use strawberry_processing::local_maxima::ThresholdType;
 use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, InferenceConfig};
 
-use super::{AnnotationKind, BackendToolType, BrushRadius, ToolState};
+use super::{
+    AnnotationKind, BackendToolType, BrushRadius, ClassId, RgbColor, SegmentationOutputMode,
+    StrokeId, ToolState,
+};
 
 #[derive(Debug, Clone)]
 pub struct OutputFrame {
@@ -80,15 +83,23 @@ pub enum AutomaticSegmentationMessage {
     SetOverlayOpacity(u8),
     ToggleThreshold(bool),
     SetThreshold(f32),
+    AddClass,
+    RenameClass(ClassId, String),
+    SetClassColor(ClassId, RgbColor),
+    DeleteClass(ClassId),
+    ToggleClassVisibility(ClassId),
+    SetPreviewSelected(bool),
+    SetOutputMode(SegmentationOutputMode),
+    SetOutputClass(ClassId),
     SetBrush(AnnotationKind),
     SetBrushRadius(BrushRadius),
     SelectLayer(usize),
     SetFeatures(FeatureConfig),
     SetForest(ForestConfig),
     SetInference(InferenceConfig),
-    SelectStroke(usize),
-    ToggleStrokeVisibility(usize),
-    DeleteStroke(usize),
+    SelectStroke(StrokeId),
+    ToggleStrokeVisibility(StrokeId),
+    DeleteStroke(StrokeId),
     UndoStroke,
     ClearAnnotations,
     TrainModel,

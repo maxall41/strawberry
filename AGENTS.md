@@ -76,3 +76,7 @@ Do not add superflous text to the UI describing how the internals of Strawberry 
 ## BTreeMaps
 
 Do not use a BTreeMap unless determinstic ordering is desired; use a regular HashMap instead for simplicity.
+
+## Imports
+
+Avoid using methods with their full qualifiers like `std::collections::HashSet::new();`. Instead, import such that they can be used like `HashSet::new();`

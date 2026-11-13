@@ -7,7 +7,10 @@ use smartcore::{
     ensemble::random_forest_classifier::RandomForestClassifierParameters,
     linalg::basic::matrix::DenseMatrix,
 };
-use std::{borrow::Cow, collections::HashMap};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 pub(super) struct TrainingData {
     rows: Vec<Vec<f32>>,
@@ -88,6 +91,7 @@ impl TrainingData {
         features: &FeatureConfig,
         images: &[Cow<'_, image::RgbaImage>],
         inference: &InferenceConfig,
+        class_count: usize,
     ) -> Result<()> {
         let cache = self
             .cache
@@ -101,6 +105,7 @@ impl TrainingData {
             // Include unlabeled neighbors when constructing the probability context map.
             let context = SegmentationModel::predict_batches(
                 first_stage_forest,
+                class_count,
                 image.dimensions(),
                 self.feature_count,
                 inference,
@@ -128,7 +133,7 @@ impl TrainingData {
                 }
             }
         }
-        self.feature_count += features.context_features().count();
+        self.feature_count += features.context_features().count() * class_count;
         Ok(())
     }
 
@@ -136,11 +141,8 @@ impl TrainingData {
         let rows = &self.rows;
         let labels = &self.labels;
         ensure!(
-            rows.len() == labels.len()
-                && labels.contains(&0)
-                && labels.contains(&1)
-                && labels.iter().all(|&v| v <= 1),
-            "Training requires foreground and background samples"
+            rows.len() == labels.len() && labels.iter().copied().collect::<HashSet<_>>().len() >= 2,
+            "Training requires at least two classes"
         );
         ensure!(
             rows.iter()

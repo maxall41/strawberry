@@ -147,6 +147,15 @@ impl SyncState for strawberry_types::AutomaticSegmentationState {
                 && (self.use_threshold != other.use_threshold
                     || (self.use_threshold && self.threshold_value != other.threshold_value)))
             || self.selected_layer != other.selected_layer
+            || self.classes.len() != other.classes.len()
+            || self.classes.iter().any(|(id, class)| {
+                other
+                    .classes
+                    .get(id)
+                    .is_none_or(|other| class.color != other.color)
+            })
+            || self.output_mode != other.output_mode
+            || self.output_class != other.output_class
             || self.model_revision != other.model_revision
     }
 }
