@@ -1,6 +1,96 @@
 //! Shared inspector layout for interactive annotation tools.
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
+
 use super::theme;
-use gpui::{Div, ElementId, FocusHandle, ScrollHandle, Stateful, div, prelude::*, px};
+use gpui::{App, Div, ElementId, FocusHandle, ScrollHandle, Stateful, Window, div, prelude::*, px};
+
+pub struct ListFocus<K> {
+    handles: RefCell<HashMap<K, FocusHandle>>,
+}
+
+impl<K: Copy + Eq + Hash> ListFocus<K> {
+    pub fn new() -> Self {
+        Self {
+            handles: RefCell::new(HashMap::new()),
+        }
+    }
+
+    pub fn sync(&self, ids: &[K], cx: &App) {
+        let current_ids: HashSet<_> = ids.iter().copied().collect();
+        let mut handles = self.handles.borrow_mut();
+        handles.retain(|id, _| current_ids.contains(id));
+        for &id in ids {
+            handles.entry(id).or_insert_with(|| cx.focus_handle());
+        }
+    }
+
+    pub fn handle(&self, id: K, cx: &App) -> FocusHandle {
+        self.handles
+            .borrow_mut()
+            .entry(id)
+            .or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+
+    pub fn focus(&self, id: K, window: &mut Window, cx: &mut App) {
+        let focus = self.handle(id, cx);
+        focus.focus(window, cx);
+    }
+
+    pub fn focused_index(&self, ids: &[K], window: &Window) -> Option<usize> {
+        let handles = self.handles.borrow();
+        ids.iter().position(|id| {
+            handles
+                .get(id)
+                .is_some_and(|focus| focus.is_focused(window))
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum ListDirection {
+    Up,
+    Down,
+}
+
+impl ListDirection {
+    pub fn from_key(event: &gpui::KeyDownEvent) -> Option<Self> {
+        let keystroke = &event.keystroke;
+        if keystroke.modifiers.modified() {
+            return None;
+        }
+        match keystroke.key.as_str() {
+            "up" => Some(Self::Up),
+            "down" => Some(Self::Down),
+            _ => None,
+        }
+    }
+}
+
+pub fn next_list_index(
+    current: Option<usize>,
+    len: usize,
+    direction: ListDirection,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let current = current.filter(|&index| index < len);
+    Some(match (current, direction) {
+        (None, ListDirection::Up) => len - 1,
+        (None, ListDirection::Down) => 0,
+        (Some(index), ListDirection::Up) => index.checked_sub(1).unwrap_or(len - 1),
+        (Some(index), ListDirection::Down) => {
+            if index == len - 1 {
+                0
+            } else {
+                index + 1
+            }
+        }
+    })
+}
 
 pub fn panel() -> Div {
     div()
