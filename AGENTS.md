@@ -73,7 +73,7 @@ Do not add superflous text to the UI describing how the internals of Strawberry 
 
 - Make sure code is not being excessivley duplicated: if a method is defined to perform a task but is not being used in liue of custom code; flag this. This instruction, however, should not be interpreted to excess: DRY is only true up to a point and should not be taken as a maxim.
 
-- Do not review simply to find bugs; also review to find unnecessary abstraction, locations where abstraction should be used, locations where different data structures would be simpler/more elegant/eloquent/superior--and, generally, for unnecessary code.
+- Do not review simply to find bugs; also review to find unnecessary abstraction, locations where abstraction should be used, locations where different data structures would be simpler/more elegant/eloquent/superior--and, generally, for unnecessary code and areas where architecture can be improved.
 
 ## BTreeMaps
 
