@@ -15,7 +15,7 @@ use gpui::{
     FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent, Menu, MenuItem,
     ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, img, prelude::*, px, rgb, size,
+    WindowOptions, div, img, prelude::*, px, size,
 };
 use gui::busy::{BusyOverlay, set_pipeline_busy};
 use gui::feedback::FeedbackModal;
@@ -28,6 +28,7 @@ use gui::workspace::{
 };
 use image::{Frame, RgbaImage};
 use rfd::FileDialog;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
@@ -95,14 +96,14 @@ struct PrimaryViewer {
     original_height: u32,
     pan_x: f32,
     pan_y: f32,
-    pressed_keys: std::collections::HashSet<String>,
+    pressed_keys: HashSet<String>,
     command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
     command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     output_frame_receiver: tokio::sync::watch::Receiver<Option<strawberry_types::OutputFrame>>,
     display_image: ImageSource,
     img_coords: Arc<RwLock<Option<Bounds<Pixels>>>>,
     overlays: OverlayCollection,
-    annotation_images: std::collections::HashMap<usize, (Arc<RgbaImage>, Arc<RenderImage>)>,
+    annotation_images: HashMap<usize, (Arc<RgbaImage>, Arc<RenderImage>)>,
     snap_target: Option<(f32, f32)>,
     toasts: Vec<Entity<FeedbackModal>>,
     last_viewport_size: Option<gpui::Size<Pixels>>,
@@ -285,7 +286,7 @@ impl PrimaryViewer {
                         this.show_output(image, window, cx);
                     }
                     if let Some(overlays) = latest_overlays {
-                        let masks: std::collections::HashMap<_, _> = overlays
+                        let masks: HashMap<_, _> = overlays
                             .all_elements()
                             .enumerate()
                             .filter_map(|(index, element)| match element {
@@ -757,8 +758,7 @@ impl PrimaryViewer {
                 color,
                 style,
             } => {
-                let gpui_color =
-                    rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
+                let gpui_color: gpui::Rgba = (*color).into();
 
                 match style {
                     CircleStyle::Border { width } | CircleStyle::Selected { width } => {
@@ -789,8 +789,7 @@ impl PrimaryViewer {
                 radius,
                 color,
             } => {
-                let gpui_color =
-                    rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
+                let gpui_color: gpui::Rgba = (*color).into();
 
                 div()
                     .absolute()
@@ -812,9 +811,8 @@ impl PrimaryViewer {
 
                 let screen_stroke = stroke_width * self.zoom_level;
 
-                // Convert RGBA array to gpui::Rgba
-                let gpui_color =
-                    rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
+                // Convert the explicit RGBA overlay color to GPUI.
+                let gpui_color: gpui::Rgba = (*color).into();
 
                 gui::polyline::Polyline::new(points.clone(), gpui_color, px(screen_stroke))
                     .with_image_dimensions(self.original_width, self.original_height)
@@ -1298,14 +1296,14 @@ async fn main() -> Result<()> {
                     original_height: 600,
                     pan_x: 0.0,
                     pan_y: 0.0,
-                    pressed_keys: std::collections::HashSet::new(),
+                    pressed_keys: HashSet::new(),
                     command_receiver: view_recv.resubscribe(),
                     command_sender: view_sender.clone(),
                     output_frame_receiver: output_frames.clone(),
                     display_image: ImageSource::Render(img_data),
                     img_coords: Arc::new(RwLock::new(None)),
                     overlays: OverlayCollection::new(),
-                    annotation_images: std::collections::HashMap::new(),
+                    annotation_images: HashMap::new(),
                     snap_target: None,
                     toasts: vec![],
                     last_viewport_size: None,

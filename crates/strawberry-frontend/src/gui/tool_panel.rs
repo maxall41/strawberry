@@ -114,3 +114,19 @@ pub fn empty(label: &'static str) -> Div {
 pub fn file_actions() -> Div {
     div().flex().gap_2().min_w_0()
 }
+
+/// Selection marker shared by annotation class and count-type rows.
+pub fn radio_indicator(selected: bool, color: gpui::Rgba) -> Div {
+    div()
+        .flex_none()
+        .size(px(14.))
+        .rounded_full()
+        .border_1()
+        .border_color(color)
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(selected, |el| {
+            el.child(div().size(px(6.)).rounded_full().bg(color))
+        })
+}

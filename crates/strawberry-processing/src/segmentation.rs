@@ -1,6 +1,7 @@
 use crate::{
     GpuImageProcessor,
     float_filters::GpuFloatFilters,
+    pixel_count,
     tiling::{TileConfig, TileGrid, TileInfo, extract_rgba_tile},
 };
 use anyhow::{Context, Result, ensure};
@@ -17,7 +18,6 @@ mod training;
 use cache::FeatureCache;
 use training::TrainingData;
 
-const MODEL_VERSION: u32 = 1;
 const GAUSSIAN_SIGMA: f32 = 1.0;
 const DOG_SMALL_SIGMA: f32 = 1.0;
 const DOG_LARGE_SIGMA: f32 = 10.0;
@@ -197,7 +197,7 @@ impl InferenceConfig {
 type Forest = RandomForestClassifier<f32, u8, DenseMatrix<f32>, Vec<u8>>;
 #[derive(Serialize, Deserialize)]
 pub struct SegmentationModel {
-    version: u32,
+    pub class_count: usize,
     pub features: FeatureConfig,
     pub parameters: ForestConfig,
     #[serde(skip)]
@@ -218,6 +218,16 @@ impl SegmentationModel {
         features.validate()?;
         parameters.validate()?;
         inference.validate()?;
+        let class_count = selected
+            .values()
+            .copied()
+            .max()
+            .map_or(0, |v| usize::from(v) + 1);
+        ensure!(
+            (2..=256).contains(&class_count)
+                && (0..class_count).all(|i| selected.values().any(|&v| usize::from(v) == i)),
+            "Every class needs training pixels"
+        );
         let mut data = TrainingData::extract(
             extractor,
             &features,
@@ -228,8 +238,15 @@ impl SegmentationModel {
         .await?;
         let (first_stage_forest, mut oob_error) = data.fit(&parameters)?;
         let second_stage_forest = if parameters.autocontext {
-            data.add_context(&first_stage_forest, extractor, &features, images, inference)
-                .await?;
+            data.add_context(
+                &first_stage_forest,
+                extractor,
+                &features,
+                images,
+                inference,
+                class_count,
+            )
+            .await?;
             let (forest, error) = data.fit(&parameters)?;
             oob_error = error;
             Some(forest)
@@ -237,7 +254,7 @@ impl SegmentationModel {
             None
         };
         Ok(Self {
-            version: MODEL_VERSION,
+            class_count,
             features,
             parameters,
             oob_error: Some(oob_error),
@@ -249,19 +266,19 @@ impl SegmentationModel {
     fn prediction_feature_count(&self) -> usize {
         self.features.count()
             + if self.parameters.autocontext {
-                self.features.context_features().count()
+                self.features.context_features().count() * self.class_count
             } else {
                 0
             }
     }
 
-    /// Predict foreground probabilities, encoded as grayscale values from 0 to 255.
+    /// Predict one byte probability plane per class, in model label order.
     pub async fn predict(
         &self,
         extractor: &FeatureExtractor,
         image: &image::RgbaImage,
         config: &InferenceConfig,
-    ) -> Result<image::RgbaImage> {
+    ) -> Result<Vec<image::GrayImage>> {
         config.validate()?;
         let original_dimensions = image.dimensions();
         let scaled = self.parameters.rescale_input(image)?;
@@ -274,6 +291,7 @@ impl SegmentationModel {
         };
         let mut output = Self::predict_batches(
             &self.first_stage_forest,
+            self.class_count,
             image.dimensions(),
             self.features.count(),
             config,
@@ -300,6 +318,7 @@ impl SegmentationModel {
             let indices = cache.image_tiles(0);
             output = Self::predict_batches(
                 forest,
+                self.class_count,
                 image.dimensions(),
                 self.prediction_feature_count(),
                 config,
@@ -324,27 +343,47 @@ impl SegmentationModel {
             )
             .await?;
         }
-        if output.dimensions() == original_dimensions {
-            Ok(output)
-        } else {
-            Ok(image::imageops::resize(
-                &output,
-                original_dimensions.0,
-                original_dimensions.1,
-                image::imageops::FilterType::Nearest,
-            ))
-        }
+        Ok(output
+            .into_iter()
+            .map(|plane| {
+                if plane.dimensions() == original_dimensions {
+                    plane
+                } else {
+                    image::imageops::resize(
+                        &plane,
+                        original_dimensions.0,
+                        original_dimensions.1,
+                        image::imageops::FilterType::Triangle,
+                    )
+                }
+            })
+            .collect())
     }
 
     async fn predict_batches<T>(
         forest: &Forest,
+        class_count: usize,
         dimensions: (u32, u32),
         feature_count: usize,
         config: &InferenceConfig,
         tiles: &[T],
         mut load_batch: impl AsyncFnMut(&[T]) -> Result<Vec<FeatureTile>>,
-    ) -> Result<image::RgbaImage> {
-        let mut output = image::RgbaImage::new(dimensions.0, dimensions.1);
+    ) -> Result<Vec<image::GrayImage>> {
+        let count = pixel_count(dimensions.0, dimensions.1)?;
+        count
+            .checked_mul(class_count)
+            .context("Probability image is too large")?;
+        let mut output = Vec::new();
+        output.try_reserve_exact(class_count)?;
+        for _ in 0..class_count {
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(count)?;
+            bytes.resize(count, 0);
+            output.push(
+                image::GrayImage::from_raw(dimensions.0, dimensions.1, bytes)
+                    .context("Invalid probability dimensions")?,
+            );
+        }
         for batch in tiles.chunks(config.batch_size()) {
             let data = load_batch(batch).await?;
             Self::predict_tiles(forest, data, feature_count, &mut output)?;
@@ -356,7 +395,7 @@ impl SegmentationModel {
         forest: &Forest,
         tiles: Vec<FeatureTile>,
         feature_count: usize,
-        output: &mut image::RgbaImage,
+        output: &mut [image::GrayImage],
     ) -> Result<()> {
         let predictions = tiles
             .into_par_iter()
@@ -366,9 +405,9 @@ impl SegmentationModel {
                     "Feature mismatch"
                 );
                 let probabilities = forest.predict_proba(&DenseMatrix::from_2d_vec(&tile.rows)?)?;
-                // Training requires both labels (0 = background, 1 = foreground).
+                // SmartCore sorts contiguous numeric labels into probability columns.
                 ensure!(
-                    probabilities.shape() == (tile.rows.len(), 2),
+                    probabilities.shape() == (tile.rows.len(), output.len()),
                     "Invalid probability matrix"
                 );
                 Ok((tile.x, tile.y, tile.width, probabilities))
@@ -376,41 +415,24 @@ impl SegmentationModel {
             .collect::<Result<Vec<_>>>()?;
         for (x, y, width, probabilities) in predictions {
             for row in 0..probabilities.shape().0 {
-                let probability = *probabilities.get((row, 1));
-                ensure!(
-                    probability.is_finite() && (0.0..=1.0).contains(&probability),
-                    "Invalid foreground probability"
-                );
-                let value = num_traits::cast::<f32, u8>((probability * 255.0).round())
-                    .context("Invalid probability pixel")?;
-                let offset = u32::try_from(row)?;
-                output.put_pixel(
-                    x + offset % width,
-                    y + offset / width,
-                    image::Rgba([value, value, value, 255]),
-                );
+                for (class, plane) in output.iter_mut().enumerate() {
+                    let probability = *probabilities.get((row, class));
+                    ensure!(
+                        probability.is_finite() && (0.0..=1.0).contains(&probability),
+                        "Invalid class probability"
+                    );
+                    let value = num_traits::cast::<f32, u8>((probability * 255.0).round())
+                        .context("Invalid probability pixel")?;
+                    let offset = u32::try_from(row)?;
+                    plane.put_pixel(x + offset % width, y + offset / width, image::Luma([value]));
+                }
             }
         }
         Ok(())
     }
 
-    pub fn save(&self, path: &Path) -> Result<()> {
-        crate::segmentation::write_artifact(path, &self.to_bytes()?)
-    }
-    pub fn load(path: &Path) -> Result<Self> {
-        Self::from_bytes(&std::fs::read(path)?)
-    }
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        self.validate()?;
-        Ok(serde_json::to_vec(self)?)
-    }
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let model: Self = serde_json::from_slice(bytes)?;
-        model.validate()?;
-        Ok(model)
-    }
-
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
+        ensure!((2..=256).contains(&self.class_count), "Invalid class count");
         self.features.validate()?;
         self.parameters.validate()?;
         ensure!(
@@ -470,13 +492,15 @@ impl FeatureTile {
                     .is_some_and(|end| end <= height),
             "Feature tile core lies outside tile"
         );
-        let pixel_count = crate::pixel_count(tile.width, tile.height)?;
+        let tile_pixel_count = pixel_count(tile.width, tile.height)?;
         ensure!(
-            columns.iter().all(|column| column.len() == pixel_count),
+            columns
+                .iter()
+                .all(|column| column.len() == tile_pixel_count),
             "Invalid feature plane dimensions"
         );
 
-        let count = crate::pixel_count(tile.core_width, tile.core_height)?;
+        let count = pixel_count(tile.core_width, tile.core_height)?;
         let mut rows: Vec<_> = (0..count)
             .map(|_| Vec::with_capacity(columns.len()))
             .collect();
@@ -533,12 +557,22 @@ impl FeatureExtractor {
     ) -> Result<FeatureTile> {
         features.validate()?;
         let input = extract_rgba_tile(image, tile)?;
+        self.extract_tile(&input, features, tile).await
+    }
+
+    /// Extract features from an already cropped tile, retaining its full-image coordinates.
+    async fn extract_tile(
+        &self,
+        input: &image::RgbaImage,
+        features: &FeatureConfig,
+        tile: &TileInfo,
+    ) -> Result<FeatureTile> {
         let (width, height) = input.dimensions();
         let channels: &[u32] = if features.rgb { &[1, 2, 3] } else { &[0] };
         let mut columns = Vec::with_capacity(features.count());
         for &channel in channels {
             let channel_start = columns.len();
-            let plane = self.filters.channel(&input, channel).await?;
+            let plane = self.filters.channel(input, channel).await?;
             let gaussian = if features.gaussian {
                 Some(
                     self.filters
@@ -597,11 +631,33 @@ impl FeatureExtractor {
 
     async fn extract_context(
         &self,
-        context: &image::RgbaImage,
+        context: &[image::GrayImage],
         features: &FeatureConfig,
         tile: &TileInfo,
     ) -> Result<FeatureTile> {
-        self.extract(context, &features.context_features(), tile)
-            .await
+        let features = features.context_features();
+        features.validate()?;
+        let mut result: Option<FeatureTile> = None;
+        for plane in context {
+            // Convert only this tile and its halo, matching extract_rgba_tile's black padding.
+            let rgba = image::RgbaImage::from_fn(tile.width, tile.height, |x, y| {
+                let value = tile
+                    .x
+                    .checked_add(x)
+                    .zip(tile.y.checked_add(y))
+                    .and_then(|(x, y)| plane.get_pixel_checked(x, y))
+                    .map_or(0, |pixel| pixel[0]);
+                image::Rgba([value, value, value, 255])
+            });
+            let data = self.extract_tile(&rgba, &features, tile).await?;
+            if let Some(result) = &mut result {
+                for (row, values) in result.rows.iter_mut().zip(data.rows) {
+                    row.extend(values);
+                }
+            } else {
+                result = Some(data);
+            }
+        }
+        result.context("Missing context planes")
     }
 }

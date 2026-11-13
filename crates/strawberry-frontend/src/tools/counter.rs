@@ -1,5 +1,6 @@
 use crate::gui::actions::actions;
 use crate::gui::{Button, ButtonVariant};
+use strawberry_types::RgbaColor;
 
 use crate::gui::{theme, tool_panel};
 // Implements UI for counter tool
@@ -17,8 +18,7 @@ use crate::gui::{ToggleButton, icon::Icon};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     CountData, CountMessage, CounterMode, CounterState, CounterTool, PipelineCommand,
-    PipelineObjectMessage, ToolState,
-    consts::{CIRCLE_COLORS, image_rgba_to_gpui_rgba},
+    PipelineObjectMessage, ToolState, consts::CIRCLE_COLORS,
 };
 
 use strawberry_types::ToolFrontend;
@@ -682,12 +682,11 @@ impl CounterView {
         let index = usize::from(count_type_id)
             .checked_rem(CIRCLE_COLORS.len())
             .unwrap_or_default();
-        let color = image_rgba_to_gpui_rgba(
-            CIRCLE_COLORS
-                .get(index)
-                .copied()
-                .unwrap_or(image::Rgba([255; 4])),
-        );
+        let color: gpui::Rgba = CIRCLE_COLORS
+            .get(index)
+            .copied()
+            .unwrap_or(RgbaColor::WHITE)
+            .into();
         let shortcut = if position < 9 {
             format!("Select count type (⌘{})", position.saturating_add(1))
         } else {
@@ -717,20 +716,7 @@ impl CounterView {
                 cx.stop_propagation();
                 this.select_count_type(count_type_id, window, cx);
             }))
-            .child(
-                div()
-                    .flex_none()
-                    .size(gpui::px(14.0))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(color)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(is_selected, |el| {
-                        el.child(div().size(gpui::px(6.0)).rounded_full().bg(color))
-                    }),
-            )
+            .child(tool_panel::radio_indicator(is_selected, color))
             .child(
                 div()
                     .flex_1()

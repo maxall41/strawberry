@@ -8,7 +8,9 @@ use crate::{
     },
     tools::{FrontendMessageHandler, spawn_message_processor},
 };
-use gpui::{App, Context, Entity, FocusHandle, Focusable, Window, div, prelude::*};
+use gpui::{
+    App, Context, Entity, FocusHandle, Focusable, Rgba as GpuiRgba, Window, div, prelude::*,
+};
 use std::sync::{Arc, RwLock};
 use strawberry_processing::segmentation::FeatureConfig;
 use strawberry_types::*;
@@ -122,12 +124,19 @@ pub struct AutomaticSegmentationView {
     show_gaussian_settings: bool,
     show_dog_settings: bool,
     show_forest: bool,
+    show_annotations: bool,
     annotations_scroll: gpui::ScrollHandle,
+    classes_scroll: gpui::ScrollHandle,
+    class_edit: Option<(ClassId, bool, String)>,
+    class_edit_select_all: bool,
 }
 impl Focusable for AutomaticSegmentationView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
+}
+fn class_color(class: &SegmentationClass) -> GpuiRgba {
+    class.color.into()
 }
 impl AutomaticSegmentationView {
     pub fn new(
@@ -147,7 +156,11 @@ impl AutomaticSegmentationView {
             show_gaussian_settings: false,
             show_dog_settings: false,
             show_forest: false,
+            show_annotations: false,
             annotations_scroll: gpui::ScrollHandle::new(),
+            classes_scroll: gpui::ScrollHandle::new(),
+            class_edit: None,
+            class_edit_select_all: false,
         }
     }
     fn send(&self, message: AutomaticSegmentationMessage) {
@@ -182,9 +195,379 @@ impl AutomaticSegmentationView {
             .label(label)
             .on_click(cx.listener(move |this, _, window, cx| this.file(save, window, cx)))
     }
+    fn commit_class_edit(&mut self) {
+        let Some((id, color, draft)) = &self.class_edit else {
+            return;
+        };
+        let message = if *color {
+            let text = draft.trim().trim_start_matches('#');
+            if text.len() != 6 {
+                return;
+            }
+            let Ok(value) = u32::from_str_radix(text, 16) else {
+                return;
+            };
+            AutomaticSegmentationMessage::SetClassColor(*id, RgbColor::from_hex(value))
+        } else {
+            if draft.trim().is_empty() {
+                return;
+            }
+            AutomaticSegmentationMessage::RenameClass(*id, draft.clone())
+        };
+        self.send(message);
+        self.class_edit = None;
+    }
+    fn class_edit_field(&self, draft: &str, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id("class-editor")
+            .track_focus(&self.base.focus_handle)
+            .flex()
+            .items_center()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .h(gpui::px(28.))
+            .px_2()
+            .rounded_sm()
+            .bg(theme::SURFACE_DEEP)
+            .border_1()
+            .border_color(theme::BORDER)
+            .focus(|style| style.border_color(theme::ACCENT))
+            .cursor(gpui::CursorStyle::IBeam)
+            .text_sm()
+            .child(
+                div()
+                    .truncate()
+                    .when(self.class_edit_select_all, |el| el.bg(theme::ACCENT))
+                    .child(draft.to_owned()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(gpui::px(1.))
+                    .h(gpui::px(14.))
+                    .bg(theme::TEXT),
+            )
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.base.focus_handle.focus(window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                let Some((_, _, draft)) = &mut this.class_edit else {
+                    return;
+                };
+                match event.keystroke.key.as_str() {
+                    "escape" => {
+                        this.class_edit = None;
+                    }
+                    "enter" => {
+                        this.commit_class_edit();
+                    }
+                    "a" if event.keystroke.modifiers.platform => {
+                        this.class_edit_select_all = true;
+                    }
+                    "v" if event.keystroke.modifiers.platform => {
+                        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                            if this.class_edit_select_all {
+                                draft.clear();
+                            }
+                            this.class_edit_select_all = false;
+                            draft.push_str(text.lines().next().unwrap_or_default());
+                        }
+                    }
+                    "backspace" => {
+                        if event.keystroke.modifiers.platform || this.class_edit_select_all {
+                            draft.clear();
+                        } else {
+                            draft.pop();
+                        }
+                        this.class_edit_select_all = false;
+                    }
+                    _ if event.keystroke.modifiers.platform
+                        || event.keystroke.modifiers.control => {}
+                    _ => {
+                        if let Some(text) = &event.keystroke.key_char {
+                            if !text.chars().any(char::is_control) {
+                                if this.class_edit_select_all {
+                                    draft.clear();
+                                }
+                                this.class_edit_select_all = false;
+                                draft.push_str(text);
+                            }
+                        }
+                    }
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }))
+    }
+    fn classes(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
+        let mut list = tool_panel::list_for_tool(
+            "segmentation-classes",
+            &self.classes_scroll,
+            &self.base.focus_handle,
+        );
+        for (&id, class) in &state.classes {
+            let selected = state.active_class == id;
+            let name = class.name.clone();
+            let color = class.color;
+            let count = class.annotation_count();
+            let editing = self
+                .class_edit
+                .as_ref()
+                .filter(|(editing_id, _, _)| *editing_id == id);
+            let renaming = editing.is_some_and(|(_, color, _)| !color);
+            let mut row = tool_panel::row()
+                .id(gpui::ElementId::Name(format!("class-row-{id}").into()))
+                .w_full()
+                .role(gpui::Role::RadioButton)
+                .aria_label(format!("Select {name}"))
+                .aria_toggled(if selected {
+                    gpui::Toggled::True
+                } else {
+                    gpui::Toggled::False
+                })
+                .focusable()
+                .cursor_pointer()
+                .border_color(theme::BORDER_MUTED)
+                .bg(if selected {
+                    theme::SURFACE_ALT
+                } else {
+                    theme::SURFACE_DEEP
+                })
+                .hover(|style| style.bg(theme::SURFACE_ALT))
+                .focus_visible(|style| style.bg(theme::CONTROL))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if renaming {
+                        return;
+                    }
+                    this.send(AutomaticSegmentationMessage::SetBrush(
+                        AnnotationKind::Paint(id),
+                    ));
+                    this.class_edit = None;
+                    cx.notify();
+                }))
+                .child(tool_panel::radio_indicator(selected, theme::ACCENT));
+            if let Some((_, false, draft)) = editing {
+                row = row
+                    .child(
+                        self.class_edit_field(draft, cx)
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::MEDIUM),
+                    )
+                    .child(
+                        Button::new("save-class-name")
+                            .compact()
+                            .label("Save")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.commit_class_edit();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("cancel-class-name")
+                            .variant(ButtonVariant::Ghost)
+                            .icon(Icon::x(), "Cancel rename")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.class_edit = None;
+                                cx.notify();
+                            })),
+                    );
+            } else {
+                row = row
+                    .child(
+                        div()
+                            .id(gpui::ElementId::Name(format!("class-name-{id}").into()))
+                            .role(gpui::Role::Button)
+                            .aria_label(format!("Select {name}"))
+                            .focusable()
+                            .cursor_pointer()
+                            .flex_1()
+                            .min_w_0()
+                            .px_2()
+                            .text_xs()
+                            .truncate()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(name.clone())
+                            .on_click(cx.listener(
+                                move |this, event: &gpui::ClickEvent, window, cx| {
+                                    if event.click_count() != 2 {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    this.class_edit = Some((id, false, name.clone()));
+                                    this.class_edit_select_all = true;
+                                    this.base.focus_handle.focus(window, cx);
+                                    cx.notify();
+                                },
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .min_w(gpui::px(18.))
+                            .text_right()
+                            .text_color(if selected {
+                                theme::TEXT
+                            } else {
+                                theme::TEXT_MUTED
+                            })
+                            .child(count.to_string()),
+                    )
+                    .child(
+                        Button::new(gpui::ElementId::Name(format!("class-color-{id}").into()))
+                            .variant(ButtonVariant::Ghost)
+                            .compact()
+                            .p_0()
+                            .flex_none()
+                            .size(gpui::px(24.))
+                            .min_h(gpui::px(24.))
+                            .aria_label(format!("Change {} color", class.name))
+                            .tooltip_text("Change color")
+                            .child(
+                                div()
+                                    .size(gpui::px(10.))
+                                    .rounded_full()
+                                    .bg(class_color(class)),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.class_edit = Some((id, true, format!("{:06X}", color.hex())));
+                                this.class_edit_select_all = true;
+                                this.base.focus_handle.focus(window, cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new(gpui::ElementId::Name(format!("class-visible-{id}").into()))
+                            .variant(ButtonVariant::Ghost)
+                            .icon(
+                                if state.hidden_classes.contains(&id) {
+                                    Icon::eye_closed()
+                                } else {
+                                    Icon::eye_open()
+                                },
+                                "Toggle class visibility",
+                            )
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.send(AutomaticSegmentationMessage::ToggleClassVisibility(id))
+                            })),
+                    )
+                    .child(
+                        Button::new(gpui::ElementId::Name(format!("delete-class-{id}").into()))
+                            .variant(ButtonVariant::Delete)
+                            .tooltip_text("Delete class")
+                            .aria_label("Delete class")
+                            .disabled(state.classes.len() <= 2)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.class_edit = None;
+                                this.send(AutomaticSegmentationMessage::DeleteClass(id));
+                                cx.notify();
+                            })),
+                    );
+            }
+            let mut entry = div().flex().flex_col().flex_none().min_w_0().child(row);
+            if let Some((_, true, draft)) = editing {
+                let mut palette = div().flex().flex_wrap().gap_1();
+                for (index, color) in CLASS_PALETTE.iter().copied().enumerate() {
+                    palette = palette.child(
+                        Button::new(gpui::ElementId::Name(
+                            format!("palette-{id}-{index}").into(),
+                        ))
+                        .variant(ButtonVariant::Ghost)
+                        .p_0()
+                        .size(gpui::px(24.))
+                        .min_h(gpui::px(24.))
+                        .aria_label(format!("Color #{:06X}", color.hex()))
+                        .child(
+                            div()
+                                .size(gpui::px(14.))
+                                .rounded_full()
+                                .bg(GpuiRgba::from(color)),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.send(AutomaticSegmentationMessage::SetClassColor(id, color));
+                            this.class_edit = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                entry = entry.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .gap_2()
+                        .p_2()
+                        .bg(theme::SURFACE_DEEP)
+                        .child(palette)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .min_w_0()
+                                .gap_2()
+                                .child(div().text_xs().text_color(theme::TEXT_MUTED).child("Hex"))
+                                .child(self.class_edit_field(draft, cx))
+                                .child(
+                                    Button::new("save-class-color")
+                                        .compact()
+                                        .label("Save")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.commit_class_edit();
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("cancel-class-color")
+                                        .variant(ButtonVariant::Ghost)
+                                        .icon(Icon::x(), "Cancel color edit")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.class_edit = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                );
+            }
+            list = list.child(entry);
+        }
+        let header = div()
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .child("Classes");
+        let add = Button::new("add-class")
+            .compact()
+            .w_full()
+            .child(Icon::plus())
+            .label("Add class")
+            .disabled(state.classes.len() >= 256)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.send(AutomaticSegmentationMessage::AddClass);
+                this.class_edit = None;
+                cx.notify();
+            }));
+        if state.training {
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .min_w_0()
+                .child(header)
+                .child(list)
+                .child(add)
+        } else {
+            tool_panel::section_with_header(header)
+                .child(list)
+                .child(add)
+        }
+    }
     fn annotations(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
         let mut list = tool_panel::list("segmentation-annotations", &self.annotations_scroll);
-        if state.annotations.is_empty() {
+        if state.current_annotations().next().is_none() {
             list = list.child(
                 div()
                     .p_3()
@@ -193,10 +576,13 @@ impl AutomaticSegmentationView {
                     .child("No annotations"),
             );
         }
-        for (index, stroke) in state.annotations.iter().enumerate() {
-            let (name, color) = match stroke.kind {
-                AnnotationKind::Foreground => ("Foreground", theme::SUCCESS),
-                AnnotationKind::Background => ("Background", theme::DANGER),
+        for (ordinal, (kind, index, stroke)) in state.current_annotations().enumerate() {
+            let (name, color) = match kind {
+                AnnotationKind::Paint(id) => state
+                    .classes
+                    .get(&id)
+                    .map(|c| (c.name.as_str(), class_color(c)))
+                    .unwrap_or(("Unknown", theme::TEXT_MUTED)),
                 AnnotationKind::Eraser => ("Eraser", theme::TEXT_MUTED),
             };
             list = list.child(
@@ -216,7 +602,7 @@ impl AutomaticSegmentationView {
                     .child(
                         self.button(
                             ("segmentation-stroke", index),
-                            format!("{name} {}", index.saturating_add(1)),
+                            format!("{name} {}", ordinal.saturating_add(1)),
                             AutomaticSegmentationMessage::SelectStroke(index),
                             cx,
                         )
@@ -254,7 +640,56 @@ impl AutomaticSegmentationView {
                     ),
             );
         }
-        tool_panel::section("Training annotations").child(list)
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .min_w_0()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .min_w_0()
+                    .child(
+                        Button::new("segmentation-strokes-disclosure")
+                            .variant(ButtonVariant::Ghost)
+                            .compact()
+                            .flex_1()
+                            .min_w_0()
+                            .justify_start()
+                            .px_0()
+                            .child(Icon::disclosure(self.show_annotations))
+                            .label(format!("Strokes ({})", state.current_annotations().count()))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_annotations = !this.show_annotations;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        self.button(
+                            "segmentation-undo",
+                            "Undo",
+                            AutomaticSegmentationMessage::UndoStroke,
+                            cx,
+                        )
+                        .variant(ButtonVariant::Ghost)
+                        .compact()
+                        .disabled(state.current_annotations().next().is_none()),
+                    )
+                    .child(
+                        self.button(
+                            "segmentation-clear",
+                            "Clear",
+                            AutomaticSegmentationMessage::ClearAnnotations,
+                            cx,
+                        )
+                        .variant(ButtonVariant::Ghost)
+                        .compact()
+                        .disabled(state.current_annotations().next().is_none()),
+                    ),
+            )
+            .when(self.show_annotations, |el| el.child(list))
     }
     fn feature_controls(
         &mut self,
@@ -417,6 +852,28 @@ impl AutomaticSegmentationView {
                 dialog.pick_file()
             };
             if let Some(path) = path {
+                if !save {
+                    let has_annotations = this
+                        .read_with(cx, |this, _| {
+                            this.state
+                                .read()
+                                .map(|s| s.annotation_count() > 0)
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+                    if has_annotations
+                        && rfd::MessageDialog::new()
+                            .set_title("Load model?")
+                            .set_description(
+                                "Loading a model replaces classes and clears training annotations.",
+                            )
+                            .set_buttons(rfd::MessageButtons::OkCancel)
+                            .show()
+                            != rfd::MessageDialogResult::Ok
+                    {
+                        return;
+                    }
+                }
                 let _ = this.update(cx, |this, _| {
                     this.send(if save {
                         AutomaticSegmentationMessage::SaveModel(path)
@@ -747,48 +1204,21 @@ impl Render for AutomaticSegmentationView {
             );
         }
         if s.training {
-            panel = panel.child(
-                ToggleButton::new(
-                    "Show Overlay".into(),
-                    s.show_overlay,
-                    move |this: &mut Self, _, _, _| {
-                        this.send(AutomaticSegmentationMessage::SetShowOverlay(
-                            !s.show_overlay,
-                        ));
-                    },
-                )
-                .with_no_margin()
-                .render(cx),
-            );
-            if s.show_overlay {
-                panel = panel.child(self.integer_control(
-                    ControlKind::OverlayOpacity,
-                    "Overlay opacity (%)",
-                    u32::from(s.overlay_opacity),
-                    0,
-                    100,
-                    cx,
-                ));
-            }
             let mut brushes = tool_panel::segmented();
             for (label, kind) in [
-                ("Foreground", AnnotationKind::Foreground),
-                ("Background", AnnotationKind::Background),
-                ("Eraser", AnnotationKind::Eraser),
+                ("Paint", AnnotationKind::Paint(s.active_class)),
+                ("Erase", AnnotationKind::Eraser),
             ] {
-                let selected = s.brush == kind;
-                let message = AutomaticSegmentationMessage::SetBrush(kind);
                 brushes = brushes.child(
                     self.button(
                         gpui::ElementId::Name(format!("segmentation-brush-{label}").into()),
                         label,
-                        message,
+                        AutomaticSegmentationMessage::SetBrush(kind),
                         cx,
                     )
                     .variant(ButtonVariant::Ghost)
                     .compact()
-                    .px_1()
-                    .selected(selected)
+                    .selected(s.brush == kind)
                     .flex_1()
                     .min_w_0(),
                 );
@@ -801,41 +1231,56 @@ impl Render for AutomaticSegmentationView {
                 BrushRadius::MAX,
                 cx,
             );
-            panel = panel
-                .child(
-                    tool_panel::section("Annotate")
-                        .child(brushes)
-                        .child(radius)
-                        .child(
-                            div()
-                                .flex()
-                                .gap_2()
-                                .child(
-                                    self.button(
-                                        "segmentation-undo",
-                                        "Undo stroke",
-                                        AutomaticSegmentationMessage::UndoStroke,
-                                        cx,
-                                    )
-                                    .compact()
-                                    .flex_1()
-                                    .min_w_0(),
-                                )
-                                .child(
-                                    self.button(
-                                        "segmentation-clear",
-                                        "Clear image",
-                                        AutomaticSegmentationMessage::ClearAnnotations,
-                                        cx,
-                                    )
-                                    .compact()
-                                    .flex_1()
-                                    .min_w_0(),
-                                ),
-                        ),
+            panel = panel.child(
+                tool_panel::section("Annotate")
+                    .child(brushes)
+                    .child(self.classes(&s, cx))
+                    .child(radius)
+                    .child(div().h(gpui::px(1.)).bg(theme::BORDER_MUTED))
+                    .child(self.annotations(&s, cx)),
+            );
+
+            let mut preview = tool_panel::section("Preview").child(
+                ToggleButton::new(
+                    "Prediction overlay".into(),
+                    s.show_overlay,
+                    move |this: &mut Self, _, _, _| {
+                        this.send(AutomaticSegmentationMessage::SetShowOverlay(
+                            !s.show_overlay,
+                        ));
+                    },
                 )
-                .child(self.annotations(&s, cx))
-                .child(self.feature_controls(&s, cx));
+                .with_no_margin()
+                .render(cx),
+            );
+            let mut scope = tool_panel::segmented();
+            for (selected, label) in [(false, "All classes"), (true, "Selected class")] {
+                scope = scope.child(
+                    self.button(
+                        gpui::ElementId::Name(format!("preview-{selected}").into()),
+                        label,
+                        AutomaticSegmentationMessage::SetPreviewSelected(selected),
+                        cx,
+                    )
+                    .variant(ButtonVariant::Ghost)
+                    .compact()
+                    .selected(s.preview_selected == selected)
+                    .flex_1()
+                    .min_w_0(),
+                );
+            }
+            preview = preview.child(scope);
+            if s.show_overlay {
+                preview = preview.child(self.integer_control(
+                    ControlKind::OverlayOpacity,
+                    "Opacity (%)",
+                    u32::from(s.overlay_opacity),
+                    0,
+                    100,
+                    cx,
+                ));
+            }
+            panel = panel.child(preview).child(self.feature_controls(&s, cx));
             let mut classifier = tool_panel::section("Classifier").child(
                 Button::new("segmentation-forest-settings")
                     .variant(ButtonVariant::Ghost)
@@ -905,23 +1350,64 @@ impl Render for AutomaticSegmentationView {
                         .large()
                         .w_full()
                         .label(if s.busy { "Training…" } else { "Train model" })
-                        .disabled(s.busy || !s.is_enabled || s.training_annotation_count == 0)
+                        .disabled(
+                            s.busy
+                                || !s.is_enabled
+                                || s.classes
+                                    .values()
+                                    .any(|class| class.annotation_count() == 0),
+                        )
                         .on_click(cx.listener(|this, _, _, _| {
                             this.send(AutomaticSegmentationMessage::TrainModel)
                         })),
                 ),
             );
         } else {
-            let mut inference = tool_panel::section("Inference settings")
-                .child(self.integer_control(
+            panel = panel.child(self.classes(&s, cx));
+            let mut inference =
+                tool_panel::section("Inference settings").child(self.integer_control(
                     ControlKind::MaxParallelTiles,
                     "Maximum parallel tiles",
                     u32::from(s.inference.max_parallel_tiles),
                     1,
                     256,
                     cx,
-                ))
-                .child(
+                ));
+            let mut outputs = tool_panel::segmented();
+            for (mode, label) in [
+                (SegmentationOutputMode::ClassMask, "Class mask"),
+                (SegmentationOutputMode::ClassColors, "Class colors"),
+            ] {
+                outputs = outputs.child(
+                    self.button(
+                        gpui::ElementId::Name(format!("output-{label}").into()),
+                        label,
+                        AutomaticSegmentationMessage::SetOutputMode(mode),
+                        cx,
+                    )
+                    .variant(ButtonVariant::Ghost)
+                    .selected(s.output_mode == mode)
+                    .flex_1()
+                    .min_w_0(),
+                );
+            }
+            inference = inference.child(outputs);
+            if s.output_mode == SegmentationOutputMode::ClassMask {
+                for (&id, class) in &s.classes {
+                    inference = inference.child(
+                        self.button(
+                            gpui::ElementId::Name(format!("output-class-{}", id).into()),
+                            class.name.clone(),
+                            AutomaticSegmentationMessage::SetOutputClass(id),
+                            cx,
+                        )
+                        .compact()
+                        .variant(ButtonVariant::Ghost)
+                        .selected(s.output_class == id)
+                        .justify_start(),
+                    );
+                }
+                inference = inference.child(
                     ToggleButton::new(
                         "Thresholding".into(),
                         s.use_threshold,
@@ -934,12 +1420,13 @@ impl Render for AutomaticSegmentationView {
                     .with_no_margin()
                     .render(cx),
                 );
-            if s.use_threshold {
-                inference = inference.child(self.float_control(
-                    FloatControlKind::Threshold,
-                    s.threshold_value,
-                    cx,
-                ));
+                if s.use_threshold {
+                    inference = inference.child(self.float_control(
+                        FloatControlKind::Threshold,
+                        s.threshold_value,
+                        cx,
+                    ));
+                }
             }
             panel = panel.child(inference);
         }

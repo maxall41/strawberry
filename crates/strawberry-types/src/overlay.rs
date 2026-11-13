@@ -1,4 +1,4 @@
-use crate::BackendToolType;
+use crate::{BackendToolType, RgbaColor};
 use serde::{Deserialize, Serialize};
 
 /// Styling options for circles
@@ -27,31 +27,31 @@ pub enum OverlayElement {
         x: f32,
         y: f32,
         radius: f32,
-        color: [u8; 4], // RGBA
+        color: RgbaColor,
         style: CircleStyle,
     },
     Point {
         x: f32,
         y: f32,
         radius: f32,
-        color: [u8; 4],
+        color: RgbaColor,
     },
     Polyline {
         points: Vec<(f32, f32)>,
-        color: [u8; 4],
+        color: RgbaColor,
         stroke_width: f32,
     },
     Polygon {
         points: Vec<(f32, f32)>,
-        fill_color: Option<[u8; 4]>,
-        stroke_color: [u8; 4],
+        fill_color: Option<RgbaColor>,
+        stroke_color: RgbaColor,
         stroke_width: f32,
     },
     Label {
         x: f32,
         y: f32,
         text: String,
-        color: [u8; 4],
+        color: RgbaColor,
         font_size: f32,
     },
 }
