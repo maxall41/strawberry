@@ -45,7 +45,7 @@ pub struct ValueControl {
     pub config: ValueControlConfig,
     pub text: String,
     pub value: f32,
-    last_key_time: Instant,
+    input_error: Option<String>,
     initialized: bool,
     focus_handle: FocusHandle,
     highlight: bool,
@@ -71,7 +71,7 @@ impl ValueControl {
             kind: ValueKind::Decimal,
             text,
             value,
-            last_key_time: Instant::now(),
+            input_error: None,
             initialized: false,
             focus_handle: cx.focus_handle(),
             highlight: false,
@@ -92,12 +92,19 @@ impl ValueControl {
     }
 
     pub fn set_integer_value(&mut self, value: u32) {
-        let min = self.config.min.ceil().to_u32().unwrap_or_default();
-        let max = self.config.max.floor().to_u32().unwrap_or(u32::MAX);
+        let (min, max) = self.integer_bounds();
         let value = value.clamp(min, max);
         self.kind = ValueKind::Integer(value);
         self.value = value.to_f32().unwrap_or_default();
         self.text = self.formatted_value();
+        self.input_error = None;
+    }
+
+    fn integer_bounds(&self) -> (u32, u32) {
+        (
+            self.config.min.ceil().to_u32().unwrap_or_default(),
+            self.config.max.floor().to_u32().unwrap_or(u32::MAX),
+        )
     }
 
     fn formatted_value(&self) -> String {
@@ -117,6 +124,7 @@ impl ValueControl {
         }
         self.value = value.clamp(self.config.min, self.config.max);
         self.text = self.formatted_value();
+        self.input_error = None;
     }
 
     fn emit_change(&self, cx: &mut Context<Self>) {
@@ -150,80 +158,113 @@ impl ValueControl {
     }
 
     fn drag_to(&mut self, delta: f32) {
+        let range = f64::from(self.config.max) - f64::from(self.config.min);
         if matches!(self.kind, ValueKind::Integer(_)) {
-            let step = f64::from(self.config.step.round().max(1.0));
+            let step = f64::from(self.config.step).round().max(1.0);
+            // Very wide count ranges retain fine adjustment instead of jumping millions per pixel.
+            let increment = if range <= 16_777_216.0 {
+                step.max(range / 200.0)
+            } else {
+                step
+            };
             let value = f64::from(delta)
-                .mul_add(step, self.drag_start_value)
+                .mul_add(increment, self.drag_start_value)
                 .round()
                 .clamp(0.0, f64::from(u32::MAX));
             self.set_integer_value(value.to_u32().unwrap_or_default());
         } else {
-            let scaling = f64::from(self.config.max - self.config.min) / 200.0;
+            let scaling = range / 200.0;
             let value = f64::from(delta).mul_add(scaling, self.drag_start_value);
             self.set_value(value.to_f32().unwrap_or_default());
         }
     }
 
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.on_focus(&self.focus_handle, window, |this, _window, cx| {
+            if !this.last_focus {
+                this.begin_edit();
+                cx.notify();
+            }
+        })
+        .detach();
         // Commit immediately when focus leaves, including when the containing
         // tool is no longer rendered after selecting a different sidebar panel.
         cx.on_blur(&self.focus_handle, window, |this, _window, cx| {
-            this.on_unfocus(cx);
+            this.commit_input(cx);
             this.last_focus = false;
             cx.notify();
         })
         .detach();
         cx.observe_keystrokes(|this, event, window, cx| {
-            let now = Instant::now();
-            this.last_key_time = now;
-
             if !this.focus_handle.is_focused(window) {
                 return;
             }
-
-            // Schedule a check after debounce period
-            let event_ref = event.keystroke.clone();
-            let task = cx.spawn_in(window, async move |this, cx| {
-                cx.background_executor()
-                    .timer(Duration::from_millis(10))
-                    .await;
-
-                this.update(cx, |this, cx| {
-                    let time_since_last = Instant::now().duration_since(this.last_key_time);
-                    if time_since_last >= Duration::from_millis(10) {
-                        this.handle_keystroke(&event_ref, cx);
-                    }
-                })
-                .ok();
-            });
-            task.detach();
+            if !this.last_focus {
+                this.begin_edit();
+            }
+            this.handle_keystroke(&event.keystroke, cx);
         })
         .detach();
         self.initialized = true;
     }
-    fn on_unfocus(&mut self, cx: &mut Context<Self>) {
-        match self.kind {
-            ValueKind::Integer(_) => {
-                if let Ok(value) = self.text.parse::<u32>() {
-                    self.set_integer_value(value);
-                    self.emit_change(cx);
-                }
+    fn begin_edit(&mut self) {
+        if !self.last_focus && self.input_error.is_none() {
+            self.text = self.formatted_value();
+        }
+        self.highlight = true;
+        self.last_focus = true;
+    }
+
+    fn commit_input(&mut self, cx: &mut Context<Self>) -> bool {
+        let changed = match self.kind {
+            ValueKind::Integer(previous) => {
+                let (min, max) = self.integer_bounds();
+                let Some(value) = self
+                    .text
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|value| (min..=max).contains(value))
+                else {
+                    self.input_error = Some(format!("Enter a whole number ({min}–{max})."));
+                    return false;
+                };
+                self.set_integer_value(value);
+                value != previous
             }
             ValueKind::Decimal => {
-                if let Ok(value) = self.text.parse::<f32>()
-                    && value.is_finite()
-                {
-                    self.set_value(value);
-                    self.emit_change(cx);
-                }
+                let Some(value) = self
+                    .text
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|value| value.is_finite())
+                else {
+                    self.input_error = Some("Enter a valid number.".to_string());
+                    return false;
+                };
+                let previous = self.value;
+                self.set_value(value);
+                self.value.to_bits() != previous.to_bits()
             }
+        };
+        self.highlight = false;
+        if changed {
+            self.emit_change(cx);
         }
-        self.text = self.formatted_value();
+        true
     }
     fn handle_keystroke(&mut self, event: &Keystroke, cx: &mut Context<Self>) {
+        if event.modifiers.modified() {
+            return;
+        }
         match event.key.as_str() {
-            "escape" | "enter" => {
+            "escape" => {
+                self.text = self.formatted_value();
+                self.input_error = None;
                 self.mark_unfocus = true;
+                cx.notify();
+            }
+            "enter" => {
+                self.mark_unfocus = self.commit_input(cx);
                 cx.notify();
             }
             "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "." => {
@@ -235,6 +276,7 @@ impl ValueControl {
                 }
                 // Handle number input
                 self.text = format!("{}{}", self.text, event.key);
+                self.input_error = None;
                 cx.notify();
             }
             "backspace" => {
@@ -243,9 +285,10 @@ impl ValueControl {
                 }
                 // Handle backspace input
                 self.text.pop();
+                self.input_error = None;
                 cx.notify();
             }
-            _ => {}
+            _ => return,
         }
         self.highlight = false;
     }
@@ -291,9 +334,11 @@ impl Render for ValueControl {
         }
         let focused = self.focus_handle(cx).is_focused(window);
         if focused != self.last_focus {
-            self.last_focus = focused;
-            if !focused {
-                self.on_unfocus(cx);
+            if focused {
+                self.begin_edit();
+            } else {
+                self.last_focus = false;
+                self.commit_input(cx);
             }
         }
         let id = self.config.id.clone();
@@ -324,9 +369,9 @@ impl Render for ValueControl {
                             .rounded_md()
                             .bg(theme::SURFACE_DEEP)
                             .border_1()
-                            .border_color(theme::BORDER_MUTED)
+                            .border_color(if self.input_error.is_some() { theme::DANGER } else { theme::BORDER_MUTED })
                             .hover(|style| {
-                                if focused {
+                                if focused || self.input_error.is_some() {
                                     style
                                 } else {
                                     style.border_color(theme::BORDER)
@@ -339,11 +384,11 @@ impl Render for ValueControl {
                                 CursorStyle::ResizeLeftRight
                             })
                             .focus(|style| {
-                                style.border_color(theme::ACCENT)
+                                style.border_color(if self.input_error.is_some() { theme::DANGER } else { theme::ACCENT })
                             })
                             .track_focus(&self.focus_handle(cx))
                             .text_sm()
-                            .child(if focused {
+                            .child(if focused || self.input_error.is_some() {
                                 div()
                                     .child(self.text.clone())
                                     .bg(if self.highlight && focused {
@@ -377,8 +422,7 @@ impl Render for ValueControl {
                                           cx: &mut Context<Self>| {
                                         cx.stop_propagation();
                                         this.focus_handle(cx).focus(window, cx);
-                                        this.text = this.formatted_value();
-                                        this.highlight = true;
+                                        this.begin_edit();
                                         this.mouse_down = true;
                                         this.drag_start_position = Some(event.position);
                                         this.drag_start_value = match this.kind {
@@ -443,5 +487,8 @@ impl Render for ValueControl {
                             .child(Self::step_button(inc_id, 1.0, cx)),
                     ),
             )
+            .when_some(self.input_error.clone(), |control, error| {
+                control.child(div().text_xs().text_color(theme::DANGER).child(error))
+            })
     }
 }
