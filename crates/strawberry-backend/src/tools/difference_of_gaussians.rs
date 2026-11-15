@@ -68,7 +68,7 @@ impl ToolBackend for DifferenceOfGaussians {
                     PipelineObjectMessage::DifferenceOfGaussiansMessage(message),
                 ) => match message {
                     DifferenceOfGaussiansMessage::SetSmallSigma(sigma)
-                        if sigma.is_finite() && sigma > 0.0 && sigma < self.state.large_sigma =>
+                        if sigma.is_finite() && sigma >= 0.1 && sigma < self.state.large_sigma =>
                     {
                         self.state.small_sigma = sigma;
                     }

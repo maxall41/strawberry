@@ -37,10 +37,10 @@ impl GpuDifferenceOfGaussians {
         ensure!(
             small_sigma.is_finite()
                 && large_sigma.is_finite()
-                && small_sigma > 0.0
+                && small_sigma >= 0.1
                 && small_sigma < large_sigma
                 && large_sigma <= 64.0,
-            "DoG requires 0 < small sigma < large sigma <= 64"
+            "DoG requires 0.1 <= small sigma < large sigma <= 64"
         );
         ensure!(image.width() > 0 && image.height() > 0, "Empty DoG image");
 
