@@ -30,7 +30,10 @@ impl GpuSobel {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Sobel Shader"),
-                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/sobel.wgsl"))),
+                source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(concat!(
+                    include_str!("shaders/sobel_math.wgsl"),
+                    include_str!("shaders/sobel.wgsl")
+                ))),
             });
 
         let compute_pipeline =

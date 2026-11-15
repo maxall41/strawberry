@@ -2,8 +2,12 @@ use image::RgbaImage;
 use std::path::PathBuf;
 use std::sync::Arc;
 use strawberry_processing::local_maxima::ThresholdType;
+use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, InferenceConfig};
 
-use super::{BackendToolType, ToolState};
+use super::{
+    AnnotationKind, BackendToolType, BrushRadius, ClassId, DatasetImportMode, RgbColor,
+    SegmentationOutputMode, StrokeId, ToolState,
+};
 
 #[derive(Debug, Clone)]
 pub struct OutputFrame {
@@ -29,6 +33,12 @@ pub enum ContrastMessage {
 #[derive(Debug, Clone)]
 pub enum GaussianBlurMessage {
     SetSigma(f32),
+}
+
+#[derive(Debug, Clone)]
+pub enum DifferenceOfGaussiansMessage {
+    SetSmallSigma(f32),
+    SetLargeSigma(f32),
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +74,39 @@ pub enum ThresholdMessage {
 #[derive(Debug, Clone)]
 pub enum WatershedMessage {
     SetParameters(f32, u32), // sigma, min_distance
+}
+
+#[derive(Debug, Clone)]
+pub enum AutomaticSegmentationMessage {
+    SetTraining(bool),
+    SetShowOverlay(bool),
+    SetOverlayOpacity(u8),
+    ToggleThreshold(bool),
+    SetThreshold(f32),
+    AddClass,
+    RenameClass(ClassId, String),
+    SetClassColor(ClassId, RgbColor),
+    DeleteClass(ClassId),
+    ToggleClassVisibility(ClassId),
+    SetPreviewSelected(bool),
+    SetOutputMode(SegmentationOutputMode),
+    SetOutputClass(ClassId),
+    SetBrush(AnnotationKind),
+    SetBrushRadius(BrushRadius),
+    SelectLayer(usize),
+    SetFeatures(FeatureConfig),
+    SetForest(ForestConfig),
+    SetInference(InferenceConfig),
+    SelectStroke(StrokeId),
+    ToggleStrokeVisibility(StrokeId),
+    DeleteStroke(StrokeId),
+    UndoStroke,
+    ClearAnnotations,
+    TrainModel,
+    SaveModel(PathBuf),
+    LoadModel(PathBuf),
+    SaveDataset(PathBuf),
+    LoadDataset(PathBuf, DatasetImportMode),
 }
 
 #[derive(Debug, Clone)]
@@ -107,9 +150,11 @@ use crate::{CounterMode, CounterTool};
 
 #[derive(Debug, Clone)]
 pub enum PipelineObjectMessage {
+    AutomaticSegmentationMessage(AutomaticSegmentationMessage),
     DecomposerMessage(DecomposerMessage),
     CompositorMessage(CompositorMessage),
     ContrastMessage(ContrastMessage),
+    DifferenceOfGaussiansMessage(DifferenceOfGaussiansMessage),
     GaussianBlurMessage(GaussianBlurMessage),
     LocalMaximaMessage(LocalMaximaMessage),
     MorphologyMessage(MorphologyMessage),

@@ -1,7 +1,7 @@
 use strawberry_types::{
-    CompositorState, ContrastState, CounterState, DecomposerState, GaussianBlurState,
-    GrayscaleState, LocalMaximaState, MorphologyState, NerveTracerState, RollingBallState,
-    SobelState, ThresholdState, WatershedState,
+    CompositorState, ContrastState, CounterState, DecomposerState, DifferenceOfGaussiansState,
+    GaussianBlurState, GrayscaleState, LocalMaximaState, MorphologyState, NerveTracerState,
+    RollingBallState, SobelState, ThresholdState, WatershedState,
 };
 
 pub trait SyncState: Clone + PartialEq {
@@ -24,6 +24,7 @@ macro_rules! processing_states {
 }
 processing_states!(
     ContrastState,
+    DifferenceOfGaussiansState,
     GaussianBlurState,
     GrayscaleState,
     LocalMaximaState,
@@ -131,5 +132,30 @@ impl<TState: SyncState> ToolCache<TState> {
     pub fn invalidate(&mut self) {
         self.cached_output = None;
         self.cached_state = None;
+    }
+}
+
+impl SyncState for strawberry_types::AutomaticSegmentationState {
+    fn is_enabled(&self) -> bool {
+        self.is_enabled
+    }
+    fn processing_differs(&self, other: &Self) -> bool {
+        self.is_enabled != other.is_enabled
+            || self.training != other.training
+            || (self.training && self.show_overlay != other.show_overlay)
+            || (!self.training
+                && (self.use_threshold != other.use_threshold
+                    || (self.use_threshold && self.threshold_value != other.threshold_value)))
+            || self.selected_layer != other.selected_layer
+            || self.classes.len() != other.classes.len()
+            || self.classes.iter().any(|(id, class)| {
+                other
+                    .classes
+                    .get(id)
+                    .is_none_or(|other| class.color != other.color)
+            })
+            || self.output_mode != other.output_mode
+            || self.output_class != other.output_class
+            || self.model_revision != other.model_revision
     }
 }

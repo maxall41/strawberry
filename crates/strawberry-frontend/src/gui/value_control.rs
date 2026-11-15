@@ -33,11 +33,18 @@ pub struct ValueControlConfig {
     pub id: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ValueKind {
+    Decimal,
+    Integer,
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "Focus, text selection, and dragging are independent UI state flags"
 )]
 pub struct ValueControl {
+    kind: ValueKind,
     pub config: ValueControlConfig,
     pub text: String,
     pub value: f32,
@@ -64,6 +71,7 @@ impl Render for DragDummy {
 impl ValueControl {
     pub fn new(text: String, value: f32, config: ValueControlConfig, cx: &App) -> Self {
         Self {
+            kind: ValueKind::Decimal,
             text,
             value,
             last_key_time: Instant::now(),
@@ -79,6 +87,50 @@ impl ValueControl {
             config,
         }
     }
+    /// Integer controls reject fractional input and quantize every interaction.
+    pub fn new_integer(value: u32, config: ValueControlConfig, cx: &App) -> Self {
+        let value = num_traits::cast(value).unwrap_or(0.0);
+        let mut control = Self::new(String::new(), value, config, cx);
+        control.kind = ValueKind::Integer;
+        control.set_value(value);
+        control
+    }
+
+    fn normalize(&self, value: f32) -> f32 {
+        let value = if self.kind == ValueKind::Integer {
+            value.round()
+        } else {
+            value
+        };
+        value.clamp(self.config.min, self.config.max)
+    }
+
+    fn formatted_value(&self) -> String {
+        match self.kind {
+            ValueKind::Integer => format!("{:.0}", self.value),
+            ValueKind::Decimal => format!("{:.2}", self.value),
+        }
+    }
+
+    pub fn set_value(&mut self, value: f32) {
+        self.value = self.normalize(value);
+        self.text = self.formatted_value();
+    }
+
+    fn adjust(&mut self, direction: f32, cx: &mut Context<Self>) {
+        let step = if self.kind == ValueKind::Integer {
+            self.config.step.round().max(1.0)
+        } else {
+            self.config.step
+        };
+        self.set_value(direction.mul_add(step, self.value));
+        cx.emit(ValueControlEvent::value_changed(
+            self.config.id.clone(),
+            self.value,
+        ));
+        cx.notify();
+    }
+
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Commit immediately when focus leaves, including when the containing
         // tool is no longer rendered after selecting a different sidebar panel.
@@ -117,14 +169,18 @@ impl ValueControl {
         self.initialized = true;
     }
     fn on_unfocus(&mut self, cx: &mut Context<Self>) {
-        if let Ok(value) = self.text.parse() {
-            self.value = value;
+        let parsed = match self.kind {
+            ValueKind::Integer => self.text.parse::<i64>().ok().and_then(num_traits::cast),
+            ValueKind::Decimal => self.text.parse::<f32>().ok(),
+        };
+        if let Some(value) = parsed.filter(|value| value.is_finite()) {
+            self.set_value(value);
             cx.emit(ValueControlEvent::value_changed(
                 self.config.id.clone(),
                 self.value,
             ));
         } else {
-            eprintln!("Failed to parse text into value: {}", self.text);
+            self.text = self.formatted_value();
         }
     }
     fn handle_keystroke(&mut self, event: &Keystroke, cx: &mut Context<Self>) {
@@ -134,6 +190,9 @@ impl ValueControl {
                 cx.notify();
             }
             "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "." => {
+                if self.kind == ValueKind::Integer && event.key == "." {
+                    return;
+                }
                 if self.highlight {
                     self.text = String::new();
                 }
@@ -172,15 +231,7 @@ impl ValueControl {
                           _event: &gpui::ClickEvent,
                           _window: &mut Window,
                           cx: &mut Context<Self>| {
-                        this.value = direction
-                            .mul_add(this.config.step, this.value)
-                            .clamp(this.config.min, this.config.max);
-                        this.text = format!("{:.2}", this.value);
-                        cx.emit(ValueControlEvent::value_changed(
-                            this.config.id.clone(),
-                            this.value,
-                        ));
-                        cx.notify();
+                        this.adjust(direction, cx);
                     },
                 )
             })
@@ -270,9 +321,22 @@ impl Render for ValueControl {
                                     })
                             } else {
                                 div()
-                                    .child(format!("{:.precision$}", self.value, precision = 2))
+                                    .child(self.formatted_value())
                             })
                             .id(ElementId::Name(SharedString::from(id)))
+                            .on_scroll_wheel(cx.listener(
+                                |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                                    if this.kind == ValueKind::Integer
+                                        && this.focus_handle(cx).is_focused(window)
+                                    {
+                                        let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
+                                        if delta != 0.0 {
+                                            this.adjust(delta.signum(), cx);
+                                        }
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .on_mouse_down(gpui::MouseButton::Left, {
                                 cx.listener(
                                     move |this: &mut Self,
@@ -281,7 +345,7 @@ impl Render for ValueControl {
                                           cx: &mut Context<Self>| {
                                         cx.stop_propagation();
                                         this.focus_handle(cx).focus(window, cx);
-                                        this.text = format!("{:.precision$}", this.value, precision = 2);
+                                        this.text = this.formatted_value();
                                         this.highlight = true;
                                         this.mouse_down = true;
                                         this.drag_start_position = Some(event.position);
@@ -310,8 +374,7 @@ impl Render for ValueControl {
                                                 let delta_x = f32::from(event.event.position.x) - f32::from(start_pos.x);
                                                 let delta_value = delta_x * scaling_factor;
                                                 let new_value = (this.drag_start_value + delta_value).clamp(this.config.min, this.config.max);
-                                                this.value = new_value;
-                                                this.text = format!("{new_value:.2}");
+                                                this.set_value(new_value);
                                                 // Live preview while dragging, throttled so the
                                                 // backend isn't flooded with recomputes
                                                 let now = Instant::now();
@@ -322,7 +385,7 @@ impl Render for ValueControl {
                                                     this.last_drag_emit = Some(now);
                                                     cx.emit(ValueControlEvent::value_changed(
                                                         this.config.id.clone(),
-                                                        new_value,
+                                                        this.value,
                                                     ));
                                                 }
                                             }

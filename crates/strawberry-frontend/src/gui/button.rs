@@ -1,6 +1,6 @@
 use gpui::{
-    AnyElement, App, ClickEvent, Div, ElementId, Interactivity, IntoElement, RenderOnce, Rgba,
-    SharedString, Stateful, StyleRefinement, Window, div, prelude::*, px,
+    AnyElement, App, ClickEvent, Div, ElementId, FocusHandle, Interactivity, IntoElement,
+    RenderOnce, Rgba, SharedString, Stateful, StyleRefinement, Window, div, prelude::*, px,
 };
 
 use super::{icon::Icon, theme, tooltip::TooltipView};
@@ -48,6 +48,7 @@ pub struct Button {
     disabled: bool,
     tooltip_text: Option<SharedString>,
     on_click: Option<ClickHandler>,
+    focus_handle: Option<FocusHandle>,
 }
 
 impl Button {
@@ -75,7 +76,13 @@ impl Button {
             disabled: false,
             tooltip_text: None,
             on_click: None,
+            focus_handle: None,
         }
+    }
+
+    pub fn focus_handle(mut self, focus: &FocusHandle) -> Self {
+        self.focus_handle = Some(focus.clone());
+        self
     }
 
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
@@ -156,8 +163,12 @@ impl StatefulInteractiveElement for Button {}
 
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let focus = window.use_keyed_state(self.id, cx, |_, cx| cx.focus_handle());
-        let focus = focus.read(cx).clone();
+        let focus = if let Some(focus) = self.focus_handle {
+            focus
+        } else {
+            let focus = window.use_keyed_state(self.id, cx, |_, cx| cx.focus_handle());
+            focus.read(cx).clone()
+        };
         let enabled = !self.disabled;
         let mouse_focus = focus.clone();
         let variant = if self.selected == Some(true) {

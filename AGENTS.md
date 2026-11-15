@@ -64,3 +64,21 @@ Never edit the README, never create new markdown files/documentation.
 ## SVG and Icons
 
 Do NOT write custom SVG icons. Use phosphor icons instead: https://phosphoricons.com/. Do not use text as icons, unless explictly instructed to do so.
+
+## UI Text
+
+Do not add superflous text to the UI describing how the internals of Strawberry function, how to interpret results, or anything else not required to make the UI clear and readable.
+
+## Reviewing
+
+- Make sure code is not being excessivley duplicated: if a method is defined to perform a task but is not being used in liue of custom code; flag this. This instruction, however, should not be interpreted to excess: DRY is only true up to a point and should not be taken as a maxim.
+
+- Do not review simply to find bugs; also review to find unnecessary abstraction, locations where abstraction should be used, locations where different data structures would be simpler/more elegant/eloquent/superior--and, generally, for unnecessary code and areas where architecture can be improved.
+
+## BTreeMaps
+
+Do not use a BTreeMap unless determinstic ordering is desired; use a regular HashMap instead for simplicity.
+
+## Imports
+
+Avoid using methods with their full qualifiers like `std::collections::HashSet::new();`. Instead, import such that they can be used like `HashSet::new();`

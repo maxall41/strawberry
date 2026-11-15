@@ -9,6 +9,7 @@ pub mod colorspace;
 pub mod compositor;
 pub mod contrast;
 pub mod decomposer;
+pub mod difference_of_gaussians;
 pub mod gaussian_blur;
 pub mod grayscale;
 pub mod local_maxima;
@@ -198,3 +199,6 @@ impl GpuImageProcessor {
             .ok_or_else(|| anyhow::anyhow!("Failed to create image from GPU buffer data"))
     }
 }
+
+pub mod float_filters;
+pub mod segmentation;

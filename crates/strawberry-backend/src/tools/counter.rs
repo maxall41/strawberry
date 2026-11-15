@@ -1,5 +1,6 @@
 use anyhow::Context as _;
 use num_traits::ToPrimitive;
+use strawberry_types::RgbaColor;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -526,8 +527,7 @@ impl ToolBackend for Counter {
             let color = CIRCLE_COLORS
                 .get(color_index)
                 .copied()
-                .unwrap_or(CIRCLE_COLORS[0])
-                .0;
+                .unwrap_or(CIRCLE_COLORS[0]);
 
             for (index, count) in counts.iter().enumerate() {
                 let is_selected = self.state.active_tool == Some(CounterTool::Review)
@@ -535,7 +535,7 @@ impl ToolBackend for Counter {
                     && index == self.state.review_current_index;
 
                 let circle_color = if is_selected {
-                    [255, 213, 0, 255] // Hot yellow for selected
+                    RgbaColor::new(255, 213, 0, 255) // Hot yellow for selected
                 } else {
                     color
                 };
@@ -552,7 +552,7 @@ impl ToolBackend for Counter {
 
         // Auto counts
         if self.state.mode == CounterMode::Auto {
-            let color = CIRCLE_COLORS[0].0; // Use first color for auto counts
+            let color = CIRCLE_COLORS[0]; // Use first color for auto counts
             for count in &self.state.auto_counts {
                 elements.push(OverlayElement::Circle {
                     x: count.position.0.to_f32()?,
@@ -571,7 +571,7 @@ impl ToolBackend for Counter {
                     x: point.0.to_f32()?,
                     y: point.1.to_f32()?,
                     radius: 2.0,
-                    color: [255, 0, 0, 255], // Red
+                    color: RgbaColor::new(255, 0, 0, 255), // Red
                 });
             }
         }

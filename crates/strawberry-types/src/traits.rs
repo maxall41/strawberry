@@ -1,11 +1,15 @@
 use async_trait::async_trait;
 use image::RgbaImage;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
     BackendToolType, PersistedState, PipelineCommand, PreparedStateUpdate, ToolState,
     overlay::ToolOverlay,
 };
+
+/// Named files stored alongside a tool's configuration in a pipeline archive.
+pub type ToolAssets = HashMap<String, Vec<u8>>;
 
 /// Trait for image processing tools (backend)
 #[async_trait]
@@ -61,6 +65,8 @@ pub trait ToolBackend: Send + Sync {
     fn prepare_loaded_persisted_state<'a>(
         &'a mut self,
         loaded_state: serde_value::Value,
+        assets: &ToolAssets,
+        cli: bool,
     ) -> anyhow::Result<Option<PreparedStateUpdate<'a>>> {
         let serde_value::Value::Map(mut variants) = loaded_state else {
             anyhow::bail!("Expected an externally tagged tool state");
@@ -74,10 +80,29 @@ pub trait ToolBackend: Send + Sync {
                 self.iam()
             );
         };
+        self.prepare_loaded_fields(fields, assets, cli)
+    }
+
+    /// Prepare concrete settings and embedded files together, without changing live state.
+    /// # Errors
+    /// Returns an error if settings or assets cannot be loaded.
+    fn prepare_loaded_fields<'a>(
+        &'a mut self,
+        fields: serde_value::Value,
+        _assets: &ToolAssets,
+        _cli: bool,
+    ) -> anyhow::Result<Option<PreparedStateUpdate<'a>>> {
         let Some(current) = self.persisted_state_mut() else {
             return Ok(None);
         };
         current.prepare_persisted_fields(fields).map(Some)
+    }
+
+    /// Serialize files that must travel with this tool's saved pipeline settings.
+    /// # Errors
+    /// Returns an error if an asset cannot be serialized.
+    fn pipeline_assets(&self) -> anyhow::Result<ToolAssets> {
+        Ok(ToolAssets::new())
     }
 
     /// Expose the concrete state for loading, or `None` if loading is unsupported.

@@ -15,7 +15,7 @@ use gpui::{
     FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent, Menu, MenuItem,
     ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, img, prelude::*, px, rgb, size,
+    WindowOptions, div, img, prelude::*, px, size,
 };
 use gui::busy::{BusyOverlay, set_pipeline_busy};
 use gui::feedback::FeedbackModal;
@@ -28,6 +28,7 @@ use gui::workspace::{
 };
 use image::{Frame, RgbaImage};
 use rfd::FileDialog;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
@@ -95,13 +96,14 @@ struct PrimaryViewer {
     original_height: u32,
     pan_x: f32,
     pan_y: f32,
-    pressed_keys: std::collections::HashSet<String>,
+    pressed_keys: HashSet<String>,
     command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
     command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
     output_frame_receiver: tokio::sync::watch::Receiver<Option<strawberry_types::OutputFrame>>,
     display_image: ImageSource,
     img_coords: Arc<RwLock<Option<Bounds<Pixels>>>>,
     overlays: OverlayCollection,
+    annotation_images: HashMap<usize, (Arc<RgbaImage>, Arc<RenderImage>)>,
     snap_target: Option<(f32, f32)>,
     toasts: Vec<Entity<FeedbackModal>>,
     last_viewport_size: Option<gpui::Size<Pixels>>,
@@ -284,6 +286,39 @@ impl PrimaryViewer {
                         this.show_output(image, window, cx);
                     }
                     if let Some(overlays) = latest_overlays {
+                        let masks: HashMap<_, _> = overlays
+                            .all_elements()
+                            .enumerate()
+                            .filter_map(|(index, element)| match element {
+                                OverlayElement::ImageMask {
+                                    image: Some(image), ..
+                                } => Some((index, image.clone())),
+                                _ => None,
+                            })
+                            .collect();
+                        this.annotation_images.retain(|key, (_, rendered)| {
+                            if masks.contains_key(key) {
+                                true
+                            } else {
+                                let _ = window.drop_image(rendered.clone());
+                                false
+                            }
+                        });
+                        for (key, mask) in masks {
+                            if this
+                                .annotation_images
+                                .get(&key)
+                                .is_some_and(|(old, _)| Arc::ptr_eq(old, &mask))
+                            {
+                                continue;
+                            }
+                            if let Some((_, old)) = this.annotation_images.remove(&key) {
+                                let _ = window.drop_image(old);
+                            }
+                            let rendered =
+                                Arc::new(RenderImage::new(vec![Frame::new((*mask).clone())]));
+                            this.annotation_images.insert(key, (mask, rendered));
+                        }
                         this.overlays = overlays;
                     }
                     if let Some((x, y)) = latest_snap {
@@ -682,17 +717,40 @@ impl PrimaryViewer {
             .then_some((x, y))
     }
 
-    // Convert image coordinates to positions relative to the image canvas.
-    const fn image_to_canvas_coords(&self, img_x: f32, img_y: f32) -> (f32, f32) {
-        (
-            img_x.mul_add(self.zoom_level, self.pan_x),
-            img_y.mul_add(self.zoom_level, self.pan_y),
-        )
-    }
-
     // Render a single overlay element
-    fn render_overlay_element(&self, element: &OverlayElement) -> impl IntoElement + use<> {
+    fn render_overlay_element(
+        &self,
+        (index, element): (usize, &OverlayElement),
+    ) -> impl IntoElement + use<> {
+        let image_width = num_traits::cast::<u32, f32>(self.original_width.max(1)).unwrap_or(1.);
+        let image_height = num_traits::cast::<u32, f32>(self.original_height.max(1)).unwrap_or(1.);
         match element {
+            OverlayElement::ImageMask { x, y, opacity, .. } => {
+                let Some((mask, rendered)) = self.annotation_images.get(&index) else {
+                    return div();
+                };
+                div()
+                    .absolute()
+                    .opacity(*opacity)
+                    .left(gpui::relative(
+                        num_traits::cast::<u32, f32>(*x).unwrap_or(0.) / image_width,
+                    ))
+                    .top(gpui::relative(
+                        num_traits::cast::<u32, f32>(*y).unwrap_or(0.) / image_height,
+                    ))
+                    .w(gpui::relative(
+                        num_traits::cast::<u32, f32>(mask.width()).unwrap_or(0.) / image_width,
+                    ))
+                    .h(gpui::relative(
+                        num_traits::cast::<u32, f32>(mask.height()).unwrap_or(0.) / image_height,
+                    ))
+                    .child(
+                        img(rendered.clone())
+                            .use_nearest_filter(true)
+                            .object_fit(gpui::ObjectFit::Fill)
+                            .size_full(),
+                    )
+            }
             OverlayElement::Circle {
                 x,
                 y,
@@ -700,30 +758,27 @@ impl PrimaryViewer {
                 color,
                 style,
             } => {
-                let (screen_x, screen_y) = self.image_to_canvas_coords(*x, *y);
-                let screen_radius = radius * self.zoom_level;
-                let gpui_color =
-                    rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
+                let gpui_color: gpui::Rgba = (*color).into();
 
                 match style {
                     CircleStyle::Border { width } | CircleStyle::Selected { width } => {
                         let screen_width = width * self.zoom_level;
                         div()
                             .absolute()
-                            .left(px(screen_x - screen_radius))
-                            .top(px(screen_y - screen_radius))
-                            .w(px(screen_radius * 2.0))
-                            .h(px(screen_radius * 2.0))
+                            .left(gpui::relative((x - radius) / image_width))
+                            .top(gpui::relative((y - radius) / image_height))
+                            .w(gpui::relative(radius * 2.0 / image_width))
+                            .h(gpui::relative(radius * 2.0 / image_height))
                             .rounded_full()
                             .border(px(screen_width))
                             .border_color(gpui_color)
                     }
                     CircleStyle::Filled => div()
                         .absolute()
-                        .left(px(screen_x - screen_radius))
-                        .top(px(screen_y - screen_radius))
-                        .w(px(screen_radius * 2.0))
-                        .h(px(screen_radius * 2.0))
+                        .left(gpui::relative((x - radius) / image_width))
+                        .top(gpui::relative((y - radius) / image_height))
+                        .w(gpui::relative(radius * 2.0 / image_width))
+                        .h(gpui::relative(radius * 2.0 / image_height))
                         .rounded_full()
                         .bg(gpui_color),
                 }
@@ -734,17 +789,14 @@ impl PrimaryViewer {
                 radius,
                 color,
             } => {
-                let (screen_x, screen_y) = self.image_to_canvas_coords(*x, *y);
-                let screen_radius = radius * self.zoom_level;
-                let gpui_color =
-                    rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
+                let gpui_color: gpui::Rgba = (*color).into();
 
                 div()
                     .absolute()
-                    .left(px(screen_x - screen_radius))
-                    .top(px(screen_y - screen_radius))
-                    .w(px(screen_radius * 2.0))
-                    .h(px(screen_radius * 2.0))
+                    .left(gpui::relative((x - radius) / image_width))
+                    .top(gpui::relative((y - radius) / image_height))
+                    .w(gpui::relative(radius * 2.0 / image_width))
+                    .h(gpui::relative(radius * 2.0 / image_height))
                     .rounded_full()
                     .bg(gpui_color)
             }
@@ -759,17 +811,11 @@ impl PrimaryViewer {
 
                 let screen_stroke = stroke_width * self.zoom_level;
 
-                // Polyline adds its paint bounds' origin when drawing to the window.
-                let canvas_points: Vec<(f32, f32)> = points
-                    .iter()
-                    .map(|(x, y)| self.image_to_canvas_coords(*x, *y))
-                    .collect();
+                // Convert the explicit RGBA overlay color to GPUI.
+                let gpui_color: gpui::Rgba = (*color).into();
 
-                // Convert RGBA array to gpui::Rgba
-                let gpui_color =
-                    rgb(u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]));
-
-                gui::polyline::Polyline::new(canvas_points, gpui_color, px(screen_stroke))
+                gui::polyline::Polyline::new(points.clone(), gpui_color, px(screen_stroke))
+                    .with_image_dimensions(self.original_width, self.original_height)
                     .into_element()
             }
             _ => div(), // Placeholder for other element types not yet implemented
@@ -815,12 +861,8 @@ impl Render for PrimaryViewer {
 
         let img = img(self.display_image.clone())
             .use_nearest_filter(true)
-            .w(px(
-                f32::from(gpui::Pixels::from(self.original_width)) * self.zoom_level
-            ))
-            .h(px(
-                f32::from(gpui::Pixels::from(self.original_height)) * self.zoom_level
-            ));
+            .object_fit(gpui::ObjectFit::Fill)
+            .size_full();
 
         let coords = img.coords.clone();
         self.img_coords = coords;
@@ -876,6 +918,12 @@ impl Render for PrimaryViewer {
             },
         ));
 
+        let img = img.on_mouse_up_out(
+            gpui::MouseButton::Left,
+            cx.listener(|this, _, _, _| {
+                let _ = this.command_sender.send(PipelineCommand::InteractionEnd);
+            }),
+        );
         let img = img.on_mouse_up(
             gpui::MouseButton::Left,
             cx.listener(
@@ -928,7 +976,20 @@ impl Render for PrimaryViewer {
                         .absolute()
                         .left(px(self.pan_x))
                         .top(px(self.pan_y))
-                        .child(img),
+                        .w(px(num_traits::cast::<u32, f32>(self.original_width)
+                            .unwrap_or(0.)
+                            * self.zoom_level))
+                        .h(px(num_traits::cast::<u32, f32>(self.original_height)
+                            .unwrap_or(0.)
+                            * self.zoom_level))
+                        // One layout establishes the image and every annotation's pixel grid.
+                        .child(img)
+                        .children(
+                            self.overlays
+                                .all_elements()
+                                .enumerate()
+                                .map(|element| self.render_overlay_element(element)),
+                        ),
                 )
             })
             .when(!self.image_loaded, |el| {
@@ -952,11 +1013,6 @@ impl Render for PrimaryViewer {
                     .right(px(20.0))
                     .child(toast.clone())
             }))
-            .children(
-                self.overlays
-                    .all_elements()
-                    .map(|element| self.render_overlay_element(element)),
-            )
             .child(self.busy_overlay.clone())
             .when_some(activity_status, |el, status| {
                 el.child(
@@ -1240,13 +1296,14 @@ async fn main() -> Result<()> {
                     original_height: 600,
                     pan_x: 0.0,
                     pan_y: 0.0,
-                    pressed_keys: std::collections::HashSet::new(),
+                    pressed_keys: HashSet::new(),
                     command_receiver: view_recv.resubscribe(),
                     command_sender: view_sender.clone(),
                     output_frame_receiver: output_frames.clone(),
                     display_image: ImageSource::Render(img_data),
                     img_coords: Arc::new(RwLock::new(None)),
                     overlays: OverlayCollection::new(),
+                    annotation_images: HashMap::new(),
                     snap_target: None,
                     toasts: vec![],
                     last_viewport_size: None,
