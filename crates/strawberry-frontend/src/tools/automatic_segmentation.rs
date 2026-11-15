@@ -632,20 +632,14 @@ impl AutomaticSegmentationView {
                 this.class_edit = None;
                 cx.notify();
             }));
-        if state.training {
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .min_w_0()
-                .child(header)
-                .child(list)
-                .child(add)
-        } else {
-            tool_panel::section_with_header(header)
-                .child(list)
-                .child(add)
-        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .min_w_0()
+            .child(header)
+            .child(list)
+            .child(add)
     }
     fn annotations(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
         let stroke_ids = state
@@ -1631,7 +1625,6 @@ impl Render for AutomaticSegmentationView {
                 importing,
             ));
         } else {
-            panel = panel.child(import_guard(self.classes(&s, cx), importing));
             let mut inference =
                 tool_panel::section("Inference settings").child(self.integer_control(
                     ControlKind::MaxParallelTiles,
