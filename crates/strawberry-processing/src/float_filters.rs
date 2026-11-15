@@ -4,6 +4,15 @@ use anyhow::{Result, ensure};
 use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 
+/// Channel to extract from internal BGRA pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterChannel {
+    Luminance,
+    Red,
+    Green,
+    Blue,
+}
+
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum FilterOperation {
@@ -178,9 +187,18 @@ impl GpuFloatFilters {
         staging.unmap();
         Ok(result)
     }
-    /// Extract luminance (0) or R/G/B (1/2/3) from internal BGRA pixels.
-    pub async fn channel(&self, image: &image::RgbaImage, channel: u32) -> Result<Vec<f32>> {
-        ensure!(channel <= 3, "Unknown channel");
+    /// Extract luminance or a color channel from internal BGRA pixels.
+    pub async fn channel(
+        &self,
+        image: &image::RgbaImage,
+        channel: FilterChannel,
+    ) -> Result<Vec<f32>> {
+        let channel = match channel {
+            FilterChannel::Luminance => 0,
+            FilterChannel::Red => 1,
+            FilterChannel::Green => 2,
+            FilterChannel::Blue => 3,
+        };
         self.run(
             image.width(),
             image.height(),

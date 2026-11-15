@@ -1,6 +1,6 @@
 use crate::{
     GpuImageProcessor,
-    float_filters::GpuFloatFilters,
+    float_filters::{FilterChannel, GpuFloatFilters},
     pixel_count,
     tiling::{TileConfig, TileGrid, TileInfo, extract_rgba_tile},
 };
@@ -574,7 +574,15 @@ impl FeatureExtractor {
         tile: &TileInfo,
     ) -> Result<FeatureTile> {
         let (width, height) = input.dimensions();
-        let channels: &[u32] = if features.rgb { &[1, 2, 3] } else { &[0] };
+        let channels: &[FilterChannel] = if features.rgb {
+            &[
+                FilterChannel::Red,
+                FilterChannel::Green,
+                FilterChannel::Blue,
+            ]
+        } else {
+            &[FilterChannel::Luminance]
+        };
         let mut columns = Vec::with_capacity(features.count());
         for &channel in channels {
             let channel_start = columns.len();
