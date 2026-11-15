@@ -675,6 +675,10 @@ impl CounterView {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep count row data and interaction metadata together"
+    )]
     fn render_count_type_item(
         count_type_id: u16,
         name: &str,
@@ -682,7 +686,7 @@ impl CounterView {
         is_selected: bool,
         is_visible: bool,
         position: usize,
-        row_focus: FocusHandle,
+        row_focus: &FocusHandle,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let index = usize::from(count_type_id)
@@ -707,7 +711,7 @@ impl CounterView {
             } else {
                 gpui::Toggled::False
             })
-            .track_focus(&row_focus)
+            .track_focus(row_focus)
             .cursor_pointer()
             .bg(if is_selected {
                 theme::SURFACE_ALT
@@ -771,7 +775,7 @@ impl CounterView {
                         "Show count type"
                     })
                     .on_click(cx.listener(move |this, _, _, _| {
-                        this.toggle_count_type_visibility(count_type_id)
+                        this.toggle_count_type_visibility(count_type_id);
                     })),
             )
             .child(
@@ -856,7 +860,7 @@ impl CounterView {
                     .copied()
                     .unwrap_or(true),
                 position,
-                row_focus,
+                &row_focus,
                 cx,
             ));
         }
@@ -890,7 +894,7 @@ impl CounterView {
             .label(label)
             .tooltip_text(shortcut)
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.set_tool(if is_active { None } else { Some(tool) }, window, cx)
+                this.set_tool(if is_active { None } else { Some(tool) }, window, cx);
             }))
     }
 

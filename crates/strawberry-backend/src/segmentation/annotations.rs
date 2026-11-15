@@ -1,3 +1,4 @@
+use anyhow::{Context, Result, ensure};
 use image::RgbaImage;
 use std::{collections::BTreeMap, ops::Range, sync::Arc};
 use strawberry_types::{AnnotationKind, AnnotationStroke, BgraColor, BrushRadius, ClassId};
@@ -13,14 +14,23 @@ fn brush_spans(
     mut visit: impl FnMut(u32, u32, u32),
 ) {
     let radius = i64::from(radius.get());
-    let top = (i64::from(y) - radius).max(0);
-    let bottom = (i64::from(y) + radius).min(i64::from(height) - 1);
+    let top = i64::from(y).saturating_sub(radius).max(0);
+    let bottom = i64::from(y)
+        .saturating_add(radius)
+        .min(i64::from(height).saturating_sub(1));
     for row in top..=bottom {
-        let dy = row - i64::from(y);
-        let extent = (radius * radius - dy * dy).unsigned_abs().isqrt();
+        let dy = row.saturating_sub(i64::from(y));
+        let extent = radius
+            .saturating_mul(radius)
+            .saturating_sub(dy.saturating_mul(dy))
+            .unsigned_abs()
+            .isqrt();
         let extent = i64::try_from(extent).unwrap_or(0);
-        let left = (i64::from(x) - extent).max(0);
-        let right = (i64::from(x) + extent + 1).min(i64::from(width));
+        let left = i64::from(x).saturating_sub(extent).max(0);
+        let right = i64::from(x)
+            .saturating_add(extent)
+            .saturating_add(1)
+            .min(i64::from(width));
         if let (Ok(row), Ok(left), Ok(right)) = (
             u32::try_from(row),
             u32::try_from(left),
@@ -31,30 +41,36 @@ fn brush_spans(
     }
 }
 
-pub(crate) fn append_stroke_points(
+pub fn append_stroke_points(
     points: &mut Arc<Vec<(u32, u32)>>,
     (x, y): (u32, u32),
     radius: BrushRadius,
 ) -> Range<usize> {
     let first_new = points.len();
     if let Some(&(a, b)) = points.last() {
-        let dx = i64::from(x) - i64::from(a);
-        let dy = i64::from(y) - i64::from(b);
+        let dx = i128::from(x).saturating_sub(i128::from(a));
+        let dy = i128::from(y).saturating_sub(i128::from(b));
         let distance = dx.unsigned_abs().max(dy.unsigned_abs());
         if distance == 0 {
             return first_new..first_new;
         }
-        let spacing = u64::from(radius.get().div_ceil(2));
+        let spacing = u128::from(radius.get().div_ceil(2));
         let steps = distance.div_ceil(spacing);
         for i in 1..=steps {
             if let (Ok(px), Ok(py)) = (
                 u32::try_from(
-                    i64::from(a)
-                        + dx * i64::try_from(i).unwrap_or(0) / i64::try_from(steps).unwrap_or(1),
+                    i128::from(a).saturating_add(
+                        dx.saturating_mul(i128::try_from(i).unwrap_or_default())
+                            .checked_div(i128::try_from(steps).unwrap_or(1))
+                            .unwrap_or_default(),
+                    ),
                 ),
                 u32::try_from(
-                    i64::from(b)
-                        + dy * i64::try_from(i).unwrap_or(0) / i64::try_from(steps).unwrap_or(1),
+                    i128::from(b).saturating_add(
+                        dy.saturating_mul(i128::try_from(i).unwrap_or_default())
+                            .checked_div(i128::try_from(steps).unwrap_or(1))
+                            .unwrap_or_default(),
+                    ),
                 ),
             ) {
                 Arc::make_mut(points).push((px, py));
@@ -71,16 +87,40 @@ pub(super) fn rasterize_labels<'a>(
     (width, height): (u32, u32),
     annotations: impl IntoIterator<Item = (AnnotationKind, &'a AnnotationStroke)>,
     class_ids: &[ClassId],
-) -> BTreeMap<(u32, u32), u8> {
+) -> Result<BTreeMap<(u32, u32), u8>> {
+    ensure!(
+        source_width > 0 && source_height > 0 && width > 0 && height > 0,
+        "Empty training image"
+    );
     let mut labels = BTreeMap::new();
     let scaled_x = |x| {
-        u32::try_from(u64::from(x) * u64::from(width) / u64::from(source_width)).unwrap_or_default()
+        u32::try_from(
+            u64::from(x)
+                .saturating_mul(u64::from(width))
+                .checked_div(u64::from(source_width))
+                .unwrap_or_default(),
+        )
+        .unwrap_or_default()
     };
     let scaled_y = |y| {
-        u32::try_from(u64::from(y) * u64::from(height) / u64::from(source_height))
-            .unwrap_or_default()
+        u32::try_from(
+            u64::from(y)
+                .saturating_mul(u64::from(height))
+                .checked_div(u64::from(source_height))
+                .unwrap_or_default(),
+        )
+        .unwrap_or_default()
     };
     for (kind, stroke) in annotations {
+        let label = match kind {
+            AnnotationKind::Paint(id) => Some(u8::try_from(
+                class_ids
+                    .iter()
+                    .position(|&class| class == id)
+                    .context("Unknown annotation class")?,
+            )?),
+            AnnotationKind::Eraser => None,
+        };
         for &(x, y) in stroke.points.iter() {
             brush_spans(
                 source_width,
@@ -93,20 +133,13 @@ pub(super) fn rasterize_labels<'a>(
                         return;
                     }
                     let row = scaled_y(row);
-                    for column in scaled_x(left)..=scaled_x(right - 1) {
-                        match kind {
-                            AnnotationKind::Eraser => {
+                    for column in scaled_x(left)..=scaled_x(right.saturating_sub(1)) {
+                        match label {
+                            None => {
                                 labels.remove(&(row, column));
                             }
-                            AnnotationKind::Paint(id) => {
-                                labels.insert(
-                                    (row, column),
-                                    class_ids
-                                        .iter()
-                                        .position(|&class| class == id)
-                                        .expect("validated stroke class")
-                                        as u8,
-                                );
+                            Some(label) => {
+                                labels.insert((row, column), label);
                             }
                         }
                     }
@@ -114,11 +147,11 @@ pub(super) fn rasterize_labels<'a>(
             );
         }
     }
-    labels
+    Ok(labels)
 }
 
 #[derive(Default)]
-pub(crate) struct AnnotationMask {
+pub struct AnnotationMask {
     tiles: BTreeMap<(u32, u32), Arc<RgbaImage>>,
 }
 
@@ -139,20 +172,24 @@ impl AnnotationMask {
                 let mut column = left;
                 while column < right {
                     let origin = (
-                        column / MASK_TILE_SIZE * MASK_TILE_SIZE,
-                        row / MASK_TILE_SIZE * MASK_TILE_SIZE,
+                        (column / MASK_TILE_SIZE).saturating_mul(MASK_TILE_SIZE),
+                        (row / MASK_TILE_SIZE).saturating_mul(MASK_TILE_SIZE),
                     );
-                    let end = right.min(origin.0 + MASK_TILE_SIZE);
+                    let end = right.min(origin.0.saturating_add(MASK_TILE_SIZE));
                     if color != BgraColor::TRANSPARENT || self.tiles.contains_key(&origin) {
                         let tile = self.tiles.entry(origin).or_insert_with(|| {
                             Arc::new(RgbaImage::new(
-                                (width - origin.0).min(MASK_TILE_SIZE),
-                                (height - origin.1).min(MASK_TILE_SIZE),
+                                width.saturating_sub(origin.0).min(MASK_TILE_SIZE),
+                                height.saturating_sub(origin.1).min(MASK_TILE_SIZE),
                             ))
                         });
                         let tile = Arc::make_mut(tile);
                         for px in column..end {
-                            tile.put_pixel(px - origin.0, row - origin.1, color.into_pixel());
+                            tile.put_pixel(
+                                px.saturating_sub(origin.0),
+                                row.saturating_sub(origin.1),
+                                color.into_pixel(),
+                            );
                         }
                     }
                     column = end;
@@ -171,10 +208,10 @@ impl AnnotationMask {
             mask.paint(dimensions, &stroke.points, stroke.radius, color);
         }
         for (key, tile) in &mut mask.tiles {
-            if let Some(old) = self.tiles.get(key) {
-                if old == tile {
-                    *tile = old.clone();
-                }
+            if let Some(old) = self.tiles.get(key)
+                && old == tile
+            {
+                *tile = old.clone();
             }
         }
         *self = mask;

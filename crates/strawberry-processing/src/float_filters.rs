@@ -3,6 +3,7 @@ use crate::GpuImageProcessor;
 use anyhow::{Result, ensure};
 use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
+use wgpu::{CommandEncoderDescriptor, PipelineCompilationOptions};
 
 /// Channel to extract from internal BGRA pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,15 +14,27 @@ pub enum FilterChannel {
     Blue,
 }
 
-#[repr(u32)]
 #[derive(Clone, Copy)]
 enum FilterOperation {
-    Channel = 0,
-    Gaussian = 1,
-    Sobel = 2,
-    DifferenceOfGaussians = 3,
-    HessianEigenvalues = 4,
-    MembraneProjections = 5,
+    Channel,
+    Gaussian,
+    Sobel,
+    DifferenceOfGaussians,
+    HessianEigenvalues,
+    MembraneProjections,
+}
+
+impl FilterOperation {
+    const fn code(self) -> u32 {
+        match self {
+            Self::Channel => 0,
+            Self::Gaussian => 1,
+            Self::Sobel => 2,
+            Self::DifferenceOfGaussians => 3,
+            Self::HessianEigenvalues => 4,
+            Self::MembraneProjections => 5,
+        }
+    }
 }
 
 #[repr(C)]
@@ -63,7 +76,7 @@ impl GpuFloatFilters {
                 layout: None,
                 module: &shader,
                 entry_point: Some("main"),
-                compilation_options: Default::default(),
+                compilation_options: PipelineCompilationOptions::default(),
                 cache: None,
             });
         Self {
@@ -74,8 +87,7 @@ impl GpuFloatFilters {
     }
     async fn run(
         &self,
-        width: u32,
-        height: u32,
+        (width, height): (u32, u32),
         input: &[u8],
         second: &[f32],
         operation: FilterOperation,
@@ -97,7 +109,7 @@ impl GpuFloatFilters {
         };
         let bytes = crate::buffer_size(count, bytes_per_pixel)?;
         ensure!(
-            bytes <= u64::from(self.gpu.device.limits().max_storage_buffer_binding_size),
+            bytes <= self.gpu.device.limits().max_storage_buffer_binding_size,
             "Tile exceeds GPU buffer limits"
         );
         let a = self
@@ -132,39 +144,31 @@ impl GpuFloatFilters {
         let params = self.gpu.create_uniform_buffer(&Params {
             width,
             height,
-            operation: operation as u32,
+            operation: operation.code(),
             channel,
             sigma,
             radius: (sigma * 3.0).ceil(),
             pad: [0; 2],
         });
         let layout = self.pipeline.get_bind_group_layout(0);
+        let entries = [(0, &params), (1, &out), (2, &a), (3, &b)].map(|(binding, buffer)| {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            }
+        });
         let group = self
             .gpu
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
                 layout: &layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: params.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: out.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: a.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: b.as_entire_binding(),
-                    },
-                ],
+                entries: &entries,
             });
-        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor::default());
         self.gpu.dispatch_compute_with_encoder(
             &mut encoder,
             &self.pipeline,
@@ -188,6 +192,8 @@ impl GpuFloatFilters {
         Ok(result)
     }
     /// Extract luminance or a color channel from internal BGRA pixels.
+    /// # Errors
+    /// Returns an error if input dimensions or parameters are invalid, or GPU processing fails.
     pub async fn channel(
         &self,
         image: &image::RgbaImage,
@@ -200,8 +206,7 @@ impl GpuFloatFilters {
             FilterChannel::Blue => 3,
         };
         self.run(
-            image.width(),
-            image.height(),
+            image.dimensions(),
             image.as_raw(),
             &[],
             FilterOperation::Channel,
@@ -210,6 +215,8 @@ impl GpuFloatFilters {
         )
         .await
     }
+    /// # Errors
+    /// Returns an error if input dimensions or parameters are invalid, or GPU processing fails.
     pub async fn membrane_projections(
         &self,
         width: u32,
@@ -218,8 +225,7 @@ impl GpuFloatFilters {
     ) -> Result<[Vec<f32>; 6]> {
         let values = self
             .run(
-                width,
-                height,
+                (width, height),
                 bytemuck::cast_slice(input),
                 &self.membrane_kernels,
                 FilterOperation::MembraneProjections,
@@ -235,6 +241,8 @@ impl GpuFloatFilters {
         Ok(projections)
     }
 
+    /// # Errors
+    /// Returns an error if input dimensions or parameters are invalid, or GPU processing fails.
     pub async fn gaussian(
         &self,
         width: u32,
@@ -247,8 +255,7 @@ impl GpuFloatFilters {
             "Sigma must be between 0.1 and 64"
         );
         self.run(
-            width,
-            height,
+            (width, height),
             bytemuck::cast_slice(input),
             &[],
             FilterOperation::Gaussian,
@@ -257,10 +264,11 @@ impl GpuFloatFilters {
         )
         .await
     }
+    /// # Errors
+    /// Returns an error if input dimensions or parameters are invalid, or GPU processing fails.
     pub async fn sobel(&self, width: u32, height: u32, input: &[f32]) -> Result<Vec<f32>> {
         self.run(
-            width,
-            height,
+            (width, height),
             bytemuck::cast_slice(input),
             &[],
             FilterOperation::Sobel,
@@ -271,6 +279,8 @@ impl GpuFloatFilters {
     }
     /// Signed Hessian eigenvalues in descending order, using central differences.
     /// Pass a Gaussian-smoothed plane to obtain smoothed image curvature.
+    /// # Errors
+    /// Returns an error if input dimensions or parameters are invalid, or GPU processing fails.
     pub async fn hessian_eigenvalues(
         &self,
         width: u32,
@@ -281,8 +291,7 @@ impl GpuFloatFilters {
         for (channel, output) in (0..2).zip(&mut eigenvalues) {
             *output = self
                 .run(
-                    width,
-                    height,
+                    (width, height),
                     bytemuck::cast_slice(input),
                     &[],
                     FilterOperation::HessianEigenvalues,
@@ -294,6 +303,8 @@ impl GpuFloatFilters {
         Ok(eigenvalues)
     }
     /// Compute a signed difference of Gaussians for any floating-point plane.
+    /// # Errors
+    /// Returns an error if input dimensions or parameters are invalid, or GPU processing fails.
     pub async fn difference_of_gaussians(
         &self,
         width: u32,
@@ -312,6 +323,8 @@ impl GpuFloatFilters {
     }
 
     /// Signed difference of two Gaussian response planes.
+    /// # Errors
+    /// Returns an error if input dimensions or parameters are invalid, or GPU processing fails.
     pub async fn difference(
         &self,
         width: u32,
@@ -321,8 +334,7 @@ impl GpuFloatFilters {
     ) -> Result<Vec<f32>> {
         ensure!(small.len() == large.len(), "DoG plane dimensions differ");
         self.run(
-            width,
-            height,
+            (width, height),
             bytemuck::cast_slice(small),
             large,
             FilterOperation::DifferenceOfGaussians,
@@ -341,12 +353,9 @@ fn membrane_kernels() -> Vec<f32> {
         let mut count = 0.0;
         for y in -9i16..=9 {
             for x in -9i16..=9 {
-                let source_x = f64::from(x) * cos - f64::from(y) * sin + 9.0;
-                let source_y = f64::from(x) * sin + f64::from(y) * cos + 9.0;
-                if (-0.01..19.0).contains(&source_x)
-                    && (-0.01..19.0).contains(&source_y)
-                    && source_x.round() == 9.0
-                {
+                let source_x = f64::mul_add(f64::from(y), -sin, f64::from(x) * cos) + 9.0;
+                let source_y = f64::mul_add(f64::from(y), cos, f64::from(x) * sin) + 9.0;
+                if (8.5..9.5).contains(&source_x) && (-0.01..19.0).contains(&source_y) {
                     offsets.extend([f32::from(x), f32::from(y)]);
                     count += 1.0;
                 }

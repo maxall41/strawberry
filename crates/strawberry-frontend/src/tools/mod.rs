@@ -17,6 +17,7 @@ pub mod grayscale;
 pub mod local_maxima;
 pub mod morphology;
 pub mod nervetracer;
+pub mod object_size_filter;
 pub mod rolling_ball;
 pub mod sobel;
 pub mod threshold;
@@ -122,7 +123,7 @@ pub fn spawn_message_processor<V: FrontendMessageHandler>(
 
             match message {
                 FrontendMessage::ReturnState(tool_state) => {
-                    let Some(new_state) = V::extract_state(tool_state) else {
+                    let Some(new_state) = V::extract_state(*tool_state) else {
                         continue;
                     };
                     let Ok(mut locked) = state.write() else {

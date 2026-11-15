@@ -2,10 +2,7 @@ use std::{fs::File, path::Path};
 
 use anyhow::{Context, Result};
 
-pub(crate) fn write_artifact(
-    path: &Path,
-    write: impl FnOnce(&mut File) -> Result<()>,
-) -> Result<()> {
+pub fn write_artifact(path: &Path, write: impl FnOnce(&mut File) -> Result<()>) -> Result<()> {
     let directory = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())

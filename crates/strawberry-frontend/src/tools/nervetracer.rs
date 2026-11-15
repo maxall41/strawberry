@@ -272,25 +272,24 @@ impl NerveTracerView {
             list = list.child(tool_panel::empty("No segments"));
         }
         for (i, _) in state.current_path_segments.iter().enumerate() {
-            list =
-                list.child(
-                    tool_panel::row()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_xs()
-                                .child(format!("Segment {}", i.saturating_add(1))),
-                        )
-                        .child(
-                            Button::new(("delete-segment", i))
-                                .variant(ButtonVariant::Delete)
-                                .tooltip_text("Delete segment")
-                                .on_click(cx.listener(move |this, _, _, _| {
-                                    this.delete_uncommitted_segment(i)
-                                })),
-                        ),
-                );
+            list = list.child(
+                tool_panel::row()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .child(format!("Segment {}", i.saturating_add(1))),
+                    )
+                    .child(
+                        Button::new(("delete-segment", i))
+                            .variant(ButtonVariant::Delete)
+                            .tooltip_text("Delete segment")
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.delete_uncommitted_segment(i);
+                            })),
+                    ),
+            );
         }
         tool_panel::section("Current path").child(list).child(
             Button::new("commit-segments")

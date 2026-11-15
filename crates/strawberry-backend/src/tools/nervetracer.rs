@@ -108,7 +108,7 @@ impl ToolBackend for NerveTracer {
                 }
                 PipelineCommand::RequestState() => {
                     self.send_to_frontend(&PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(self.get_state()),
+                        FrontendMessage::ReturnState(Box::new(self.get_state())),
                     ))?;
                 }
                 PipelineCommand::PipelineObject(message) => match message {
@@ -239,7 +239,7 @@ impl ToolBackend for NerveTracer {
             return Ok(());
         }
         self.send_to_frontend(&PipelineCommand::FrontendMessage(
-            FrontendMessage::ReturnState(self.get_state()),
+            FrontendMessage::ReturnState(Box::new(self.get_state())),
         ))?;
         self.cache.sync.frontend_latest_state = Some(self.state.clone());
         self.command_sender

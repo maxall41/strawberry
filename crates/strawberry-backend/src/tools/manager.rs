@@ -3,7 +3,7 @@ use std::{
     path::Path,
 };
 
-use crate::pipeline_io::{self, LoadedPipeline};
+use crate::utils::pipeline_io::{self, LoadedPipeline};
 
 use strawberry_types::{
     BackendToolType, FrontendMessage, ManagerMessage, ManagerState, PendingProcessing,
@@ -315,10 +315,6 @@ impl ToolManager {
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Command dispatch as one function is cleaner"
-    )]
     fn handle_messages(&mut self) -> anyhow::Result<()> {
         let commands: Vec<PipelineCommand> =
             std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
@@ -327,7 +323,7 @@ impl ToolManager {
             match message {
                 PipelineCommand::RequestState() => {
                     self.send_to_frontend(&PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(self.get_state()),
+                        FrontendMessage::ReturnState(Box::new(self.get_state())),
                     ))?;
                 }
                 PipelineCommand::PipelineObject(message) => match message {
@@ -405,7 +401,7 @@ impl ToolManager {
 
     fn update_state(&mut self) -> anyhow::Result<()> {
         self.send_to_frontend(&PipelineCommand::FrontendMessage(
-            FrontendMessage::ReturnState(self.get_state()),
+            FrontendMessage::ReturnState(Box::new(self.get_state())),
         ))?;
         self.frontend_latest_state = Some(self.state.clone());
         Ok(())

@@ -7,12 +7,12 @@ use strawberry_processing::segmentation::{
 };
 use strawberry_types::{AnnotationKind, AnnotationStroke, ClassId};
 
-pub(crate) struct TrainingSample {
+pub struct TrainingSample {
     pub(crate) image: Arc<RgbaImage>,
     pub(crate) annotations: Vec<(AnnotationKind, AnnotationStroke)>,
 }
 
-pub(crate) async fn train(
+pub async fn train(
     samples: &[TrainingSample],
     class_ids: &[ClassId],
     features: FeatureConfig,
@@ -24,7 +24,7 @@ pub(crate) async fn train(
         .iter()
         .map(|sample| forest.rescale_input(&sample.image))
         .collect::<Result<Vec<_>>>()?;
-    let candidates = collect_candidates(samples, &images, class_ids);
+    let candidates = collect_candidates(samples, &images, class_ids)?;
     let selected = select_training_pixels(&candidates, forest.balance_classes)?;
     SegmentationModel::train(features, forest, extractor, &images, &selected, inference).await
 }
@@ -33,7 +33,7 @@ fn collect_candidates(
     samples: &[TrainingSample],
     images: &[Cow<'_, RgbaImage>],
     class_ids: &[ClassId],
-) -> Vec<Vec<(usize, u32, u32)>> {
+) -> Result<Vec<Vec<(usize, u32, u32)>>> {
     let mut candidates = vec![Vec::new(); class_ids.len()];
     for (image_index, (sample, image)) in samples.iter().zip(images).enumerate() {
         let labels = rasterize_labels(
@@ -44,14 +44,14 @@ fn collect_candidates(
                 .iter()
                 .map(|(kind, stroke)| (*kind, stroke)),
             class_ids,
-        );
+        )?;
         for ((y, x), label) in labels {
             if let Some(class) = candidates.get_mut(usize::from(label)) {
                 class.push((image_index, x, y));
             }
         }
     }
-    candidates
+    Ok(candidates)
 }
 
 fn select_training_pixels(
@@ -71,7 +71,9 @@ fn select_training_pixels(
             let index = if count == class.len() {
                 i
             } else {
-                i * class.len() / count
+                i.checked_mul(class.len())
+                    .and_then(|offset| offset.checked_div(count))
+                    .ok_or_else(|| anyhow::anyhow!("Training sample index overflow"))?
             };
             if let Some(&key) = class.get(index) {
                 selected.insert(key, u8::try_from(label)?);

@@ -79,14 +79,16 @@ pub fn next_list_index(
     }
     let current = current.filter(|&index| index < len);
     Some(match (current, direction) {
-        (None, ListDirection::Up) => len - 1,
+        (None, ListDirection::Up) => len.saturating_sub(1),
         (None, ListDirection::Down) => 0,
-        (Some(index), ListDirection::Up) => index.checked_sub(1).unwrap_or(len - 1),
+        (Some(index), ListDirection::Up) => index
+            .checked_sub(1)
+            .unwrap_or_else(|| len.saturating_sub(1)),
         (Some(index), ListDirection::Down) => {
-            if index == len - 1 {
+            if index == len.saturating_sub(1) {
                 0
             } else {
-                index + 1
+                index.saturating_add(1)
             }
         }
     })
