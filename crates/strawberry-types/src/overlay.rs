@@ -1,4 +1,4 @@
-use crate::BackendToolType;
+use crate::{BackendToolType, RgbaColor};
 use serde::{Deserialize, Serialize};
 
 /// Styling options for circles
@@ -15,35 +15,43 @@ pub enum CircleStyle {
 /// Individual overlay elements that tools can emit
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OverlayElement {
+    /// A cached BGRA label overlay, rendered as one image rather than individual pixels.
+    ImageMask {
+        x: u32,
+        y: u32,
+        opacity: f32,
+        #[serde(skip)]
+        image: Option<std::sync::Arc<image::RgbaImage>>,
+    },
     Circle {
         x: f32,
         y: f32,
         radius: f32,
-        color: [u8; 4], // RGBA
+        color: RgbaColor,
         style: CircleStyle,
     },
     Point {
         x: f32,
         y: f32,
         radius: f32,
-        color: [u8; 4],
+        color: RgbaColor,
     },
     Polyline {
         points: Vec<(f32, f32)>,
-        color: [u8; 4],
+        color: RgbaColor,
         stroke_width: f32,
     },
     Polygon {
         points: Vec<(f32, f32)>,
-        fill_color: Option<[u8; 4]>,
-        stroke_color: [u8; 4],
+        fill_color: Option<RgbaColor>,
+        stroke_color: RgbaColor,
         stroke_width: f32,
     },
     Label {
         x: f32,
         y: f32,
         text: String,
-        color: [u8; 4],
+        color: RgbaColor,
         font_size: f32,
     },
 }

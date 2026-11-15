@@ -1,4 +1,5 @@
 use num_traits::ToPrimitive;
+use strawberry_types::RgbaColor;
 
 use crate::nervetracer::io::{
     export_nervetracer_to_xml_file, import_nervetracer_from_xml_file_into,
@@ -256,11 +257,11 @@ impl ToolBackend for NerveTracer {
         let mut elements = Vec::new();
 
         // Color for uncommitted segments (orange/yellow)
-        let uncommitted_color = [255, 200, 0, 255];
+        let uncommitted_color = RgbaColor::new(255, 200, 0, 255);
         // Color for committed paths (cyan/blue)
-        let committed_color = [0, 200, 255, 255];
+        let committed_color = RgbaColor::new(0, 200, 255, 255);
         // Color for current points (bright red/pink)
-        let current_point_color = [255, 50, 100, 255];
+        let current_point_color = RgbaColor::new(255, 50, 100, 255);
         let stroke_width = 2.0;
         let point_radius = 2.0;
 
@@ -388,16 +389,16 @@ mod tests {
                 x: 0.5,
                 y: 0.5,
                 radius: 2.0,
-                color: [255, 50, 100, 255],
+                color: RgbaColor::new(255, 50, 100, 255),
             },
             OverlayElement::Polyline {
                 points: vec![(10.5, 20.5), (30.5, 20.5)],
-                color: [255, 200, 0, 255],
+                color: RgbaColor::new(255, 200, 0, 255),
                 stroke_width: 2.0,
             },
             OverlayElement::Polyline {
                 points: vec![(5.5, 6.5), (7.5, 8.5)],
-                color: [0, 200, 255, 255],
+                color: RgbaColor::new(0, 200, 255, 255),
                 stroke_width: 2.0,
             },
         ];

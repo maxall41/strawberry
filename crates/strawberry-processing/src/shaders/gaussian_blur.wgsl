@@ -28,11 +28,6 @@ fn pack_rgba8(color: vec4<f32>) -> u32 {
 }
 
 // Calculate gaussian weight for given distance and sigma
-fn gaussian_weight(distance: f32, sigma: f32) -> f32 {
-    let two_sigma_squared = 2.0 * sigma * sigma;
-    return exp(-(distance * distance) / two_sigma_squared) / (3.14159265359 * two_sigma_squared);
-}
-
 // Sample pixel with bounds checking
 fn sample_pixel(x: i32, y: i32) -> vec4<f32> {
     let width = i32(uniforms.width);

@@ -5,7 +5,11 @@ use gpui::{
     ScrollStrategy, StyledText, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
 };
 
-use super::{fuzzy::FuzzyMatcher, theme};
+use super::{
+    fuzzy::FuzzyMatcher,
+    theme,
+    tool_panel::{ListDirection, next_list_index},
+};
 
 super::actions::actions!([PickerPaste]);
 
@@ -87,17 +91,16 @@ impl GenericPicker {
     }
 
     fn move_selection(&mut self, delta: isize) {
-        if self.matches.is_empty() {
-            return;
-        }
-        let Some(count) = isize::try_from(self.matches.len()).ok() else {
+        let direction = if delta < 0 {
+            ListDirection::Up
+        } else {
+            ListDirection::Down
+        };
+        let Some(selected) = next_list_index(Some(self.selected), self.matches.len(), direction)
+        else {
             return;
         };
-        let Some(selected) = isize::try_from(self.selected).ok() else {
-            return;
-        };
-        self.selected =
-            usize::try_from(selected.saturating_add(delta).rem_euclid(count)).unwrap_or_default();
+        self.selected = selected;
         self.list_scroll
             .scroll_to_item(self.selected, ScrollStrategy::Nearest);
     }

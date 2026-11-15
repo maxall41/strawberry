@@ -19,14 +19,17 @@ use strawberry_types::{
 
 // Import tool implementations from tools module
 use tools::{
-    Compositor, Contrast, Counter, Decomposer, GaussianBlur, Grayscale, LocalMaxima, Morphology,
-    RollingBall, Sobel, Threshold, ToolManager, Watershed,
+    Compositor, Contrast, Counter, Decomposer, DifferenceOfGaussians, GaussianBlur, Grayscale,
+    LocalMaxima, Morphology, RollingBall, Sobel, Threshold, ToolManager, Watershed,
 };
 
 use crate::tools::nervetracer::NerveTracer;
 
 pub mod counter;
+mod file_io;
 pub mod nervetracer;
+mod pipeline_io;
+mod segmentation;
 pub mod tools;
 
 /// Helper macros for tool registration
@@ -84,6 +87,11 @@ impl Pipeline {
 
         let tool_manager = ToolManager::new(
             vec![
+                Box::new(tools::automatic_segmentation::AutomaticSegmentation::new(
+                    command_tx.clone(),
+                    output_tx.clone(),
+                    gpu_image_processor.clone(),
+                )),
                 // GPU-accelerated tools
                 create_gpu_tool!(Compositor, output_tx, gpu_image_processor),
                 create_gpu_tool!(Contrast, output_tx, gpu_image_processor),
@@ -98,6 +106,7 @@ impl Pipeline {
                 create_gpu_tool!(Sobel, output_tx, gpu_image_processor),
                 create_gpu_tool!(Grayscale, output_tx, gpu_image_processor),
                 Box::new(NerveTracer::new(command_tx.clone(), output_tx.clone())?),
+                create_gpu_tool!(DifferenceOfGaussians, output_tx, gpu_image_processor),
             ],
             output_tx.clone(),
         );
@@ -437,27 +446,7 @@ impl Pipeline {
                     }
                 }
                 PipelineCommand::CLILoadPipeline(path) => {
-                    let config = std::fs::read_to_string(path)
-                        .map_err(|e| anyhow!("Failed to read pipeline file: {e}"))
-                        .and_then(|toml_content| {
-                            tools::manager::deserialize_pipeline_config(&toml_content)
-                                .map_err(|e| anyhow!("Failed to parse pipeline TOML: {e}"))
-                        });
-
-                    let (pipeline_config, indices) = match config {
-                        Ok(config) => config,
-                        Err(e) => {
-                            let _ = self.output_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::error(e.to_string()),
-                            ));
-                            continue 'commands;
-                        }
-                    };
-
-                    if let Err(error) = self
-                        .tool_manager
-                        .apply_pipeline_config(pipeline_config, &indices)
-                    {
+                    if let Err(error) = self.tool_manager.load_pipeline(path, true) {
                         self.report_error("Failed to load pipeline", &error);
                         continue 'commands;
                     }
@@ -524,7 +513,8 @@ impl Pipeline {
 
     fn reconcile_tools(&mut self, pending: &mut PendingProcessing) -> ReconcilliationTicket {
         for (index, tool) in self.tool_manager.tools.iter_mut().enumerate() {
-            if tool.reconcile_state() {
+            // The manager schedules removed stages; still reconcile disabled tools to clear stale caches.
+            if tool.reconcile_state() && tool.is_enabled() && tool.supports_processing() {
                 pending.request_processing(index);
             }
         }
@@ -543,14 +533,8 @@ impl Pipeline {
                 ));
             }
         }
-        match self.tool_manager.receive_messages() {
-            Ok(true) => pending.request_processing(0),
-            Ok(false) => {}
-            Err(error) => {
-                self.report_error("Tool manager communication error", &error);
-                // Earlier commands in the same batch may already have changed the order.
-                pending.request_processing(0);
-            }
+        if let Err(error) = self.tool_manager.receive_messages(pending) {
+            self.report_error("Tool manager communication error", &error);
         }
         if let Some(ticket) = self.reconcile_tools(pending).validate()
             && !self.input_images.is_empty()
