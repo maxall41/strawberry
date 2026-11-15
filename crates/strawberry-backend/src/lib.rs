@@ -26,6 +26,7 @@ use tools::{
 use crate::tools::nervetracer::NerveTracer;
 
 pub mod counter;
+mod file_io;
 pub mod nervetracer;
 mod pipeline_io;
 mod segmentation;

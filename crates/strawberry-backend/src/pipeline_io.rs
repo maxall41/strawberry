@@ -11,6 +11,8 @@ use serde_value::Value;
 use strawberry_types::{PipelineConfig, ToolAssets};
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
+use crate::file_io::write_artifact;
+
 const CONFIG_FILE: &str = "pipeline.toml";
 
 #[derive(Serialize)]
@@ -93,15 +95,7 @@ pub(crate) fn save(
     assets: &HashMap<String, ToolAssets>,
 ) -> Result<()> {
     let config = serialize_config(config, indices, assets)?;
-    let directory = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    write_archive(temporary.as_file_mut(), &config, assets)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path)?;
-    Ok(())
+    write_artifact(path, |file| write_archive(file, &config, assets))
 }
 
 fn write_archive(

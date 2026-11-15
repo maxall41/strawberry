@@ -11,7 +11,7 @@ use smartcore::{
     ensemble::random_forest_classifier::RandomForestClassifier,
     linalg::basic::{arrays::Array, matrix::DenseMatrix},
 };
-use std::{borrow::Cow, collections::HashMap, io::Write, path::Path, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 mod cache;
 mod training;
@@ -445,18 +445,6 @@ impl SegmentationModel {
         );
         Ok(())
     }
-}
-
-pub fn write_artifact(path: &Path, bytes: &[u8]) -> Result<()> {
-    let directory = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    temporary.write_all(bytes)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path)?;
-    Ok(())
 }
 
 pub struct FeatureExtractor {
