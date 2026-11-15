@@ -75,6 +75,8 @@ Do not add superflous text to the UI describing how the internals of Strawberry 
 
 - Do not review simply to find bugs; also review to find unnecessary abstraction, locations where abstraction should be used, locations where different data structures would be simpler/more elegant/eloquent/superior--and, generally, for unnecessary code and areas where architecture can be improved.
 
+- Analyze frontend UI layout across components to ensure consistency of UI design idioms. Use the gpui test fixtures to render a new UI to a screenshot when implementing a new ui.
+ 
 ## BTreeMaps
 
 Do not use a BTreeMap unless determinstic ordering is desired; use a regular HashMap instead for simplicity.
