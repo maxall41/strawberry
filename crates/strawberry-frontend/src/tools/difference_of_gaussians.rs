@@ -101,14 +101,14 @@ impl FrontendMessageHandler for DifferenceOfGaussiansView {
     fn on_state_changed(&mut self, state: &Self::State, cx: &mut Context<Self>) {
         if let Some(control) = &self.small_sigma_control {
             control.update(cx, |control, cx| {
-                control.config.max = (state.large_sigma - 0.1).max(0.1);
+                control.config.max = state.large_sigma.next_down();
                 control.set_value(state.small_sigma);
                 cx.notify();
             });
         }
         if let Some(control) = &self.large_sigma_control {
             control.update(cx, |control, cx| {
-                control.config.min = (state.small_sigma + 0.1).min(64.0);
+                control.config.min = state.small_sigma.next_up();
                 control.set_value(state.large_sigma);
                 cx.notify();
             });
@@ -180,8 +180,8 @@ impl ToolFrontend for DifferenceOfGaussiansView {
                     label: "Small sigma (px)".to_string(),
                     id: "dog-small-sigma".to_string(),
                     step: 0.1,
-                    min: 0.1,
-                    max: state.large_sigma - 0.1,
+                    min: 0.0_f32.next_up(),
+                    max: state.large_sigma.next_down(),
                 },
                 cx,
             )
@@ -194,7 +194,7 @@ impl ToolFrontend for DifferenceOfGaussiansView {
                     label: "Large sigma (px)".to_string(),
                     id: "dog-large-sigma".to_string(),
                     step: 0.1,
-                    min: state.small_sigma + 0.1,
+                    min: state.small_sigma.next_up(),
                     max: 64.0,
                 },
                 cx,
