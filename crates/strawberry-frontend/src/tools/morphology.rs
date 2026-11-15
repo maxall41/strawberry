@@ -159,10 +159,11 @@ impl MorphologyView {
 
     // Operation selection component
     fn render_operation_control(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
-        let state = self
+        let operation = self
             .state
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .operation;
         let mut choices = div()
             .id("morphology-operation-choices")
             .flex()
@@ -193,20 +194,23 @@ impl MorphologyView {
                 let Some(target) = target else {
                     return;
                 };
-                this.set_operation(Self::OPERATIONS[target].0, window, cx);
+                let Some(&(operation, _)) = Self::OPERATIONS.get(target) else {
+                    return;
+                };
+                this.set_operation(operation, window, cx);
                 this.operation_focus.focus(target, window, cx);
                 cx.stop_propagation();
                 cx.notify();
             }));
         let operation_ids = (0..Self::OPERATIONS.len()).collect::<Vec<_>>();
         self.operation_focus.sync(&operation_ids, cx);
-        for (index, &(operation, label)) in Self::OPERATIONS.iter().enumerate() {
+        for (index, &(choice, label)) in Self::OPERATIONS.iter().enumerate() {
             let focus = self.operation_focus.handle(index, cx);
             choices = choices.child(Self::render_operation_button(
                 label.to_string(),
-                operation,
-                state.operation == operation,
-                focus,
+                choice,
+                operation == choice,
+                &focus,
                 cx,
             ));
         }
@@ -226,13 +230,13 @@ impl MorphologyView {
         label: String,
         operation: MorphologyOperation,
         is_selected: bool,
-        focus: FocusHandle,
+        focus: &FocusHandle,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         Button::new(gpui::ElementId::Name(
             format!("render_operation_button-{label}").into(),
         ))
-        .focus_handle(&focus)
+        .focus_handle(focus)
         .selected(is_selected)
         .label(label)
         .on_click(cx.listener(

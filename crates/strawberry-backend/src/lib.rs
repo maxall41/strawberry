@@ -20,17 +20,17 @@ use strawberry_types::{
 // Import tool implementations from tools module
 use tools::{
     Compositor, Contrast, Counter, Decomposer, DifferenceOfGaussians, GaussianBlur, Grayscale,
-    LocalMaxima, Morphology, RollingBall, Sobel, Threshold, ToolManager, Watershed,
+    LocalMaxima, Morphology, ObjectSizeFilter, RollingBall, Sobel, Threshold, ToolManager,
+    Watershed,
 };
 
 use crate::tools::nervetracer::NerveTracer;
 
 pub mod counter;
-mod file_io;
 pub mod nervetracer;
-mod pipeline_io;
 mod segmentation;
 pub mod tools;
+mod utils;
 
 /// Helper macros for tool registration
 macro_rules! create_gpu_tool {
@@ -107,6 +107,7 @@ impl Pipeline {
                 create_gpu_tool!(Grayscale, output_tx, gpu_image_processor),
                 Box::new(NerveTracer::new(command_tx.clone(), output_tx.clone())?),
                 create_gpu_tool!(DifferenceOfGaussians, output_tx, gpu_image_processor),
+                Box::new(ObjectSizeFilter::new(output_tx.clone())),
             ],
             output_tx.clone(),
         );

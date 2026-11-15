@@ -16,7 +16,12 @@ use std::{
     sync::{Arc, RwLock},
 };
 use strawberry_processing::segmentation::FeatureConfig;
-use strawberry_types::*;
+use strawberry_types::{
+    AnnotationKind, AutomaticSegmentationMessage, AutomaticSegmentationState, BackendToolType,
+    BrushRadius, CLASS_PALETTE, ClassId, DatasetImportMode, DatasetOperation, MAX_CLASSES,
+    PipelineCommand, PipelineObjectMessage, RgbColor, SegmentationClass, SegmentationOutputMode,
+    StrokeId, ToolFrontend, ToolState,
+};
 
 #[derive(Clone, Copy)]
 enum FileKind {
@@ -99,14 +104,14 @@ struct Controls {
 }
 
 impl Controls {
-    fn float_slot(&mut self, kind: FloatControlKind) -> &mut Option<Entity<ValueControl>> {
+    const fn float_slot(&mut self, kind: FloatControlKind) -> &mut Option<Entity<ValueControl>> {
         match kind {
             FloatControlKind::InputScale => &mut self.input_scale,
             FloatControlKind::Threshold => &mut self.threshold,
         }
     }
 
-    fn sigma_slot(&mut self, kind: SigmaKind) -> &mut Option<Entity<ValueControl>> {
+    const fn sigma_slot(&mut self, kind: SigmaKind) -> &mut Option<Entity<ValueControl>> {
         match kind {
             SigmaKind::Gaussian => &mut self.gaussian_sigma,
             SigmaKind::DogSmall => &mut self.dog_small_sigma,
@@ -114,7 +119,7 @@ impl Controls {
         }
     }
 
-    fn slot(&mut self, kind: ControlKind) -> &mut Option<Entity<ValueControl>> {
+    const fn slot(&mut self, kind: ControlKind) -> &mut Option<Entity<ValueControl>> {
         match kind {
             ControlKind::BrushRadius => &mut self.brush_radius,
             ControlKind::OverlayOpacity => &mut self.overlay_opacity,
@@ -125,6 +130,10 @@ impl Controls {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Inspector sections and editing states vary independently"
+)]
 pub struct AutomaticSegmentationView {
     pub state: Arc<RwLock<AutomaticSegmentationState>>,
     pub base: super::base::ToolBase,
@@ -218,7 +227,6 @@ impl AutomaticSegmentationView {
         }
     }
     fn button(
-        &self,
         id: impl Into<gpui::ElementId>,
         label: impl Into<gpui::SharedString>,
         message: AutomaticSegmentationMessage,
@@ -338,14 +346,14 @@ impl AutomaticSegmentationView {
                     _ if event.keystroke.modifiers.platform
                         || event.keystroke.modifiers.control => {}
                     _ => {
-                        if let Some(text) = &event.keystroke.key_char {
-                            if !text.chars().any(char::is_control) {
-                                if this.class_edit_select_all {
-                                    draft.clear();
-                                }
-                                this.class_edit_select_all = false;
-                                draft.push_str(text);
+                        if let Some(text) = &event.keystroke.key_char
+                            && !text.chars().any(char::is_control)
+                        {
+                            if this.class_edit_select_all {
+                                draft.clear();
                             }
+                            this.class_edit_select_all = false;
+                            draft.push_str(text);
                         }
                     }
                 }
@@ -353,6 +361,10 @@ impl AutomaticSegmentationView {
                 cx.notify();
             }))
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep declarative GPUI layout and its event bindings together"
+    )]
     fn classes(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
         let class_ids = state.classes.keys().copied().collect::<Vec<_>>();
         self.class_focus.sync(&class_ids, cx);
@@ -538,7 +550,7 @@ impl AutomaticSegmentationView {
                                 "Toggle class visibility",
                             )
                             .on_click(cx.listener(move |this, _, _, _| {
-                                this.send(AutomaticSegmentationMessage::ToggleClassVisibility(id))
+                                this.send(AutomaticSegmentationMessage::ToggleClassVisibility(id));
                             })),
                     )
                     .child(
@@ -641,6 +653,10 @@ impl AutomaticSegmentationView {
             .child(list)
             .child(add)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep declarative GPUI layout and its event bindings together"
+    )]
     fn annotations(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
         let stroke_ids = state
             .current_annotations()
@@ -700,8 +716,9 @@ impl AutomaticSegmentationView {
                 AnnotationKind::Paint(id) => state
                     .classes
                     .get(&id)
-                    .map(|c| (c.name.as_str(), class_color(c)))
-                    .unwrap_or(("Unknown", theme::TEXT_MUTED)),
+                    .map_or(("Unknown", theme::TEXT_MUTED), |c| {
+                        (c.name.as_str(), class_color(c))
+                    }),
                 AnnotationKind::Eraser => ("Eraser", theme::TEXT_MUTED),
             };
             list = list.child(
@@ -719,7 +736,7 @@ impl AutomaticSegmentationView {
                             .bg(color),
                     )
                     .child(
-                        self.button(
+                        Self::button(
                             ("segmentation-stroke", index),
                             format!("{name} {}", ordinal.saturating_add(1)),
                             AutomaticSegmentationMessage::SelectStroke(index),
@@ -746,7 +763,7 @@ impl AutomaticSegmentationView {
                             .on_click(cx.listener(move |this, _, _, _| {
                                 this.send(AutomaticSegmentationMessage::ToggleStrokeVisibility(
                                     index,
-                                ))
+                                ));
                             })),
                     )
                     .child(
@@ -754,7 +771,7 @@ impl AutomaticSegmentationView {
                             .variant(ButtonVariant::Delete)
                             .tooltip_text("Delete annotation")
                             .on_click(cx.listener(move |this, _, _, _| {
-                                this.send(AutomaticSegmentationMessage::DeleteStroke(index))
+                                this.send(AutomaticSegmentationMessage::DeleteStroke(index));
                             })),
                     ),
             );
@@ -786,7 +803,7 @@ impl AutomaticSegmentationView {
                             })),
                     )
                     .child(
-                        self.button(
+                        Self::button(
                             "segmentation-undo",
                             "Undo",
                             AutomaticSegmentationMessage::UndoStroke,
@@ -797,7 +814,7 @@ impl AutomaticSegmentationView {
                         .disabled(state.current_annotations().next().is_none()),
                     )
                     .child(
-                        self.button(
+                        Self::button(
                             "segmentation-clear",
                             "Clear",
                             AutomaticSegmentationMessage::ClearAnnotations,
@@ -810,6 +827,10 @@ impl AutomaticSegmentationView {
             )
             .when(self.show_annotations, |el| el.child(list))
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep declarative GPUI layout and its event bindings together"
+    )]
     fn feature_controls(
         &mut self,
         s: &AutomaticSegmentationState,
@@ -875,7 +896,7 @@ impl AutomaticSegmentationView {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         match label {
                             "Gaussian blur" => {
-                                this.show_gaussian_settings = !this.show_gaussian_settings
+                                this.show_gaussian_settings = !this.show_gaussian_settings;
                             }
                             _ => this.show_dog_settings = !this.show_dog_settings,
                         }
@@ -897,7 +918,7 @@ impl AutomaticSegmentationView {
                             move |this: &mut Self, _, _, _| {
                                 this.send(AutomaticSegmentationMessage::SetFeatures(
                                     features.clone(),
-                                ))
+                                ));
                             },
                         )
                         .with_no_margin()
@@ -942,7 +963,7 @@ impl AutomaticSegmentationView {
             let mut features = s.features.clone();
             features.rgb = rgb;
             channels = channels.child(
-                self.button(
+                Self::button(
                     gpui::ElementId::Name(format!("segmentation-channel-{label}").into()),
                     label,
                     AutomaticSegmentationMessage::SetFeatures(features),
@@ -1043,11 +1064,10 @@ impl AutomaticSegmentationView {
                     FileKind::Dataset => ("Segmentation dataset", "sbd", "dataset.sbd"),
                 };
                 let mut dialog = rfd::AsyncFileDialog::new().add_filter(label, &[extension]);
-                if matches!(kind, FileKind::Dataset) {
-                    if let Some(directory) = directory {
+                if matches!(kind, FileKind::Dataset)
+                    && let Some(directory) = directory {
                         dialog = dialog.set_directory(directory);
                     }
-                }
                 let file = if save {
                     dialog.set_file_name(default_name).save_file().await
                 } else {
@@ -1175,7 +1195,7 @@ impl AutomaticSegmentationView {
                     this.send(AutomaticSegmentationMessage::SetForest(forest));
                 }
                 FloatControlKind::Threshold => {
-                    this.send(AutomaticSegmentationMessage::SetThreshold(event.value))
+                    this.send(AutomaticSegmentationMessage::SetThreshold(event.value));
                 }
             },
         )
@@ -1254,7 +1274,7 @@ impl AutomaticSegmentationView {
             )
         });
         cx.subscribe(&control, move |this, _, event: &ValueControlEvent, _| {
-            let Some(integer) = num_traits::ToPrimitive::to_u32(&event.value) else {
+            let Some(integer) = event.integer_value else {
                 return;
             };
             let mut forest = this
@@ -1340,7 +1360,7 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
                 control.update(cx, |control, cx| {
                     control.config.min = min;
                     control.config.max = max;
-                    if control.value != value {
+                    if control.value.to_bits() != value.to_bits() {
                         control.set_value(value);
                     }
                     cx.notify();
@@ -1362,9 +1382,8 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
         ] {
             if let Some(control) = self.controls.slot(kind) {
                 control.update(cx, |control, cx| {
-                    let value = num_traits::cast(value).unwrap_or(0.);
-                    if control.value != value {
-                        control.set_value(value);
+                    if control.integer_value() != Some(value) {
+                        control.set_integer_value(value);
                         cx.notify();
                     }
                 });
@@ -1376,7 +1395,7 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
         ] {
             if let Some(control) = self.controls.float_slot(kind) {
                 control.update(cx, |control, cx| {
-                    if control.value != value {
+                    if control.value.to_bits() != value.to_bits() {
                         control.set_value(value);
                         cx.notify();
                     }
@@ -1393,6 +1412,10 @@ impl ToolFrontend for AutomaticSegmentationView {
     }
 }
 impl Render for AutomaticSegmentationView {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep declarative GPUI layout and its event bindings together"
+    )]
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let s = self
             .state
@@ -1406,7 +1429,7 @@ impl Render for AutomaticSegmentationView {
         let mut modes = tool_panel::segmented();
         for (training, label) in [(true, "Training"), (false, "Inference")] {
             modes = modes.child(
-                self.button(
+                Self::button(
                     gpui::ElementId::Name(format!("segmentation-mode-{label}").into()),
                     label,
                     AutomaticSegmentationMessage::SetTraining(training),
@@ -1446,7 +1469,7 @@ impl Render for AutomaticSegmentationView {
                         .flex_wrap()
                         .gap_1()
                         .children((0..s.total_layers).map(|i| {
-                            self.button(
+                            Self::button(
                                 ("segmentation-layer", i),
                                 format!("{}", i.saturating_add(1)),
                                 AutomaticSegmentationMessage::SelectLayer(i),
@@ -1467,7 +1490,7 @@ impl Render for AutomaticSegmentationView {
                 ("Erase", AnnotationKind::Eraser),
             ] {
                 brushes = brushes.child(
-                    self.button(
+                    Self::button(
                         gpui::ElementId::Name(format!("segmentation-brush-{label}").into()),
                         label,
                         AutomaticSegmentationMessage::SetBrush(kind),
@@ -1514,7 +1537,7 @@ impl Render for AutomaticSegmentationView {
             let mut scope = tool_panel::segmented();
             for (selected, label) in [(false, "All classes"), (true, "Selected class")] {
                 scope = scope.child(
-                    self.button(
+                    Self::button(
                         gpui::ElementId::Name(format!("preview-{selected}").into()),
                         label,
                         AutomaticSegmentationMessage::SetPreviewSelected(selected),
@@ -1619,7 +1642,7 @@ impl Render for AutomaticSegmentationView {
                                     .any(|class| class.annotation_count() == 0),
                         )
                         .on_click(cx.listener(|this, _, _, _| {
-                            this.send(AutomaticSegmentationMessage::TrainModel)
+                            this.send(AutomaticSegmentationMessage::TrainModel);
                         })),
                 ),
                 importing,
@@ -1640,7 +1663,7 @@ impl Render for AutomaticSegmentationView {
                 (SegmentationOutputMode::ClassColors, "Class colors"),
             ] {
                 outputs = outputs.child(
-                    self.button(
+                    Self::button(
                         gpui::ElementId::Name(format!("output-{label}").into()),
                         label,
                         AutomaticSegmentationMessage::SetOutputMode(mode),
@@ -1666,8 +1689,8 @@ impl Render for AutomaticSegmentationView {
                         continue;
                     };
                     output_classes = output_classes.child(
-                        self.button(
-                            gpui::ElementId::Name(format!("output-class-{}", id).into()),
+                        Self::button(
+                            gpui::ElementId::Name(format!("output-class-{id}").into()),
                             class.name.clone(),
                             AutomaticSegmentationMessage::SetOutputClass(id),
                             cx,
@@ -1741,7 +1764,7 @@ impl Render for AutomaticSegmentationView {
             }
             panel = panel.child(inference);
         }
-        let mut model =
+        let mut model_section =
             tool_panel::section("Model").child(
                 div()
                     .flex()
@@ -1762,7 +1785,7 @@ impl Render for AutomaticSegmentationView {
                     ),
             );
         if let Some(error) = s.oob_error {
-            model = model.child(
+            model_section = model_section.child(
                 div()
                     .text_xs()
                     .text_color(theme::TEXT_MUTED)
@@ -1770,7 +1793,7 @@ impl Render for AutomaticSegmentationView {
             );
         }
         if let Some(name) = s.model_path.as_ref().and_then(|p| p.file_name()) {
-            model = model.child(
+            model_section = model_section.child(
                 div()
                     .min_w_0()
                     .text_xs()
@@ -1780,7 +1803,7 @@ impl Render for AutomaticSegmentationView {
             );
         }
         panel = panel.child(
-            model.child(
+            model_section.child(
                 tool_panel::file_actions()
                     .child(
                         self.file_button(

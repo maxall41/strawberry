@@ -75,7 +75,7 @@ impl ToolBackend for Compositor {
                 PipelineCommand::RequestState() => {
                     self.base
                         .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(self.get_state()),
+                            FrontendMessage::ReturnState(Box::new(self.get_state())),
                         ))?;
                 }
                 PipelineCommand::PipelineObject(message) => match message {

@@ -206,6 +206,10 @@ impl PrimaryViewer {
             )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep viewer message polling and dispatch in one task"
+    )]
     pub fn process_messages(&self, window: &Window, cx: &Context<Self>) {
         let mut receiver = self.command_receiver.resubscribe();
         let mut output_frames = self.output_frame_receiver.clone();

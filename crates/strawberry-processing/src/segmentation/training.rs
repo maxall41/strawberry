@@ -1,6 +1,7 @@
 use super::cache::FeatureCache;
 use super::{
     FeatureConfig, FeatureExtractor, Forest, ForestConfig, InferenceConfig, SegmentationModel,
+    pixel_coordinates,
 };
 use crate::tiling::TileInfo;
 use anyhow::{Context, Result, ensure};
@@ -53,9 +54,19 @@ fn training_tiles(
     // TileGrid uses a regular core stride; only the final row/column can be smaller.
     let occupied: HashSet<_> = pixels
         .iter()
-        .map(|&(x, y)| (x / width, y / height))
+        .map(|&(x, y)| {
+            (
+                x.checked_div(width).unwrap_or_default(),
+                y.checked_div(height).unwrap_or_default(),
+            )
+        })
         .collect();
-    tiles.retain(|tile| occupied.contains(&(tile.core_x / width, tile.core_y / height)));
+    tiles.retain(|tile| {
+        occupied.contains(&(
+            tile.core_x.checked_div(width).unwrap_or_default(),
+            tile.core_y.checked_div(height).unwrap_or_default(),
+        ))
+    });
     Ok(tiles)
 }
 
@@ -84,12 +95,8 @@ impl TrainingData {
                 let data = extractor.extract(image, features, &tile).await?;
                 let mut samples = Vec::new();
                 for (offset, row) in data.rows.iter().enumerate() {
-                    let pixel = u32::try_from(offset)?;
-                    let key = (
-                        image_index,
-                        data.x + pixel % data.width,
-                        data.y + pixel / data.width,
-                    );
+                    let (x, y) = pixel_coordinates((data.x, data.y), data.width, offset)?;
+                    let key = (image_index, x, y);
                     if let Some(&label) = selected.get(&key) {
                         if cache.is_some() {
                             samples.push((offset, rows.len()));
@@ -164,7 +171,16 @@ impl TrainingData {
                 }
             }
         }
-        self.feature_count += features.context_features().count() * class_count;
+        self.feature_count = self
+            .feature_count
+            .checked_add(
+                features
+                    .context_features()
+                    .count()
+                    .checked_mul(class_count)
+                    .context("Too many context features")?,
+            )
+            .context("Too many training features")?;
         Ok(())
     }
 

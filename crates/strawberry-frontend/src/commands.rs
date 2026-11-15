@@ -20,6 +20,7 @@ use crate::tools::grayscale::GrayscaleView;
 use crate::tools::local_maxima::LocalMaximaView;
 use crate::tools::morphology::MorphologyView;
 use crate::tools::nervetracer::NerveTracerView;
+use crate::tools::object_size_filter::ObjectSizeFilterView;
 use crate::tools::rolling_ball::RollingBallView;
 use crate::tools::sobel::SobelView;
 use crate::tools::threshold::ThresholdView;
@@ -47,6 +48,7 @@ actions!([
     ThresholdSettings,
     LocalMaximaSettings,
     MorphologySettings,
+    ObjectSizeFilterSettings,
     RollingBallSettings,
     WatershedSettings,
     ManagerSettings,
@@ -245,6 +247,16 @@ pub fn install(
             tx.clone(),
             rx,
             RollingBallView::new,
+        ),
+        register_tool(
+            cx,
+            sidebar,
+            ObjectSizeFilterSettings,
+            "Object Size Filter",
+            BackendToolType::ObjectSizeFilter,
+            tx.clone(),
+            rx,
+            ObjectSizeFilterView::new,
         ),
         register_tool(
             cx,
