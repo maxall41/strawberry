@@ -220,11 +220,6 @@ impl ValueControl {
             } else {
                 Icon::minus()
             })
-            .aria_label(if direction > 0.0 {
-                "Increase value"
-            } else {
-                "Decrease value"
-            })
             .on_click({
                 cx.listener(
                     move |this: &mut Self,

@@ -411,7 +411,6 @@ impl AutomaticSegmentationView {
                 .id(gpui::ElementId::Name(format!("class-row-{id}").into()))
                 .w_full()
                 .role(gpui::Role::RadioButton)
-                .aria_label(format!("Select {name}"))
                 .aria_toggled(if selected {
                     gpui::Toggled::True
                 } else {
@@ -470,7 +469,6 @@ impl AutomaticSegmentationView {
                         div()
                             .id(gpui::ElementId::Name(format!("class-name-{id}").into()))
                             .role(gpui::Role::Button)
-                            .aria_label(format!("Select {name}"))
                             .focusable()
                             .cursor_pointer()
                             .flex_1()
@@ -514,7 +512,6 @@ impl AutomaticSegmentationView {
                             .flex_none()
                             .size(gpui::px(24.))
                             .min_h(gpui::px(24.))
-                            .aria_label(format!("Change {} color", class.name))
                             .tooltip_text("Change color")
                             .child(
                                 div()
@@ -548,7 +545,6 @@ impl AutomaticSegmentationView {
                         Button::new(gpui::ElementId::Name(format!("delete-class-{id}").into()))
                             .variant(ButtonVariant::Delete)
                             .tooltip_text("Delete class")
-                            .aria_label("Delete class")
                             .disabled(state.classes.len() <= 2)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.class_edit = None;
@@ -569,7 +565,6 @@ impl AutomaticSegmentationView {
                         .p_0()
                         .size(gpui::px(24.))
                         .min_h(gpui::px(24.))
-                        .aria_label(format!("Color #{:06X}", color.hex()))
                         .child(
                             div()
                                 .size(gpui::px(14.))
@@ -763,7 +758,6 @@ impl AutomaticSegmentationView {
                     .child(
                         Button::new(("segmentation-delete", index))
                             .variant(ButtonVariant::Delete)
-                            .aria_label("Delete annotation")
                             .tooltip_text("Delete annotation")
                             .on_click(cx.listener(move |this, _, _, _| {
                                 this.send(AutomaticSegmentationMessage::DeleteStroke(index))

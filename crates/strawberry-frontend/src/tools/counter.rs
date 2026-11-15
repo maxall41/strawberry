@@ -702,7 +702,6 @@ impl CounterView {
             .id(("counter-type-row", usize::from(count_type_id)))
             .w_full()
             .role(gpui::Role::RadioButton)
-            .aria_label(format!("Select {name}"))
             .aria_toggled(if is_selected {
                 gpui::Toggled::True
             } else {
@@ -778,7 +777,6 @@ impl CounterView {
             .child(
                 Button::new(("count-type-delete", usize::from(count_type_id)))
                     .variant(ButtonVariant::Delete)
-                    .aria_label("Delete count type")
                     .tooltip_text("Delete count type")
                     .on_click(
                         cx.listener(move |this, _, _, _| this.delete_count_type(count_type_id)),
