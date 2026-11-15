@@ -1,418 +1,229 @@
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
+use super::{
+    Compositor, Contrast, Counter, Decomposer, DifferenceOfGaussians, GaussianBlur, Grayscale,
+    LocalMaxima, Morphology, ObjectSizeFilter, RollingBall, Sobel, Threshold, Watershed,
+    automatic_segmentation::AutomaticSegmentation, base::ToolEvents, nervetracer::NerveTracer,
 };
-
-use crate::utils::pipeline_io::{self, LoadedPipeline};
-
+use crate::utils::pipeline_io;
+use indexmap::IndexMap;
+use std::{path::Path, sync::Arc};
+use strawberry_processing::GpuImageProcessor;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, ManagerMessage, ManagerState, PendingProcessing,
-    PipelineCommand, PipelineConfig, PipelineObjectMessage, ToolAssets, ToolBackend, ToolProxy,
-    ToolState,
+    BackendToolType, PendingProcessing, PipelineState, ToolBackend, ToolId, ToolState, ToolSummary,
 };
+use tokio::sync::watch;
 
-/// Orchestrates the pipeline's tools.
-///
-/// Note that unlike the tools it manages,
-/// the manager itself is NOT a `ToolBackend`: it never appears in the pipeline
-/// tool list, doesn't process images, and has no cache. The `Pipeline`
-/// special-cases it for discovery/disconnect instead.
+pub struct ToolInstance {
+    backend: Box<dyn ToolBackend>,
+    state_sender: watch::Sender<ToolState>,
+}
+impl ToolInstance {
+    pub fn subscribe_state(&self) -> watch::Receiver<ToolState> {
+        self.state_sender.subscribe()
+    }
+}
+impl std::ops::Deref for ToolInstance {
+    type Target = dyn ToolBackend;
+    fn deref(&self) -> &Self::Target {
+        self.backend.as_ref()
+    }
+}
+impl std::ops::DerefMut for ToolInstance {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.backend.as_mut()
+    }
+}
+
 pub struct ToolManager {
-    pub tools: Vec<Box<dyn ToolBackend>>,
-    pub state: ManagerState,
-    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub sender: flume::Sender<PipelineCommand>,
-    pub receiver: flume::Receiver<PipelineCommand>,
-    pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
-    pub frontend_latest_state: Option<ManagerState>,
-    included: HashSet<BackendToolType>,
-    /// Last reconciled processing order, before any new tool messages change enabled state.
-    processing_order: Vec<BackendToolType>,
+    pub tools: IndexMap<ToolId, ToolInstance>,
+    pub selected_tool: Option<ToolId>,
+    /// Latest ordered tools, enablement, and selection for pipeline subscribers.
+    pipeline_state_sender: watch::Sender<PipelineState>,
+    gpu: Arc<GpuImageProcessor>,
+    next_id: u64,
+    processing_order: Vec<ToolId>,
 }
-
-fn update_proxy_tools(
-    input: &[Box<dyn ToolBackend>],
-    included: &HashSet<BackendToolType>,
-) -> Vec<ToolProxy> {
-    input
-        .iter()
-        .enumerate()
-        .filter(|(_, tool)| included.contains(&tool.iam()))
-        .filter_map(|(index, tool)| {
-            Some(ToolProxy {
-                name: tool.iam().to_string(),
-                position: u16::try_from(index).ok()?,
-                is_enabled: tool.is_enabled(),
-            })
-        })
-        .collect()
-}
-
 impl ToolManager {
-    pub(crate) fn load_pipeline(&mut self, path: &Path, cli: bool) -> anyhow::Result<()> {
-        self.apply_pipeline_config(pipeline_io::load(path)?, cli)
-    }
-
-    fn save_pipeline(&self, path: &Path) -> anyhow::Result<()> {
-        let (config, indices) = self.pipeline_config()?;
-        let mut assets = HashMap::new();
-        for tool in &self.tools {
-            if self.included.contains(&tool.iam()) {
-                assets.insert(tool.iam().to_string(), tool.pipeline_assets()?);
-            }
-        }
-        pipeline_io::save(path, &config, &indices, &assets)
-    }
-
-    /// Apply a loaded pipeline config to all tools.
-    pub(crate) fn apply_pipeline_config(
-        &mut self,
-        mut config: LoadedPipeline,
-        cli: bool,
-    ) -> anyhow::Result<()> {
-        // Presence in the file defines membership, including disabled tools.
-        let included = self
-            .tools
-            .iter()
-            .filter(|tool| config.tools.contains_key(&tool.iam().to_string()))
-            .map(|tool| tool.iam())
-            .collect();
-        let mut updates = Vec::new();
-        let mut loaded = Vec::with_capacity(self.tools.len());
-        let empty_assets = ToolAssets::new();
-        for tool in &mut self.tools {
-            let name = format!("{:?}", tool.iam());
-            let update = match config.tools.remove(&name) {
-                Some(settings) => tool
-                    .prepare_loaded_persisted_state(
-                        settings,
-                        config.assets.get(&name).unwrap_or(&empty_assets),
-                        cli,
-                    )
-                    .map_err(|error| anyhow::anyhow!("Failed to load {name}: {error}"))?,
-                None => None,
-            };
-            loaded.push(update.is_some());
-            if let Some(update) = update {
-                updates.push(update);
-            }
-        }
-        // Check for unsupported tools
-        if !config.tools.is_empty() {
-            let mut unsupported_tools: Vec<_> = config.tools.keys().cloned().collect();
-            unsupported_tools.sort();
-            anyhow::bail!(
-                "Unsupported pipeline tools: {}",
-                unsupported_tools.join(", ")
-            );
-        }
-        // Apply updates seperately such that pipelines are never partially loaded if one tool fails to parse into concrete types.
-        for update in updates {
-            update();
-        }
-        for (tool, loaded) in self.tools.iter_mut().zip(loaded) {
-            if !loaded {
-                tool.set_enabled(false);
-            }
-        }
-        self.restore_tool_indices(&config.indices);
-        self.included = included;
-        Ok(())
-    }
-
-    #[must_use]
-    pub fn new(
-        mut input: Vec<Box<dyn ToolBackend>>,
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    ) -> Self {
-        let (sender, receiver) = flume::unbounded();
-
-        // Assign indices to all tools
-        for (index, tool) in input.iter_mut().enumerate() {
-            tool.set_index(index);
-        }
-        let included = input
-            .iter()
-            .filter(|tool| tool.is_enabled())
-            .map(|tool| tool.iam())
-            .collect();
-        let processing_order = input
-            .iter()
-            .filter(|tool| tool.is_enabled() && tool.supports_processing())
-            .map(|tool| tool.iam())
-            .collect();
-
+    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         Self {
-            state: ManagerState {
-                proxy_tools: update_proxy_tools(&input, &included),
-                is_enabled: true,
-            },
-            tools: input,
-            frontend_senders: Vec::new(),
-            global_sender,
-            sender,
-            receiver,
-            frontend_latest_state: None,
-            included,
-            processing_order,
+            tools: IndexMap::new(),
+            selected_tool: None,
+            pipeline_state_sender: watch::channel(PipelineState::default()).0,
+            gpu,
+            next_id: 1,
+            processing_order: vec![],
         }
     }
-
-    fn reindex_tools(&mut self) {
-        for (index, tool) in self.tools.iter_mut().enumerate() {
-            tool.set_index(index);
-        }
+    pub fn subscribe_pipeline_state(&self) -> watch::Receiver<PipelineState> {
+        self.pipeline_state_sender.subscribe()
     }
-
-    fn move_tool(&mut self, from: usize, to: usize) {
-        let tool = self.tools.remove(from);
-        let destination = to.min(self.tools.len());
-        self.tools.insert(destination, tool);
-        self.reindex_tools();
+    fn allocate_id(&mut self) -> anyhow::Result<ToolId> {
+        let id = ToolId(self.next_id);
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Tool IDs exhausted"))?;
+        Ok(id)
     }
-
-    /// Adding appends the tool, including when restoring a removed tool.
-    /// An existing item keeps its enabled state and position in the stack.
-    fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<()> {
-        let Some(index) = self.tools.iter().position(|tool| tool.iam() == *kind) else {
-            anyhow::bail!("Unknown pipeline tool: {kind}");
-        };
-        if self.included.contains(kind) {
-            return Ok(());
-        }
-        if let Some(tool) = self.tools.get_mut(index) {
-            tool.set_enabled(true);
-        }
-        self.included.insert(kind.clone());
-        self.move_tool(index, self.tools.len().saturating_sub(1));
-        Ok(())
-    }
-
-    fn remove_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<()> {
-        let Some(index) = self.tools.iter().position(|tool| tool.iam() == *kind) else {
-            anyhow::bail!("Unknown pipeline tool: {kind}");
-        };
-        if !self.included.contains(kind)
-            && !self.tools.get(index).is_some_and(|tool| tool.is_enabled())
-        {
-            return Ok(());
-        }
-        if let Some(tool) = self.tools.get_mut(index) {
-            tool.set_enabled(false);
-        }
-        self.included.remove(kind);
-        Ok(())
-    }
-
-    fn pipeline_config(&self) -> anyhow::Result<(PipelineConfig, HashMap<String, u16>)> {
-        let mut configs = HashMap::new();
-        let mut indices = HashMap::new();
-        let mut pipeline_index = 0u16;
-        for tool in &self.tools {
-            if !self.included.contains(&tool.iam()) {
-                continue;
+    /// Detached construction has no externally visible side effects.
+    fn create(&self, kind: BackendToolType) -> ToolInstance {
+        let events = ToolEvents::default();
+        let gpu = self.gpu.clone();
+        let backend: Box<dyn ToolBackend> = match kind {
+            BackendToolType::AutomaticSegmentation => {
+                Box::new(AutomaticSegmentation::new(events, gpu))
             }
-            let name = tool.iam().to_string();
-            indices.insert(name.clone(), pipeline_index);
-            configs.insert(name, tool.get_state());
-            pipeline_index = pipeline_index
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("Too many pipeline tools"))?;
+            BackendToolType::Compositor => Box::new(Compositor::new(events, gpu)),
+            BackendToolType::Contrast => Box::new(Contrast::new(events, gpu)),
+            BackendToolType::Counter => Box::new(Counter::new(events)),
+            BackendToolType::Decomposer => Box::new(Decomposer::new(events, gpu)),
+            BackendToolType::DifferenceOfGaussians => {
+                Box::new(DifferenceOfGaussians::new(events, gpu))
+            }
+            BackendToolType::GaussianBlur => Box::new(GaussianBlur::new(events, gpu)),
+            BackendToolType::Grayscale => Box::new(Grayscale::new(events, gpu)),
+            BackendToolType::LocalMaxima => Box::new(LocalMaxima::new(events, gpu)),
+            BackendToolType::Morphology => Box::new(Morphology::new(events, gpu)),
+            BackendToolType::NerveTracer => Box::new(NerveTracer::new(events)),
+            BackendToolType::ObjectSizeFilter => Box::new(ObjectSizeFilter::new(events)),
+            BackendToolType::RollingBall => Box::new(RollingBall::new(events, gpu)),
+            BackendToolType::Sobel => Box::new(Sobel::new(events, gpu)),
+            BackendToolType::Threshold => Box::new(Threshold::new(events, gpu)),
+            BackendToolType::Watershed => Box::new(Watershed::new(events, gpu)),
+        };
+        let state_sender = watch::channel(backend.get_state()).0;
+        ToolInstance {
+            backend,
+            state_sender,
         }
-        Ok((PipelineConfig { tools: configs }, indices))
     }
-
-    pub(crate) fn restore_tool_indices(&mut self, indices: &HashMap<String, u16>) {
-        if indices.is_empty() {
+    pub fn add_tool(&mut self, kind: BackendToolType) -> anyhow::Result<ToolId> {
+        let mut tool = self.create(kind);
+        tool.set_enabled(true);
+        tool.state_sender.send_replace(tool.get_state());
+        let id = self.allocate_id()?;
+        self.tools.insert(id, tool);
+        self.select(Some(id));
+        Ok(id)
+    }
+    pub fn select(&mut self, id: Option<ToolId>) {
+        if id.is_some_and(|id| !self.tools.contains_key(&id)) {
             return;
         }
-
-        let mut ordered: Vec<_> = self.tools.drain(..).enumerate().collect();
-        ordered.sort_by_key(|(current_index, tool)| {
-            indices
-                .get(&tool.iam().to_string())
-                .copied()
-                .map_or((1, *current_index), |index| (0, usize::from(index)))
-        });
-        self.tools = ordered.into_iter().map(|(_, tool)| tool).collect();
-        self.reindex_tools();
-    }
-
-    /// Automatically include tools enabled outside Add Tool. Existing stack items
-    /// keep their position when disabled or enabled again.
-    fn move_newly_enabled_tools_to_end(&mut self) {
-        let mut retained = Vec::with_capacity(self.tools.len());
-        let mut added = Vec::new();
-        for tool in self.tools.drain(..) {
-            if tool.is_enabled() && self.included.insert(tool.iam()) {
-                added.push(tool);
-            } else {
-                retained.push(tool);
+        if id != self.selected_tool {
+            if let Some(tool) = self.selected_tool.and_then(|id| self.tools.get_mut(&id)) {
+                tool.cancel_interaction();
             }
-        }
-        let order_changed = !added.is_empty();
-        retained.append(&mut added);
-        self.tools = retained;
-        if order_changed {
-            self.reindex_tools();
+            self.selected_tool = id;
         }
     }
-
-    #[must_use]
-    pub fn get_sender(&self) -> flume::Sender<PipelineCommand> {
-        self.sender.clone()
+    pub fn remove_tool(&mut self, id: ToolId) {
+        if self.selected_tool == Some(id) {
+            self.select(None);
+        }
+        self.tools.shift_remove(&id);
     }
-
-    fn get_state(&self) -> ToolState {
-        ToolState::ManagerState(self.state.clone())
+    pub fn move_tool(&mut self, id: ToolId, before: Option<ToolId>) {
+        let Some(from) = self.tools.get_index_of(&id) else {
+            return;
+        };
+        if before == Some(id) {
+            return;
+        }
+        let to = match before {
+            Some(before) => {
+                let Some(index) = self.tools.get_index_of(&before) else {
+                    return;
+                };
+                if from < index {
+                    index.saturating_sub(1)
+                } else {
+                    index
+                }
+            }
+            None => self.tools.len().saturating_sub(1),
+        };
+        self.tools.move_index(from, to);
     }
-
-    pub fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
-        self.frontend_senders.push(sender);
-    }
-
-    pub fn disconnect(&mut self) {
-        self.frontend_senders.clear();
-    }
-
-    /// Apply queued commands and schedule processing from the first changed stage.
-    /// # Errors
-    /// Returns an error if a command fails or a communication channel is disconnected.
-    pub fn receive_messages(&mut self, pending: &mut PendingProcessing) -> anyhow::Result<()> {
-        // Earlier commands can succeed before a later command fails; reconcile both outcomes.
-        let result = self.handle_messages();
-        self.move_newly_enabled_tools_to_end();
-        let processing_tools: Vec<_> = self
+    pub fn reconcile(&mut self, pending: &mut PendingProcessing) {
+        let current: Vec<_> = self
             .tools
             .iter()
             .enumerate()
-            .filter(|(_, tool)| tool.is_enabled() && tool.supports_processing())
-            .map(|(index, tool)| (index, tool.iam()))
+            .filter(|(_, (_, tool))| tool.is_enabled() && tool.supports_processing())
+            .map(|(index, (id, _))| (index, *id))
             .collect();
-        let common_prefix = self
+        let common = self
             .processing_order
             .iter()
-            .zip(&processing_tools)
-            .take_while(|(previous, (_, current))| *previous == current)
+            .zip(&current)
+            .take_while(|(old, (_, id))| *old == id)
             .count();
-        if common_prefix < self.processing_order.len() || common_prefix < processing_tools.len() {
-            // Removing the last stage only needs to republish the preceding cached output.
-            let index = processing_tools
-                .get(common_prefix)
-                .map_or(self.tools.len(), |(index, _)| *index);
-            pending.request_processing(index);
+        if common < self.processing_order.len() || common < current.len() {
+            pending.request_processing(
+                current
+                    .get(common)
+                    .map_or(self.tools.len(), |(index, _)| *index),
+            );
         }
-        self.processing_order = processing_tools.into_iter().map(|(_, kind)| kind).collect();
-
-        let new_proxy_tools = update_proxy_tools(&self.tools, &self.included);
-        if new_proxy_tools != self.state.proxy_tools {
-            self.state.proxy_tools = new_proxy_tools;
-        }
-        result?;
-        if self.frontend_latest_state.as_ref() != Some(&self.state) {
-            self.update_state()?;
-        }
-        Ok(())
+        self.processing_order = current.into_iter().map(|(_, id)| id).collect();
     }
-
-    fn handle_messages(&mut self) -> anyhow::Result<()> {
-        let commands: Vec<PipelineCommand> =
-            std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
-
-        for message in commands {
-            match message {
-                PipelineCommand::RequestState() => {
-                    self.send_to_frontend(&PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(Box::new(self.get_state())),
-                    ))?;
+    pub fn publish(&mut self) -> bool {
+        let mut changed = false;
+        for tool in self.tools.values_mut() {
+            let state = tool.get_state();
+            changed |= tool.state_sender.send_if_modified(|previous| {
+                if *previous == state {
+                    false
+                } else {
+                    *previous = state;
+                    true
                 }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
-                    }
-                    PipelineObjectMessage::ManagerMessage(message) => match message {
-                        ManagerMessage::AddTool(kind) => {
-                            self.add_tool(&kind)?;
-                        }
-                        ManagerMessage::RemoveTool(kind) => {
-                            self.remove_tool(&kind)?;
-                        }
-                        ManagerMessage::SavePipeline(path) => {
-                            if let Err(error) = self.save_pipeline(&path) {
-                                self.global_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::error(format!(
-                                        "Failed to save pipeline: {error:#}"
-                                    )),
-                                ))?;
-                                return Err(error);
-                            }
-                            self.global_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::success(
-                                    "Pipeline saved successfully!".to_string(),
-                                ),
-                            ))?;
-                        }
-                        ManagerMessage::LoadPipeline(path) => {
-                            if let Err(error) = self.load_pipeline(&path, false) {
-                                self.global_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::error(format!(
-                                        "Failed to load pipeline: {error:#}"
-                                    )),
-                                ))?;
-                                return Err(error);
-                            }
-
-                            self.global_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::success(
-                                    "Pipeline loaded successfully!".to_string(),
-                                ),
-                            ))?;
-                        }
-                        ManagerMessage::ReorderTool(start_index, new_index) => {
-                            let start_idx = usize::from(start_index);
-                            let new_idx = usize::from(new_index);
-
-                            if start_idx >= self.tools.len() {
-                                let error_msg = format!(
-                                    "Manager: Start index {} out of bounds (max: {})",
-                                    start_idx,
-                                    self.tools.len()
-                                );
-                                self.global_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::error(error_msg.clone()),
-                                ))?;
-                                return Err(anyhow::anyhow!(error_msg));
-                            }
-
-                            if start_idx == new_idx.min(self.tools.len().saturating_sub(1)) {
-                                continue;
-                            }
-                            self.move_tool(start_idx, new_idx);
-                        }
-                    },
-                    _ => {}
-                },
-                _ => {}
+            });
+        }
+        let state = PipelineState {
+            selected_tool: self.selected_tool,
+            tools: self
+                .tools
+                .iter()
+                .map(|(id, tool)| ToolSummary {
+                    id: *id,
+                    kind: tool.iam(),
+                    is_enabled: tool.is_enabled(),
+                })
+                .collect(),
+        };
+        changed |= self.pipeline_state_sender.send_if_modified(|previous| {
+            if *previous == state {
+                false
+            } else {
+                *previous = state;
+                true
             }
-        }
-
-        Ok(())
+        });
+        changed
     }
-
-    fn update_state(&mut self) -> anyhow::Result<()> {
-        self.send_to_frontend(&PipelineCommand::FrontendMessage(
-            FrontendMessage::ReturnState(Box::new(self.get_state())),
-        ))?;
-        self.frontend_latest_state = Some(self.state.clone());
-        Ok(())
+    pub fn save_pipeline(&self, path: &Path) -> anyhow::Result<()> {
+        let entries = self
+            .tools
+            .values()
+            .map(|tool| Ok((tool.get_state(), tool.pipeline_assets()?)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        pipeline_io::save(path, &entries)
     }
-
-    fn send_to_frontend(&self, message: &PipelineCommand) -> anyhow::Result<()> {
-        for sender in &self.frontend_senders {
-            sender
-                .try_send(message.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to send message to frontend: {e}"))?;
+    pub fn load_pipeline(&mut self, path: &Path, cli: bool) -> anyhow::Result<()> {
+        let mut candidate = IndexMap::new();
+        for entry in pipeline_io::load(path)? {
+            let kind = entry.kind()?;
+            let mut tool = self.create(kind);
+            tool.load_persisted_state(entry.state, &entry.assets, cli)?;
+            tool.get_state().validate()?;
+            tool.cancel_interaction();
+            tool.state_sender.send_replace(tool.get_state());
+            let id = self.allocate_id()?;
+            candidate.insert(id, tool);
         }
+        self.select(None);
+        self.tools = candidate;
         Ok(())
     }
 }

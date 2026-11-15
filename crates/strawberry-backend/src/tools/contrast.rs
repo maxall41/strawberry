@@ -1,3 +1,4 @@
+use crate::tools::base::ToolEvents;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -7,8 +8,8 @@ use strawberry_processing::{GpuImageProcessor, contrast::GpuContrast};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, ContrastMessage, ContrastState, FrontendMessage, PipelineCommand,
-    PipelineObjectMessage, ToolBackend, ToolState,
+    BackendToolType, ContrastMessage, ContrastState, FrontendMessage, PipelineObjectMessage,
+    ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Contrast {
@@ -40,10 +41,8 @@ impl ToolBackend for Contrast {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
-                        .global_sender
-                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                            format!("Contrast error: {e}"),
-                        )))?;
+                        .events
+                        .emit(FrontendMessage::error(format!("Contrast error: {e}")));
                     return Err(e);
                 }
             };
@@ -51,31 +50,22 @@ impl ToolBackend for Contrast {
         Ok(())
     }
 
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = self.base.collect_commands();
-
-        for message in commands {
-            match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
-                }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        match message {
+            ToolInput::Message(message) => match message {
+                PipelineObjectMessage::ContrastMessage(message) => match message {
+                    ContrastMessage::SetMinMax(min, max) => {
+                        anyhow::ensure!(
+                            min.is_finite() && max.is_finite() && min <= max,
+                            "Invalid contrast range"
+                        );
+                        self.state.min = min;
+                        self.state.max = max;
                     }
-                    PipelineObjectMessage::ContrastMessage(message) => match message {
-                        ContrastMessage::SetMinMax(min, max) => {
-                            self.state.min = min;
-                            self.state.max = max;
-                        }
-                    },
-                    _ => {}
                 },
                 _ => {}
-            }
+            },
+            _ => {}
         }
 
         Ok(())
@@ -84,10 +74,7 @@ impl ToolBackend for Contrast {
 
 impl Contrast {
     #[must_use]
-    pub fn new(
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        gpu_image_processor: Arc<GpuImageProcessor>,
-    ) -> Self {
+    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
         let state = ContrastState {
             is_enabled: false,
             min: 0.0,
@@ -95,7 +82,7 @@ impl Contrast {
         };
         Self {
             state: state.clone(),
-            base: ToolBase::new(global_sender),
+            base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             processor: GpuContrast::new(gpu_image_processor),
         }

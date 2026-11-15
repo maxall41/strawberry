@@ -4,6 +4,7 @@ use crate::segmentation::{
     dataset::{Dataset, DatasetSample},
     render_class_mask, render_class_prediction, train,
 };
+use crate::tools::base::ToolEvents;
 use crate::utils::file_io::write_artifact;
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
@@ -22,9 +23,9 @@ use strawberry_processing::{
 use strawberry_types::{
     AnnotationKind, AnnotationStroke, AutomaticSegmentationMessage, AutomaticSegmentationState,
     BackendToolType, BgraColor, CLASS_PALETTE, ClassId, DatasetImportMode, DatasetOperation,
-    FrontendMessage, MAX_CLASSES, PipelineCommand, PipelineObjectMessage, PreparedStateUpdate,
-    RgbaColor, SampleId, SegmentationClass, SegmentationClasses, SegmentationOutputMode, StrokeId,
-    ToolAssets, ToolBackend, ToolState,
+    FrontendMessage, MAX_CLASSES, PipelineObjectMessage, RgbaColor, SampleId, SegmentationClass,
+    SegmentationClasses, SegmentationOutputMode, StrokeId, ToolAssets, ToolBackend, ToolInput,
+    ToolState,
     overlay::{CircleStyle, OverlayElement, ToolOverlay},
 };
 
@@ -285,7 +286,6 @@ pub struct AutomaticSegmentation {
     pub base: ToolBase,
     /// Pipeline output/bypass cache and frontend state synchronization, used by the backend macros.
     pub cache: ToolCache<AutomaticSegmentationState>,
-    commands: tokio::sync::broadcast::Sender<PipelineCommand>,
     dataset_revision: u64,
     dataset_job: Option<DatasetJob>,
     // Annotation/settings edits do not invalidate a model trained from their earlier snapshot.
@@ -306,16 +306,10 @@ pub struct AutomaticSegmentation {
 }
 impl AutomaticSegmentation {
     #[must_use]
-    pub fn new(
-        commands: tokio::sync::broadcast::Sender<PipelineCommand>,
-        output: tokio::sync::broadcast::Sender<PipelineCommand>,
-        gpu: Arc<GpuImageProcessor>,
-    ) -> Self {
+    pub fn new(output: ToolEvents, gpu: Arc<GpuImageProcessor>) -> Self {
         let state = AutomaticSegmentationState::default();
         let base = ToolBase::new(output);
-        let _ = commands.send(PipelineCommand::RegisterClickReceiver(base.sender.clone()));
         Self {
-            commands,
             dataset_revision: 0,
             dataset_job: None,
             training_generation: 0,
@@ -515,12 +509,7 @@ impl AutomaticSegmentation {
     }
 
     fn dataset_feedback(&self, message: &str) {
-        let _ = self
-            .base
-            .global_sender
-            .send(PipelineCommand::FrontendMessage(FrontendMessage::success(
-                message,
-            )));
+        self.base.events.emit(FrontendMessage::success(message));
     }
 
     fn class(&self, id: ClassId) -> Result<&SegmentationClass> {
@@ -689,12 +678,9 @@ impl AutomaticSegmentation {
         Some(index)
     }
     fn error(&self, error: &anyhow::Error) {
-        let _ = self
-            .base
-            .global_sender
-            .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                format!("Segmentation: {error}"),
-            )));
+        self.base
+            .events
+            .emit(FrontendMessage::error(format!("Segmentation: {error}")));
     }
     fn start_training(&mut self) -> Result<()> {
         ensure!(self.training_job.is_none(), "Training is already running");
@@ -1032,85 +1018,66 @@ impl AutomaticSegmentation {
         }
     }
 
-    fn receive_commands(&mut self) -> Result<()> {
-        for message in self.base.collect_commands() {
-            match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
+    fn receive_commands(&mut self, message: ToolInput) -> Result<()> {
+        match message {
+            ToolInput::Message(PipelineObjectMessage::AutomaticSegmentationMessage(message)) => {
+                if let Err(error) = self.handle(message) {
+                    self.error(&error);
                 }
-                PipelineCommand::PipelineObject(PipelineObjectMessage::ToggleActive(value)) => {
-                    self.state.is_enabled = value;
-                    self.stroke = None;
-                    self.rebuild_mask();
-                    self.changed();
-                }
-                PipelineCommand::PipelineObject(
-                    PipelineObjectMessage::AutomaticSegmentationMessage(message),
-                ) => {
-                    if let Err(error) = self.handle(message) {
-                        self.error(&error);
-                    }
-                }
-                PipelineCommand::InteractionStart(x, y)
-                    if self.state.is_enabled
-                        && self.state.training
-                        && !self.importing_dataset() =>
-                {
-                    if self.ensure_sample().is_some() {
-                        self.next_stroke_id = self
-                            .next_stroke_id
-                            .checked_add(1)
-                            .ok_or_else(|| anyhow::anyhow!("Stroke ID exhausted"))?;
-                        self.stroke = Some(PendingStroke {
-                            id: self.next_stroke_id,
-                            kind: self.state.brush,
-                            stroke: AnnotationStroke {
-                                visible: true,
-                                radius: self.state.brush_radius,
-                                points: Arc::new(Vec::new()),
-                            },
-                        });
-                        self.add_point(x, y);
-                    }
-                }
-                PipelineCommand::InteractionMove(x, y) if self.stroke.is_some() => {
+            }
+            ToolInput::InteractionStart(x, y)
+                if self.state.is_enabled && self.state.training && !self.importing_dataset() =>
+            {
+                if self.ensure_sample().is_some() {
+                    self.next_stroke_id = self
+                        .next_stroke_id
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow::anyhow!("Stroke ID exhausted"))?;
+                    self.stroke = Some(PendingStroke {
+                        id: self.next_stroke_id,
+                        kind: self.state.brush,
+                        stroke: AnnotationStroke {
+                            visible: true,
+                            radius: self.state.brush_radius,
+                            points: Arc::new(Vec::new()),
+                        },
+                    });
                     self.add_point(x, y);
                 }
-                PipelineCommand::InteractionEnd => {
-                    if let Some(stroke) = self.stroke.take()
-                        && !stroke.stroke.points.is_empty()
-                    {
-                        if let Some(sample) = self.current {
-                            match stroke.kind {
-                                AnnotationKind::Paint(id) => {
-                                    if let Some(annotations) =
-                                        self.state.classes.annotations_mut(id)
-                                    {
-                                        annotations
-                                            .entry(sample)
-                                            .or_default()
-                                            .insert(stroke.id, stroke.stroke);
-                                    }
-                                }
-                                AnnotationKind::Eraser => {
-                                    self.state
-                                        .erasers
+            }
+            ToolInput::InteractionMove(x, y) if self.stroke.is_some() => {
+                self.add_point(x, y);
+            }
+            ToolInput::InteractionEnd => {
+                if let Some(stroke) = self.stroke.take()
+                    && !stroke.stroke.points.is_empty()
+                {
+                    if let Some(sample) = self.current {
+                        match stroke.kind {
+                            AnnotationKind::Paint(id) => {
+                                if let Some(annotations) = self.state.classes.annotations_mut(id) {
+                                    annotations
                                         .entry(sample)
                                         .or_default()
                                         .insert(stroke.id, stroke.stroke);
                                 }
                             }
+                            AnnotationKind::Eraser => {
+                                self.state
+                                    .erasers
+                                    .entry(sample)
+                                    .or_default()
+                                    .insert(stroke.id, stroke.stroke);
+                            }
                         }
-                        self.dataset_edited();
-                        self.edited();
                     }
+                    self.dataset_edited();
+                    self.edited();
                 }
-                _ => {}
             }
+            _ => {}
         }
+
         Ok(())
     }
 }
@@ -1124,14 +1091,15 @@ impl ToolBackend for AutomaticSegmentation {
         }
         Ok(assets)
     }
-    fn prepare_loaded_fields<'a>(
-        &'a mut self,
+    fn load_fields(
+        &mut self,
         fields: serde_value::Value,
         assets: &ToolAssets,
         cli: bool,
-    ) -> Result<Option<PreparedStateUpdate<'a>>> {
+    ) -> Result<()> {
         let mut state = self.state.clone();
         AutomaticSegmentationState::deserialize_in_place(fields, &mut state)?;
+        state.features.validate()?;
         state.forest.validate()?;
         state.inference.validate()?;
         state.overlay_opacity = state.overlay_opacity.min(100);
@@ -1201,7 +1169,7 @@ impl ToolBackend for AutomaticSegmentation {
         state.dataset_operation = None;
         state.model_revision = self.state.model_revision.wrapping_add(1);
 
-        Ok(Some(Box::new(move || {
+        {
             self.state = state;
             self.model_class_ids = model
                 .as_ref()
@@ -1218,7 +1186,8 @@ impl ToolBackend for AutomaticSegmentation {
             self.training_generation = self.training_generation.wrapping_add(1);
             self.cache.invalidate();
             self.changed();
-        })))
+        }
+        Ok(())
     }
     fn iam(&self) -> BackendToolType {
         BackendToolType::AutomaticSegmentation
@@ -1295,21 +1264,29 @@ impl ToolBackend for AutomaticSegmentation {
 
         Ok(())
     }
-    fn receive_messages(&mut self) -> Result<()> {
-        // The tool manager can disable a tool directly, bypassing ToggleActive.
+    fn handle_input(&mut self, input: ToolInput) -> Result<()> {
+        self.receive_commands(input)
+    }
+    fn take_overlay_changes(&mut self) -> bool {
+        std::mem::take(&mut self.overlays_dirty)
+    }
+    fn cancel_interaction(&mut self) {
+        if self.stroke.take().is_some() {
+            self.rebuild_mask();
+            self.changed();
+        }
+    }
+    fn poll_background(&mut self) -> Result<()> {
+        // Disabling or leaving training mode cancels the transient stroke.
         if (!self.state.is_enabled || !self.state.training) && self.stroke.take().is_some() {
             self.rebuild_mask();
             self.changed();
         }
         self.finish_training();
         self.finish_dataset_job();
-        self.receive_commands()?;
-        if std::mem::take(&mut self.overlays_dirty) {
-            let _ = self.commands.send(PipelineCommand::RequestOverlays);
-        }
         Ok(())
     }
-    fn get_overlays(&self) -> Option<ToolOverlay> {
+    fn get_overlays(&self, id: strawberry_types::ToolId) -> Option<ToolOverlay> {
         if !self.state.is_enabled || !self.state.training {
             return None;
         }
@@ -1354,7 +1331,7 @@ impl ToolBackend for AutomaticSegmentation {
             });
         }
         Some(ToolOverlay {
-            tool_id: self.iam(),
+            tool_id: id,
             z_order: 50,
             elements,
         })

@@ -97,8 +97,8 @@ struct PrimaryViewer {
     pan_x: f32,
     pan_y: f32,
     pressed_keys: HashSet<String>,
-    command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-    command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    command_receiver: tokio::sync::broadcast::Receiver<FrontendMessage>,
+    command_sender: strawberry_types::CommandSender,
     output_frame_receiver: tokio::sync::watch::Receiver<Option<strawberry_types::OutputFrame>>,
     display_image: ImageSource,
     img_coords: Arc<RwLock<Option<Bounds<Pixels>>>>,
@@ -234,7 +234,7 @@ impl PrimaryViewer {
 
                 loop {
                     match receiver.try_recv() {
-                        Ok(PipelineCommand::FrontendMessage(msg)) => match msg {
+                        Ok(msg) => match msg {
                             FrontendMessage::UserFeedback(text, level) => {
                                 toasts.push((text, level));
                             }
@@ -246,9 +246,15 @@ impl PrimaryViewer {
                                 activity_events.push(Some(progress));
                             }
                             FrontendMessage::PipelineFinished => activity_events.push(None),
-                            _ => {}
+                            FrontendMessage::ToolEvent { event, .. } => match *event {
+                                FrontendMessage::UserFeedback(text, level) => {
+                                    toasts.push((text, level))
+                                }
+                                FrontendMessage::SnapToPosition(x, y) => latest_snap = Some((x, y)),
+                                _ => {}
+                            },
                         },
-                        Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+                        Err(broadcast::error::TryRecvError::Lagged(_)) => {}
                         Err(broadcast::error::TryRecvError::Empty) => break,
                         Err(broadcast::error::TryRecvError::Closed) => {
                             closed = true;
@@ -476,7 +482,10 @@ impl PrimaryViewer {
                     *dir = Some(parent.to_path_buf());
                 }
 
-                if let Err(e) = sender_p.send(PipelineCommand::Load(files)) {
+                if let Err(e) = sender_p.send(PipelineCommand::Load {
+                    files,
+                    reply: tokio::sync::oneshot::channel().0,
+                }) {
                     eprintln!("Failed to send loaded images to pipeline: {e}");
                 }
             }
@@ -487,16 +496,31 @@ impl PrimaryViewer {
     fn handle_save_image(&mut self, _: &SaveImage, window: &mut Window, cx: &mut Context<Self>) {
         let sender_p = self.command_sender.clone();
 
-        cx.spawn_in(window, async move |_, _| {
+        cx.spawn_in(window, async move |this, cx| {
             let output_file = FileDialog::new()
                 .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
                 .set_directory("~/")
                 .save_file();
 
-            if let Some(file) = output_file
-                && let Err(e) = sender_p.send(PipelineCommand::SaveOutput(file))
-            {
-                eprintln!("Failed to send save output command to pipeline: {e}");
+            if let Some(path) = output_file {
+                let (reply, result) = tokio::sync::oneshot::channel();
+                if sender_p
+                    .send(PipelineCommand::SaveOutput { path, reply })
+                    .is_ok()
+                {
+                    let result = result.await;
+                    let _ = this.update(cx, |this, cx| {
+                        let (text, level) = match result {
+                            Ok(Ok(())) => (
+                                "Image saved successfully".to_string(),
+                                FeedbackLevel::Success,
+                            ),
+                            Ok(Err(error)) => (error, FeedbackLevel::Error),
+                            Err(error) => (error.to_string(), FeedbackLevel::Error),
+                        };
+                        this.add_toast(text, level, cx);
+                    });
+                }
             }
         })
         .detach();
@@ -966,10 +990,10 @@ impl Render for PrimaryViewer {
                  paths: &ExternalPaths,
                  _window: &mut Window,
                  _cx: &mut Context<Self>| {
-                    if let Err(e) = this
-                        .command_sender
-                        .send(PipelineCommand::Load(paths.paths().to_vec()))
-                    {
+                    if let Err(e) = this.command_sender.send(PipelineCommand::Load {
+                        files: paths.paths().to_vec(),
+                        reply: tokio::sync::oneshot::channel().0,
+                    }) {
                         eprintln!("Failed to send loaded images to pipeline: {e}");
                     }
                 },
@@ -1286,13 +1310,8 @@ async fn main() -> Result<()> {
             let primary_viewer_image_dir = image_directory.clone();
             let main_window = cx.open_window(window_options, |window, cx| {
                 let sidebar = cx.new(|cx| ToolSidebar::new(view_sender.clone(), window, cx));
-                let commands = commands::install(
-                    cx,
-                    &sidebar,
-                    view_sender.clone(),
-                    &view_recv,
-                    image_directory.clone(),
-                );
+                let commands =
+                    commands::install(cx, &sidebar, view_sender.clone(), image_directory.clone());
                 let raw_primary_viewer = PrimaryViewer {
                     focus_handle: cx.focus_handle(),
                     zoom_level: 1.0,

@@ -1,6 +1,7 @@
 use crate::gui::actions::actions;
 use crate::gui::theme;
 use std::sync::{Arc, RwLock};
+use strawberry_types::{CommandSender, ToolId};
 
 use gpui::{
     App, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div, prelude::*,
@@ -8,7 +9,7 @@ use gpui::{
 
 use crate::gui::ToggleButton;
 use crate::tools::{FrontendMessageHandler, ToolBase, spawn_message_processor};
-use strawberry_types::{GrayscaleState, PipelineCommand, PipelineObjectMessage, ToolState};
+use strawberry_types::{GrayscaleState, ToolState};
 
 use strawberry_types::ToolFrontend;
 
@@ -44,18 +45,10 @@ impl FrontendMessageHandler for GrayscaleView {
 }
 
 impl GrayscaleView {
-    pub fn new(
-        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(GrayscaleState::default())),
-            base: crate::tools::base::ToolBase::new(
-                command_sender,
-                strawberry_types::BackendToolType::Grayscale,
-                cx.focus_handle(),
-            ),
+            base: crate::tools::base::ToolBase::new(command_sender, id, cx.focus_handle()),
         }
     }
 
@@ -64,9 +57,7 @@ impl GrayscaleView {
     }
 
     fn toggle_enabled(&self, current_value: bool, _window: &mut Window, _cx: &mut Context<Self>) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::ToggleActive(!current_value),
-        )) {
+        if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
@@ -143,6 +134,7 @@ impl Render for GrayscaleView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<Self>| {
+                        this.base.select();
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )

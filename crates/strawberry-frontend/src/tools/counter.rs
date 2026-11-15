@@ -1,6 +1,7 @@
 use crate::gui::actions::actions;
 use crate::gui::{Button, ButtonVariant};
 use strawberry_types::RgbaColor;
+use strawberry_types::{CommandSender, ToolId};
 
 use crate::gui::{theme, tool_panel};
 // Implements UI for counter tool
@@ -17,8 +18,8 @@ use rfd::FileDialog;
 use crate::gui::{ToggleButton, icon::Icon};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
-    CountData, CountMessage, CounterMode, CounterState, CounterTool, PipelineCommand,
-    PipelineObjectMessage, ToolState, consts::CIRCLE_COLORS,
+    CountData, CountMessage, CounterMode, CounterState, CounterTool, PipelineObjectMessage,
+    ToolState, consts::CIRCLE_COLORS,
 };
 
 use strawberry_types::ToolFrontend;
@@ -41,8 +42,8 @@ impl Focusable for CounterView {
 
 impl CounterView {
     pub fn new(
-        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+        id: ToolId,
+        command_sender: CommandSender,
         image_directory: Arc<RwLock<Option<PathBuf>>>,
         cx: &App,
     ) -> Self {
@@ -53,11 +54,7 @@ impl CounterView {
             next_count_type_id: Arc::new(RwLock::new(0)),
             last_directory: Arc::new(RwLock::new(None)),
             image_directory,
-            base: crate::tools::base::ToolBase::new(
-                command_sender,
-                strawberry_types::BackendToolType::Counter,
-                cx.focus_handle(),
-            ),
+            base: crate::tools::base::ToolBase::new(command_sender, id, cx.focus_handle()),
         }
     }
 
@@ -66,10 +63,6 @@ impl CounterView {
     }
 
     fn save_counts(&self, window: &Window, cx: &Context<Self>) {
-        let Some(current_tool_index) = self.base.get_current_tool_index() else {
-            return;
-        };
-
         let image_directory = self.image_directory.clone();
 
         cx.spawn_in(window, async move |this, cx| {
@@ -88,16 +81,13 @@ impl CounterView {
 
             if let Some(file) = file
                 && let Err(e) = this.update(cx, |this, _cx| {
-                    if let Some(sender) =
-                        this.base.send_channels.get(usize::from(current_tool_index))
+                    if let Err(e) = this
+                        .base
+                        .send_to_backend(PipelineObjectMessage::CountMessage(
+                            CountMessage::SaveCounts(file),
+                        ))
                     {
-                        if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                            PipelineObjectMessage::CountMessage(CountMessage::SaveCounts(file)),
-                        )) {
-                            eprintln!("Failed to send save counts command: {e}");
-                        }
-                    } else {
-                        eprintln!("Invalid tool index: {current_tool_index}");
+                        eprintln!("Failed to send save counts command: {e}");
                     }
                 })
             {
@@ -108,10 +98,6 @@ impl CounterView {
     }
 
     fn load_counts(&self, window: &Window, cx: &Context<Self>) {
-        let Some(current_tool_index) = self.base.get_current_tool_index() else {
-            return;
-        };
-
         let last_directory = self.last_directory.clone();
         let image_directory = self.image_directory.clone();
 
@@ -142,16 +128,13 @@ impl CounterView {
                 }
 
                 if let Err(e) = this.update(cx, |this, _cx| {
-                    if let Some(sender) =
-                        this.base.send_channels.get(usize::from(current_tool_index))
+                    if let Err(e) = this
+                        .base
+                        .send_to_backend(PipelineObjectMessage::CountMessage(
+                            CountMessage::LoadCounts(file),
+                        ))
                     {
-                        if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                            PipelineObjectMessage::CountMessage(CountMessage::LoadCounts(file)),
-                        )) {
-                            eprintln!("Failed to send load counts command: {e}");
-                        }
-                    } else {
-                        eprintln!("Invalid tool index: {current_tool_index}");
+                        eprintln!("Failed to send load counts command: {e}");
                     }
                 }) {
                     eprintln!("Failed to update count types: {e}");
@@ -180,35 +163,16 @@ impl CounterView {
         drop(state);
         drop(hint);
 
-        let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => {
-                if let Some(index) = *guard {
-                    index
-                } else {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::NewCountType(new_id)),
-            )) {
-                eprintln!("Failed to send new count type command: {e}");
-                return;
-            }
-            println!("Sent new count type message!");
-        } else {
-            eprintln!(
-                "Failed to send new count type message. Invalid tool index: {current_tool_index}"
-            );
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::CountMessage(
+                CountMessage::NewCountType(new_id),
+            ))
+        {
+            eprintln!("Failed to send new count type command: {e}");
             return;
         }
+        println!("Sent new count type message!");
 
         // Reserve the ID until the next backend state arrives.
         if let Ok(mut next_id) = self.next_count_type_id.write() {
@@ -219,35 +183,18 @@ impl CounterView {
     }
 
     fn delete_count_type(&self, count_type_id: u16) {
-        let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => {
-                if let Some(index) = *guard {
-                    index
-                } else {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::DeleteCountType(count_type_id)),
-            )) {
-                eprintln!("Failed to send delete count type command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::CountMessage(
+                CountMessage::DeleteCountType(count_type_id),
+            ))
+        {
+            eprintln!("Failed to send delete count type command: {e}");
         }
 
         // Clear selection if this was the selected type
         if let Ok(state) = self.state.read()
             && state.active_count_type == Some(count_type_id)
-            && let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index))
         {
             let mut remaining_types: Vec<u16> = state
                 .manual_counts
@@ -263,11 +210,11 @@ impl CounterView {
                 .copied();
 
             if let Some(new_active_id) = new_active
-                && let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                    PipelineObjectMessage::CountMessage(CountMessage::SetActiveCountType(
-                        new_active_id,
-                    )),
-                ))
+                && let Err(e) = self
+                    .base
+                    .send_to_backend(PipelineObjectMessage::CountMessage(
+                        CountMessage::SetActiveCountType(new_active_id),
+                    ))
             {
                 eprintln!("Failed to send set active count type command: {e}");
             }
@@ -275,121 +222,52 @@ impl CounterView {
     }
 
     fn select_count_type(&self, count_type_id: u16, _window: &Window, _cx: &Context<Self>) {
-        let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => {
-                if let Some(index) = *guard {
-                    index
-                } else {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::SetActiveCountType(
-                    count_type_id,
-                )),
-            )) {
-                eprintln!("Failed to send set active count type command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::CountMessage(
+                CountMessage::SetActiveCountType(count_type_id),
+            ))
+        {
+            eprintln!("Failed to send set active count type command: {e}");
         }
     }
 
     fn copy_to_manual(&self) {
-        let Some(current_tool_index) = self.base.get_current_tool_index() else {
-            eprintln!("No current tool index available for copy to manual");
-            return;
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::CopyToManual),
-            )) {
-                eprintln!("Failed to send copy to manual command: {e}");
-            }
-        } else {
-            eprintln!("No sender available for copy to manual command");
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::CountMessage(
+                CountMessage::CopyToManual,
+            ))
+        {
+            eprintln!("Failed to send copy to manual command: {e}");
         }
     }
 
     fn toggle_count_type_visibility(&self, count_type_id: u16) {
-        let Some(current_tool_index) = self.base.get_current_tool_index() else {
-            eprintln!("No current tool index available for toggle count type visibility");
-            return;
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::ToggleCountTypeVisibility(
-                    count_type_id,
-                )),
-            )) {
-                eprintln!("Failed to send toggle count type visibility command: {e}");
-            }
-        } else {
-            eprintln!("No sender available for toggle count type visibility command");
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::CountMessage(
+                CountMessage::ToggleCountTypeVisibility(count_type_id),
+            ))
+        {
+            eprintln!("Failed to send toggle count type visibility command: {e}");
         }
     }
 
     fn set_tool(&self, tool: Option<CounterTool>, _window: &Window, _cx: &Context<Self>) {
-        let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => {
-                if let Some(index) = *guard {
-                    index
-                } else {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::SetActiveTool(tool)),
-            )) {
-                eprintln!("Failed to send set active tool command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::CountMessage(
+                CountMessage::SetActiveTool(tool),
+            ))
+        {
+            eprintln!("Failed to send set active tool command: {e}");
         }
     }
 
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &Context<Self>) {
-        let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => {
-                if let Some(index) = *guard {
-                    index
-                } else {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::ToggleActive(!current_value),
-            )) {
-                eprintln!("Failed to send toggle enabled command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self.base.set_enabled(!current_value) {
+            eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
@@ -637,9 +515,12 @@ impl CounterView {
     }
 
     fn set_mode(&self, mode: CounterMode) {
-        if let Err(error) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::CountMessage(CountMessage::SetMode(mode)),
-        )) {
+        if let Err(error) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::CountMessage(CountMessage::SetMode(
+                mode,
+            )))
+        {
             eprintln!("Failed to set counter mode: {error}");
         }
     }
@@ -1058,83 +939,35 @@ impl CounterView {
 
     // Review functionality methods - now sends messages to backend
     fn send_review_navigate_previous(&self) {
-        let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => {
-                if let Some(index) = *guard {
-                    index
-                } else {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::ReviewNavigatePrevious),
-            )) {
-                eprintln!("Failed to send review navigate previous command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::CountMessage(
+                CountMessage::ReviewNavigatePrevious,
+            ))
+        {
+            eprintln!("Failed to send review navigate previous command: {e}");
         }
     }
 
     fn send_review_navigate_next(&self) {
-        let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => {
-                if let Some(index) = *guard {
-                    index
-                } else {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::ReviewNavigateNext),
-            )) {
-                eprintln!("Failed to send review navigate next command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::CountMessage(
+                CountMessage::ReviewNavigateNext,
+            ))
+        {
+            eprintln!("Failed to send review navigate next command: {e}");
         }
     }
 
     fn send_delete_current_count(&self) {
-        let current_tool_index = match self.base.current_tool_index.read() {
-            Ok(guard) => {
-                if let Some(index) = *guard {
-                    index
-                } else {
-                    eprintln!("No current tool index available");
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to read current tool index: {e}");
-                return;
-            }
-        };
-
-        if let Some(sender) = self.base.send_channels.get(usize::from(current_tool_index)) {
-            if let Err(e) = sender.send(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::CountMessage(CountMessage::DeleteCurrentCount),
-            )) {
-                eprintln!("Failed to send delete current count command: {e}");
-            }
-        } else {
-            eprintln!("Invalid tool index: {current_tool_index}");
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::CountMessage(
+                CountMessage::DeleteCurrentCount,
+            ))
+        {
+            eprintln!("Failed to send delete current count command: {e}");
         }
     }
 }
@@ -1223,6 +1056,7 @@ impl Render for CounterView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<Self>| {
+                        this.base.select();
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )

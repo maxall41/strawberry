@@ -1,6 +1,7 @@
 use crate::gui::Button;
 use crate::gui::actions::actions;
 use num_traits::ToPrimitive;
+use strawberry_types::{CommandSender, ToolId};
 
 use crate::gui::{theme, tool_panel};
 // Implements UI for morphology tool
@@ -16,9 +17,7 @@ use crate::gui::ToggleButton;
 use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_processing::morphology::MorphologyOperation;
-use strawberry_types::{
-    MorphologyMessage, MorphologyState, PipelineCommand, PipelineObjectMessage, ToolState,
-};
+use strawberry_types::{MorphologyMessage, MorphologyState, PipelineObjectMessage, ToolState};
 
 use strawberry_types::ToolFrontend;
 
@@ -43,20 +42,12 @@ impl MorphologyView {
         (MorphologyOperation::Closing, "Closing"),
     ];
 
-    pub fn new(
-        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(MorphologyState::default())),
             element_size_control: None,
             operation_focus: tool_panel::ListFocus::new(),
-            base: crate::tools::base::ToolBase::new(
-                command_sender,
-                strawberry_types::BackendToolType::Morphology,
-                cx.focus_handle(),
-            ),
+            base: crate::tools::base::ToolBase::new(command_sender, id, cx.focus_handle()),
         }
     }
 
@@ -65,9 +56,7 @@ impl MorphologyView {
     }
 
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &Context<Self>) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::ToggleActive(!current_value),
-        )) {
+        if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
@@ -79,16 +68,20 @@ impl MorphologyView {
         _window: &Window,
         _cx: &Context<Self>,
     ) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::MorphologyMessage(MorphologyMessage::SetOperation(operation)),
-        )) {
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::MorphologyMessage(
+                MorphologyMessage::SetOperation(operation),
+            ))
+        {
             eprintln!("Failed to send operation update command: {e}");
         }
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::MorphologyMessage(MorphologyMessage::SetElementSize(
-                element_size,
-            )),
-        )) {
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::MorphologyMessage(
+                MorphologyMessage::SetElementSize(element_size),
+            ))
+        {
             eprintln!("Failed to send element size update command: {e}");
         }
     }
@@ -112,15 +105,21 @@ impl MorphologyView {
         let operation = current_state.operation;
         drop(current_state);
 
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::MorphologyMessage(MorphologyMessage::SetOperation(operation)),
-        )) {
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::MorphologyMessage(
+                MorphologyMessage::SetOperation(operation),
+            ))
+        {
             eprintln!("Failed to send operation update command: {e}");
         }
 
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::MorphologyMessage(MorphologyMessage::SetElementSize(new_size)),
-        )) {
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::MorphologyMessage(
+                MorphologyMessage::SetElementSize(new_size),
+            ))
+        {
             eprintln!("Failed to send element size update command: {e}");
         }
     }
@@ -411,6 +410,7 @@ impl Render for MorphologyView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<Self>| {
+                        this.base.select();
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )

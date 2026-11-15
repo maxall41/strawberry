@@ -1,6 +1,7 @@
 use crate::gui::actions::actions;
 use crate::gui::{Button, ButtonVariant};
 use crate::gui::{theme, tool_panel};
+use strawberry_types::{CommandSender, ToolId};
 // Implements UI for nerve tracer tool
 
 use std::path::PathBuf;
@@ -13,9 +14,7 @@ use rfd::FileDialog;
 
 use crate::gui::ToggleButton;
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
-use strawberry_types::{
-    NerveTracerMessage, NerveTracerState, PipelineCommand, PipelineObjectMessage, ToolState,
-};
+use strawberry_types::{NerveTracerMessage, NerveTracerState, PipelineObjectMessage, ToolState};
 
 use strawberry_types::ToolFrontend;
 
@@ -34,21 +33,13 @@ impl Focusable for NerveTracerView {
 }
 
 impl NerveTracerView {
-    pub fn new(
-        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(NerveTracerState::default())),
             segments_scroll: gpui::ScrollHandle::new(),
             paths_scroll: gpui::ScrollHandle::new(),
             last_directory: Arc::new(RwLock::new(None)),
-            base: crate::tools::base::ToolBase::new(
-                command_sender,
-                strawberry_types::BackendToolType::NerveTracer,
-                cx.focus_handle(),
-            ),
+            base: crate::tools::base::ToolBase::new(command_sender, id, cx.focus_handle()),
         }
     }
 
@@ -73,11 +64,12 @@ impl NerveTracerView {
 
             if let Some(file) = file
                 && let Err(e) = this.update(cx, |this, _cx| {
-                    if let Err(e) = this.base.send_to_backend(PipelineCommand::PipelineObject(
-                        PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::SaveTraces(
-                            file,
-                        )),
-                    )) {
+                    if let Err(e) =
+                        this.base
+                            .send_to_backend(PipelineObjectMessage::NerveTracerMessage(
+                                NerveTracerMessage::SaveTraces(file),
+                            ))
+                    {
                         eprintln!("Failed to send save traces command: {e}");
                     }
                 })
@@ -112,11 +104,12 @@ impl NerveTracerView {
                 }
 
                 if let Err(e) = this.update(cx, |this, _cx| {
-                    if let Err(e) = this.base.send_to_backend(PipelineCommand::PipelineObject(
-                        PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::LoadTraces(
-                            file,
-                        )),
-                    )) {
+                    if let Err(e) =
+                        this.base
+                            .send_to_backend(PipelineObjectMessage::NerveTracerMessage(
+                                NerveTracerMessage::LoadTraces(file),
+                            ))
+                    {
                         eprintln!("Failed to send load traces command: {e}");
                     }
                 }) {
@@ -128,57 +121,62 @@ impl NerveTracerView {
     }
 
     fn commit_segments(&self) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::NerveTracerMessage(
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::NerveTracerMessage(
                 NerveTracerMessage::CommitCurrentPathSegments(),
-            ),
-        )) {
+            ))
+        {
             eprintln!("Failed to send commit segments command: {e}");
         }
     }
 
     fn delete_uncommitted_segment(&self, segment_id: usize) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::NerveTracerMessage(
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::NerveTracerMessage(
                 NerveTracerMessage::DeleteUncomittedPathSegment(segment_id),
-            ),
-        )) {
+            ))
+        {
             eprintln!("Failed to send delete uncommitted segment command: {e}");
         }
     }
 
     fn delete_path(&self, path_id: usize) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::DeletePath(path_id)),
-        )) {
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::NerveTracerMessage(
+                NerveTracerMessage::DeletePath(path_id),
+            ))
+        {
             eprintln!("Failed to send delete path command: {e}");
         }
     }
 
     fn delete_path_segment(&self, path_id: usize, segment_id: usize) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::NerveTracerMessage(
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::NerveTracerMessage(
                 NerveTracerMessage::DeletePathSegmentInCommitedPath(path_id, segment_id),
-            ),
-        )) {
+            ))
+        {
             eprintln!("Failed to send delete path segment command: {e}");
         }
     }
 
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::ToggleActive(!current_value),
-        )) {
+        if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
     fn set_selected_image(&self, image_index: usize) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::NerveTracerMessage(NerveTracerMessage::SetSelectedImageIndex(
-                image_index,
-            )),
-        )) {
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::NerveTracerMessage(
+                NerveTracerMessage::SetSelectedImageIndex(image_index),
+            ))
+        {
             eprintln!("Failed to send set selected image command: {e}");
         }
     }
@@ -457,6 +455,7 @@ impl Render for NerveTracerView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<Self>| {
+                        this.base.select();
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )

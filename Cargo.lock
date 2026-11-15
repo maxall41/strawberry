@@ -5361,6 +5361,7 @@ dependencies = [
  "flume",
  "futures",
  "image",
+ "indexmap",
  "lutz",
  "num-traits",
  "quick-xml 0.42.0",
@@ -5395,7 +5396,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "env_logger",
- "flume",
  "futures",
  "gpui",
  "gpui_platform",
@@ -5432,13 +5432,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "flume",
  "gpui",
  "image",
  "serde",
  "serde-value",
  "serde_derive",
  "strawberry-processing",
+ "tokio",
 ]
 
 [[package]]

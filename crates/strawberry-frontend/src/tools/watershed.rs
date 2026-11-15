@@ -1,6 +1,7 @@
 use crate::gui::Button;
 use crate::gui::actions::actions;
 use num_traits::ToPrimitive;
+use strawberry_types::{CommandSender, ToolId};
 
 use crate::gui::theme;
 // Implements UI for watershed tool
@@ -15,9 +16,7 @@ use gpui::{
 use crate::gui::ToggleButton;
 use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
-use strawberry_types::{
-    PipelineCommand, PipelineObjectMessage, ToolState, WatershedMessage, WatershedState,
-};
+use strawberry_types::{PipelineObjectMessage, ToolState, WatershedMessage, WatershedState};
 
 use strawberry_types::ToolFrontend;
 
@@ -35,20 +34,12 @@ impl Focusable for WatershedView {
 }
 
 impl WatershedView {
-    pub fn new(
-        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(WatershedState::default())),
             sigma_control: None,
             min_distance_control: None,
-            base: crate::tools::base::ToolBase::new(
-                command_sender,
-                strawberry_types::BackendToolType::Watershed,
-                cx.focus_handle(),
-            ),
+            base: crate::tools::base::ToolBase::new(command_sender, id, cx.focus_handle()),
         }
     }
 
@@ -57,20 +48,18 @@ impl WatershedView {
     }
 
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::ToggleActive(!current_value),
-        )) {
+        if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
     fn update_parameters(&self, sigma: f32, min_distance: u32) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::WatershedMessage(WatershedMessage::SetParameters(
-                sigma,
-                min_distance,
-            )),
-        )) {
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::WatershedMessage(
+                WatershedMessage::SetParameters(sigma, min_distance),
+            ))
+        {
             eprintln!("Failed to send watershed parameters update: {e}");
         }
     }
@@ -291,6 +280,7 @@ impl Render for WatershedView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<Self>| {
+                        this.base.select();
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )
