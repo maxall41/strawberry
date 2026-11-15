@@ -1352,7 +1352,9 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
                 control.update(cx, |control, cx| {
                     control.config.min = min;
                     control.config.max = max;
-                    control.set_value(value);
+                    if control.value != value {
+                        control.set_value(value);
+                    }
                     cx.notify();
                 });
             }

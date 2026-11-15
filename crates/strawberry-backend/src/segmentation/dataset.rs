@@ -18,6 +18,8 @@ use zip::{
     write::SimpleFileOptions,
 };
 
+use crate::file_io::write_artifact;
+
 const FORMAT: &str = "strawberry-segmentation-dataset";
 const VERSION: u32 = 1;
 const ENCODING: &str = "BGRA8";
@@ -293,18 +295,12 @@ impl Dataset {
     pub(crate) fn save(&self, path: &Path) -> Result<()> {
         let document = self.document()?;
         document.validate(None)?;
-        let directory = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let mut temporary = tempfile::NamedTempFile::new_in(directory)
-            .context("Cannot create dataset temporary file")?;
         let options = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Zstd)
             .compression_level(Some(3))
             .large_file(true);
-        {
-            let mut archive = ZipWriter::new(temporary.as_file_mut());
+        write_artifact(path, |file| {
+            let mut archive = ZipWriter::new(file);
             archive.start_file(MANIFEST, options)?;
             serde_json::to_writer(
                 LimitedWriter {
@@ -328,15 +324,8 @@ impl Dataset {
             archive
                 .finish()
                 .context("Cannot finalize dataset archive")?;
-        }
-        temporary
-            .as_file()
-            .sync_all()
-            .context("Cannot sync dataset archive")?;
-        temporary
-            .persist(path)
-            .context("Cannot replace dataset destination")?;
-        Ok(())
+            Ok(())
+        })
     }
 
     pub(crate) fn load(path: &Path, existing: Option<&Self>) -> Result<Self> {

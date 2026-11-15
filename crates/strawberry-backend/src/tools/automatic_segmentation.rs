@@ -1,4 +1,5 @@
 use super::{base::ToolBase, cache::ToolCache};
+use crate::file_io::write_artifact;
 use crate::segmentation::{
     AnnotationMask, TrainingSample, append_stroke_points,
     dataset::{Dataset, DatasetSample},
@@ -10,12 +11,13 @@ use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    io::Write,
     path::PathBuf,
     sync::Arc,
 };
 use strawberry_processing::{
     GpuImageProcessor,
-    segmentation::{FeatureExtractor, SegmentationModel, write_artifact},
+    segmentation::{FeatureExtractor, SegmentationModel},
 };
 use strawberry_types::{
     overlay::{CircleStyle, OverlayElement, ToolOverlay},
@@ -914,7 +916,11 @@ impl AutomaticSegmentation {
             }
             AutomaticSegmentationMessage::TrainModel => self.start_training()?,
             AutomaticSegmentationMessage::SaveModel(path) => {
-                write_artifact(&path, &self.model_bytes()?)?;
+                let bytes = self.model_bytes()?;
+                write_artifact(&path, |file| {
+                    file.write_all(&bytes)?;
+                    Ok(())
+                })?;
                 self.state.model_path = Some(path);
             }
             AutomaticSegmentationMessage::LoadModel(path) => {
