@@ -285,7 +285,6 @@ impl NerveTracerView {
                         .child(
                             Button::new(("delete-segment", i))
                                 .variant(ButtonVariant::Delete)
-                                .aria_label("Delete segment")
                                 .tooltip_text("Delete segment")
                                 .on_click(cx.listener(move |this, _, _, _| {
                                     this.delete_uncommitted_segment(i)
@@ -345,7 +344,6 @@ impl NerveTracerView {
                     .child(
                         Button::new(("delete-path", path_id))
                             .variant(ButtonVariant::Delete)
-                            .aria_label("Delete path")
                             .tooltip_text("Delete path")
                             .on_click(cx.listener(move |this, _, _, _| this.delete_path(path_id))),
                     ),
@@ -366,7 +364,6 @@ impl NerveTracerView {
                                 format!("delete-path-{path_id}-segment-{segment_id}").into(),
                             ))
                             .variant(ButtonVariant::Delete)
-                            .aria_label("Delete path segment")
                             .tooltip_text("Delete path segment")
                             .on_click(cx.listener(
                                 move |this, _, _, _| this.delete_path_segment(path_id, segment_id),
