@@ -5,7 +5,7 @@ use image::RgbaImage;
 
 use crate::{
     GpuImageProcessor,
-    float_filters::GpuFloatFilters,
+    float_filters::{FilterChannel, GpuFloatFilters},
     tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
@@ -74,7 +74,10 @@ impl GpuDifferenceOfGaussians {
         large_sigma: f32,
     ) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
-        let luminance = self.filters.channel(image, 0).await?;
+        let luminance = self
+            .filters
+            .channel(image, FilterChannel::Luminance)
+            .await?;
         let response = self
             .filters
             .difference_of_gaussians(width, height, &luminance, small_sigma, large_sigma)
