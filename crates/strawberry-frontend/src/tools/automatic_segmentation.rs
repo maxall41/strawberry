@@ -11,9 +11,18 @@ use crate::{
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, Rgba as GpuiRgba, Window, div, prelude::*,
 };
-use std::sync::{Arc, RwLock};
+use std::{
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
 use strawberry_processing::segmentation::FeatureConfig;
 use strawberry_types::*;
+
+#[derive(Clone, Copy)]
+enum FileKind {
+    Model,
+    Dataset,
+}
 
 #[derive(Clone, Copy)]
 enum SigmaKind {
@@ -120,6 +129,8 @@ pub struct AutomaticSegmentationView {
     pub state: Arc<RwLock<AutomaticSegmentationState>>,
     pub base: super::base::ToolBase,
     controls: Controls,
+    dataset_directory: Option<PathBuf>,
+    file_dialog_open: bool,
     show_features: bool,
     show_gaussian_settings: bool,
     show_dog_settings: bool,
@@ -141,6 +152,16 @@ impl Focusable for AutomaticSegmentationView {
 fn class_color(class: &SegmentationClass) -> GpuiRgba {
     class.color.into()
 }
+
+fn import_guard(content: gpui::Div, importing: bool) -> gpui::Div {
+    content.when(importing, |el| {
+        el.opacity(0.5)
+            .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            .capture_any_mouse_up(|_, _, cx| cx.stop_propagation())
+            .capture_key_down(|_, _, cx| cx.stop_propagation())
+            .capture_key_up(|_, _, cx| cx.stop_propagation())
+    })
+}
 impl AutomaticSegmentationView {
     pub fn new(
         _: tokio::sync::broadcast::Receiver<PipelineCommand>,
@@ -155,6 +176,8 @@ impl AutomaticSegmentationView {
                 cx.focus_handle(),
             ),
             controls: Controls::default(),
+            dataset_directory: None,
+            file_dialog_open: false,
             show_features: false,
             show_gaussian_settings: false,
             show_dog_settings: false,
@@ -170,6 +193,24 @@ impl AutomaticSegmentationView {
         }
     }
     fn send(&self, message: AutomaticSegmentationMessage) {
+        if self.state.read().is_ok_and(|s| {
+            s.dataset_operation
+                .is_some_and(DatasetOperation::is_importing)
+                && !matches!(
+                    message,
+                    AutomaticSegmentationMessage::SetShowOverlay(_)
+                        | AutomaticSegmentationMessage::SetOverlayOpacity(_)
+                        | AutomaticSegmentationMessage::SetPreviewSelected(_)
+                        | AutomaticSegmentationMessage::SetOutputMode(_)
+                        | AutomaticSegmentationMessage::SetOutputClass(_)
+                        | AutomaticSegmentationMessage::ToggleThreshold(_)
+                        | AutomaticSegmentationMessage::SetThreshold(_)
+                        | AutomaticSegmentationMessage::SetInference(_)
+                        | AutomaticSegmentationMessage::SaveModel(_)
+                )
+        }) {
+            return;
+        }
         if let Err(error) = self.base.send_to_backend(PipelineCommand::PipelineObject(
             PipelineObjectMessage::AutomaticSegmentationMessage(message),
         )) {
@@ -191,15 +232,17 @@ impl AutomaticSegmentationView {
         &self,
         id: &'static str,
         label: &'static str,
+        kind: FileKind,
         save: bool,
         cx: &Context<Self>,
     ) -> Button {
         Button::new(id)
+            .disabled(self.file_dialog_open)
             .compact()
             .flex_1()
             .min_w_0()
             .label(label)
-            .on_click(cx.listener(move |this, _, window, cx| this.file(save, window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.file(kind, save, window, cx)))
     }
     fn commit_class_edit(&mut self) {
         let Some((id, color, draft)) = &self.class_edit else {
@@ -588,7 +631,7 @@ impl AutomaticSegmentationView {
             .w_full()
             .child(Icon::plus())
             .label("Add class")
-            .disabled(state.classes.len() >= 256)
+            .disabled(state.classes.len() >= MAX_CLASSES)
             .on_click(cx.listener(|this, _, _, cx| {
                 this.send(AutomaticSegmentationMessage::AddClass);
                 this.class_edit = None;
@@ -933,45 +976,167 @@ impl AutomaticSegmentationView {
             )
             .child(channels)
     }
-    fn file(&self, save: bool, window: &Window, cx: &Context<Self>) {
+    fn dataset(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
+        let unavailable = state.busy || state.dataset_operation.is_some() || self.file_dialog_open;
+        let mut status = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x_2()
+            .gap_y_1()
+            .text_xs()
+            .text_color(theme::TEXT_MUTED)
+            .child(format!(
+                "{} samples · {} strokes",
+                state.dataset_samples,
+                state.annotation_count(),
+            ));
+        if let Some(operation) = state.dataset_operation {
+            status = status.child(div().text_color(theme::ACCENT).child(match operation {
+                DatasetOperation::Saving => "Saving…",
+                DatasetOperation::Loading => "Loading…",
+                DatasetOperation::Merging => "Merging…",
+            }));
+        }
+        if state.dataset_dirty {
+            status = status.child(div().text_color(theme::TEXT).child("Unsaved"));
+        }
+        let mut section = tool_panel::section("Dataset").child(status);
+        if let Some(name) = state.dataset_path.as_ref().and_then(|p| p.file_name()) {
+            section = section.child(
+                div()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(theme::TEXT_MUTED)
+                    .truncate()
+                    .child(name.to_string_lossy().into_owned()),
+            );
+        }
+        section.child(
+            tool_panel::file_actions()
+                .child(
+                    self.file_button(
+                        "segmentation-load-dataset",
+                        "Load dataset",
+                        FileKind::Dataset,
+                        false,
+                        cx,
+                    )
+                    .disabled(unavailable),
+                )
+                .child(
+                    self.file_button(
+                        "segmentation-save-dataset",
+                        "Save dataset",
+                        FileKind::Dataset,
+                        true,
+                        cx,
+                    )
+                    .disabled(
+                        state.dataset_operation.is_some()
+                            || self.file_dialog_open
+                            || state.dataset_samples == 0,
+                    ),
+                ),
+        )
+    }
+
+    fn file(&mut self, kind: FileKind, save: bool, window: &Window, cx: &mut Context<Self>) {
+        if self.file_dialog_open {
+            return;
+        }
+        self.file_dialog_open = true;
+        let directory = self.dataset_directory.clone();
+        cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let dialog = rfd::FileDialog::new().add_filter("Segmentation model", &["sbm"]);
-            let path = if save {
-                dialog.set_file_name("model.sbm").save_file()
-            } else {
-                dialog.pick_file()
-            };
-            if let Some(path) = path {
-                if !save {
-                    let has_annotations = this
-                        .read_with(cx, |this, _| {
-                            this.state
-                                .read()
-                                .map(|s| s.annotation_count() > 0)
-                                .unwrap_or(false)
-                        })
-                        .unwrap_or(false);
-                    if has_annotations
-                        && rfd::MessageDialog::new()
-                            .set_title("Load model?")
-                            .set_description(
-                                "Loading a model replaces classes and clears training annotations.",
-                            )
-                            .set_buttons(rfd::MessageButtons::OkCancel)
-                            .show()
-                            != rfd::MessageDialogResult::Ok
-                    {
-                        return;
+            let selection = async {
+                let (label, extension, default_name) = match kind {
+                    FileKind::Model => ("Segmentation model", "sbm", "model.sbm"),
+                    FileKind::Dataset => ("Segmentation dataset", "sbd", "dataset.sbd"),
+                };
+                let mut dialog = rfd::AsyncFileDialog::new().add_filter(label, &[extension]);
+                if matches!(kind, FileKind::Dataset) {
+                    if let Some(directory) = directory {
+                        dialog = dialog.set_directory(directory);
                     }
                 }
-                let _ = this.update(cx, |this, _| {
-                    this.send(if save {
-                        AutomaticSegmentationMessage::SaveModel(path)
-                    } else {
-                        AutomaticSegmentationMessage::LoadModel(path)
+                let file = if save {
+                    dialog.set_file_name(default_name).save_file().await
+                } else {
+                    dialog.pick_file().await
+                }?;
+                let path = file.path().to_path_buf();
+                let has_data = this.read_with(cx, |this, _| {
+                    this.state.read().is_ok_and(|s| {
+                        s.dataset_dirty
+                            || s.dataset_path.is_some()
+                            || s.dataset_samples > 0
+                            || s.annotation_count() > 0
+                    })
+                }).ok()?;
+                let message = match (kind, save) {
+                    (FileKind::Dataset, true) => AutomaticSegmentationMessage::SaveDataset(path.clone()),
+                    (FileKind::Dataset, false) => {
+                        let mode = if has_data {
+                            let choice = rfd::AsyncMessageDialog::new()
+                                .set_title("Load dataset")
+                                .set_description("Merge with the current dataset, or replace it?")
+                                .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+                                    "Merge".into(), "Replace".into(), "Cancel".into(),
+                                ))
+                                .show().await;
+                            match choice {
+                                rfd::MessageDialogResult::Custom(label) if label == "Merge" => DatasetImportMode::Merge,
+                                rfd::MessageDialogResult::Custom(label) if label == "Replace" => {
+                                    if rfd::AsyncMessageDialog::new()
+                                        .set_title("Replace dataset?")
+                                        .set_description("Current training images, classes, and annotations will be replaced. Unsaved changes will be lost.")
+                                        .set_level(rfd::MessageLevel::Warning)
+                                        .set_buttons(rfd::MessageButtons::OkCancelCustom("Replace".into(), "Cancel".into()))
+                                        .show().await != rfd::MessageDialogResult::Custom("Replace".into())
+                                    {
+                                        return None;
+                                    }
+                                    DatasetImportMode::Replace
+                                }
+                                _ => return None,
+                            }
+                        } else {
+                            DatasetImportMode::Replace
+                        };
+                        AutomaticSegmentationMessage::LoadDataset(path.clone(), mode)
+                    }
+                    (FileKind::Model, true) => AutomaticSegmentationMessage::SaveModel(path.clone()),
+                    (FileKind::Model, false) => {
+                        if has_data && rfd::AsyncMessageDialog::new()
+                            .set_title("Load model?")
+                            .set_description("Loading a model replaces classes and clears training annotations.")
+                            .set_buttons(rfd::MessageButtons::OkCancel)
+                            .show().await != rfd::MessageDialogResult::Ok
+                        {
+                            return None;
+                        }
+                        AutomaticSegmentationMessage::LoadModel(path.clone())
+                    }
+                };
+                Some((path, message))
+            }.await;
+            let _ = this.update(cx, |this, cx| {
+                this.file_dialog_open = false;
+                if let Some((path, message)) = selection {
+                    let allowed = this.state.read().is_ok_and(|s| match kind {
+                        FileKind::Dataset => (save || !s.busy) && s.dataset_operation.is_none(),
+                        FileKind::Model => save || (!s.busy && !s.dataset_operation.is_some_and(DatasetOperation::is_importing)),
                     });
-                });
-            }
+                    if allowed {
+                        if matches!(kind, FileKind::Dataset) {
+                            this.dataset_directory = path.parent().map(PathBuf::from);
+                        }
+                        this.send(message);
+                    }
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -1171,6 +1336,12 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
         }
     }
     fn on_state_changed(&mut self, state: &Self::State, cx: &mut Context<Self>) {
+        if state
+            .dataset_operation
+            .is_some_and(DatasetOperation::is_importing)
+        {
+            self.class_edit = None;
+        }
         for kind in [
             SigmaKind::Gaussian,
             SigmaKind::DogSmall,
@@ -1239,6 +1410,9 @@ impl Render for AutomaticSegmentationView {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let enabled = s.is_enabled;
+        let importing = s
+            .dataset_operation
+            .is_some_and(DatasetOperation::is_importing);
         let mut modes = tool_panel::segmented();
         for (training, label) in [(true, "Training"), (false, "Inference")] {
             modes = modes.child(
@@ -1250,6 +1424,7 @@ impl Render for AutomaticSegmentationView {
                 )
                 .variant(ButtonVariant::Ghost)
                 .selected(s.training == training)
+                .disabled(importing)
                 .flex_1()
                 .min_w_0(),
             );
@@ -1289,11 +1464,13 @@ impl Render for AutomaticSegmentationView {
                             )
                             .compact()
                             .selected(i == s.selected_layer)
+                            .disabled(importing)
                         })),
                 ),
             );
         }
         if s.training {
+            panel = panel.child(self.dataset(&s, cx));
             let mut brushes = tool_panel::segmented();
             for (label, kind) in [
                 ("Paint", AnnotationKind::Paint(s.active_class)),
@@ -1321,14 +1498,15 @@ impl Render for AutomaticSegmentationView {
                 BrushRadius::MAX,
                 cx,
             );
-            panel = panel.child(
+            panel = panel.child(import_guard(
                 tool_panel::section("Annotate")
                     .child(brushes)
                     .child(self.classes(&s, cx))
                     .child(radius)
                     .child(div().h(gpui::px(1.)).bg(theme::BORDER_MUTED))
                     .child(self.annotations(&s, cx)),
-            );
+                importing,
+            ));
 
             let mut preview = tool_panel::section("Preview").child(
                 ToggleButton::new(
@@ -1370,7 +1548,9 @@ impl Render for AutomaticSegmentationView {
                     cx,
                 ));
             }
-            panel = panel.child(preview).child(self.feature_controls(&s, cx));
+            panel = panel
+                .child(import_guard(self.feature_controls(&s, cx), importing))
+                .child(preview);
             let mut classifier = tool_panel::section("Classifier").child(
                 Button::new("segmentation-forest-settings")
                     .variant(ButtonVariant::Ghost)
@@ -1433,7 +1613,7 @@ impl Render for AutomaticSegmentationView {
                     );
                 }
             }
-            panel = panel.child(
+            panel = panel.child(import_guard(
                 classifier.child(
                     Button::new("segmentation-train")
                         .variant(ButtonVariant::Success)
@@ -1442,6 +1622,7 @@ impl Render for AutomaticSegmentationView {
                         .label(if s.busy { "Training…" } else { "Train model" })
                         .disabled(
                             s.busy
+                                || importing
                                 || !s.is_enabled
                                 || s.classes
                                     .values()
@@ -1451,9 +1632,10 @@ impl Render for AutomaticSegmentationView {
                             this.send(AutomaticSegmentationMessage::TrainModel)
                         })),
                 ),
-            );
+                importing,
+            ));
         } else {
-            panel = panel.child(self.classes(&s, cx));
+            panel = panel.child(import_guard(self.classes(&s, cx), importing));
             let mut inference =
                 tool_panel::section("Inference settings").child(self.integer_control(
                     ControlKind::MaxParallelTiles,
@@ -1611,10 +1793,25 @@ impl Render for AutomaticSegmentationView {
         panel = panel.child(
             model.child(
                 tool_panel::file_actions()
-                    .child(self.file_button("segmentation-load-model", "Load model", false, cx))
                     .child(
-                        self.file_button("segmentation-save-model", "Save model", true, cx)
-                            .disabled(!s.model_ready),
+                        self.file_button(
+                            "segmentation-load-model",
+                            "Load model",
+                            FileKind::Model,
+                            false,
+                            cx,
+                        )
+                        .disabled(s.busy || importing || self.file_dialog_open),
+                    )
+                    .child(
+                        self.file_button(
+                            "segmentation-save-model",
+                            "Save model",
+                            FileKind::Model,
+                            true,
+                            cx,
+                        )
+                        .disabled(!s.model_ready || self.file_dialog_open),
                     ),
             ),
         );

@@ -1,4 +1,5 @@
 mod annotations;
+pub(crate) mod dataset;
 mod prediction;
 mod training;
 

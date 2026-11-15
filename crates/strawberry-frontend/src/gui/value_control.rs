@@ -324,13 +324,19 @@ impl Render for ValueControl {
                                     .child(self.formatted_value())
                             })
                             .id(ElementId::Name(SharedString::from(id)))
-                            .on_scroll_wheel(cx.listener(|this, event: &gpui::ScrollWheelEvent, _, cx| {
-                                if this.kind == ValueKind::Integer {
-                                    let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
-                                    if delta != 0.0 { this.adjust(delta.signum(), cx); }
-                                    cx.stop_propagation();
-                                }
-                            }))
+                            .on_scroll_wheel(cx.listener(
+                                |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                                    if this.kind == ValueKind::Integer
+                                        && this.focus_handle(cx).is_focused(window)
+                                    {
+                                        let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
+                                        if delta != 0.0 {
+                                            this.adjust(delta.signum(), cx);
+                                        }
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .on_mouse_down(gpui::MouseButton::Left, {
                                 cx.listener(
                                     move |this: &mut Self,
