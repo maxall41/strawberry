@@ -82,7 +82,7 @@ macro_rules! impl_tool_backend_basics {
             if self.cache.sync.needs_frontend_sync(&self.state) {
                 self.base
                     .send_to_frontend(&strawberry_types::PipelineCommand::FrontendMessage(
-                        strawberry_types::FrontendMessage::ReturnState(self.get_state()),
+                        strawberry_types::FrontendMessage::ReturnState(Box::new(self.get_state())),
                     ))?;
                 self.cache.sync.frontend_latest_state = Some(self.state.clone());
             }

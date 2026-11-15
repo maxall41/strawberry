@@ -9,51 +9,15 @@ use crate::counter::fitting::{find_counts_within_polygon, ramer_douglas_peucker_
 
 use crate::counter::io::export_counter_to_xml_file;
 
+use crate::utils::binary_image::BinaryImageWrapper;
 use async_trait::async_trait;
-use lutz::{Image as LutzImage, Pixel, lutz};
+use lutz::{Pixel, lutz};
 use strawberry_types::consts::CIRCLE_COLORS;
 use strawberry_types::overlay::{CircleStyle, OverlayElement, ToolOverlay};
 use strawberry_types::{
     BackendToolType, CountData, CountMessage, CounterMode, CounterState, CounterTool,
     FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolBackend, ToolState,
 };
-
-// Image wrapper for lutz algorithm
-struct BinaryImageWrapper<'a> {
-    image: &'a image::RgbaImage,
-    threshold: u8,
-}
-
-impl<'a> BinaryImageWrapper<'a> {
-    const fn new(image: &'a image::RgbaImage, threshold: u8) -> Self {
-        Self { image, threshold }
-    }
-}
-
-impl LutzImage for BinaryImageWrapper<'_> {
-    fn width(&self) -> u32 {
-        self.image.width()
-    }
-
-    fn height(&self) -> u32 {
-        self.image.height()
-    }
-
-    fn has_pixel(&self, x: u32, y: u32) -> bool {
-        if x >= self.width() || y >= self.height() {
-            return false;
-        }
-        let pixel = self.image.get_pixel(x, y);
-        // Consider pixel as foreground if it's not transparent and has sufficient brightness
-        pixel[3] > 0
-            && u16::from(pixel[0])
-                .saturating_add(u16::from(pixel[1]))
-                .saturating_add(u16::from(pixel[2]))
-                .checked_div(3)
-                .unwrap_or_default()
-                > u16::from(self.threshold)
-    }
-}
 
 pub struct Counter {
     pub state: CounterState,
@@ -132,7 +96,7 @@ impl ToolBackend for Counter {
             match message {
                 PipelineCommand::RequestState() => {
                     self.send_to_frontend(&PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(self.get_state()),
+                        FrontendMessage::ReturnState(Box::new(self.get_state())),
                     ))?;
                 }
                 PipelineCommand::HandleClick(x, y) => {
@@ -492,8 +456,9 @@ impl ToolBackend for Counter {
         if !self.cache.sync.needs_frontend_sync(&self.state) {
             return Ok(());
         }
-        let message =
-            PipelineCommand::FrontendMessage(FrontendMessage::ReturnState(self.get_state()));
+        let message = PipelineCommand::FrontendMessage(FrontendMessage::ReturnState(Box::new(
+            self.get_state(),
+        )));
         self.send_to_frontend(&message)?;
         self.cache.sync.frontend_latest_state = Some(self.state.clone());
         self.command_sender

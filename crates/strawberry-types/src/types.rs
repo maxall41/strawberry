@@ -13,7 +13,7 @@ impl PendingProcessing {
     }
 
     /// Consume the pending request at a processing boundary.
-    pub fn take(&mut self) -> Option<usize> {
+    pub const fn take(&mut self) -> Option<usize> {
         self.from.take()
     }
 }
@@ -27,17 +27,15 @@ pub struct ValidReconcilliationTicket {
 }
 
 impl ReconcilliationTicket {
+    #[must_use]
     pub fn validate(&self) -> Option<ValidReconcilliationTicket> {
-        if let Some(index) = self.index {
-            Some(ValidReconcilliationTicket { index: index })
-        } else {
-            None
-        }
+        self.index.map(|index| ValidReconcilliationTicket { index })
     }
 }
 
 impl ValidReconcilliationTicket {
-    pub fn take(&self) -> usize {
+    #[must_use]
+    pub const fn take(&self) -> usize {
         self.index
     }
 }
@@ -54,6 +52,7 @@ pub enum BackendToolType {
     LocalMaxima,
     Manager,
     Morphology,
+    ObjectSizeFilter,
     RollingBall,
     Sobel,
     Threshold,

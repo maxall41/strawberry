@@ -11,7 +11,7 @@ use serde_value::Value;
 use strawberry_types::{PipelineConfig, ToolAssets};
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-use crate::file_io::write_artifact;
+use super::file_io::write_artifact;
 
 const CONFIG_FILE: &str = "pipeline.toml";
 
@@ -31,7 +31,7 @@ struct ArchiveConfig {
     assets: HashMap<String, Vec<String>>,
 }
 
-pub(crate) struct LoadedPipeline {
+pub struct LoadedPipeline {
     pub tools: HashMap<String, Value>,
     pub indices: HashMap<String, u16>,
     pub assets: HashMap<String, ToolAssets>,
@@ -88,7 +88,7 @@ fn tool_index(tool: &Value) -> Option<u16> {
     u16::try_from(*index).ok()
 }
 
-pub(crate) fn save(
+pub fn save(
     path: &Path,
     config: &PipelineConfig,
     indices: &HashMap<String, u16>,
@@ -119,7 +119,7 @@ fn write_archive(
     Ok(())
 }
 
-pub(crate) fn load(path: &Path) -> Result<LoadedPipeline> {
+pub fn load(path: &Path) -> Result<LoadedPipeline> {
     let mut archive =
         ZipArchive::new(File::open(path)?).context("Invalid .sbp pipeline archive")?;
     let config = read_config(&mut archive)?;

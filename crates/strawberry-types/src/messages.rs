@@ -5,8 +5,8 @@ use strawberry_processing::local_maxima::ThresholdType;
 use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, InferenceConfig};
 
 use super::{
-    AnnotationKind, BackendToolType, BrushRadius, ClassId, DatasetImportMode, RgbColor,
-    SegmentationOutputMode, StrokeId, ToolState,
+    AnnotationKind, BackendToolType, BrushRadius, ClassId, DatasetImportMode, ObjectSizeFilterMode,
+    RgbColor, SegmentationOutputMode, StrokeId, ToolState,
 };
 
 #[derive(Debug, Clone)]
@@ -50,6 +50,12 @@ pub enum LocalMaximaMessage {
 pub enum MorphologyMessage {
     SetOperation(strawberry_processing::morphology::MorphologyOperation),
     SetElementSize(u32),
+}
+
+#[derive(Debug, Clone)]
+pub enum ObjectSizeFilterMessage {
+    SetMode(ObjectSizeFilterMode),
+    SetSize(u32),
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +164,7 @@ pub enum PipelineObjectMessage {
     GaussianBlurMessage(GaussianBlurMessage),
     LocalMaximaMessage(LocalMaximaMessage),
     MorphologyMessage(MorphologyMessage),
+    ObjectSizeFilterMessage(ObjectSizeFilterMessage),
     RollingBallMessage(RollingBallMessage),
     SobelMessage(SobelMessage),
     ThresholdMessage(ThresholdMessage),
@@ -187,7 +194,7 @@ pub struct PipelineProgress {
 
 #[derive(Debug, Clone)]
 pub enum FrontendMessage {
-    ReturnState(ToolState),
+    ReturnState(Box<ToolState>),
     ReturnBackendTools(Vec<u16>, Vec<flume::Sender<PipelineCommand>>),
     UserFeedback(String, FeedbackLevel),
     ReturnOverlays(crate::overlay::OverlayCollection),

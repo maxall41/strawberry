@@ -140,6 +140,30 @@ pub struct MorphologyState {
     pub is_enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ObjectSizeFilterMode {
+    #[default]
+    RemoveSmallerThan,
+    RemoveLargerThan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectSizeFilterState {
+    pub is_enabled: bool,
+    pub mode: ObjectSizeFilterMode,
+    pub size: u32,
+}
+
+impl Default for ObjectSizeFilterState {
+    fn default() -> Self {
+        Self {
+            is_enabled: false,
+            mode: ObjectSizeFilterMode::default(),
+            size: 100,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollingBallState {
     pub ball_radius: u32,
@@ -168,7 +192,7 @@ pub struct ThresholdState {
     pub is_enabled: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CounterState {
     pub is_enabled: bool,
     pub manual_counts: HashMap<u16, Vec<CountData>>,
@@ -203,6 +227,7 @@ impl BrushRadius {
     pub const MIN: u32 = 1;
     pub const MAX: u32 = 128;
 
+    #[must_use]
     pub const fn get(self) -> u32 {
         self.0
     }
@@ -241,9 +266,11 @@ impl From<BrushRadius> for u32 {
 pub struct ClassId(u64);
 
 impl ClassId {
+    #[must_use]
     pub const fn new(id: u64) -> Self {
         Self(id)
     }
+    #[must_use]
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -275,11 +302,13 @@ pub type AnnotationsBySample = HashMap<SampleId, BTreeMap<StrokeId, AnnotationSt
 pub const MAX_CLASSES: usize = 256;
 
 /// Ordered by ID for stable class presentation and model class mappings.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct SegmentationClasses(BTreeMap<ClassId, SegmentationClass>);
 
 impl SegmentationClasses {
+    /// # Errors
+    /// Returns an error if class count, names, or name uniqueness are invalid.
     pub fn validate(&self) -> Result<()> {
         ensure!(
             (2..=MAX_CLASSES).contains(&self.len()),
@@ -307,31 +336,42 @@ impl SegmentationClasses {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error for a duplicate ID, invalid name, or class limit violation.
     pub fn insert(&mut self, id: ClassId, mut class: SegmentationClass) -> Result<()> {
         ensure!(!self.contains_key(&id), "Class ID already exists");
         ensure!(self.len() < MAX_CLASSES, "Maximum of {MAX_CLASSES} classes");
-        class.name = class.name.trim().to_owned();
+        class.name = class.name.trim().into();
         self.check_name(id, &class.name)?;
         self.0.insert(id, class);
         Ok(())
     }
 
-    pub fn rename(&mut self, id: ClassId, name: String) -> Result<()> {
-        let name = name.trim().to_owned();
-        self.check_name(id, &name)?;
-        self.0
-            .get_mut(&id)
-            .ok_or_else(|| anyhow::anyhow!("Unknown class"))?
-            .name = name;
+    /// # Errors
+    /// Returns an error if the class is unknown or the name is empty or duplicated.
+    pub fn rename(&mut self, id: ClassId, name: &str) -> Result<()> {
+        let name = name.trim();
+        self.check_name(id, name)?;
+        name.clone_into(
+            &mut self
+                .0
+                .get_mut(&id)
+                .ok_or_else(|| anyhow::anyhow!("Unknown class"))?
+                .name,
+        );
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error if the class is unknown or fewer than two classes would remain.
     pub fn remove(&mut self, id: ClassId) -> Result<()> {
         ensure!(self.len() > 2, "Keep at least two classes");
         ensure!(self.0.remove(&id).is_some(), "Unknown class");
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error if the class is unknown.
     pub fn set_color(&mut self, id: ClassId, color: RgbColor) -> Result<()> {
         self.0
             .get_mut(&id)
@@ -344,6 +384,7 @@ impl SegmentationClasses {
         self.0.get_mut(&id).map(|class| &mut class.annotations)
     }
 
+    #[must_use]
     pub fn without_annotations(&self) -> Self {
         Self(
             self.iter()
@@ -361,11 +402,15 @@ impl SegmentationClasses {
         )
     }
 
-    pub fn unused_name(&self) -> String {
-        (self.len() + 1..)
+    /// # Errors
+    /// Returns an error if no unused name can be generated.
+    pub fn unused_name(&self) -> Result<String> {
+        let start = self.len().saturating_add(1);
+        let end = start.saturating_add(self.len());
+        (start..=end)
             .map(|number| format!("Class {number}"))
             .find(|name| self.values().all(|class| class.name != *name))
-            .expect("finite class collection")
+            .ok_or_else(|| anyhow::anyhow!("No unused class name"))
     }
 }
 
@@ -374,7 +419,7 @@ impl TryFrom<BTreeMap<ClassId, SegmentationClass>> for SegmentationClasses {
 
     fn try_from(mut classes: BTreeMap<ClassId, SegmentationClass>) -> Result<Self> {
         for class in classes.values_mut() {
-            class.name = class.name.trim().to_owned();
+            class.name = class.name.trim().into();
         }
         let classes = Self(classes);
         classes.validate()?;
@@ -413,7 +458,7 @@ impl<'a> IntoIterator for &'a SegmentationClasses {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SegmentationClass {
     pub name: String,
     pub color: RgbColor,
@@ -421,7 +466,8 @@ pub struct SegmentationClass {
     pub annotations: AnnotationsBySample,
 }
 impl SegmentationClass {
-    pub fn bgra(&self, alpha: u8) -> BgraColor {
+    #[must_use]
+    pub const fn bgra(&self, alpha: u8) -> BgraColor {
         self.color.with_alpha(alpha).to_bgra()
     }
 
@@ -456,7 +502,7 @@ pub enum SegmentationOutputMode {
     ClassColors,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnnotationStroke {
     pub visible: bool,
     pub radius: BrushRadius,
@@ -476,13 +522,18 @@ pub enum DatasetOperation {
 }
 
 impl DatasetOperation {
-    pub fn is_importing(self) -> bool {
+    #[must_use]
+    pub const fn is_importing(self) -> bool {
         matches!(self, Self::Loading | Self::Merging)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Processing, visibility, and runtime job flags vary independently"
+)]
 pub struct AutomaticSegmentationState {
     pub is_enabled: bool,
     pub training: bool,
@@ -537,8 +588,8 @@ impl AutomaticSegmentationState {
         self.classes
             .values()
             .map(SegmentationClass::annotation_count)
-            .sum::<usize>()
-            + self.erasers.values().map(BTreeMap::len).sum::<usize>()
+            .chain(self.erasers.values().map(BTreeMap::len))
+            .sum()
     }
 
     pub fn sample_annotations(
@@ -573,6 +624,7 @@ impl AutomaticSegmentationState {
             .flat_map(|sample| self.sample_annotations(sample))
     }
 
+    #[must_use]
     pub fn ordered_annotations(
         &self,
         sample: SampleId,
@@ -582,6 +634,7 @@ impl AutomaticSegmentationState {
             .collect()
     }
 
+    #[must_use]
     pub fn stroke(&self, sample: SampleId, id: StrokeId) -> Option<&AnnotationStroke> {
         self.erasers
             .get(&sample)
@@ -633,7 +686,7 @@ impl Default for AutomaticSegmentationState {
             overlay_opacity: 30,
             use_threshold: false,
             threshold_value: 0.5,
-            classes: SegmentationClasses::try_from(BTreeMap::from([
+            classes: SegmentationClasses(BTreeMap::from([
                 (
                     ClassId::new(0),
                     SegmentationClass {
@@ -650,8 +703,7 @@ impl Default for AutomaticSegmentationState {
                         annotations: HashMap::new(),
                     },
                 ),
-            ]))
-            .expect("valid default classes"),
+            ])),
             next_class_id: 2,
             hidden_classes: vec![],
             preview_selected: false,
@@ -693,6 +745,7 @@ pub enum ToolState {
     LocalMaximaState(LocalMaximaState),
     ManagerState(ManagerState),
     MorphologyState(MorphologyState),
+    ObjectSizeFilterState(ObjectSizeFilterState),
     RollingBallState(RollingBallState),
     SobelState(SobelState),
     ThresholdState(ThresholdState),
@@ -710,17 +763,17 @@ pub trait PersistedState {
     /// Prepares a state update, retaining fields marked `serde(skip)`. The returned closure must be executed for the state update to take place.
     /// # Errors
     /// Returns an error if the fields cannot be deserialized; leaves state unchanged.
-    fn prepare_persisted_fields<'a>(
-        &'a mut self,
+    fn prepare_persisted_fields(
+        &mut self,
         fields: serde_value::Value,
-    ) -> anyhow::Result<PreparedStateUpdate<'a>>;
+    ) -> anyhow::Result<PreparedStateUpdate<'_>>;
 }
 
 impl<T: Clone + serde::de::DeserializeOwned> PersistedState for T {
-    fn prepare_persisted_fields<'a>(
-        &'a mut self,
+    fn prepare_persisted_fields(
+        &mut self,
         fields: serde_value::Value,
-    ) -> anyhow::Result<PreparedStateUpdate<'a>> {
+    ) -> anyhow::Result<PreparedStateUpdate<'_>> {
         let mut merged = self.clone();
         T::deserialize_in_place(fields, &mut merged)?;
         Ok(Box::new(move || *self = merged))

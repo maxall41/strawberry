@@ -1,6 +1,7 @@
 use crate::gui::Button;
 // Reusable value control components for tool UIs
 
+use num_traits::ToPrimitive;
 use std::time::Duration;
 
 use gpui::{
@@ -15,12 +16,8 @@ use super::{icon::Icon, theme};
 pub struct ValueControlEvent {
     pub id: String,
     pub value: f32,
-}
-
-impl ValueControlEvent {
-    pub const fn value_changed(id: String, value: f32) -> Self {
-        Self { id, value }
-    }
+    /// Exact pixel counts and other integers that may not fit in an f32.
+    pub integer_value: Option<u32>,
 }
 
 impl EventEmitter<ValueControlEvent> for ValueControl {}
@@ -36,7 +33,7 @@ pub struct ValueControlConfig {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ValueKind {
     Decimal,
-    Integer,
+    Integer(u32),
 }
 
 #[expect(
@@ -56,7 +53,7 @@ pub struct ValueControl {
     mark_unfocus: bool,
     mouse_down: bool,
     drag_start_position: Option<Point<Pixels>>,
-    drag_start_value: f32,
+    drag_start_value: f64,
     last_drag_emit: Option<Instant>,
 }
 
@@ -89,46 +86,82 @@ impl ValueControl {
     }
     /// Integer controls reject fractional input and quantize every interaction.
     pub fn new_integer(value: u32, config: ValueControlConfig, cx: &App) -> Self {
-        let value = num_traits::cast(value).unwrap_or(0.0);
-        let mut control = Self::new(String::new(), value, config, cx);
-        control.kind = ValueKind::Integer;
-        control.set_value(value);
+        let mut control = Self::new(String::new(), 0.0, config, cx);
+        control.set_integer_value(value);
         control
     }
 
-    fn normalize(&self, value: f32) -> f32 {
-        let value = if self.kind == ValueKind::Integer {
-            value.round()
-        } else {
-            value
-        };
-        value.clamp(self.config.min, self.config.max)
+    pub fn set_integer_value(&mut self, value: u32) {
+        let min = self.config.min.ceil().to_u32().unwrap_or_default();
+        let max = self.config.max.floor().to_u32().unwrap_or(u32::MAX);
+        let value = value.clamp(min, max);
+        self.kind = ValueKind::Integer(value);
+        self.value = value.to_f32().unwrap_or_default();
+        self.text = self.formatted_value();
     }
 
     fn formatted_value(&self) -> String {
         match self.kind {
-            ValueKind::Integer => format!("{:.0}", self.value),
+            ValueKind::Integer(value) => value.to_string(),
             ValueKind::Decimal => format!("{:.2}", self.value),
         }
     }
 
     pub fn set_value(&mut self, value: f32) {
-        self.value = self.normalize(value);
+        if !value.is_finite() {
+            return;
+        }
+        if matches!(self.kind, ValueKind::Integer(_)) {
+            self.set_integer_value(value.round().max(0.0).to_u32().unwrap_or(u32::MAX));
+            return;
+        }
+        self.value = value.clamp(self.config.min, self.config.max);
         self.text = self.formatted_value();
     }
 
+    fn emit_change(&self, cx: &mut Context<Self>) {
+        cx.emit(ValueControlEvent {
+            id: self.config.id.clone(),
+            value: self.value,
+            integer_value: self.integer_value(),
+        });
+    }
+
+    pub const fn integer_value(&self) -> Option<u32> {
+        match self.kind {
+            ValueKind::Integer(value) => Some(value),
+            ValueKind::Decimal => None,
+        }
+    }
+
     fn adjust(&mut self, direction: f32, cx: &mut Context<Self>) {
-        let step = if self.kind == ValueKind::Integer {
-            self.config.step.round().max(1.0)
+        if let ValueKind::Integer(value) = self.kind {
+            let step = self.config.step.round().to_u32().unwrap_or(1).max(1);
+            self.set_integer_value(if direction > 0.0 {
+                value.saturating_add(step)
+            } else {
+                value.saturating_sub(step)
+            });
         } else {
-            self.config.step
-        };
-        self.set_value(direction.mul_add(step, self.value));
-        cx.emit(ValueControlEvent::value_changed(
-            self.config.id.clone(),
-            self.value,
-        ));
+            self.set_value(direction.mul_add(self.config.step, self.value));
+        }
+        self.emit_change(cx);
         cx.notify();
+    }
+
+    fn drag_to(&mut self, delta: f32) {
+        if matches!(self.kind, ValueKind::Integer(_)) {
+            let step = f64::from(self.config.step.round().max(1.0));
+            let value = f64::from(delta)
+                .mul_add(step, self.drag_start_value)
+                .round()
+                .clamp(0.0, f64::from(u32::MAX));
+            self.set_integer_value(value.to_u32().unwrap_or_default());
+        } else {
+            let scaling = f64::from(self.config.max - self.config.min) / 200.0;
+            let value = f64::from(delta).mul_add(scaling, self.drag_start_value);
+            self.set_value(value.to_f32().unwrap_or_default());
+        }
     }
 
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -169,19 +202,23 @@ impl ValueControl {
         self.initialized = true;
     }
     fn on_unfocus(&mut self, cx: &mut Context<Self>) {
-        let parsed = match self.kind {
-            ValueKind::Integer => self.text.parse::<i64>().ok().and_then(num_traits::cast),
-            ValueKind::Decimal => self.text.parse::<f32>().ok(),
-        };
-        if let Some(value) = parsed.filter(|value| value.is_finite()) {
-            self.set_value(value);
-            cx.emit(ValueControlEvent::value_changed(
-                self.config.id.clone(),
-                self.value,
-            ));
-        } else {
-            self.text = self.formatted_value();
+        match self.kind {
+            ValueKind::Integer(_) => {
+                if let Ok(value) = self.text.parse::<u32>() {
+                    self.set_integer_value(value);
+                    self.emit_change(cx);
+                }
+            }
+            ValueKind::Decimal => {
+                if let Ok(value) = self.text.parse::<f32>()
+                    && value.is_finite()
+                {
+                    self.set_value(value);
+                    self.emit_change(cx);
+                }
+            }
         }
+        self.text = self.formatted_value();
     }
     fn handle_keystroke(&mut self, event: &Keystroke, cx: &mut Context<Self>) {
         match event.key.as_str() {
@@ -190,7 +227,7 @@ impl ValueControl {
                 cx.notify();
             }
             "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "." => {
-                if self.kind == ValueKind::Integer && event.key == "." {
+                if matches!(self.kind, ValueKind::Integer(_)) && event.key == "." {
                     return;
                 }
                 if self.highlight {
@@ -321,7 +358,7 @@ impl Render for ValueControl {
                             .id(ElementId::Name(SharedString::from(id)))
                             .on_scroll_wheel(cx.listener(
                                 |this, event: &gpui::ScrollWheelEvent, window, cx| {
-                                    if this.kind == ValueKind::Integer
+                                    if matches!(this.kind, ValueKind::Integer(_))
                                         && this.focus_handle(cx).is_focused(window)
                                     {
                                         let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
@@ -344,7 +381,10 @@ impl Render for ValueControl {
                                         this.highlight = true;
                                         this.mouse_down = true;
                                         this.drag_start_position = Some(event.position);
-                                        this.drag_start_value = this.value;
+                                        this.drag_start_value = match this.kind {
+                                            ValueKind::Integer(value) => f64::from(value),
+                                            ValueKind::Decimal => f64::from(this.value),
+                                        };
                                     },
                                 )
                             })
@@ -363,13 +403,8 @@ impl Render for ValueControl {
                                                   return;
                                               }
                                               if let Some(start_pos) = this.drag_start_position {
-                                                let value_range = this.config.max - this.config.min;
-                                                let pixels_for_full_range = 200.0;
-                                                let scaling_factor = value_range / pixels_for_full_range;
                                                 let delta_x = f32::from(event.event.position.x) - f32::from(start_pos.x);
-                                                let delta_value = delta_x * scaling_factor;
-                                                let new_value = (this.drag_start_value + delta_value).clamp(this.config.min, this.config.max);
-                                                this.set_value(new_value);
+                                                this.drag_to(delta_x);
                                                 // Live preview while dragging, throttled so the
                                                 // backend isn't flooded with recomputes
                                                 let now = Instant::now();
@@ -378,10 +413,7 @@ impl Render for ValueControl {
                                                     .is_none_or(|t| now.duration_since(t) >= Duration::from_millis(80));
                                                 if should_emit {
                                                     this.last_drag_emit = Some(now);
-                                                    cx.emit(ValueControlEvent::value_changed(
-                                                        this.config.id.clone(),
-                                                        this.value,
-                                                    ));
+                                                    this.emit_change(cx);
                                                 }
                                             }
                                     },
@@ -396,10 +428,7 @@ impl Render for ValueControl {
                                             this.mouse_down = false;
                                             if this.drag_start_position.take().is_some() {
                                                 this.last_drag_emit = None;
-                                                cx.emit(ValueControlEvent::value_changed(
-                                                    this.config.id.clone(),
-                                                    this.value,
-                                                ));
+                                                this.emit_change(cx);
                                             }
                                     },
                                 )

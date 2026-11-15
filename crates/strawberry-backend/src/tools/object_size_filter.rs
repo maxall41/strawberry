@@ -1,0 +1,95 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use image::{Rgba, RgbaImage};
+use lutz::{Pixel, lutz};
+use strawberry_types::{
+    BackendToolType, FrontendMessage, ObjectSizeFilterMessage, ObjectSizeFilterMode,
+    ObjectSizeFilterState, PipelineCommand, PipelineObjectMessage, ToolBackend, ToolState,
+};
+
+use crate::{
+    impl_tool_backend_basics,
+    tools::{base::ToolBase, cache::ToolCache},
+    utils::binary_image::BinaryImageWrapper,
+};
+
+pub struct ObjectSizeFilter {
+    pub state: ObjectSizeFilterState,
+    pub base: ToolBase,
+    pub cache: ToolCache<ObjectSizeFilterState>,
+}
+
+#[async_trait]
+impl ToolBackend for ObjectSizeFilter {
+    impl_tool_backend_basics!(ObjectSizeFilter);
+
+    fn get_state(&self) -> ToolState {
+        ToolState::ObjectSizeFilterState(self.state.clone())
+    }
+
+    fn iam(&self) -> BackendToolType {
+        BackendToolType::ObjectSizeFilter
+    }
+
+    async fn process(&mut self, input: &mut Vec<Arc<RgbaImage>>) -> anyhow::Result<()> {
+        for image in input {
+            let mut output = None;
+            for pixels in lutz::<_, Vec<Pixel>>(BinaryImageWrapper::new(image, 128)) {
+                let area = u64::try_from(pixels.len())?;
+                let size = u64::from(self.state.size);
+                let remove = match self.state.mode {
+                    ObjectSizeFilterMode::RemoveSmallerThan => area < size,
+                    ObjectSizeFilterMode::RemoveLargerThan => area > size,
+                };
+                if remove {
+                    let output = output.get_or_insert_with(|| image.as_ref().clone());
+                    for pixel in pixels {
+                        let target = output.get_pixel_mut(pixel.x, pixel.y);
+                        *target = Rgba([0, 0, 0, target[3]]);
+                    }
+                }
+            }
+            if let Some(output) = output {
+                *image = Arc::new(output);
+            }
+        }
+        Ok(())
+    }
+
+    fn receive_messages(&mut self) -> anyhow::Result<()> {
+        for message in self.base.collect_commands() {
+            match message {
+                PipelineCommand::RequestState() => {
+                    self.base
+                        .send_to_frontend(&PipelineCommand::FrontendMessage(
+                            FrontendMessage::ReturnState(Box::new(self.get_state())),
+                        ))?;
+                }
+                PipelineCommand::PipelineObject(PipelineObjectMessage::ToggleActive(enabled)) => {
+                    self.state.is_enabled = enabled;
+                }
+                PipelineCommand::PipelineObject(
+                    PipelineObjectMessage::ObjectSizeFilterMessage(message),
+                ) => match message {
+                    ObjectSizeFilterMessage::SetMode(mode) => self.state.mode = mode,
+                    ObjectSizeFilterMessage::SetSize(size) => self.state.size = size,
+                },
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ObjectSizeFilter {
+    #[must_use]
+    pub fn new(global_sender: tokio::sync::broadcast::Sender<PipelineCommand>) -> Self {
+        let state = ObjectSizeFilterState::default();
+        Self {
+            base: ToolBase::new(global_sender),
+            cache: ToolCache::new(&state),
+            state,
+        }
+    }
+}
