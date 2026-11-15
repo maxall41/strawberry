@@ -1,10 +1,12 @@
 use crate::{BgraColor, RgbColor};
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use anyhow::{Result, ensure};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
 use std::path::PathBuf;
 use std::{
     fmt::{self, Display, Formatter},
     num::ParseIntError,
+    ops::Deref,
     sync::Arc,
 };
 use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, InferenceConfig};
@@ -270,7 +272,146 @@ pub type StrokeId = usize;
 /// Index of an input image retained by the segmentation tool.
 pub type SampleId = usize;
 pub type AnnotationsBySample = HashMap<SampleId, BTreeMap<StrokeId, AnnotationStroke>>;
-pub type SegmentationClasses = BTreeMap<ClassId, SegmentationClass>;
+pub const MAX_CLASSES: usize = 256;
+
+/// Ordered by ID for stable class presentation and model class mappings.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct SegmentationClasses(BTreeMap<ClassId, SegmentationClass>);
+
+impl SegmentationClasses {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            (2..=MAX_CLASSES).contains(&self.len()),
+            "Define between 2 and {MAX_CLASSES} classes"
+        );
+        let mut names = HashSet::new();
+        for class in self.values() {
+            ensure!(!class.name.trim().is_empty(), "Class names cannot be empty");
+            ensure!(
+                names.insert(class.name.trim()),
+                "Duplicate class name: {}",
+                class.name
+            );
+        }
+        Ok(())
+    }
+
+    fn check_name(&self, id: ClassId, name: &str) -> Result<()> {
+        ensure!(!name.is_empty(), "Class names cannot be empty");
+        ensure!(
+            self.iter()
+                .all(|(&other, class)| other == id || class.name != name),
+            "Duplicate class name: {name}"
+        );
+        Ok(())
+    }
+
+    pub fn insert(&mut self, id: ClassId, mut class: SegmentationClass) -> Result<()> {
+        ensure!(!self.contains_key(&id), "Class ID already exists");
+        ensure!(self.len() < MAX_CLASSES, "Maximum of {MAX_CLASSES} classes");
+        class.name = class.name.trim().to_owned();
+        self.check_name(id, &class.name)?;
+        self.0.insert(id, class);
+        Ok(())
+    }
+
+    pub fn rename(&mut self, id: ClassId, name: String) -> Result<()> {
+        let name = name.trim().to_owned();
+        self.check_name(id, &name)?;
+        self.0
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown class"))?
+            .name = name;
+        Ok(())
+    }
+
+    pub fn remove(&mut self, id: ClassId) -> Result<()> {
+        ensure!(self.len() > 2, "Keep at least two classes");
+        ensure!(self.0.remove(&id).is_some(), "Unknown class");
+        Ok(())
+    }
+
+    pub fn set_color(&mut self, id: ClassId, color: RgbColor) -> Result<()> {
+        self.0
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown class"))?
+            .color = color;
+        Ok(())
+    }
+
+    pub fn annotations_mut(&mut self, id: ClassId) -> Option<&mut AnnotationsBySample> {
+        self.0.get_mut(&id).map(|class| &mut class.annotations)
+    }
+
+    pub fn without_annotations(&self) -> Self {
+        Self(
+            self.iter()
+                .map(|(&id, class)| {
+                    (
+                        id,
+                        SegmentationClass {
+                            name: class.name.clone(),
+                            color: class.color,
+                            annotations: HashMap::new(),
+                        },
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    pub fn unused_name(&self) -> String {
+        (self.len() + 1..)
+            .map(|number| format!("Class {number}"))
+            .find(|name| self.values().all(|class| class.name != *name))
+            .expect("finite class collection")
+    }
+}
+
+impl TryFrom<BTreeMap<ClassId, SegmentationClass>> for SegmentationClasses {
+    type Error = anyhow::Error;
+
+    fn try_from(mut classes: BTreeMap<ClassId, SegmentationClass>) -> Result<Self> {
+        for class in classes.values_mut() {
+            class.name = class.name.trim().to_owned();
+        }
+        let classes = Self(classes);
+        classes.validate()?;
+        Ok(classes)
+    }
+}
+
+impl<'de> Deserialize<'de> for SegmentationClasses {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        BTreeMap::deserialize(deserializer)?
+            .try_into()
+            .map_err(D::Error::custom)
+    }
+}
+
+impl Deref for SegmentationClasses {
+    type Target = BTreeMap<ClassId, SegmentationClass>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl IntoIterator for SegmentationClasses {
+    type Item = (ClassId, SegmentationClass);
+    type IntoIter = btree_map::IntoIter<ClassId, SegmentationClass>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a SegmentationClasses {
+    type Item = (&'a ClassId, &'a SegmentationClass);
+    type IntoIter = btree_map::Iter<'a, ClassId, SegmentationClass>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SegmentationClass {
@@ -321,6 +462,25 @@ pub struct AnnotationStroke {
     pub radius: BrushRadius,
     pub points: Arc<Vec<(u32, u32)>>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatasetImportMode {
+    Replace,
+    Merge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatasetOperation {
+    Saving,
+    Loading,
+    Merging,
+}
+
+impl DatasetOperation {
+    pub fn is_importing(self) -> bool {
+        matches!(self, Self::Loading | Self::Merging)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AutomaticSegmentationState {
@@ -347,6 +507,14 @@ pub struct AutomaticSegmentationState {
     pub inference: InferenceConfig,
     #[serde(skip)]
     pub model_path: Option<PathBuf>,
+    #[serde(skip)]
+    pub dataset_samples: usize,
+    #[serde(skip)]
+    pub dataset_path: Option<PathBuf>,
+    #[serde(skip)]
+    pub dataset_dirty: bool,
+    #[serde(skip)]
+    pub dataset_operation: Option<DatasetOperation>,
     #[serde(skip)]
     pub erasers: AnnotationsBySample,
     #[serde(skip)]
@@ -431,6 +599,7 @@ impl AutomaticSegmentationState {
             .and_then(|strokes| strokes.get_mut(&id))
             .or_else(|| {
                 self.classes
+                    .0
                     .values_mut()
                     .find_map(|class| class.annotations.get_mut(&sample)?.get_mut(&id))
             })
@@ -440,7 +609,7 @@ impl AutomaticSegmentationState {
         if let Some(strokes) = self.erasers.get_mut(&sample) {
             strokes.remove(&id);
         }
-        for class in self.classes.values_mut() {
+        for class in self.classes.0.values_mut() {
             if let Some(strokes) = class.annotations.get_mut(&sample) {
                 strokes.remove(&id);
             }
@@ -449,7 +618,7 @@ impl AutomaticSegmentationState {
 
     pub fn clear_sample_annotations(&mut self, sample: SampleId) {
         self.erasers.remove(&sample);
-        for class in self.classes.values_mut() {
+        for class in self.classes.0.values_mut() {
             class.annotations.remove(&sample);
         }
     }
@@ -464,7 +633,7 @@ impl Default for AutomaticSegmentationState {
             overlay_opacity: 30,
             use_threshold: false,
             threshold_value: 0.5,
-            classes: BTreeMap::from([
+            classes: SegmentationClasses::try_from(BTreeMap::from([
                 (
                     ClassId::new(0),
                     SegmentationClass {
@@ -481,7 +650,8 @@ impl Default for AutomaticSegmentationState {
                         annotations: HashMap::new(),
                     },
                 ),
-            ]),
+            ]))
+            .expect("valid default classes"),
             next_class_id: 2,
             hidden_classes: vec![],
             preview_selected: false,
@@ -496,6 +666,10 @@ impl Default for AutomaticSegmentationState {
             forest: ForestConfig::default(),
             inference: InferenceConfig::default(),
             model_path: None,
+            dataset_samples: 0,
+            dataset_path: None,
+            dataset_dirty: false,
+            dataset_operation: None,
             erasers: HashMap::new(),
             current_sample: None,
             selected_stroke: None,

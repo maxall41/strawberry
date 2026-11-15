@@ -1,14 +1,16 @@
 use super::{base::ToolBase, cache::ToolCache};
 use crate::segmentation::{
-    AnnotationMask, TrainingSample, append_stroke_points, render_class_mask,
-    render_class_prediction, train,
+    AnnotationMask, TrainingSample, append_stroke_points,
+    dataset::{Dataset, DatasetSample},
+    render_class_mask, render_class_prediction, train,
 };
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
+    path::PathBuf,
     sync::Arc,
 };
 use strawberry_processing::{
@@ -20,10 +22,172 @@ use strawberry_types::{
     *,
 };
 
-const MODEL_ASSET: &str = "model.json";
+const MODEL_ASSET: &str = "model.sbm";
 
+#[derive(Clone)]
 struct Sample {
     image: Arc<RgbaImage>,
+}
+
+struct DatasetJob {
+    receiver: flume::Receiver<Result<DatasetResult>>,
+    revision: u64,
+    path: PathBuf,
+}
+
+struct TrainingJob {
+    receiver: flume::Receiver<Result<(SegmentationModel, Vec<ClassId>)>>,
+    generation: u64,
+}
+
+enum DatasetResult {
+    Saved,
+    Imported(PreparedDataset),
+}
+
+struct PreparedDataset {
+    state: AutomaticSegmentationState,
+    samples: Vec<Sample>,
+    next_stroke_id: StrokeId,
+    model_class_ids: Option<Vec<ClassId>>,
+    mode: DatasetImportMode,
+}
+
+impl PreparedDataset {
+    fn new(
+        mut state: AutomaticSegmentationState,
+        mut samples: Vec<Sample>,
+        mut next_stroke_id: StrokeId,
+        model_class_ids: &[ClassId],
+        dataset: Dataset,
+        mode: DatasetImportMode,
+    ) -> Result<Self> {
+        dataset.classes.validate()?;
+        let mut class_mapping = HashMap::new();
+        let model_class_ids = match mode {
+            DatasetImportMode::Replace => {
+                let model_mapping =
+                    remap_model_classes(&state.classes, &dataset.classes, model_class_ids);
+                let mut classes = BTreeMap::new();
+                state.erasers.clear();
+                samples.clear();
+                next_stroke_id = 0;
+                for (source, mut class) in dataset.classes {
+                    let destination = ClassId::new(u64::try_from(classes.len())?);
+                    class_mapping.insert(source, destination);
+                    class.annotations.clear();
+                    classes.insert(destination, class);
+                }
+                state.classes = classes.try_into()?;
+                state.next_class_id = u64::try_from(state.classes.len())?;
+                model_mapping.and_then(|ids| {
+                    ids.into_iter()
+                        .map(|id| class_mapping.get(&id).copied())
+                        .collect()
+                })
+            }
+            DatasetImportMode::Merge => {
+                let mut names: HashMap<_, _> = state
+                    .classes
+                    .iter()
+                    .map(|(&id, class)| (class.name.clone(), id))
+                    .collect();
+                for (id, mut class) in dataset.classes {
+                    let name = class.name.clone();
+                    let destination = if let Some(&destination) = names.get(&name) {
+                        destination
+                    } else {
+                        ensure!(
+                            state.classes.len() < MAX_CLASSES,
+                            "Merged dataset would exceed {MAX_CLASSES} classes"
+                        );
+                        let destination = ClassId::new(state.next_class_id);
+                        state.next_class_id = state
+                            .next_class_id
+                            .checked_add(1)
+                            .ok_or_else(|| anyhow::anyhow!("Class ID exhausted"))?;
+                        class.annotations.clear();
+                        state.classes.insert(destination, class)?;
+                        names.insert(name, destination);
+                        destination
+                    };
+                    class_mapping.insert(id, destination);
+                }
+                Some(model_class_ids.to_vec())
+            }
+        };
+        samples.try_reserve(dataset.samples.len())?;
+        for sample in dataset.samples {
+            let index = samples.len();
+            for (kind, stroke) in sample.annotations {
+                next_stroke_id = next_stroke_id
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("Stroke ID exhausted"))?;
+                let annotations = match kind {
+                    AnnotationKind::Paint(id) => {
+                        let destination = class_mapping
+                            .get(&id)
+                            .ok_or_else(|| anyhow::anyhow!("Unknown imported class"))?;
+                        state
+                            .classes
+                            .annotations_mut(*destination)
+                            .ok_or_else(|| anyhow::anyhow!("Unknown destination class"))?
+                    }
+                    AnnotationKind::Eraser => &mut state.erasers,
+                };
+                annotations
+                    .entry(index)
+                    .or_default()
+                    .insert(next_stroke_id, stroke);
+            }
+            samples.push(Sample {
+                image: sample.image,
+            });
+        }
+        Ok(Self {
+            state,
+            samples,
+            next_stroke_id,
+            model_class_ids,
+            mode,
+        })
+    }
+}
+
+fn dataset_snapshot(state: &AutomaticSegmentationState, samples: &[Sample]) -> Dataset {
+    let classes = state.classes.without_annotations();
+    let samples = samples
+        .iter()
+        .enumerate()
+        .filter_map(|(index, sample)| {
+            let annotations = state
+                .ordered_annotations(index)
+                .into_values()
+                .map(|(kind, stroke)| (kind, stroke.clone()))
+                .collect::<Vec<_>>();
+            (!annotations.is_empty()).then(|| DatasetSample {
+                image: sample.image.clone(),
+                annotations,
+            })
+        })
+        .collect();
+    Dataset { classes, samples }
+}
+
+fn remap_model_classes(
+    current: &SegmentationClasses,
+    incoming: &SegmentationClasses,
+    ids: &[ClassId],
+) -> Option<Vec<ClassId>> {
+    ids.iter()
+        .map(|id| {
+            let name = &current.get(id)?.name;
+            incoming
+                .iter()
+                .find(|(_, class)| class.name == *name)
+                .map(|(&id, _)| id)
+        })
+        .collect()
 }
 
 struct PendingStroke {
@@ -49,7 +213,7 @@ impl ModelDocument {
             "Unsupported segmentation model version"
         );
         document.model.validate()?;
-        validate_classes(&document.classes)?;
+        document.classes.validate()?;
         let ids: HashSet<_> = document.class_ids.iter().copied().collect();
         ensure!(
             document.class_ids.len() == document.model.class_count
@@ -59,17 +223,6 @@ impl ModelDocument {
         );
         Ok(document)
     }
-}
-fn validate_classes(classes: &SegmentationClasses) -> Result<()> {
-    ensure!(
-        (2..=256).contains(&classes.len()),
-        "Define between 2 and 256 classes"
-    );
-    ensure!(
-        classes.values().all(|class| !class.name.trim().is_empty()),
-        "Class names cannot be empty"
-    );
-    Ok(())
 }
 fn annotation_visible(
     state: &AutomaticSegmentationState,
@@ -127,11 +280,13 @@ pub struct AutomaticSegmentation {
     /// Pipeline output/bypass cache and frontend state synchronization, used by the backend macros.
     pub cache: ToolCache<AutomaticSegmentationState>,
     commands: tokio::sync::broadcast::Sender<PipelineCommand>,
+    dataset_revision: u64,
+    dataset_job: Option<DatasetJob>,
     // Annotation/settings edits do not invalidate a model trained from their earlier snapshot.
     // Deleting a class or loading a model invalidates pending training results.
     training_generation: u64,
+    training_job: Option<TrainingJob>,
     next_stroke_id: StrokeId,
-    job_generation: u64,
     extractor: Arc<FeatureExtractor>,
     model: Option<Arc<SegmentationModel>>,
     model_class_ids: Vec<ClassId>,
@@ -142,7 +297,6 @@ pub struct AutomaticSegmentation {
     stroke: Option<PendingStroke>,
     annotation_masks: AnnotationMask,
     overlays_dirty: bool,
-    job: Option<flume::Receiver<Result<(SegmentationModel, Vec<ClassId>)>>>,
 }
 impl AutomaticSegmentation {
     pub fn new(
@@ -155,9 +309,10 @@ impl AutomaticSegmentation {
         let _ = commands.send(PipelineCommand::RegisterClickReceiver(base.sender.clone()));
         Self {
             commands,
+            dataset_revision: 0,
+            dataset_job: None,
             training_generation: 0,
             next_stroke_id: 0,
-            job_generation: 0,
             cache: ToolCache::new(&state),
             state,
             base,
@@ -171,13 +326,202 @@ impl AutomaticSegmentation {
             stroke: None,
             annotation_masks: AnnotationMask::default(),
             overlays_dirty: false,
-            job: None,
+            training_job: None,
         }
     }
-    fn class_mut(&mut self, id: ClassId) -> Result<&mut SegmentationClass> {
+    fn importing_dataset(&self) -> bool {
+        self.state
+            .dataset_operation
+            .is_some_and(DatasetOperation::is_importing)
+    }
+
+    fn reset_dataset_status(&mut self) {
+        self.dataset_revision = self.dataset_revision.wrapping_add(1);
+        self.state.dataset_samples = 0;
+        self.state.dataset_path = None;
+        self.state.dataset_dirty = false;
+        self.dataset_job = None;
+        self.state.dataset_operation = None;
+    }
+
+    fn dataset_edited(&mut self) {
+        self.dataset_revision = self.dataset_revision.wrapping_add(1);
+        self.state.dataset_dirty = true;
+        self.state.dataset_samples = (0..self.samples.len())
+            .filter(|&sample| self.state.sample_annotations(sample).next().is_some())
+            .count();
+    }
+
+    fn start_dataset_save(&mut self, path: PathBuf) -> Result<()> {
+        ensure!(
+            self.dataset_job.is_none(),
+            "A dataset operation is already running"
+        );
+        ensure!(
+            self.stroke.is_none(),
+            "Finish the current stroke before saving"
+        );
+        let dataset = dataset_snapshot(&self.state, &self.samples);
+        ensure!(
+            !dataset.samples.is_empty(),
+            "Annotate an image before saving a dataset"
+        );
+        let (tx, receiver) = flume::bounded(1);
+        self.dataset_job = Some(DatasetJob {
+            receiver,
+            revision: self.dataset_revision,
+            path: path.clone(),
+        });
+        self.state.dataset_operation = Some(DatasetOperation::Saving);
+        tokio::task::spawn_blocking(move || {
+            let result = dataset.save(&path).map(|()| DatasetResult::Saved);
+            let _ = tx.send(result);
+        });
+        Ok(())
+    }
+
+    fn start_dataset_import(&mut self, path: PathBuf, mode: DatasetImportMode) -> Result<()> {
+        ensure!(
+            self.dataset_job.is_none(),
+            "A dataset operation is already running"
+        );
+        ensure!(
+            self.training_job.is_none(),
+            "Wait for training to finish before importing a dataset"
+        );
+        ensure!(
+            self.stroke.is_none(),
+            "Finish the current stroke before importing"
+        );
+        let state = self.state.clone();
+        let samples = if mode == DatasetImportMode::Merge {
+            self.samples.clone()
+        } else {
+            Vec::new()
+        };
+        let existing = (mode == DatasetImportMode::Merge)
+            .then(|| dataset_snapshot(&self.state, &self.samples));
+        let next_stroke_id = self.next_stroke_id;
+        let model_class_ids = self.model_class_ids.clone();
+        let (tx, receiver) = flume::bounded(1);
+        self.dataset_job = Some(DatasetJob {
+            receiver,
+            revision: self.dataset_revision,
+            path: path.clone(),
+        });
+        self.state.dataset_operation = Some(match mode {
+            DatasetImportMode::Replace => DatasetOperation::Loading,
+            DatasetImportMode::Merge => DatasetOperation::Merging,
+        });
+        tokio::task::spawn_blocking(move || {
+            let result = Dataset::load(&path, existing.as_ref())
+                .and_then(|dataset| {
+                    PreparedDataset::new(
+                        state,
+                        samples,
+                        next_stroke_id,
+                        &model_class_ids,
+                        dataset,
+                        mode,
+                    )
+                })
+                .map(DatasetResult::Imported);
+            let _ = tx.send(result);
+        });
+        Ok(())
+    }
+
+    fn finish_dataset_job(&mut self) {
+        let Some(job) = self.dataset_job.as_ref() else {
+            return;
+        };
+        let result = match job.receiver.try_recv() {
+            Ok(result) => result,
+            Err(flume::TryRecvError::Empty) => return,
+            Err(flume::TryRecvError::Disconnected) => {
+                Err(anyhow::anyhow!("Dataset worker stopped unexpectedly"))
+            }
+        };
+        let Some(job) = self.dataset_job.take() else {
+            return;
+        };
+        self.state.dataset_operation = None;
+        match result {
+            Ok(DatasetResult::Saved) => {
+                self.state.dataset_path = Some(job.path);
+                if job.revision == self.dataset_revision {
+                    self.state.dataset_dirty = false;
+                }
+                self.dataset_feedback("Dataset saved");
+            }
+            Ok(DatasetResult::Imported(prepared)) => {
+                if job.revision != self.dataset_revision {
+                    self.error(&anyhow::anyhow!(
+                        "Dataset changed during import; nothing was imported"
+                    ));
+                    return;
+                }
+                let replace = prepared.mode == DatasetImportMode::Replace;
+                self.state.classes = prepared.state.classes;
+                self.state.erasers = prepared.state.erasers;
+                self.state.next_class_id = prepared.state.next_class_id;
+                self.samples = prepared.samples;
+                self.next_stroke_id = prepared.next_stroke_id;
+                self.training_generation = self.training_generation.wrapping_add(1);
+                if replace {
+                    self.current = None;
+                    self.stroke = None;
+                    self.state.selected_stroke = None;
+                    self.annotation_masks.clear();
+                    self.state.hidden_classes.clear();
+                    let fallback = *self
+                        .state
+                        .classes
+                        .keys()
+                        .nth(1)
+                        .expect("validated class count");
+                    self.state.active_class = fallback;
+                    self.state.output_class = fallback;
+                    self.state.brush = AnnotationKind::Paint(fallback);
+                    if let Some(ids) = prepared.model_class_ids {
+                        self.model_class_ids = ids;
+                        self.inference_cache = None;
+                        self.state.model_revision = self.state.model_revision.wrapping_add(1);
+                    } else {
+                        self.invalidate_model();
+                    }
+                }
+                self.dataset_edited();
+                if replace {
+                    self.state.dataset_path = Some(job.path);
+                    self.state.dataset_dirty = false;
+                }
+                self.rebuild_mask();
+                self.cache.invalidate();
+                self.changed();
+                self.dataset_feedback(if replace {
+                    "Dataset loaded"
+                } else {
+                    "Dataset merged"
+                });
+            }
+            Err(error) => self.error(&error),
+        }
+    }
+
+    fn dataset_feedback(&self, message: &str) {
+        let _ = self
+            .base
+            .global_sender
+            .send(PipelineCommand::FrontendMessage(FrontendMessage::success(
+                message,
+            )));
+    }
+
+    fn class(&self, id: ClassId) -> Result<&SegmentationClass> {
         self.state
             .classes
-            .get_mut(&id)
+            .get(&id)
             .ok_or_else(|| anyhow::anyhow!("Unknown class"))
     }
     fn install_classes(&mut self, classes: SegmentationClasses) {
@@ -203,6 +547,7 @@ impl AutomaticSegmentation {
         self.annotation_masks.clear();
         self.state.selected_stroke = None;
         self.inference_cache = None;
+        self.reset_dataset_status();
     }
     fn model_bytes(&self) -> Result<Vec<u8>> {
         let model = self
@@ -331,15 +676,17 @@ impl AutomaticSegmentation {
             )));
     }
     fn start_training(&mut self) -> Result<()> {
-        ensure!(self.job.is_none(), "Training is already running");
+        ensure!(self.training_job.is_none(), "Training is already running");
+        ensure!(!self.importing_dataset(), "A dataset import is running");
         self.state.features.validate()?;
         self.state.forest.validate()?;
-        validate_classes(&self.state.classes)?;
+        self.state.classes.validate()?;
         let classes: Vec<_> = self.state.classes.keys().copied().collect();
         let samples: Vec<_> = self
             .samples
             .iter()
             .enumerate()
+            .filter(|(index, _)| self.state.sample_annotations(*index).next().is_some())
             .map(|(index, sample)| TrainingSample {
                 image: sample.image.clone(),
                 annotations: self
@@ -354,9 +701,11 @@ impl AutomaticSegmentation {
         let forest = self.state.forest.clone();
         let inference = self.state.inference.clone();
         let extractor = self.extractor.clone();
-        self.job_generation = self.training_generation;
         let (tx, rx) = flume::bounded(1);
-        self.job = Some(rx);
+        self.training_job = Some(TrainingJob {
+            receiver: rx,
+            generation: self.training_generation,
+        });
         self.state.busy = true;
         tokio::task::spawn_blocking(move || {
             let result = futures::executor::block_on(async move {
@@ -369,40 +718,63 @@ impl AutomaticSegmentation {
         Ok(())
     }
     fn handle(&mut self, message: AutomaticSegmentationMessage) -> Result<()> {
+        ensure!(
+            !self.importing_dataset()
+                || matches!(
+                    &message,
+                    AutomaticSegmentationMessage::SetShowOverlay(_)
+                        | AutomaticSegmentationMessage::SetOverlayOpacity(_)
+                        | AutomaticSegmentationMessage::SetPreviewSelected(_)
+                        | AutomaticSegmentationMessage::SetOutputMode(_)
+                        | AutomaticSegmentationMessage::SetOutputClass(_)
+                        | AutomaticSegmentationMessage::ToggleThreshold(_)
+                        | AutomaticSegmentationMessage::SetThreshold(_)
+                        | AutomaticSegmentationMessage::SetInference(_)
+                        | AutomaticSegmentationMessage::SaveModel(_)
+                ),
+            "A dataset import is running"
+        );
+        let changes_dataset = matches!(
+            &message,
+            AutomaticSegmentationMessage::AddClass
+                | AutomaticSegmentationMessage::RenameClass(..)
+                | AutomaticSegmentationMessage::SetClassColor(..)
+                | AutomaticSegmentationMessage::DeleteClass(..)
+                | AutomaticSegmentationMessage::ToggleStrokeVisibility(..)
+                | AutomaticSegmentationMessage::DeleteStroke(..)
+                | AutomaticSegmentationMessage::UndoStroke
+                | AutomaticSegmentationMessage::ClearAnnotations
+        );
         match message {
             AutomaticSegmentationMessage::AddClass => {
-                ensure!(self.state.classes.len() < 256, "Maximum of 256 classes");
                 let id = self.state.next_class_id;
-                self.state.next_class_id = id
+                let next_class_id = id
                     .checked_add(1)
                     .ok_or_else(|| anyhow::anyhow!("Class ID exhausted"))?;
                 let id = ClassId::new(id);
-                let number = self.state.classes.len() + 1;
+                let name = self.state.classes.unused_name();
                 self.state.classes.insert(
                     id,
                     SegmentationClass {
-                        name: format!("Class {number}"),
+                        name,
                         color: CLASS_PALETTE[id.get() as usize % CLASS_PALETTE.len()],
                         annotations: HashMap::new(),
                     },
-                );
+                )?;
+                self.state.next_class_id = next_class_id;
                 self.state.brush = AnnotationKind::Paint(id);
                 self.state.active_class = id;
                 self.edited();
             }
             AutomaticSegmentationMessage::RenameClass(id, name) => {
-                let name = name.trim().to_string();
-                ensure!(!name.is_empty(), "Class names cannot be empty");
-                self.class_mut(id)?.name = name;
+                self.state.classes.rename(id, name)?;
             }
             AutomaticSegmentationMessage::SetClassColor(id, color) => {
-                self.class_mut(id)?.color = color;
+                self.state.classes.set_color(id, color)?;
                 self.rebuild_mask();
             }
             AutomaticSegmentationMessage::DeleteClass(id) => {
-                ensure!(self.state.classes.len() > 2, "Keep at least two classes");
-                self.class_mut(id)?;
-                self.state.classes.remove(&id);
+                self.state.classes.remove(id)?;
                 self.state.hidden_classes.retain(|&c| c != id);
                 let fallback = *self
                     .state
@@ -423,7 +795,7 @@ impl AutomaticSegmentation {
                 self.edited();
             }
             AutomaticSegmentationMessage::ToggleClassVisibility(id) => {
-                self.class_mut(id)?;
+                self.class(id)?;
                 if self.state.hidden_classes.contains(&id) {
                     self.state.hidden_classes.retain(|&c| c != id);
                 } else {
@@ -437,7 +809,7 @@ impl AutomaticSegmentation {
             }
             AutomaticSegmentationMessage::SetOutputMode(value) => self.state.output_mode = value,
             AutomaticSegmentationMessage::SetOutputClass(id) => {
-                self.class_mut(id)?;
+                self.class(id)?;
                 self.state.output_class = id;
             }
             AutomaticSegmentationMessage::SetTraining(value) => {
@@ -461,7 +833,7 @@ impl AutomaticSegmentation {
             }
             AutomaticSegmentationMessage::SetBrush(kind) => {
                 if let AnnotationKind::Paint(id) = kind {
-                    self.class_mut(id)?;
+                    self.class(id)?;
                     self.state.active_class = id;
                 }
                 self.state.brush = kind;
@@ -536,6 +908,10 @@ impl AutomaticSegmentation {
                 }
                 self.edited();
             }
+            AutomaticSegmentationMessage::SaveDataset(path) => self.start_dataset_save(path)?,
+            AutomaticSegmentationMessage::LoadDataset(path, mode) => {
+                self.start_dataset_import(path, mode)?;
+            }
             AutomaticSegmentationMessage::TrainModel => self.start_training()?,
             AutomaticSegmentationMessage::SaveModel(path) => {
                 write_artifact(&path, &self.model_bytes()?)?;
@@ -555,6 +931,9 @@ impl AutomaticSegmentation {
                 self.state.model_path = Some(path);
                 self.state.model_revision = self.state.model_revision.wrapping_add(1);
             }
+        }
+        if changes_dataset {
+            self.dataset_edited();
         }
         self.changed();
         Ok(())
@@ -589,11 +968,21 @@ impl AutomaticSegmentation {
         }
     }
     fn finish_training(&mut self) {
-        if let Some(result) = self.job.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.job = None;
+        let result = self
+            .training_job
+            .as_ref()
+            .and_then(|job| match job.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(flume::TryRecvError::Empty) => None,
+                Err(flume::TryRecvError::Disconnected) => {
+                    Some(Err(anyhow::anyhow!("Training worker stopped unexpectedly")))
+                }
+            });
+        if let Some(result) = result {
+            let job = self.training_job.take().expect("completed training job");
             self.state.busy = false;
             match result {
-                _ if self.job_generation != self.training_generation || !self.state.is_enabled => {}
+                _ if job.generation != self.training_generation || !self.state.is_enabled => {}
                 Ok((model, class_ids)) => {
                     self.state.oob_error = model.oob_error;
                     self.model = Some(Arc::new(model));
@@ -631,10 +1020,15 @@ impl AutomaticSegmentation {
                     }
                 }
                 PipelineCommand::InteractionStart(x, y)
-                    if self.state.is_enabled && self.state.training =>
+                    if self.state.is_enabled
+                        && self.state.training
+                        && !self.importing_dataset() =>
                 {
                     if self.ensure_sample().is_some() {
-                        self.next_stroke_id += 1;
+                        self.next_stroke_id = self
+                            .next_stroke_id
+                            .checked_add(1)
+                            .ok_or_else(|| anyhow::anyhow!("Stroke ID exhausted"))?;
                         self.stroke = Some(PendingStroke {
                             id: self.next_stroke_id,
                             kind: self.state.brush,
@@ -656,9 +1050,10 @@ impl AutomaticSegmentation {
                             if let Some(sample) = self.current {
                                 match stroke.kind {
                                     AnnotationKind::Paint(id) => {
-                                        if let Some(class) = self.state.classes.get_mut(&id) {
-                                            class
-                                                .annotations
+                                        if let Some(annotations) =
+                                            self.state.classes.annotations_mut(id)
+                                        {
+                                            annotations
                                                 .entry(sample)
                                                 .or_default()
                                                 .insert(stroke.id, stroke.stroke);
@@ -673,6 +1068,7 @@ impl AutomaticSegmentation {
                                     }
                                 }
                             }
+                            self.dataset_edited();
                             self.edited();
                         }
                     }
@@ -719,7 +1115,7 @@ impl ToolBackend for AutomaticSegmentation {
             );
             state.training = false;
         }
-        validate_classes(&state.classes)?;
+        state.classes.validate()?;
         if let AnnotationKind::Paint(id) = state.brush {
             ensure!(state.classes.contains_key(&id), "Unknown brush class");
         }
@@ -765,6 +1161,10 @@ impl ToolBackend for AutomaticSegmentation {
         state.model_ready = model.is_some();
         state.oob_error = model.as_ref().and_then(|document| document.model.oob_error);
         state.busy = false;
+        state.dataset_samples = 0;
+        state.dataset_path = None;
+        state.dataset_dirty = false;
+        state.dataset_operation = None;
         state.model_revision = self.state.model_revision.wrapping_add(1);
 
         Ok(Some(Box::new(move || {
@@ -773,12 +1173,13 @@ impl ToolBackend for AutomaticSegmentation {
                 .as_ref()
                 .map_or_else(Vec::new, |document| document.class_ids.clone());
             self.model = model.map(|document| document.model);
+            self.reset_dataset_status();
             self.samples.clear();
             self.current = None;
             self.input = None;
             self.annotation_masks.clear();
             self.inference_cache = None;
-            self.job = None;
+            self.training_job = None;
             self.stroke = None;
             self.training_generation = self.training_generation.wrapping_add(1);
             self.cache.invalidate();
@@ -867,6 +1268,7 @@ impl ToolBackend for AutomaticSegmentation {
             self.changed();
         }
         self.finish_training();
+        self.finish_dataset_job();
         self.receive_commands()?;
         if std::mem::take(&mut self.overlays_dirty) {
             let _ = self.commands.send(PipelineCommand::RequestOverlays);

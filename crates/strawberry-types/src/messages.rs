@@ -5,8 +5,8 @@ use strawberry_processing::local_maxima::ThresholdType;
 use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, InferenceConfig};
 
 use super::{
-    AnnotationKind, BackendToolType, BrushRadius, ClassId, RgbColor, SegmentationOutputMode,
-    StrokeId, ToolState,
+    AnnotationKind, BackendToolType, BrushRadius, ClassId, DatasetImportMode, RgbColor,
+    SegmentationOutputMode, StrokeId, ToolState,
 };
 
 #[derive(Debug, Clone)]
@@ -105,6 +105,8 @@ pub enum AutomaticSegmentationMessage {
     TrainModel,
     SaveModel(PathBuf),
     LoadModel(PathBuf),
+    SaveDataset(PathBuf),
+    LoadDataset(PathBuf, DatasetImportMode),
 }
 
 #[derive(Debug, Clone)]
