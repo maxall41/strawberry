@@ -333,7 +333,6 @@ impl ToolSidebar {
                                     .px_1()
                                     .h_full()
                                     .justify_start()
-                                    .aria_label(tool.label)
                                     .aria_expanded(tool.expanded)
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(
