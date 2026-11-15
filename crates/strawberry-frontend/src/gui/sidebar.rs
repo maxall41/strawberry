@@ -1,8 +1,5 @@
 use crate::gui::{Button, ButtonVariant};
-use std::{
-    rc::Rc,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, rc::Rc};
 
 use gpui::{
     AnyView, App, Bounds, Context, DragMoveEvent, EventEmitter, FocusHandle, Focusable, FontWeight,
@@ -10,8 +7,7 @@ use gpui::{
 };
 use rfd::FileDialog;
 use strawberry_types::{
-    BackendToolType, ManagerMessage, ManagerState, PipelineCommand, PipelineObjectMessage,
-    ToolProxy, ToolState,
+    BackendToolType, CommandSender, PipelineCommand, PipelineState, ToolId, ToolSummary,
 };
 
 use super::{
@@ -21,9 +17,8 @@ use super::{
     tool_picker::{ToolChoice, ToolPicker, ToolPickerEvent},
     tooltip::TooltipView,
 };
-use crate::tools::{FrontendMessageHandler, ToolBase, spawn_message_processor};
 
-type PanelFactory = Rc<dyn Fn(&mut Window, &mut App) -> ToolPanel>;
+type PanelFactory = Rc<dyn Fn(ToolId, &mut Window, &mut App) -> ToolPanel>;
 const SLOT_HEIGHT: f32 = 8.0;
 
 pub struct ToolPanel {
@@ -36,30 +31,32 @@ pub struct ToolRegistration {
     kind: BackendToolType,
     label: &'static str,
     factory: PanelFactory,
-    panel: Option<ToolPanel>,
-    expanded: bool,
 }
 
 impl ToolRegistration {
     pub fn new(
         kind: BackendToolType,
         label: &'static str,
-        factory: impl Fn(&mut Window, &mut App) -> ToolPanel + 'static,
+        factory: impl Fn(ToolId, &mut Window, &mut App) -> ToolPanel + 'static,
     ) -> Self {
         Self {
             kind,
             label,
             factory: Rc::new(factory),
-            panel: None,
-            expanded: false,
         }
     }
 }
 
+#[derive(Default)]
+struct InstancePanel {
+    panel: Option<ToolPanel>,
+    expanded: bool,
+}
+
 #[derive(Clone)]
 struct DraggedTool {
-    kind: BackendToolType,
-    label: &'static str,
+    id: ToolId,
+    label: String,
     width: Pixels,
 }
 
@@ -78,7 +75,7 @@ impl Render for ToolDragPreview {
             .text_color(theme::TEXT)
             .text_sm()
             .shadow_lg()
-            .child(self.0.label)
+            .child(self.0.label.clone())
     }
 }
 
@@ -86,41 +83,72 @@ pub struct ToolSelected;
 
 pub struct ToolSidebar {
     tools: Vec<ToolRegistration>,
-    state: Arc<RwLock<ManagerState>>,
-    base: ToolBase,
+    instances: HashMap<ToolId, InstancePanel>,
+    state: PipelineState,
+    sender: CommandSender,
+    focus_handle: FocusHandle,
     scroll: ScrollHandle,
-    focus_requested: Option<BackendToolType>,
+    focus_requested: Option<ToolId>,
     add_menu: Option<gpui::Entity<ToolPicker>>,
-    drag_tool: Option<BackendToolType>,
+    drag_tool: Option<ToolId>,
     drop_slot: Option<usize>,
-    queued_commands: Vec<ManagerMessage>,
     busy_overlay: gpui::Entity<BusyOverlay>,
 }
 
 impl EventEmitter<ToolSelected> for ToolSidebar {}
 
 impl ToolSidebar {
-    pub fn new(
-        sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let mut sidebar = Self {
+    pub fn new(sender: CommandSender, window: &Window, cx: &mut Context<Self>) -> Self {
+        let (reply, subscription) = tokio::sync::oneshot::channel();
+        let _ = sender.send(PipelineCommand::SubscribePipeline(reply));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(mut receiver) = subscription.await else {
+                return;
+            };
+            loop {
+                let state = receiver.borrow_and_update().clone();
+                if this
+                    .update(cx, |this, cx| {
+                        this.instances
+                            .retain(|id, _| state.tools.iter().any(|tool| tool.id == *id));
+                        if let Some(id) = state.selected_tool
+                            && !this.instances.contains_key(&id)
+                        {
+                            this.instances.insert(
+                                id,
+                                InstancePanel {
+                                    expanded: true,
+                                    panel: None,
+                                },
+                            );
+                            this.focus_requested = Some(id);
+                        }
+                        this.state = state;
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                if receiver.changed().await.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        Self {
             tools: Vec::new(),
-            state: Arc::new(RwLock::new(ManagerState::default())),
-            base: ToolBase::new(sender, BackendToolType::Manager, cx.focus_handle()),
+            instances: HashMap::new(),
+            state: PipelineState::default(),
+            sender,
+            focus_handle: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             focus_requested: None,
             add_menu: None,
             drag_tool: None,
             drop_slot: None,
-            queued_commands: Vec::new(),
             busy_overlay: cx.new(|cx| BusyOverlay::new(true, cx)),
-        };
-        if sidebar.base.connect() {
-            spawn_message_processor(&mut sidebar, window, cx);
         }
-        sidebar
     }
 
     pub fn register(&mut self, tool: ToolRegistration) {
@@ -134,57 +162,35 @@ impl ToolSidebar {
     }
 
     pub fn add_tool(&mut self, kind: &BackendToolType, cx: &mut Context<Self>) {
-        if let Some(tool) = self.tools.iter_mut().find(|tool| tool.kind == *kind) {
-            tool.expanded = true;
-            self.focus_requested = Some(kind.clone());
-            self.add_menu = None;
-            self.queued_commands
-                .push(ManagerMessage::AddTool(kind.clone()));
-            self.reveal(cx);
-        }
+        let (reply, result) = tokio::sync::oneshot::channel();
+        let _ = self.sender.send(PipelineCommand::AddTool {
+            kind: kind.clone(),
+            reply,
+        });
+        cx.spawn(async move |_, _| {
+            let _ = result.await;
+        })
+        .detach();
+        self.reveal(cx);
     }
-
-    fn pipeline_tools(&self) -> Vec<ToolProxy> {
-        let mut tools = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .proxy_tools
-            .clone();
-        tools.sort_by_key(|tool| tool.position);
-        tools
+    fn pipeline_tools(&self) -> Vec<ToolSummary> {
+        self.state.tools.clone()
     }
-
-    fn flush_commands(&mut self) {
-        if self.base.send_channels.is_empty() {
-            return;
-        }
-        for message in std::mem::take(&mut self.queued_commands) {
-            if let Err(error) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-                PipelineObjectMessage::ManagerMessage(message),
-            )) {
-                eprintln!("Failed to update pipeline: {error}");
-            }
-        }
-    }
-
-    fn remove_tool(&mut self, kind: &BackendToolType, window: &mut Window, cx: &mut Context<Self>) {
-        self.queued_commands
-            .push(ManagerMessage::RemoveTool(kind.clone()));
-        self.base.focus_handle.focus(window, cx);
+    fn remove_tool(&mut self, id: ToolId, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.sender.send(PipelineCommand::RemoveTool(id));
+        self.focus_handle.focus(window, cx);
         cx.notify();
     }
-
-    fn toggle_expanded(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(tool) = self.tools.get_mut(index) {
-            tool.expanded = !tool.expanded;
-            if tool.expanded {
-                self.focus_requested = Some(tool.kind.clone());
-            } else {
-                self.base.focus_handle.focus(window, cx);
-            }
-            cx.notify();
+    fn toggle_expanded(&mut self, id: ToolId, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.sender.send(PipelineCommand::SelectTool(Some(id)));
+        let tool = self.instances.entry(id).or_default();
+        tool.expanded = !tool.expanded;
+        if tool.expanded {
+            self.focus_requested = Some(id);
+        } else {
+            self.focus_handle.focus(window, cx);
         }
+        cx.notify();
     }
 
     fn pipeline_file(save: bool, window: &Window, cx: &Context<Self>) {
@@ -197,11 +203,23 @@ impl ToolSidebar {
             };
             if let Some(path) = file {
                 let _ = this.update(cx, |this, cx| {
-                    this.queued_commands.push(if save {
-                        ManagerMessage::SavePipeline(path)
+                    let (reply, result) = tokio::sync::oneshot::channel();
+                    let command = if save {
+                        PipelineCommand::SavePipeline { path, reply }
                     } else {
-                        ManagerMessage::LoadPipeline(path)
-                    });
+                        PipelineCommand::LoadPipeline {
+                            path,
+                            cli: false,
+                            reply,
+                        }
+                    };
+                    let _ = this.sender.send(command);
+                    cx.spawn(async move |_, _| {
+                        if let Ok(Err(error)) = result.await {
+                            eprintln!("Pipeline file operation failed: {error}");
+                        }
+                    })
+                    .detach();
                     cx.notify();
                 });
             }
@@ -237,12 +255,10 @@ impl ToolSidebar {
     fn commit_drop(&mut self, cx: &mut Context<Self>) {
         let dragged = self.drag_tool.take();
         let slot = self.drop_slot.take();
-        if let (Some(kind), Some(slot)) = (dragged, slot)
-            && let Some((from, to)) =
-                reorder_indices(&self.pipeline_tools(), &kind.to_string(), slot)
+        if let (Some(id), Some(slot)) = (dragged, slot)
+            && let Some(before) = reorder_target(&self.pipeline_tools(), id, slot)
         {
-            self.queued_commands
-                .push(ManagerMessage::ReorderTool(from, to));
+            let _ = self.sender.send(PipelineCommand::MoveTool { id, before });
         }
         cx.notify();
     }
@@ -255,19 +271,18 @@ impl ToolSidebar {
         &self,
         row: usize,
         count: usize,
-        index: usize,
+        id: ToolId,
+        label: String,
         enabled: bool,
         cx: &Context<Self>,
     ) -> gpui::AnyElement {
-        let Some(tool) = self.tools.get(index) else {
+        let Some(tool) = self.instances.get(&id) else {
             return div().into_any_element();
         };
-        let kind = tool.kind.clone();
-        let remove_kind = kind.clone();
-        let dragged = self.drag_tool.as_ref() == Some(&kind);
+        let dragged = self.drag_tool == Some(id);
         let payload = DraggedTool {
-            kind,
-            label: tool.label,
+            id,
+            label: label.clone(),
             width: px((f32::from(self.scroll.bounds().size.width) - 16.0).max(120.0)),
         };
         let entity = cx.entity();
@@ -278,13 +293,23 @@ impl ToolSidebar {
             .child(drop_slot(self.drop_slot == Some(row)))
             .child(
                 div()
-                    .id(("pipeline-tool", index))
+                    .id(("pipeline-tool", id.0))
                     .flex()
                     .flex_none()
                     .flex_col()
                     .rounded_md()
                     .border_1()
-                    .border_color(theme::BORDER_MUTED)
+                    .border_color(if self.state.selected_tool == Some(id) {
+                        theme::ACCENT
+                    } else {
+                        theme::BORDER_MUTED
+                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, _| {
+                            let _ = this.sender.send(PipelineCommand::SelectTool(Some(id)));
+                        }),
+                    )
                     .overflow_hidden()
                     .bg(theme::WINDOW_BG)
                     .when(dragged, |el| el.opacity(0.4))
@@ -297,7 +322,7 @@ impl ToolSidebar {
                             .bg(theme::SURFACE)
                             .child(
                                 div()
-                                    .id(("tool-drag-handle", index))
+                                    .id(("tool-drag-handle", id.0))
                                     .w(px(20.))
                                     .h(px(24.))
                                     .flex_none()
@@ -317,7 +342,7 @@ impl ToolSidebar {
                                     })
                                     .on_drag(payload, move |dragged, _, _, cx| {
                                         entity.update(cx, |this, cx| {
-                                            this.drag_tool = Some(dragged.kind.clone());
+                                            this.drag_tool = Some(dragged.id);
                                             this.drop_slot = Some(row);
                                             cx.notify();
                                         });
@@ -325,7 +350,7 @@ impl ToolSidebar {
                                     }),
                             )
                             .child(
-                                Button::new(("tool-expand", index))
+                                Button::new(("tool-expand", id.0))
                                     .variant(ButtonVariant::Ghost)
                                     .flex_1()
                                     .min_w_0()
@@ -356,21 +381,21 @@ impl ToolSidebar {
                                             } else {
                                                 theme::TEXT_MUTED
                                             })
-                                            .child(tool.label),
+                                            .child(label),
                                     )
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.toggle_expanded(index, window, cx);
+                                        this.toggle_expanded(id, window, cx);
                                     })),
                             )
                             .child(
-                                Button::new(("tool-remove", index))
+                                Button::new(("tool-remove", id.0))
                                     .variant(ButtonVariant::Ghost)
                                     .icon(
                                         Icon::x().size(16.).color(theme::TEXT_MUTED),
                                         "Remove tool",
                                     )
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.remove_tool(&remove_kind, window, cx);
+                                        this.remove_tool(id, window, cx);
                                     })),
                             ),
                     )
@@ -392,14 +417,8 @@ impl ToolSidebar {
     }
 
     fn available_tools(&self) -> Vec<ToolChoice> {
-        let pipeline = self.pipeline_tools();
         self.tools
             .iter()
-            .filter(|tool| {
-                !pipeline
-                    .iter()
-                    .any(|active| active.name == tool.kind.to_string())
-            })
             .map(|tool| ToolChoice {
                 kind: tool.kind.clone(),
                 label: tool.label,
@@ -409,7 +428,7 @@ impl ToolSidebar {
 
     fn toggle_add_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.add_menu.take().is_some() {
-            self.base.focus_handle.focus(window, cx);
+            self.focus_handle.focus(window, cx);
             cx.notify();
             return;
         }
@@ -421,7 +440,7 @@ impl ToolSidebar {
                 ToolPickerEvent::Selected(kind) => this.add_tool(kind, cx),
                 ToolPickerEvent::Dismissed => {
                     this.add_menu = None;
-                    this.base.focus_handle.focus(window, cx);
+                    this.focus_handle.focus(window, cx);
                     cx.notify();
                 }
             },
@@ -443,62 +462,41 @@ impl ToolSidebar {
     }
 }
 
-impl FrontendMessageHandler for ToolSidebar {
-    type State = ManagerState;
-
-    fn state_arc(&self) -> Arc<RwLock<Self::State>> {
-        self.state.clone()
-    }
-    fn base(&self) -> &ToolBase {
-        &self.base
-    }
-    fn base_mut(&mut self) -> &mut ToolBase {
-        &mut self.base
-    }
-    fn extract_state(state: ToolState) -> Option<Self::State> {
-        if let ToolState::ManagerState(state) = state {
-            Some(state)
-        } else {
-            None
-        }
-    }
-
-    fn on_state_changed(&mut self, _new_state: &Self::State, cx: &mut Context<Self>) {
-        if let Some(menu) = &self.add_menu {
-            let tools = self.available_tools();
-            menu.update(cx, |menu, cx| menu.set_tools(tools, cx));
-        }
-    }
-}
-
 impl Render for ToolSidebar {
     #[expect(
         clippy::too_many_lines,
         reason = "Keep sidebar layout and bindings together"
     )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.flush_commands();
         if self.drag_tool.is_some() && !cx.has_active_drag() {
             self.drag_tool = None;
             self.drop_slot = None;
         }
         let pipeline = self.pipeline_tools();
         let mut rows = Vec::new();
+        let mut occurrences: HashMap<BackendToolType, usize> = HashMap::new();
         for (row, proxy) in pipeline.iter().enumerate() {
-            let Some(index) = self
-                .tools
-                .iter()
-                .position(|tool| tool.kind.to_string() == proxy.name)
-            else {
+            let Some(definition) = self.tools.iter().find(|tool| tool.kind == proxy.kind) else {
                 continue;
             };
-            if let Some(tool) = self.tools.get_mut(index)
-                && tool.expanded
-            {
+            let ordinal = occurrences.entry(proxy.kind.clone()).or_default();
+            *ordinal += 1;
+            let repeated = pipeline
+                .iter()
+                .filter(|tool| tool.kind == proxy.kind)
+                .count()
+                > 1;
+            let label = if repeated {
+                format!("{} {}", definition.label, ordinal)
+            } else {
+                definition.label.to_string()
+            };
+            let tool = self.instances.entry(proxy.id).or_default();
+            if tool.expanded {
                 if tool.panel.is_none() {
-                    tool.panel = Some((tool.factory)(window, cx));
+                    tool.panel = Some((definition.factory)(proxy.id, window, cx));
                 }
-                if self.focus_requested.as_ref() == Some(&tool.kind) {
+                if self.focus_requested == Some(proxy.id) {
                     if let Some(panel) = &tool.panel {
                         panel.focus.focus(window, cx);
                     }
@@ -506,7 +504,7 @@ impl Render for ToolSidebar {
                     self.focus_requested = None;
                 }
             }
-            rows.push(self.render_row(row, pipeline.len(), index, proxy.is_enabled, cx));
+            rows.push(self.render_row(row, pipeline.len(), proxy.id, label, proxy.is_enabled, cx));
         }
         div()
             .id("pipeline-sidebar")
@@ -515,10 +513,10 @@ impl Render for ToolSidebar {
             .flex_col()
             .size_full()
             .min_h_0()
-            .track_focus(&self.base.focus_handle)
+            .track_focus(&self.focus_handle)
             .on_mouse_down_out(cx.listener(|this, _, window, cx| {
                 if this.add_menu.take().is_some() {
-                    this.base.focus_handle.focus(window, cx);
+                    this.focus_handle.focus(window, cx);
                     cx.notify();
                 }
             }))
@@ -571,7 +569,7 @@ impl Render for ToolSidebar {
                         gpui::MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
                             if this.add_menu.take().is_some() {
-                                this.base.focus_handle.focus(window, cx);
+                                this.focus_handle.focus(window, cx);
                                 cx.notify();
                             }
                         }),
@@ -648,49 +646,46 @@ fn drop_slot(active: bool) -> impl IntoElement {
         )
 }
 
-/// Translate a visible insertion slot into backend indices. Tools outside the
-/// stack can leave gaps, so visible row numbers cannot be sent directly.
-fn reorder_indices(tools: &[ToolProxy], name: &str, slot: usize) -> Option<(u16, u16)> {
-    let from = tools.iter().position(|tool| tool.name == name)?;
+/// Resolve a visible insertion slot to the stable ID immediately after it.
+fn reorder_target(tools: &[ToolSummary], id: ToolId, slot: usize) -> Option<Option<ToolId>> {
+    let from = tools.iter().position(|tool| tool.id == id)?;
     if slot > tools.len() || slot == from || slot == from.saturating_add(1) {
         return None;
     }
-    let target = if slot < from {
-        slot
-    } else {
-        slot.saturating_sub(1)
-    };
-    Some((tools.get(from)?.position, tools.get(target)?.position))
+    Some(tools.get(slot).map(|tool| tool.id))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn pipeline() -> Vec<ToolProxy> {
-        [("Contrast", 2), ("Sobel", 5), ("Counter", 9)]
+    fn pipeline() -> Vec<ToolSummary> {
+        [2, 5, 9]
             .into_iter()
-            .map(|(name, position)| ToolProxy {
-                name: name.into(),
-                position,
-                is_enabled: name != "Sobel",
+            .map(|id| ToolSummary {
+                id: ToolId(id),
+                kind: BackendToolType::Contrast,
+                is_enabled: id != 5,
             })
             .collect()
     }
-
     #[test]
     fn reorder_uses_backend_positions_and_includes_disabled_stack_items() {
-        assert_eq!(reorder_indices(&pipeline(), "Counter", 0), Some((9, 2)));
-        assert_eq!(reorder_indices(&pipeline(), "Contrast", 3), Some((2, 9)));
-        assert_eq!(reorder_indices(&pipeline(), "Counter", 1), Some((9, 5)));
+        assert_eq!(
+            reorder_target(&pipeline(), ToolId(9), 0),
+            Some(Some(ToolId(2)))
+        );
+        assert_eq!(reorder_target(&pipeline(), ToolId(2), 3), Some(None));
+        assert_eq!(
+            reorder_target(&pipeline(), ToolId(9), 1),
+            Some(Some(ToolId(5)))
+        );
     }
-
     #[test]
     fn adjacent_and_invalid_drops_do_not_reorder() {
-        assert_eq!(reorder_indices(&pipeline(), "Sobel", 1), None);
-        assert_eq!(reorder_indices(&pipeline(), "Sobel", 2), None);
-        assert_eq!(reorder_indices(&pipeline(), "Sobel", 8), None);
-        assert_eq!(reorder_indices(&pipeline(), "Missing", 0), None);
-        assert_eq!(reorder_indices(&[], "Sobel", 0), None);
+        assert_eq!(reorder_target(&pipeline(), ToolId(5), 1), None);
+        assert_eq!(reorder_target(&pipeline(), ToolId(5), 2), None);
+        assert_eq!(reorder_target(&pipeline(), ToolId(5), 8), None);
+        assert_eq!(reorder_target(&pipeline(), ToolId(30), 0), None);
+        assert_eq!(reorder_target(&[], ToolId(5), 0), None);
     }
 }

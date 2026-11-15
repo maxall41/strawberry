@@ -1,12 +1,13 @@
 use std::sync::{Arc, RwLock};
+use strawberry_types::{CommandSender, ToolId};
 
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div,
     prelude::*,
 };
 use strawberry_types::{
-    BackendToolType, DifferenceOfGaussiansMessage, DifferenceOfGaussiansState, PipelineCommand,
-    PipelineObjectMessage, ToolFrontend, ToolState,
+    DifferenceOfGaussiansMessage, DifferenceOfGaussiansState, PipelineObjectMessage, ToolFrontend,
+    ToolState,
 };
 
 use crate::{
@@ -35,28 +36,17 @@ impl Focusable for DifferenceOfGaussiansView {
 }
 
 impl DifferenceOfGaussiansView {
-    pub fn new(
-        _receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: ToolId, sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(DifferenceOfGaussiansState::default())),
-            base: ToolBase::new(
-                sender,
-                BackendToolType::DifferenceOfGaussians,
-                cx.focus_handle(),
-            ),
+            base: ToolBase::new(sender, id, cx.focus_handle()),
             small_sigma_control: None,
             large_sigma_control: None,
         }
     }
 
     fn send(&self, message: PipelineObjectMessage) {
-        if let Err(error) = self
-            .base
-            .send_to_backend(PipelineCommand::PipelineObject(message))
-        {
+        if let Err(error) = self.base.send_to_backend(message) {
             eprintln!("Failed to update Difference of Gaussians: {error}");
         }
     }
@@ -72,7 +62,7 @@ impl DifferenceOfGaussiansView {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
-        self.send(PipelineObjectMessage::ToggleActive(!enabled));
+        let _ = self.base.set_enabled(!enabled);
     }
 }
 
@@ -137,6 +127,7 @@ impl Render for DifferenceOfGaussiansView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    this.base.select();
                     this.focus_handle(cx).focus(window, cx);
                 }),
             )
@@ -146,7 +137,7 @@ impl Render for DifferenceOfGaussiansView {
                     "Enabled".to_string(),
                     enabled,
                     move |this: &mut Self, _, _, _| {
-                        this.send(PipelineObjectMessage::ToggleActive(!enabled));
+                        let _ = this.base.set_enabled(!enabled);
                     },
                 )
                 .with_keyboard_shortcut("⌘T")

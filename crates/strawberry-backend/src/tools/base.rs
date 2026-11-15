@@ -1,93 +1,50 @@
-use strawberry_types::PipelineCommand;
+use std::sync::Mutex;
+use strawberry_types::FrontendMessage;
 
-/// Common infrastructure shared by all tools
-/// Use composition: tools embed this struct as a field
+#[derive(Default)]
+pub struct ToolEvents(Mutex<Vec<FrontendMessage>>);
+impl ToolEvents {
+    pub fn emit(&self, event: FrontendMessage) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+    }
+    pub fn drain(&self) -> Vec<FrontendMessage> {
+        std::mem::take(
+            &mut *self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+}
+
+#[derive(Default)]
 pub struct ToolBase {
-    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub sender: flume::Sender<PipelineCommand>,
-    pub receiver: flume::Receiver<PipelineCommand>,
-    pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
-    pub index: usize,
+    pub events: ToolEvents,
 }
-
 impl ToolBase {
-    #[must_use]
-    pub fn new(global_sender: tokio::sync::broadcast::Sender<PipelineCommand>) -> Self {
-        let (sender, receiver) = flume::unbounded();
-        Self {
-            global_sender,
-            sender,
-            receiver,
-            frontend_senders: Vec::new(),
-            index: 0,
-        }
-    }
-
-    /// # Errors
-    /// Returns an error if a command fails or a communication channel is disconnected.
-    pub fn send_to_frontend(&self, message: &PipelineCommand) -> anyhow::Result<()> {
-        for sender in &self.frontend_senders {
-            sender
-                .try_send(message.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to send to frontend: {e}"))?;
-        }
-        Ok(())
-    }
-
-    #[must_use]
-    pub fn collect_commands(&self) -> Vec<PipelineCommand> {
-        std::iter::from_fn(|| self.receiver.try_recv().ok()).collect()
+    pub fn new(events: ToolEvents) -> Self {
+        Self { events }
     }
 }
-
-/// Macro to implement the repetitive parts of `ToolBackend` trait
-/// Tools only need to implement: `process()`, `receive_messages()`, `get_state()`, `iam()`
 #[macro_export]
 macro_rules! impl_tool_backend_basics {
     ($tool_type:ty) => {
         fn persisted_state_mut(&mut self) -> Option<&mut dyn strawberry_types::PersistedState> {
             Some(&mut self.state)
         }
-
         fn is_enabled(&self) -> bool {
             self.state.is_enabled
         }
-
         fn set_enabled(&mut self, enabled: bool) {
             self.state.is_enabled = enabled;
         }
-
-        fn get_sender(&self) -> flume::Sender<strawberry_types::PipelineCommand> {
-            self.base.sender.clone()
+        fn drain_events(&mut self) -> Vec<strawberry_types::FrontendMessage> {
+            self.base.events.drain()
         }
-
-        fn add_frontend_sender(
-            &mut self,
-            sender: flume::Sender<strawberry_types::PipelineCommand>,
-        ) {
-            self.base.frontend_senders.push(sender);
-        }
-
-        fn disconnect(&mut self) {
-            self.base.frontend_senders.clear();
-        }
-
-        fn set_index(&mut self, index: usize) {
-            self.base.index = index;
-        }
-
         $crate::impl_tool_cache!();
-
-        fn sync_frontend(&mut self) -> anyhow::Result<()> {
-            if self.cache.sync.needs_frontend_sync(&self.state) {
-                self.base
-                    .send_to_frontend(&strawberry_types::PipelineCommand::FrontendMessage(
-                        strawberry_types::FrontendMessage::ReturnState(Box::new(self.get_state())),
-                    ))?;
-                self.cache.sync.frontend_latest_state = Some(self.state.clone());
-            }
-            Ok(())
-        }
     };
 }
 

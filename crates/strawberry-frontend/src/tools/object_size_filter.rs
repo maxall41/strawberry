@@ -1,4 +1,5 @@
 use std::sync::{Arc, RwLock};
+use strawberry_types::{CommandSender, ToolId};
 
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div,
@@ -6,8 +7,8 @@ use gpui::{
 };
 use num_traits::ToPrimitive;
 use strawberry_types::{
-    BackendToolType, ObjectSizeFilterMessage, ObjectSizeFilterMode, ObjectSizeFilterState,
-    PipelineCommand, PipelineObjectMessage, ToolFrontend, ToolState,
+    ObjectSizeFilterMessage, ObjectSizeFilterMode, ObjectSizeFilterState, PipelineObjectMessage,
+    ToolFrontend, ToolState,
 };
 
 use crate::{
@@ -44,24 +45,17 @@ impl ObjectSizeFilterView {
         (ObjectSizeFilterMode::RemoveLargerThan, "Remove larger than"),
     ];
 
-    pub fn new(
-        _receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: ToolId, sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(ObjectSizeFilterState::default())),
-            base: ToolBase::new(sender, BackendToolType::ObjectSizeFilter, cx.focus_handle()),
+            base: ToolBase::new(sender, id, cx.focus_handle()),
             size_control: None,
             mode_focus: tool_panel::ListFocus::new(),
         }
     }
 
     fn send(&self, message: PipelineObjectMessage) {
-        if let Err(error) = self
-            .base
-            .send_to_backend(PipelineCommand::PipelineObject(message))
-        {
+        if let Err(error) = self.base.send_to_backend(message) {
             eprintln!("Failed to update Object Size Filter: {error}");
         }
     }
@@ -83,7 +77,7 @@ impl ObjectSizeFilterView {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_enabled;
-        self.send(PipelineObjectMessage::ToggleActive(!enabled));
+        let _ = self.base.set_enabled(!enabled);
     }
 
     fn render_modes(
@@ -172,6 +166,7 @@ impl Render for ObjectSizeFilterView {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    this.base.select();
                     this.focus_handle(cx).focus(window, cx);
                 }),
             )
@@ -181,7 +176,7 @@ impl Render for ObjectSizeFilterView {
                     "Enabled".to_string(),
                     state.is_enabled,
                     move |this: &mut Self, _, _, _| {
-                        this.send(PipelineObjectMessage::ToggleActive(!state.is_enabled));
+                        let _ = this.base.set_enabled(!state.is_enabled);
                     },
                 )
                 .with_keyboard_shortcut("⌘T")

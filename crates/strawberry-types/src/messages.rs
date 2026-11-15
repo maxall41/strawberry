@@ -59,15 +59,6 @@ pub enum ObjectSizeFilterMessage {
 }
 
 #[derive(Debug, Clone)]
-pub enum ManagerMessage {
-    AddTool(BackendToolType),
-    RemoveTool(BackendToolType),
-    ReorderTool(u16, u16),
-    SavePipeline(PathBuf),
-    LoadPipeline(PathBuf),
-}
-
-#[derive(Debug, Clone)]
 pub enum RollingBallMessage {
     SetBallRadius(u32),
 }
@@ -169,8 +160,6 @@ pub enum PipelineObjectMessage {
     SobelMessage(SobelMessage),
     ThresholdMessage(ThresholdMessage),
     WatershedMessage(WatershedMessage),
-    ToggleActive(bool),
-    ManagerMessage(ManagerMessage),
     CountMessage(CountMessage),
     NerveTracerMessage(NerveTracerMessage),
 }
@@ -194,8 +183,10 @@ pub struct PipelineProgress {
 
 #[derive(Debug, Clone)]
 pub enum FrontendMessage {
-    ReturnState(Box<ToolState>),
-    ReturnBackendTools(Vec<u16>, Vec<flume::Sender<PipelineCommand>>),
+    ToolEvent {
+        id: super::ToolId,
+        event: Box<FrontendMessage>,
+    },
     UserFeedback(String, FeedbackLevel),
     ReturnOverlays(crate::overlay::OverlayCollection),
     SnapToPosition(f32, f32),
@@ -214,35 +205,57 @@ impl FrontendMessage {
     }
 }
 
-/// Commands that can be sent to the pipeline
-#[derive(Debug, Clone)]
+pub type CommandSender = tokio::sync::mpsc::UnboundedSender<PipelineCommand>;
+pub type CommandResult = tokio::sync::oneshot::Sender<Result<(), String>>;
+
+/// All frontend and CLI mutations share this ordered queue.
+#[derive(Debug)]
 pub enum PipelineCommand {
-    /// Load input images into the pipeline
-    Load(Vec<PathBuf>),
-    /// Message to pipeline object
-    PipelineObject(PipelineObjectMessage),
-    /// Message to frontend
-    FrontendMessage(FrontendMessage),
-    /// Request state from pipeline object
-    RequestState(),
-    /// Discover
-    DiscoverBackend(BackendToolType, flume::Sender<Self>),
-    /// Disconnect frontend tool
-    DisconnectFrontend(BackendToolType),
-    /// Handle click at x and y image pixels
+    AddTool {
+        kind: BackendToolType,
+        reply: tokio::sync::oneshot::Sender<Result<super::ToolId, String>>,
+    },
+    RemoveTool(super::ToolId),
+    SetEnabled {
+        id: super::ToolId,
+        enabled: bool,
+    },
+    SelectTool(Option<super::ToolId>),
+    MoveTool {
+        id: super::ToolId,
+        before: Option<super::ToolId>,
+    },
+    ToolMessage {
+        id: super::ToolId,
+        message: PipelineObjectMessage,
+    },
+    SubscribePipeline(
+        tokio::sync::oneshot::Sender<tokio::sync::watch::Receiver<super::PipelineState>>,
+    ),
+    SubscribeTool {
+        id: super::ToolId,
+        reply: tokio::sync::oneshot::Sender<Option<tokio::sync::watch::Receiver<ToolState>>>,
+    },
+    LoadPipeline {
+        path: PathBuf,
+        cli: bool,
+        reply: CommandResult,
+    },
+    SavePipeline {
+        path: PathBuf,
+        reply: CommandResult,
+    },
+    Load {
+        files: Vec<PathBuf>,
+        reply: CommandResult,
+    },
+    SaveOutput {
+        path: PathBuf,
+        reply: CommandResult,
+    },
     HandleClick(u64, u64),
-    /// Register click receiver
-    RegisterClickReceiver(flume::Sender<Self>),
-    /// Command used by CLI to avoid discovery negoitation
-    CLILoadPipeline(PathBuf),
-    /// Save output image to file
-    SaveOutput(PathBuf),
-    /// Request overlay updates from all tools
     RequestOverlays,
-    /// Interaction start (mouse down) at image coordinates
     InteractionStart(u64, u64),
-    /// Interaction move (mouse move while dragging) at image coordinates
     InteractionMove(u64, u64),
-    /// Interaction end (mouse up)
     InteractionEnd,
 }

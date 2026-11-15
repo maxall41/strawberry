@@ -1,3 +1,4 @@
+use crate::tools::base::ToolEvents;
 use anyhow::Context as _;
 use num_traits::ToPrimitive;
 use strawberry_types::RgbaColor;
@@ -16,17 +17,12 @@ use strawberry_types::consts::CIRCLE_COLORS;
 use strawberry_types::overlay::{CircleStyle, OverlayElement, ToolOverlay};
 use strawberry_types::{
     BackendToolType, CountData, CountMessage, CounterMode, CounterState, CounterTool,
-    FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolBackend, ToolState,
+    FrontendMessage, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Counter {
     pub state: CounterState,
-    pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub sender: flume::Sender<PipelineCommand>,
-    pub receiver: flume::Receiver<PipelineCommand>,
-    pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
-    pub index: usize,
-    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
+    pub events: ToolEvents,
     pub cache: crate::tools::cache::ToolCache<CounterState>,
     pub lasso_points: Vec<(u64, u64)>,
     pub is_lasso_dragging: bool,
@@ -34,24 +30,27 @@ pub struct Counter {
 
 #[async_trait]
 impl ToolBackend for Counter {
+    fn drain_events(&mut self) -> Vec<FrontendMessage> {
+        self.events.drain()
+    }
+    fn persisted_state_mut(&mut self) -> Option<&mut dyn strawberry_types::PersistedState> {
+        Some(&mut self.state)
+    }
+    fn cancel_interaction(&mut self) {
+        self.lasso_points.clear();
+        self.is_lasso_dragging = false;
+    }
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
-    fn get_sender(&self) -> flume::Sender<PipelineCommand> {
-        self.sender.clone()
-    }
+
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
     }
     fn get_state(&self) -> ToolState {
         ToolState::CounterState(self.state.clone())
     }
-    fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
-        self.frontend_senders.push(sender);
-    }
-    fn disconnect(&mut self) {
-        self.frontend_senders.clear();
-    }
+
     async fn process(
         &mut self,
         output_images: &mut Vec<Arc<image::RgbaImage>>,
@@ -88,354 +87,305 @@ impl ToolBackend for Counter {
         clippy::too_many_lines,
         reason = "Command dispatch as one function is cleaner"
     )]
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands: Vec<PipelineCommand> =
-            std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
-
-        for message in commands {
-            match message {
-                PipelineCommand::RequestState() => {
-                    self.send_to_frontend(&PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(Box::new(self.get_state())),
-                    ))?;
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        match message {
+            ToolInput::HandleClick(x, y) => {
+                if !self.state.is_enabled {
+                    return Ok(());
                 }
-                PipelineCommand::HandleClick(x, y) => {
-                    // `continue`, not `return`: bailing out of the whole batch
-                    // would silently drop every command drained after this one.
-                    if !self.state.is_enabled {
-                        continue;
-                    }
-                    if let Some(id) = self.state.active_count_type {
-                        match self.state.active_tool {
-                            Some(CounterTool::Place) => {
-                                self.state
-                                    .manual_counts
-                                    .entry(id)
-                                    .or_default()
-                                    .push(CountData {
-                                        position: (x, y),
-                                        size: 0,
-                                    });
+                if let Some(id) = self.state.active_count_type {
+                    match self.state.active_tool {
+                        Some(CounterTool::Place) => {
+                            self.state
+                                .manual_counts
+                                .entry(id)
+                                .or_default()
+                                .push(CountData {
+                                    position: (x, y),
+                                    size: 0,
+                                });
+                        }
+                        Some(CounterTool::Delete) => {
+                            if let Some(counts) = self.state.manual_counts.get_mut(&id) {
+                                counts.retain(|count| {
+                                    let dx = count.position.0.abs_diff(x);
+                                    let dy = count.position.1.abs_diff(y);
+                                    // A six-pixel radius; avoid signed conversion and overflow.
+                                    dx > 6
+                                        || dy > 6
+                                        || dx
+                                            .saturating_mul(dx)
+                                            .saturating_add(dy.saturating_mul(dy))
+                                            > 36
+                                });
                             }
-                            Some(CounterTool::Delete) => {
-                                if let Some(counts) = self.state.manual_counts.get_mut(&id) {
-                                    counts.retain(|count| {
-                                        let dx = count.position.0.abs_diff(x);
-                                        let dy = count.position.1.abs_diff(y);
-                                        // A six-pixel radius; avoid signed conversion and overflow.
-                                        dx > 6
-                                            || dy > 6
-                                            || dx
-                                                .saturating_mul(dx)
-                                                .saturating_add(dy.saturating_mul(dy))
-                                                > 36
-                                    });
-                                }
-                            }
-                            _ => {}
                         }
+                        _ => {}
                     }
                 }
-                PipelineCommand::InteractionStart(x, y) => {
-                    if !self.state.is_enabled {
-                        continue;
-                    }
-                    if self.state.active_tool == Some(CounterTool::LassoDelete) {
-                        self.is_lasso_dragging = true;
-                        self.lasso_points.clear();
-                        self.lasso_points.push((x, y));
-                        // Trigger overlay update
-                        let overlays = self.get_overlays();
-                        if let Some(overlays) = overlays {
-                            let _ = self.global_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::ReturnOverlays({
-                                    let mut collection = crate::overlay::OverlayCollection::new();
-                                    collection.merge(overlays);
-                                    collection
-                                }),
-                            ));
+            }
+            ToolInput::InteractionStart(x, y) => {
+                if !self.state.is_enabled {
+                    return Ok(());
+                }
+                if self.state.active_tool == Some(CounterTool::LassoDelete) {
+                    self.is_lasso_dragging = true;
+                    self.lasso_points.clear();
+                    self.lasso_points.push((x, y));
+                }
+            }
+            ToolInput::InteractionMove(x, y) => {
+                if self.is_lasso_dragging {
+                    self.lasso_points.push((x, y));
+                }
+            }
+            ToolInput::InteractionEnd => {
+                if self.is_lasso_dragging && !self.lasso_points.is_empty() {
+                    // Process the lasso deletion
+                    if let Some(active_count_type) = &self.state.active_count_type {
+                        let polygon = ramer_douglas_peucker_closed(self.lasso_points.clone());
+                        if let Some(counts) = self.state.manual_counts.get(active_count_type) {
+                            let filtered = find_counts_within_polygon(&polygon, counts.clone());
+                            self.state
+                                .manual_counts
+                                .insert(*active_count_type, filtered);
                         }
                     }
+                    self.is_lasso_dragging = false;
+                    self.lasso_points.clear();
                 }
-                PipelineCommand::InteractionMove(x, y) => {
-                    if self.is_lasso_dragging {
-                        self.lasso_points.push((x, y));
-                        // Trigger overlay update for visual feedback
-                        let overlays = self.get_overlays();
-                        if let Some(overlays) = overlays {
-                            let _ = self.global_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::ReturnOverlays({
-                                    let mut collection = crate::overlay::OverlayCollection::new();
-                                    collection.merge(overlays);
-                                    collection
-                                }),
-                            ));
-                        }
+            }
+            ToolInput::Message(message) => match message {
+                PipelineObjectMessage::CountMessage(count_message) => match count_message {
+                    CountMessage::NewCountType(id) => {
+                        self.state.manual_counts.insert(id, vec![]);
+                        self.state.count_type_visibility.insert(id, true);
+                        self.state.count_type_names.insert(id, format!("Type {id}"));
+                        self.state.active_count_type = Some(id);
                     }
-                }
-                PipelineCommand::InteractionEnd => {
-                    if self.is_lasso_dragging && !self.lasso_points.is_empty() {
-                        // Process the lasso deletion
+                    CountMessage::DeletionLasso(points) => {
                         if let Some(active_count_type) = &self.state.active_count_type {
-                            let polygon = ramer_douglas_peucker_closed(self.lasso_points.clone());
-                            if let Some(counts) = self.state.manual_counts.get(active_count_type) {
-                                let filtered = find_counts_within_polygon(&polygon, counts.clone());
-                                self.state
-                                    .manual_counts
-                                    .insert(*active_count_type, filtered);
-                            }
+                            let polygon = ramer_douglas_peucker_closed(points);
+                            let counts = self
+                                .state
+                                .manual_counts
+                                .get(active_count_type)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "Active count type {active_count_type} not found"
+                                    )
+                                })?
+                                .clone();
+                            self.state.manual_counts.insert(
+                                *active_count_type,
+                                find_counts_within_polygon(&polygon, counts),
+                            );
                         }
-                        self.is_lasso_dragging = false;
-                        self.lasso_points.clear();
                     }
-                }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
+                    CountMessage::SetActiveCountType(id) => {
+                        self.state.active_count_type = Some(id);
+                        // The review cursor is per-tool, not per-type; reset it so
+                        // it can't dangle past the end of a shorter list.
+                        self.state.review_current_index = 0;
                     }
-                    PipelineObjectMessage::CountMessage(count_message) => match count_message {
-                        CountMessage::NewCountType(id) => {
-                            self.state.manual_counts.insert(id, vec![]);
-                            self.state.count_type_visibility.insert(id, true);
-                            self.state.count_type_names.insert(id, format!("Type {id}"));
-                            self.state.active_count_type = Some(id);
-                        }
-                        CountMessage::DeletionLasso(points) => {
-                            if let Some(active_count_type) = &self.state.active_count_type {
-                                let polygon = ramer_douglas_peucker_closed(points);
-                                let counts = self
-                                    .state
-                                    .manual_counts
-                                    .get(active_count_type)
-                                    .ok_or_else(|| {
-                                        anyhow::anyhow!(
-                                            "Active count type {active_count_type} not found"
-                                        )
-                                    })?
-                                    .clone();
-                                self.state.manual_counts.insert(
-                                    *active_count_type,
-                                    find_counts_within_polygon(&polygon, counts),
-                                );
-                            }
-                        }
-                        CountMessage::SetActiveCountType(id) => {
-                            self.state.active_count_type = Some(id);
-                            // The review cursor is per-tool, not per-type; reset it so
-                            // it can't dangle past the end of a shorter list.
+                    CountMessage::SetActiveTool(tool) => {
+                        self.state.active_tool = tool;
+                    }
+                    CountMessage::DeleteCountType(id) => {
+                        self.state.manual_counts.remove(&id);
+                        self.state.count_type_visibility.remove(&id);
+                        self.state.count_type_names.remove(&id);
+                        // Never let active_count_type dangle
+                        if self.state.active_count_type == Some(id) {
+                            self.state.active_count_type =
+                                self.state.manual_counts.keys().min().copied();
                             self.state.review_current_index = 0;
                         }
-                        CountMessage::SetActiveTool(tool) => {
-                            self.state.active_tool = tool;
+                    }
+                    CountMessage::ToggleCountTypeVisibility(id) => {
+                        let current_visibility =
+                            self.state.count_type_visibility.get(&id).unwrap_or(&true);
+                        self.state
+                            .count_type_visibility
+                            .insert(id, !current_visibility);
+                    }
+                    CountMessage::SetMode(new_mode) => {
+                        self.state.mode = new_mode;
+                    }
+                    CountMessage::SaveCounts(file) => {
+                        // Use the utils::io module to export to XML
+                        if let Err(e) = export_counter_to_xml_file(&self.state, &file) {
+                            self.events.emit(FrontendMessage::error(
+                                "Error saving counts: XML export failed".to_string(),
+                            ));
+                            return Err(anyhow::anyhow!("Error saving counts to file: {e}"));
                         }
-                        CountMessage::DeleteCountType(id) => {
-                            self.state.manual_counts.remove(&id);
-                            self.state.count_type_visibility.remove(&id);
-                            self.state.count_type_names.remove(&id);
-                            // Never let active_count_type dangle
-                            if self.state.active_count_type == Some(id) {
-                                self.state.active_count_type =
-                                    self.state.manual_counts.keys().min().copied();
-                                self.state.review_current_index = 0;
-                            }
-                        }
-                        CountMessage::ToggleCountTypeVisibility(id) => {
-                            let current_visibility =
-                                self.state.count_type_visibility.get(&id).unwrap_or(&true);
-                            self.state
-                                .count_type_visibility
-                                .insert(id, !current_visibility);
-                        }
-                        CountMessage::SetMode(new_mode) => {
-                            self.state.mode = new_mode;
-                        }
-                        CountMessage::SaveCounts(file) => {
-                            // Use the utils::io module to export to XML
-                            if let Err(e) = export_counter_to_xml_file(&self.state, &file) {
-                                self.global_sender.send(PipelineCommand::FrontendMessage(
-                                    FrontendMessage::error(
-                                        "Error saving counts: XML export failed".to_string(),
-                                    ),
-                                ))?;
-                                return Err(anyhow::anyhow!("Error saving counts to file: {e}"));
-                            }
-                            self.global_sender.send(PipelineCommand::FrontendMessage(
-                                FrontendMessage::success("Counts saved successfully!".to_string()),
-                            ))?;
-                        }
-                        CountMessage::LoadCounts(file) => {
-                            match crate::counter::io::import_counter_from_xml_file(&file) {
-                                Ok(loaded_state) => {
-                                    self.state.manual_counts = loaded_state.manual_counts;
-                                    self.state.auto_counts = loaded_state.auto_counts;
-                                    self.state.mode = loaded_state.mode;
-                                    self.state.active_count_type = loaded_state.active_count_type;
-                                    self.state.count_type_names = loaded_state.count_type_names;
-                                    self.state.is_enabled = true;
+                        self.events.emit(FrontendMessage::success(
+                            "Counts saved successfully!".to_string(),
+                        ));
+                    }
+                    CountMessage::LoadCounts(file) => {
+                        match crate::counter::io::import_counter_from_xml_file(&file) {
+                            Ok(loaded_state) => {
+                                self.state.manual_counts = loaded_state.manual_counts;
+                                self.state.auto_counts = loaded_state.auto_counts;
+                                self.state.mode = loaded_state.mode;
+                                self.state.active_count_type = loaded_state.active_count_type;
+                                self.state.count_type_names = loaded_state.count_type_names;
+                                self.state.is_enabled = true;
 
-                                    // Initialize visibility for all loaded count types
-                                    self.state.count_type_visibility.clear();
-                                    for &count_type_id in self.state.manual_counts.keys() {
-                                        self.state
-                                            .count_type_visibility
-                                            .insert(count_type_id, true);
-                                    }
-
-                                    self.global_sender.send(PipelineCommand::FrontendMessage(
-                                        FrontendMessage::success(
-                                            "Counts loaded successfully!".to_string(),
-                                        ),
-                                    ))?;
-                                    println!(
-                                        "Sent count loaded user feedback over command_sender broadcast channel"
-                                    );
+                                // Initialize visibility for all loaded count types
+                                self.state.count_type_visibility.clear();
+                                for &count_type_id in self.state.manual_counts.keys() {
+                                    self.state.count_type_visibility.insert(count_type_id, true);
                                 }
-                                Err(e) => {
-                                    self.global_sender.send(PipelineCommand::FrontendMessage(
-                                        FrontendMessage::error(
-                                            "Error loading counts: XML import failed".to_string(),
-                                        ),
-                                    ))?;
-                                    return Err(anyhow::anyhow!(
-                                        "Error loading counts from file: {e}"
+
+                                self.events.emit(FrontendMessage::success(
+                                    "Counts loaded successfully!".to_string(),
+                                ));
+                                println!(
+                                    "Sent count loaded user feedback over command_sender broadcast channel"
+                                );
+                            }
+                            Err(e) => {
+                                self.events.emit(FrontendMessage::error(
+                                    "Error loading counts: XML import failed".to_string(),
+                                ));
+                                return Err(anyhow::anyhow!("Error loading counts from file: {e}"));
+                            }
+                        }
+                    }
+                    CountMessage::CopyToManual => {
+                        // `len()` collides with existing ids once types have
+                        // been deleted; pick the first genuinely free id.
+                        let new_key = (0..=u16::MAX)
+                            .find(|k| !self.state.manual_counts.contains_key(k))
+                            .ok_or_else(|| anyhow::anyhow!("No count type IDs available"))?;
+                        self.state
+                            .manual_counts
+                            .insert(new_key, self.state.auto_counts.clone());
+                        self.state.count_type_visibility.insert(new_key, true);
+                        self.state
+                            .count_type_names
+                            .insert(new_key, format!("Type {new_key}"));
+                        self.state.mode = CounterMode::Manual;
+                        self.state.active_count_type = Some(new_key);
+                        self.state.review_current_index = 0;
+                    }
+                    CountMessage::ReviewNavigatePrevious => {
+                        if let Some(active_count_type) = self.state.active_count_type
+                            && let Some(counts) = self.state.manual_counts.get(&active_count_type)
+                        {
+                            let counts_len = counts.len();
+
+                            if counts_len > 0 {
+                                // Clamp: the cursor can be stale when counts were
+                                // trimmed outside review (Delete tool, lasso).
+                                let current_index = self
+                                    .state
+                                    .review_current_index
+                                    .min(counts_len.saturating_sub(1));
+                                let new_index = if current_index == 0 {
+                                    counts_len.saturating_sub(1)
+                                } else {
+                                    current_index.saturating_sub(1)
+                                };
+                                self.state.review_current_index = new_index;
+
+                                // Emit snap to position
+                                if let Some(count) = counts.get(new_index) {
+                                    self.events.emit(FrontendMessage::SnapToPosition(
+                                        count
+                                            .position
+                                            .0
+                                            .to_f32()
+                                            .context("Count coordinate cannot be displayed")?,
+                                        count
+                                            .position
+                                            .1
+                                            .to_f32()
+                                            .context("Count coordinate cannot be displayed")?,
                                     ));
                                 }
                             }
                         }
-                        CountMessage::CopyToManual => {
-                            // `len()` collides with existing ids once types have
-                            // been deleted; pick the first genuinely free id.
-                            let new_key = (0..=u16::MAX)
-                                .find(|k| !self.state.manual_counts.contains_key(k))
-                                .ok_or_else(|| anyhow::anyhow!("No count type IDs available"))?;
-                            self.state
-                                .manual_counts
-                                .insert(new_key, self.state.auto_counts.clone());
-                            self.state.count_type_visibility.insert(new_key, true);
-                            self.state
-                                .count_type_names
-                                .insert(new_key, format!("Type {new_key}"));
-                            self.state.mode = CounterMode::Manual;
-                            self.state.active_count_type = Some(new_key);
-                            self.state.review_current_index = 0;
-                        }
-                        CountMessage::ReviewNavigatePrevious => {
-                            if let Some(active_count_type) = self.state.active_count_type
-                                && let Some(counts) =
-                                    self.state.manual_counts.get(&active_count_type)
-                            {
-                                let counts_len = counts.len();
+                    }
+                    CountMessage::ReviewNavigateNext => {
+                        if let Some(active_count_type) = self.state.active_count_type
+                            && let Some(counts) = self.state.manual_counts.get(&active_count_type)
+                        {
+                            let counts_len = counts.len();
 
-                                if counts_len > 0 {
-                                    // Clamp: the cursor can be stale when counts were
-                                    // trimmed outside review (Delete tool, lasso).
-                                    let current_index = self
-                                        .state
-                                        .review_current_index
-                                        .min(counts_len.saturating_sub(1));
-                                    let new_index = if current_index == 0 {
-                                        counts_len.saturating_sub(1)
-                                    } else {
-                                        current_index.saturating_sub(1)
-                                    };
-                                    self.state.review_current_index = new_index;
-
-                                    // Emit snap to position
-                                    if let Some(count) = counts.get(new_index) {
-                                        let _ = self.global_sender.send(
-                                            PipelineCommand::FrontendMessage(
-                                                FrontendMessage::SnapToPosition(
-                                                    count.position.0.to_f32().context(
-                                                        "Count coordinate cannot be displayed",
-                                                    )?,
-                                                    count.position.1.to_f32().context(
-                                                        "Count coordinate cannot be displayed",
-                                                    )?,
-                                                ),
-                                            ),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        CountMessage::ReviewNavigateNext => {
-                            if let Some(active_count_type) = self.state.active_count_type
-                                && let Some(counts) =
-                                    self.state.manual_counts.get(&active_count_type)
-                            {
-                                let counts_len = counts.len();
-
-                                if counts_len > 0 {
-                                    // Clamp: the cursor can be stale when counts were
-                                    // trimmed outside review (Delete tool, lasso).
-                                    let current_index = self
-                                        .state
-                                        .review_current_index
-                                        .min(counts_len.saturating_sub(1));
-                                    let new_index = (current_index.saturating_add(1))
-                                        .checked_rem(counts_len)
-                                        .unwrap_or_default();
-                                    self.state.review_current_index = new_index;
-
-                                    // Emit snap to position
-                                    if let Some(count) = counts.get(new_index) {
-                                        let _ = self.global_sender.send(
-                                            PipelineCommand::FrontendMessage(
-                                                FrontendMessage::SnapToPosition(
-                                                    count.position.0.to_f32().context(
-                                                        "Count coordinate cannot be displayed",
-                                                    )?,
-                                                    count.position.1.to_f32().context(
-                                                        "Count coordinate cannot be displayed",
-                                                    )?,
-                                                ),
-                                            ),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        CountMessage::DeleteCurrentCount => {
-                            if let Some(active_count_type) = self.state.active_count_type
-                                && let Some(counts) =
-                                    self.state.manual_counts.get_mut(&active_count_type)
-                                && !counts.is_empty()
-                            {
-                                // Clamp instead of the old `index < len` guard: a
-                                // stale cursor (counts trimmed outside review) must
-                                // still delete something, not silently no-op.
+                            if counts_len > 0 {
+                                // Clamp: the cursor can be stale when counts were
+                                // trimmed outside review (Delete tool, lasso).
                                 let current_index = self
                                     .state
                                     .review_current_index
-                                    .min(counts.len().saturating_sub(1));
-                                counts.remove(current_index);
+                                    .min(counts_len.saturating_sub(1));
+                                let new_index = (current_index.saturating_add(1))
+                                    .checked_rem(counts_len)
+                                    .unwrap_or_default();
+                                self.state.review_current_index = new_index;
 
-                                self.state.review_current_index = if counts.is_empty() {
-                                    0
-                                } else {
-                                    current_index.min(counts.len().saturating_sub(1))
-                                };
-                                // Deleting the last count leaves nothing to snap to.
-                                if let Some(count) = counts.get(self.state.review_current_index) {
-                                    let _ =
-                                        self.global_sender.send(PipelineCommand::FrontendMessage(
-                                            FrontendMessage::SnapToPosition(
-                                                count.position.0.to_f32().context(
-                                                    "Count coordinate cannot be displayed",
-                                                )?,
-                                                count.position.1.to_f32().context(
-                                                    "Count coordinate cannot be displayed",
-                                                )?,
-                                            ),
-                                        ));
+                                // Emit snap to position
+                                if let Some(count) = counts.get(new_index) {
+                                    self.events.emit(FrontendMessage::SnapToPosition(
+                                        count
+                                            .position
+                                            .0
+                                            .to_f32()
+                                            .context("Count coordinate cannot be displayed")?,
+                                        count
+                                            .position
+                                            .1
+                                            .to_f32()
+                                            .context("Count coordinate cannot be displayed")?,
+                                    ));
                                 }
                             }
                         }
-                    },
-                    _ => {}
+                    }
+                    CountMessage::DeleteCurrentCount => {
+                        if let Some(active_count_type) = self.state.active_count_type
+                            && let Some(counts) =
+                                self.state.manual_counts.get_mut(&active_count_type)
+                            && !counts.is_empty()
+                        {
+                            // Clamp instead of the old `index < len` guard: a
+                            // stale cursor (counts trimmed outside review) must
+                            // still delete something, not silently no-op.
+                            let current_index = self
+                                .state
+                                .review_current_index
+                                .min(counts.len().saturating_sub(1));
+                            counts.remove(current_index);
+
+                            self.state.review_current_index = if counts.is_empty() {
+                                0
+                            } else {
+                                current_index.min(counts.len().saturating_sub(1))
+                            };
+                            // Deleting the last count leaves nothing to snap to.
+                            if let Some(count) = counts.get(self.state.review_current_index) {
+                                self.events.emit(FrontendMessage::SnapToPosition(
+                                    count
+                                        .position
+                                        .0
+                                        .to_f32()
+                                        .context("Count coordinate cannot be displayed")?,
+                                    count
+                                        .position
+                                        .1
+                                        .to_f32()
+                                        .context("Count coordinate cannot be displayed")?,
+                                ));
+                            }
+                        }
+                    }
                 },
                 _ => {}
-            }
+            },
         }
 
         Ok(())
@@ -445,29 +395,11 @@ impl ToolBackend for Counter {
         BackendToolType::Counter
     }
 
-    fn set_index(&mut self, index: usize) {
-        self.index = index;
-    }
-
     crate::impl_tool_cache!();
 
     /// Push state to the frontend without discarding the cached image.
-    fn sync_frontend(&mut self) -> anyhow::Result<()> {
-        if !self.cache.sync.needs_frontend_sync(&self.state) {
-            return Ok(());
-        }
-        let message = PipelineCommand::FrontendMessage(FrontendMessage::ReturnState(Box::new(
-            self.get_state(),
-        )));
-        self.send_to_frontend(&message)?;
-        self.cache.sync.frontend_latest_state = Some(self.state.clone());
-        self.command_sender
-            .send(PipelineCommand::RequestOverlays)
-            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {e}"))?;
-        Ok(())
-    }
 
-    fn get_overlays(&self) -> Option<crate::overlay::ToolOverlay> {
+    fn get_overlays(&self, id: strawberry_types::ToolId) -> Option<crate::overlay::ToolOverlay> {
         // Only the overlay is rounded to f32; stored count positions remain exact integers.
         if !self.state.is_enabled {
             return None;
@@ -542,7 +474,7 @@ impl ToolBackend for Counter {
         }
 
         Some(ToolOverlay {
-            tool_id: strawberry_types::BackendToolType::Counter,
+            tool_id: id,
             z_order: 100, // High priority - on top
             elements,
         })
@@ -550,17 +482,8 @@ impl ToolBackend for Counter {
 }
 
 impl Counter {
-    /// # Errors
-    /// Returns an error if a command fails or a communication channel is disconnected.
-    pub fn new(
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    ) -> anyhow::Result<Self> {
-        let (sender, receiver) = flume::unbounded();
-        command_sender
-            .send(PipelineCommand::RegisterClickReceiver(sender.clone()))
-            .map_err(|e| anyhow::anyhow!("Failed to register click receiver: {e}"))?;
-
+    #[must_use]
+    pub fn new(events: ToolEvents) -> Self {
         let state = CounterState {
             is_enabled: false,
             manual_counts: HashMap::new(),
@@ -572,26 +495,12 @@ impl Counter {
             count_type_visibility: HashMap::new(),
             count_type_names: HashMap::new(),
         };
-        Ok(Self {
+        Self {
             state: state.clone(),
-            frontend_senders: vec![],
-            index: 0,
-            command_sender,
-            sender,
-            receiver,
-            global_sender,
+            events,
             cache: crate::tools::cache::ToolCache::new(&state),
             lasso_points: Vec::new(),
             is_lasso_dragging: false,
-        })
-    }
-
-    fn send_to_frontend(&self, message: &PipelineCommand) -> anyhow::Result<()> {
-        for (i, sender) in self.frontend_senders.iter().enumerate() {
-            sender
-                .send(message.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to send message to sender {i}: {e}"))?;
         }
-        Ok(())
     }
 }

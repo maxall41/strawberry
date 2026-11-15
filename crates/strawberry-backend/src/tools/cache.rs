@@ -66,7 +66,6 @@ impl SyncState for NerveTracerState {
 /// Frontend delivery never determines whether processing is out of date.
 pub struct ToolSync<TState> {
     reconciled: TState,
-    pub frontend_latest_state: Option<TState>,
 }
 
 impl<TState: SyncState> ToolSync<TState> {
@@ -74,7 +73,6 @@ impl<TState: SyncState> ToolSync<TState> {
     pub fn new(state: &TState) -> Self {
         Self {
             reconciled: state.clone(),
-            frontend_latest_state: None,
         }
     }
 
@@ -90,11 +88,6 @@ impl<TState: SyncState> ToolSync<TState> {
         if self.reconciled != *state {
             self.reconciled = state.clone();
         }
-    }
-
-    #[must_use]
-    pub fn needs_frontend_sync(&self, state: &TState) -> bool {
-        self.frontend_latest_state.as_ref() != Some(state)
     }
 }
 

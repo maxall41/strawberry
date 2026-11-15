@@ -1,3 +1,4 @@
+use crate::tools::base::ToolEvents;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -7,8 +8,8 @@ use strawberry_processing::{GpuImageProcessor, gaussian_blur::GpuGaussianBlur};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, GaussianBlurMessage, GaussianBlurState, PipelineCommand,
-    PipelineObjectMessage, ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, GaussianBlurMessage, GaussianBlurState,
+    PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct GaussianBlur {
@@ -36,10 +37,8 @@ impl ToolBackend for GaussianBlur {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
-                        .global_sender
-                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                            format!("Gaussian Blur error: {e}"),
-                        )))?;
+                        .events
+                        .emit(FrontendMessage::error(format!("Gaussian Blur error: {e}")));
                     return Err(e);
                 }
             };
@@ -47,30 +46,18 @@ impl ToolBackend for GaussianBlur {
         Ok(())
     }
 
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = self.base.collect_commands();
-
-        for message in commands {
-            match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
-                }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        match message {
+            ToolInput::Message(message) => match message {
+                PipelineObjectMessage::GaussianBlurMessage(message) => match message {
+                    GaussianBlurMessage::SetSigma(sigma) => {
+                        anyhow::ensure!(sigma.is_finite() && sigma > 0., "Sigma must be positive");
+                        self.state.sigma = sigma;
                     }
-                    PipelineObjectMessage::GaussianBlurMessage(message) => match message {
-                        GaussianBlurMessage::SetSigma(sigma) => {
-                            self.state.sigma = sigma;
-                        }
-                    },
-                    _ => {}
                 },
                 _ => {}
-            }
+            },
+            _ => {}
         }
 
         Ok(())
@@ -79,17 +66,14 @@ impl ToolBackend for GaussianBlur {
 
 impl GaussianBlur {
     #[must_use]
-    pub fn new(
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        gpu_image_processor: Arc<GpuImageProcessor>,
-    ) -> Self {
+    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
         let state = GaussianBlurState {
             is_enabled: false,
             sigma: 2.0,
         };
         Self {
             state: state.clone(),
-            base: ToolBase::new(global_sender),
+            base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             processor: GpuGaussianBlur::new(gpu_image_processor),
         }

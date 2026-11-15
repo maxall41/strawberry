@@ -1,11 +1,12 @@
+use crate::tools::base::ToolEvents;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use image::{Rgba, RgbaImage};
 use lutz::{Pixel, lutz};
 use strawberry_types::{
-    BackendToolType, FrontendMessage, ObjectSizeFilterMessage, ObjectSizeFilterMode,
-    ObjectSizeFilterState, PipelineCommand, PipelineObjectMessage, ToolBackend, ToolState,
+    BackendToolType, ObjectSizeFilterMessage, ObjectSizeFilterMode, ObjectSizeFilterState,
+    PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
 use crate::{
@@ -57,37 +58,27 @@ impl ToolBackend for ObjectSizeFilter {
         Ok(())
     }
 
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        for message in self.base.collect_commands() {
-            match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
-                }
-                PipelineCommand::PipelineObject(PipelineObjectMessage::ToggleActive(enabled)) => {
-                    self.state.is_enabled = enabled;
-                }
-                PipelineCommand::PipelineObject(
-                    PipelineObjectMessage::ObjectSizeFilterMessage(message),
-                ) => match message {
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        match message {
+            ToolInput::Message(PipelineObjectMessage::ObjectSizeFilterMessage(message)) => {
+                match message {
                     ObjectSizeFilterMessage::SetMode(mode) => self.state.mode = mode,
                     ObjectSizeFilterMessage::SetSize(size) => self.state.size = size,
-                },
-                _ => {}
+                }
             }
+            _ => {}
         }
+
         Ok(())
     }
 }
 
 impl ObjectSizeFilter {
     #[must_use]
-    pub fn new(global_sender: tokio::sync::broadcast::Sender<PipelineCommand>) -> Self {
+    pub fn new(events: ToolEvents) -> Self {
         let state = ObjectSizeFilterState::default();
         Self {
-            base: ToolBase::new(global_sender),
+            base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             state,
         }

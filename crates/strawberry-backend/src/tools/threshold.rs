@@ -1,3 +1,4 @@
+use crate::tools::base::ToolEvents;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -7,8 +8,8 @@ use strawberry_processing::{GpuImageProcessor, threshold::GpuThreshold};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ThresholdMessage,
-    ThresholdState, ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, PipelineObjectMessage, ThresholdMessage, ThresholdState,
+    ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Threshold {
@@ -40,10 +41,8 @@ impl ToolBackend for Threshold {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
-                        .global_sender
-                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                            format!("Threshold error: {e}"),
-                        )))?;
+                        .events
+                        .emit(FrontendMessage::error(format!("Threshold error: {e}")));
                     return Err(e);
                 }
             };
@@ -51,30 +50,21 @@ impl ToolBackend for Threshold {
         Ok(())
     }
 
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = self.base.collect_commands();
-
-        for message in commands {
-            match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
-                }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        match message {
+            ToolInput::Message(message) => match message {
+                PipelineObjectMessage::ThresholdMessage(threshold) => match threshold {
+                    ThresholdMessage::SetThresholdValue(value) => {
+                        anyhow::ensure!(
+                            value.is_finite() && (0.0..=1.0).contains(&value),
+                            "Invalid threshold"
+                        );
+                        self.state.threshold_value = value;
                     }
-                    PipelineObjectMessage::ThresholdMessage(threshold) => match threshold {
-                        ThresholdMessage::SetThresholdValue(value) => {
-                            self.state.threshold_value = value;
-                        }
-                    },
-                    _ => {}
                 },
                 _ => {}
-            }
+            },
+            _ => {}
         }
 
         Ok(())
@@ -83,17 +73,14 @@ impl ToolBackend for Threshold {
 
 impl Threshold {
     #[must_use]
-    pub fn new(
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        gpu_image_processor: Arc<GpuImageProcessor>,
-    ) -> Self {
+    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
         let state = ThresholdState {
             is_enabled: false,
             threshold_value: 0.5,
         };
         Self {
             state: state.clone(),
-            base: ToolBase::new(global_sender),
+            base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             processor: GpuThreshold::new(gpu_image_processor),
         }

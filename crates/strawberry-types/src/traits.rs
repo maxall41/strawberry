@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    BackendToolType, PersistedState, PipelineCommand, PreparedStateUpdate, ToolState,
+    BackendToolType, PersistedState, PipelineObjectMessage, ToolInput, ToolState,
     overlay::ToolOverlay,
 };
 
@@ -20,21 +20,24 @@ pub trait ToolBackend: Send + Sync {
     /// Check if this tool is currently enabled
     fn is_enabled(&self) -> bool;
 
-    /// Receive messages from the pipeline
-    /// # Errors
-    /// Returns an error if a command cannot be handled or a channel is disconnected.
-    fn receive_messages(&mut self) -> anyhow::Result<()>;
+    fn handle_input(&mut self, input: ToolInput) -> anyhow::Result<()>;
+    fn handle_message(&mut self, message: PipelineObjectMessage) -> anyhow::Result<()> {
+        self.handle_input(ToolInput::Message(message))
+    }
+    fn poll_background(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn cancel_interaction(&mut self) {}
+    fn take_overlay_changes(&mut self) -> bool {
+        false
+    }
+    fn drain_events(&mut self) -> Vec<crate::FrontendMessage>;
 
     /// Reconcile backend mutations against last known pipeline run; returns whether the pipeline needs processing.
     fn reconcile_state(&mut self) -> bool;
 
     /// Acknowledge state produced by latest processing run, without scheduling another pass.
     fn acknowledge_processed_state(&mut self);
-
-    /// Publish frontend state independently of processing/cache validity.
-    /// # Errors
-    /// Returns an error if a communication channel is disconnected.
-    fn sync_frontend(&mut self) -> anyhow::Result<()>;
 
     /// Enable or disable this tool
     fn set_enabled(&mut self, enabled: bool);
@@ -45,29 +48,20 @@ pub trait ToolBackend: Send + Sync {
     /// Identify
     fn iam(&self) -> BackendToolType;
 
-    /// Get the sender for frontend->backend communication
-    fn get_sender(&self) -> flume::Sender<PipelineCommand>;
-
-    /// Set the sender for backend->frontend communication
-    fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>);
-
-    /// Disconnect the frontend by clearing the frontend sender
-    fn disconnect(&mut self);
-
     /// Supports processing
     fn supports_processing(&self) -> bool {
         true
     }
 
-    /// Prepare parsed settings without changing live state.
+    /// Load parsed settings into a detached candidate.
     /// # Errors
     /// Returns an error if the wrapper is malformed or fields cannot be deserialized.
-    fn prepare_loaded_persisted_state<'a>(
-        &'a mut self,
+    fn load_persisted_state(
+        &mut self,
         loaded_state: serde_value::Value,
         assets: &ToolAssets,
         cli: bool,
-    ) -> anyhow::Result<Option<PreparedStateUpdate<'a>>> {
+    ) -> anyhow::Result<()> {
         let serde_value::Value::Map(mut variants) = loaded_state else {
             anyhow::bail!("Expected an externally tagged tool state");
         };
@@ -80,22 +74,22 @@ pub trait ToolBackend: Send + Sync {
                 self.iam()
             );
         };
-        self.prepare_loaded_fields(fields, assets, cli)
+        self.load_fields(fields, assets, cli)
     }
 
-    /// Prepare concrete settings and embedded files together, without changing live state.
+    /// Load concrete settings and embedded files into a detached candidate.
     /// # Errors
     /// Returns an error if settings or assets cannot be loaded.
-    fn prepare_loaded_fields<'a>(
-        &'a mut self,
+    fn load_fields(
+        &mut self,
         fields: serde_value::Value,
         _assets: &ToolAssets,
         _cli: bool,
-    ) -> anyhow::Result<Option<PreparedStateUpdate<'a>>> {
+    ) -> anyhow::Result<()> {
         let Some(current) = self.persisted_state_mut() else {
-            return Ok(None);
+            return Ok(());
         };
-        current.prepare_persisted_fields(fields).map(Some)
+        current.load_persisted_fields(fields)
     }
 
     /// Serialize files that must travel with this tool's saved pipeline settings.
@@ -110,9 +104,6 @@ pub trait ToolBackend: Send + Sync {
         None
     }
 
-    /// Set the tool's index in the pipeline
-    fn set_index(&mut self, index: usize);
-
     /// Return the cached output only if it is still valid for the tool's current state.
     fn valid_cached_output(&self) -> Option<Vec<Arc<RgbaImage>>> {
         None
@@ -126,7 +117,7 @@ pub trait ToolBackend: Send + Sync {
 
     /// Get overlay elements to render on the primary viewer.
     /// Returns None if the tool doesn't produce overlays.
-    fn get_overlays(&self) -> Option<ToolOverlay> {
+    fn get_overlays(&self, _id: crate::ToolId) -> Option<ToolOverlay> {
         None
     }
 }

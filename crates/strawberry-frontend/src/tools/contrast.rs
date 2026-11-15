@@ -1,6 +1,7 @@
 use crate::gui::Button;
 use crate::gui::actions::actions;
 use crate::gui::theme;
+use strawberry_types::{CommandSender, ToolId};
 // Implements UI for contrast tool
 
 use std::sync::{Arc, RwLock};
@@ -13,9 +14,7 @@ use gpui::{
 use crate::gui::ToggleButton;
 use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
-use strawberry_types::{
-    ContrastMessage, ContrastState, PipelineCommand, PipelineObjectMessage, ToolState,
-};
+use strawberry_types::{ContrastMessage, ContrastState, PipelineObjectMessage, ToolState};
 
 use strawberry_types::ToolFrontend;
 
@@ -33,20 +32,12 @@ impl Focusable for ContrastView {
 }
 
 impl ContrastView {
-    pub fn new(
-        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(ContrastState::default())),
             min_control: None,
             max_control: None,
-            base: crate::tools::base::ToolBase::new(
-                command_sender,
-                strawberry_types::BackendToolType::Contrast,
-                cx.focus_handle(),
-            ),
+            base: crate::tools::base::ToolBase::new(command_sender, id, cx.focus_handle()),
         }
     }
 
@@ -55,17 +46,18 @@ impl ContrastView {
     }
 
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::ToggleActive(!current_value),
-        )) {
+        if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
     fn update_min_max(&self, min: f32, max: f32) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::ContrastMessage(ContrastMessage::SetMinMax(min, max)),
-        )) {
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::ContrastMessage(
+                ContrastMessage::SetMinMax(min, max),
+            ))
+        {
             eprintln!("Failed to send min/max update command: {e}");
         }
     }
@@ -291,6 +283,7 @@ impl Render for ContrastView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<Self>| {
+                        this.base.select();
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )

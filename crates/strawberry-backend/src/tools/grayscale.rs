@@ -1,3 +1,4 @@
+use crate::tools::base::ToolEvents;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -7,8 +8,7 @@ use strawberry_processing::{GpuImageProcessor, grayscale::GpuGrayscale};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, GrayscaleState, PipelineCommand, PipelineObjectMessage,
-    ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, GrayscaleState, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Grayscale {
@@ -36,10 +36,8 @@ impl ToolBackend for Grayscale {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
-                        .global_sender
-                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                            format!("Grayscale error: {e}"),
-                        )))?;
+                        .events
+                        .emit(FrontendMessage::error(format!("Grayscale error: {e}")));
                     return Err(e);
                 }
             };
@@ -47,38 +45,18 @@ impl ToolBackend for Grayscale {
         Ok(())
     }
 
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = self.base.collect_commands();
-
-        for message in commands {
-            match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
-                }
-                PipelineCommand::PipelineObject(PipelineObjectMessage::ToggleActive(value)) => {
-                    self.state.is_enabled = value;
-                }
-                _ => {}
-            }
-        }
-
+    fn handle_input(&mut self, _message: ToolInput) -> anyhow::Result<()> {
         Ok(())
     }
 }
 
 impl Grayscale {
     #[must_use]
-    pub fn new(
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        gpu_image_processor: Arc<GpuImageProcessor>,
-    ) -> Self {
+    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
         let state = GrayscaleState { is_enabled: false };
         Self {
             state: state.clone(),
-            base: ToolBase::new(global_sender),
+            base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             processor: GpuGrayscale::new(gpu_image_processor),
         }

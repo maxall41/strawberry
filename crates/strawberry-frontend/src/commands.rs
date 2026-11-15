@@ -4,8 +4,7 @@ use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use gpui::{Action, App, AppContext, Entity, Focusable, Render};
-use strawberry_types::{BackendToolType, PipelineCommand, ToolFrontend};
-use tokio::sync::broadcast;
+use strawberry_types::{BackendToolType, CommandSender, ToolFrontend, ToolId};
 
 use crate::gui::sidebar::{ToolPanel, ToolRegistration, ToolSidebar};
 use crate::tools::FrontendMessageHandler;
@@ -90,27 +89,24 @@ fn register_tool<T, A>(
     action: A,
     label: &'static str,
     kind: BackendToolType,
-    view_sender: broadcast::Sender<PipelineCommand>,
-    view_receiver: &broadcast::Receiver<PipelineCommand>,
-    constructor: impl Fn(
-        broadcast::Receiver<PipelineCommand>,
-        broadcast::Sender<PipelineCommand>,
-        &App,
-    ) -> T
-    + 'static,
+    view_sender: CommandSender,
+    constructor: impl Fn(ToolId, CommandSender, &App) -> T + 'static,
 ) -> PalleteCommand
 where
     T: ToolFrontend + FrontendMessageHandler + Render + Focusable + 'static,
     A: Action + 'static,
 {
-    let receiver = view_receiver.resubscribe();
     sidebar.update(cx, |sidebar, _| {
         sidebar.register(ToolRegistration::new(
             kind.clone(),
             label,
-            move |window, cx| {
-                let mut tool = constructor(receiver.resubscribe(), view_sender.clone(), cx);
+            move |id, window, cx| {
+                let mut tool = constructor(id, view_sender.clone(), cx);
                 let tool = cx.new(|cx| {
+                    cx.on_focus_in(&tool.base().focus_handle, window, |tool: &mut T, _, _| {
+                        tool.base().select()
+                    })
+                    .detach();
                     tool.initialize(window, cx);
                     tool
                 });
@@ -141,8 +137,7 @@ where
 pub fn install(
     cx: &mut App,
     sidebar: &Entity<ToolSidebar>,
-    tx: broadcast::Sender<PipelineCommand>,
-    rx: &broadcast::Receiver<PipelineCommand>,
+    tx: CommandSender,
     image_directory: Arc<RwLock<Option<PathBuf>>>,
 ) -> Rc<[PalleteCommand]> {
     let mut commands = vec![
@@ -153,7 +148,6 @@ pub fn install(
             "Compositor",
             BackendToolType::Compositor,
             tx.clone(),
-            rx,
             CompositorView::new,
         ),
         register_tool(
@@ -163,7 +157,6 @@ pub fn install(
             "Contrast",
             BackendToolType::Contrast,
             tx.clone(),
-            rx,
             ContrastView::new,
         ),
         register_tool(
@@ -173,7 +166,6 @@ pub fn install(
             "Counter",
             BackendToolType::Counter,
             tx.clone(),
-            rx,
             move |receiver, sender, cx| {
                 CounterView::new(receiver, sender, image_directory.clone(), cx)
             },
@@ -185,7 +177,6 @@ pub fn install(
             "Gaussian Blur",
             BackendToolType::GaussianBlur,
             tx.clone(),
-            rx,
             GaussianBlurView::new,
         ),
         register_tool(
@@ -195,7 +186,6 @@ pub fn install(
             "Difference of Gaussians",
             BackendToolType::DifferenceOfGaussians,
             tx.clone(),
-            rx,
             DifferenceOfGaussiansView::new,
         ),
         register_tool(
@@ -205,7 +195,6 @@ pub fn install(
             "Grayscale",
             BackendToolType::Grayscale,
             tx.clone(),
-            rx,
             GrayscaleView::new,
         ),
         register_tool(
@@ -215,7 +204,6 @@ pub fn install(
             "Threshold",
             BackendToolType::Threshold,
             tx.clone(),
-            rx,
             ThresholdView::new,
         ),
         register_tool(
@@ -225,7 +213,6 @@ pub fn install(
             "Local Maxima",
             BackendToolType::LocalMaxima,
             tx.clone(),
-            rx,
             LocalMaximaView::new,
         ),
         register_tool(
@@ -235,7 +222,6 @@ pub fn install(
             "Morphology",
             BackendToolType::Morphology,
             tx.clone(),
-            rx,
             MorphologyView::new,
         ),
         register_tool(
@@ -245,7 +231,6 @@ pub fn install(
             "Rolling Ball",
             BackendToolType::RollingBall,
             tx.clone(),
-            rx,
             RollingBallView::new,
         ),
         register_tool(
@@ -255,7 +240,6 @@ pub fn install(
             "Object Size Filter",
             BackendToolType::ObjectSizeFilter,
             tx.clone(),
-            rx,
             ObjectSizeFilterView::new,
         ),
         register_tool(
@@ -265,7 +249,6 @@ pub fn install(
             "Automatic Segmentation",
             BackendToolType::AutomaticSegmentation,
             tx.clone(),
-            rx,
             AutomaticSegmentationView::new,
         ),
         register_tool(
@@ -275,7 +258,6 @@ pub fn install(
             "Watershed",
             BackendToolType::Watershed,
             tx.clone(),
-            rx,
             WatershedView::new,
         ),
         register_tool(
@@ -285,7 +267,6 @@ pub fn install(
             "Decomposer",
             BackendToolType::Decomposer,
             tx.clone(),
-            rx,
             DecomposerView::new,
         ),
         register_tool(
@@ -295,7 +276,6 @@ pub fn install(
             "Sobel",
             BackendToolType::Sobel,
             tx.clone(),
-            rx,
             SobelView::new,
         ),
         register_tool(
@@ -305,7 +285,6 @@ pub fn install(
             "Nerve Tracer",
             BackendToolType::NerveTracer,
             tx,
-            rx,
             NerveTracerView::new,
         ),
     ];
