@@ -2,6 +2,7 @@ use super::cache::FeatureCache;
 use super::{
     FeatureConfig, FeatureExtractor, Forest, ForestConfig, InferenceConfig, SegmentationModel,
 };
+use crate::tiling::TileInfo;
 use anyhow::{Context, Result, ensure};
 use smartcore::{
     ensemble::random_forest_classifier::RandomForestClassifierParameters,
@@ -19,6 +20,45 @@ pub(super) struct TrainingData {
     feature_count: usize,
 }
 
+fn index_selected(
+    images: &[Cow<'_, image::RgbaImage>],
+    selected: &HashMap<(usize, u32, u32), u8>,
+) -> Result<HashMap<usize, Vec<(u32, u32)>>> {
+    let mut by_image: HashMap<usize, Vec<(u32, u32)>> = HashMap::new();
+    for &(image_index, x, y) in selected.keys() {
+        let image = images
+            .get(image_index)
+            .context("Training pixels lie outside their images")?;
+        ensure!(
+            x < image.width() && y < image.height(),
+            "Training pixels lie outside their images"
+        );
+        by_image.entry(image_index).or_default().push((x, y));
+    }
+    Ok(by_image)
+}
+
+fn training_tiles(
+    mut tiles: Vec<TileInfo>,
+    pixels: &[(u32, u32)],
+    cache_features: bool,
+) -> Result<Vec<TileInfo>> {
+    // Auto-context needs complete feature planes, including unlabeled neighbors.
+    if cache_features {
+        return Ok(tiles);
+    }
+    let first = tiles.first().context("Missing training image tiles")?;
+    let (width, height) = (first.core_width, first.core_height);
+    ensure!(width > 0 && height > 0, "Invalid training tile dimensions");
+    // TileGrid uses a regular core stride; only the final row/column can be smaller.
+    let occupied: HashSet<_> = pixels
+        .iter()
+        .map(|&(x, y)| (x / width, y / height))
+        .collect();
+    tiles.retain(|tile| occupied.contains(&(tile.core_x / width, tile.core_y / height)));
+    Ok(tiles)
+}
+
 impl TrainingData {
     pub async fn extract(
         extractor: &FeatureExtractor,
@@ -27,6 +67,7 @@ impl TrainingData {
         selected: &HashMap<(usize, u32, u32), u8>,
         cache_features: bool,
     ) -> Result<Self> {
+        let selected_by_image = index_selected(images, selected)?;
         let mut rows = Vec::new();
         let mut labels = Vec::new();
         let mut cache = if cache_features {
@@ -35,21 +76,11 @@ impl TrainingData {
             None
         };
         for (image_index, image) in images.iter().enumerate() {
-            if !selected.keys().any(|&(i, _, _)| i == image_index) {
+            let Some(pixels) = selected_by_image.get(&image_index) else {
                 continue;
-            }
-            for tile in extractor.tiles(image, features)? {
-                if cache.is_none()
-                    && !selected.keys().any(|&(i, x, y)| {
-                        i == image_index
-                            && x >= tile.core_x
-                            && x < tile.core_x + tile.core_width
-                            && y >= tile.core_y
-                            && y < tile.core_y + tile.core_height
-                    })
-                {
-                    continue;
-                }
+            };
+            let tiles = training_tiles(extractor.tiles(image, features)?, pixels, cache_features)?;
+            for tile in tiles {
                 let data = extractor.extract(image, features, &tile).await?;
                 let mut samples = Vec::new();
                 for (offset, row) in data.rows.iter().enumerate() {
