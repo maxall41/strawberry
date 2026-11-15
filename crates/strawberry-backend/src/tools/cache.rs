@@ -1,7 +1,7 @@
 use strawberry_types::{
     CompositorState, ContrastState, CounterState, DecomposerState, DifferenceOfGaussiansState,
     GaussianBlurState, GrayscaleState, LocalMaximaState, MorphologyState, NerveTracerState,
-    RollingBallState, SobelState, ThresholdState, WatershedState,
+    ObjectSizeFilterState, RollingBallState, SobelState, ThresholdState, WatershedState,
 };
 
 pub trait SyncState: Clone + PartialEq {
@@ -29,6 +29,7 @@ processing_states!(
     GrayscaleState,
     LocalMaximaState,
     MorphologyState,
+    ObjectSizeFilterState,
     RollingBallState,
     SobelState,
     ThresholdState,
@@ -145,7 +146,8 @@ impl SyncState for strawberry_types::AutomaticSegmentationState {
             || (self.training && self.show_overlay != other.show_overlay)
             || (!self.training
                 && (self.use_threshold != other.use_threshold
-                    || (self.use_threshold && self.threshold_value != other.threshold_value)))
+                    || (self.use_threshold
+                        && self.threshold_value.to_bits() != other.threshold_value.to_bits())))
             || self.selected_layer != other.selected_layer
             || self.classes.len() != other.classes.len()
             || self.classes.iter().any(|(id, class)| {

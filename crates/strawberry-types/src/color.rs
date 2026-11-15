@@ -8,10 +8,12 @@ pub struct RgbColor {
 }
 
 impl RgbColor {
+    #[must_use]
     pub const fn new(red: u8, green: u8, blue: u8) -> Self {
         Self { red, green, blue }
     }
 
+    #[must_use]
     pub const fn with_alpha(self, alpha: u8) -> RgbaColor {
         RgbaColor {
             red: self.red,
@@ -21,10 +23,12 @@ impl RgbColor {
         }
     }
 
+    #[must_use]
     pub const fn hex(self) -> u32 {
         u32::from_be_bytes([0, self.red, self.green, self.blue])
     }
 
+    #[must_use]
     pub const fn from_hex(hex: u32) -> Self {
         let [_, red, green, blue] = hex.to_be_bytes();
         Self::new(red, green, blue)
@@ -42,6 +46,7 @@ pub struct RgbaColor {
 impl RgbaColor {
     pub const WHITE: Self = Self::new(255, 255, 255, 255);
 
+    #[must_use]
     pub const fn new(red: u8, green: u8, blue: u8, alpha: u8) -> Self {
         Self {
             red,
@@ -51,6 +56,7 @@ impl RgbaColor {
         }
     }
 
+    #[must_use]
     pub const fn to_bgra(self) -> BgraColor {
         BgraColor {
             blue: self.blue,
@@ -77,7 +83,8 @@ impl BgraColor {
         alpha: 0,
     };
 
-    /// The image buffers used by the viewer store BGRA bytes in image::Rgba pixels.
+    /// The image buffers used by the viewer store BGRA bytes in `image::Rgba` pixels.
+    #[must_use]
     pub const fn into_pixel(self) -> image::Rgba<u8> {
         image::Rgba([self.blue, self.green, self.red, self.alpha])
     }

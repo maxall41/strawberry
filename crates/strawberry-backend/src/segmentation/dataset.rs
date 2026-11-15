@@ -18,7 +18,7 @@ use zip::{
     write::SimpleFileOptions,
 };
 
-use crate::file_io::write_artifact;
+use crate::utils::file_io::write_artifact;
 
 const FORMAT: &str = "strawberry-segmentation-dataset";
 const VERSION: u32 = 1;
@@ -33,12 +33,12 @@ const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 
-pub(crate) struct Dataset {
+pub struct Dataset {
     pub classes: SegmentationClasses,
     pub samples: Vec<DatasetSample>,
 }
 
-pub(crate) struct DatasetSample {
+pub struct DatasetSample {
     pub image: Arc<RgbaImage>,
     pub annotations: Vec<(AnnotationKind, AnnotationStroke)>,
 }
@@ -92,30 +92,10 @@ fn image_bytes(width: u32, height: u32) -> Result<usize> {
 }
 
 impl Document {
-    fn validate(&self, existing: Option<&Document>) -> Result<()> {
-        ensure!(
-            self.format == FORMAT,
-            "Not a Strawberry segmentation dataset"
-        );
-        ensure!(
-            self.version == VERSION,
-            "Unsupported dataset version: {}",
-            self.version
-        );
-        ensure!(
-            self.encoding == ENCODING,
-            "Unsupported dataset pixel encoding"
-        );
+    fn validate_classes(&self) -> Result<()> {
         ensure!(
             !self.classes.is_empty() && self.classes.len() <= MAX_CLASSES,
             "Invalid dataset class count"
-        );
-        ensure!(
-            self.samples
-                .len()
-                .checked_add(existing.map_or(0, |dataset| dataset.samples.len()))
-                .is_some_and(|count| count <= MAX_SAMPLES),
-            "Dataset sample limit exceeded"
         );
         for (index, class) in self.classes.iter().enumerate() {
             ensure!(
@@ -130,6 +110,31 @@ impl Document {
                 "Duplicate dataset class ID"
             );
         }
+        Ok(())
+    }
+
+    fn validate(&self, existing: Option<&Self>) -> Result<()> {
+        ensure!(
+            self.format == FORMAT,
+            "Not a Strawberry segmentation dataset"
+        );
+        ensure!(
+            self.version == VERSION,
+            "Unsupported dataset version: {}",
+            self.version
+        );
+        ensure!(
+            self.encoding == ENCODING,
+            "Unsupported dataset pixel encoding"
+        );
+        self.validate_classes()?;
+        ensure!(
+            self.samples
+                .len()
+                .checked_add(existing.map_or(0, |dataset| dataset.samples.len()))
+                .is_some_and(|count| count <= MAX_SAMPLES),
+            "Dataset sample limit exceeded"
+        );
         let mut total_bytes = existing
             .iter()
             .flat_map(|document| &document.samples)
@@ -350,27 +355,16 @@ impl Dataset {
             "Duplicate dataset archive entry"
         );
         ensure!(
-            archive.len() <= MAX_SAMPLES + 1,
+            archive.len() <= MAX_SAMPLES.saturating_add(1),
             "Dataset archive entry limit exceeded"
         );
         archive
             .validate_header_consistency()
             .context("Inconsistent dataset ZIP headers")?;
-        let document: Document = {
-            let mut entry = archive
-                .by_name(MANIFEST)
-                .context("Dataset archive is missing dataset.json")?;
-            validate_entry(&entry)?;
-            ensure!(
-                entry.size() <= u64::try_from(MAX_METADATA_BYTES)?,
-                "Dataset metadata limit exceeded"
-            );
-            let bytes = read_exact_entry(&mut entry)?;
-            serde_json::from_slice(&bytes).context("Invalid dataset metadata")?
-        };
+        let document = read_document(&mut archive)?;
         document.validate(existing.as_ref())?;
         ensure!(
-            archive.len() == document.samples.len() + 1,
+            archive.len() == document.samples.len().saturating_add(1),
             "Missing or unexpected dataset archive entries"
         );
         for name in archive.file_names() {
@@ -430,7 +424,7 @@ impl Dataset {
                     SegmentationClass {
                         name: class.name,
                         color: class.color,
-                        annotations: Default::default(),
+                        annotations: HashMap::new(),
                     },
                 )
             })
@@ -438,6 +432,19 @@ impl Dataset {
         let classes = classes.try_into()?;
         Ok(Self { classes, samples })
     }
+}
+
+fn read_document(archive: &mut ZipArchive<File>) -> Result<Document> {
+    let mut entry = archive
+        .by_name(MANIFEST)
+        .context("Dataset archive is missing dataset.json")?;
+    validate_entry(&entry)?;
+    ensure!(
+        entry.size() <= u64::try_from(MAX_METADATA_BYTES)?,
+        "Dataset metadata limit exceeded"
+    );
+    let bytes = read_exact_entry(&mut entry)?;
+    serde_json::from_slice(&bytes).context("Invalid dataset metadata")
 }
 
 fn validate_entry<R: Read>(entry: &zip::read::ZipFile<'_, R>) -> Result<()> {
@@ -484,7 +491,10 @@ impl<W: Write> Write for LimitedWriter<W> {
             return Err(io::Error::other("Dataset metadata limit exceeded"));
         }
         let written = self.inner.write(bytes)?;
-        self.remaining -= written;
+        self.remaining = self
+            .remaining
+            .checked_sub(written)
+            .ok_or_else(|| io::Error::other("Writer exceeded the provided buffer"))?;
         Ok(written)
     }
 

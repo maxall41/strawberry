@@ -1,10 +1,10 @@
 use super::{base::ToolBase, cache::ToolCache};
-use crate::file_io::write_artifact;
 use crate::segmentation::{
     AnnotationMask, TrainingSample, append_stroke_points,
     dataset::{Dataset, DatasetSample},
     render_class_mask, render_class_prediction, train,
 };
+use crate::utils::file_io::write_artifact;
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use image::RgbaImage;
@@ -20,8 +20,12 @@ use strawberry_processing::{
     segmentation::{FeatureExtractor, SegmentationModel},
 };
 use strawberry_types::{
+    AnnotationKind, AnnotationStroke, AutomaticSegmentationMessage, AutomaticSegmentationState,
+    BackendToolType, BgraColor, CLASS_PALETTE, ClassId, DatasetImportMode, DatasetOperation,
+    FrontendMessage, MAX_CLASSES, PipelineCommand, PipelineObjectMessage, PreparedStateUpdate,
+    RgbaColor, SampleId, SegmentationClass, SegmentationClasses, SegmentationOutputMode, StrokeId,
+    ToolAssets, ToolBackend, ToolState,
     overlay::{CircleStyle, OverlayElement, ToolOverlay},
-    *,
 };
 
 const MODEL_ASSET: &str = "model.sbm";
@@ -44,7 +48,7 @@ struct TrainingJob {
 
 enum DatasetResult {
     Saved,
-    Imported(PreparedDataset),
+    Imported(Box<PreparedDataset>),
 }
 
 struct PreparedDataset {
@@ -301,6 +305,7 @@ pub struct AutomaticSegmentation {
     overlays_dirty: bool,
 }
 impl AutomaticSegmentation {
+    #[must_use]
     pub fn new(
         commands: tokio::sync::broadcast::Sender<PipelineCommand>,
         output: tokio::sync::broadcast::Sender<PipelineCommand>,
@@ -318,7 +323,7 @@ impl AutomaticSegmentation {
             cache: ToolCache::new(&state),
             state,
             base,
-            extractor: Arc::new(FeatureExtractor::new(gpu.clone())),
+            extractor: Arc::new(FeatureExtractor::new(gpu)),
             model: None,
             model_class_ids: Vec::new(),
             inference_cache: None,
@@ -427,7 +432,7 @@ impl AutomaticSegmentation {
                         mode,
                     )
                 })
-                .map(DatasetResult::Imported);
+                .map(|prepared| DatasetResult::Imported(Box::new(prepared)));
             let _ = tx.send(result);
         });
         Ok(())
@@ -476,12 +481,10 @@ impl AutomaticSegmentation {
                     self.state.selected_stroke = None;
                     self.annotation_masks.clear();
                     self.state.hidden_classes.clear();
-                    let fallback = *self
-                        .state
-                        .classes
-                        .keys()
-                        .nth(1)
-                        .expect("validated class count");
+                    let Some(fallback) = self.state.classes.keys().nth(1).copied() else {
+                        self.error(&anyhow::anyhow!("Missing foreground class"));
+                        return;
+                    };
                     self.state.active_class = fallback;
                     self.state.output_class = fallback;
                     self.state.brush = AnnotationKind::Paint(fallback);
@@ -526,17 +529,19 @@ impl AutomaticSegmentation {
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("Unknown class"))
     }
-    fn install_classes(&mut self, classes: SegmentationClasses) {
+    fn install_classes(&mut self, classes: SegmentationClasses) -> Result<()> {
+        let active = *classes
+            .keys()
+            .nth(1)
+            .ok_or_else(|| anyhow::anyhow!("Missing foreground class"))?;
         self.state.next_class_id = self.state.next_class_id.max(
             classes
                 .keys()
                 .next_back()
                 .copied()
-                .map(ClassId::get)
-                .unwrap_or(0)
+                .map_or(0, ClassId::get)
                 .saturating_add(1),
         );
-        let active = *classes.keys().nth(1).expect("validated class count");
         self.state.output_class = active;
         self.state.brush = AnnotationKind::Paint(active);
         self.state.active_class = active;
@@ -550,6 +555,7 @@ impl AutomaticSegmentation {
         self.state.selected_stroke = None;
         self.inference_cache = None;
         self.reset_dataset_status();
+        Ok(())
     }
     fn model_bytes(&self) -> Result<Vec<u8>> {
         let model = self
@@ -563,7 +569,7 @@ impl AutomaticSegmentation {
             model: Arc::clone(model),
         })?)
     }
-    fn render_prediction(&self, planes: &[image::GrayImage]) -> RgbaImage {
+    fn render_prediction(&self, planes: &[image::GrayImage]) -> Result<RgbaImage> {
         if self.state.output_mode == SegmentationOutputMode::ClassMask {
             let plane = self
                 .model_class_ids
@@ -578,8 +584,8 @@ impl AutomaticSegmentation {
         let colors: Vec<_> = self
             .model_class_ids
             .iter()
-            .map(|id| self.state.classes[id].bgra(255))
-            .collect();
+            .map(|id| self.class(*id).map(|class| class.bgra(255)))
+            .collect::<Result<_>>()?;
         render_class_prediction(planes, &colors)
     }
     fn refresh_prediction_overlay(&mut self) {
@@ -596,16 +602,23 @@ impl AutomaticSegmentation {
         }) else {
             return;
         };
-        let colors: Vec<_> = self
+        let colors = match self
             .model_class_ids
             .iter()
             .map(|id| {
-                let class = &self.state.classes[id];
+                let class = self.class(*id)?;
                 let hidden = self.state.hidden_classes.contains(id)
                     || (self.state.preview_selected && self.state.active_class != *id);
-                class.bgra(if hidden { 0 } else { 255 })
+                Ok(class.bgra(if hidden { 0 } else { 255 }))
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()
+        {
+            Ok(colors) => colors,
+            Err(error) => {
+                self.error(&error);
+                return;
+            }
+        };
         if cached
             .overlay
             .as_ref()
@@ -613,7 +626,13 @@ impl AutomaticSegmentation {
         {
             return;
         }
-        let image = Arc::new(render_class_prediction(&cached.output, &colors));
+        let image = match render_class_prediction(&cached.output, &colors) {
+            Ok(image) => Arc::new(image),
+            Err(error) => {
+                self.error(&error);
+                return;
+            }
+        };
         if let Some(cached) = &mut self.inference_cache {
             cached.overlay = Some(PredictionOverlay { colors, image });
         }
@@ -626,10 +645,10 @@ impl AutomaticSegmentation {
             let strokes = self.state.ordered_annotations(index);
             self.annotation_masks.rebuild(
                 sample.image.dimensions(),
-                strokes.into_values().filter_map(|(kind, stroke)| {
-                    annotation_visible(&self.state, kind, stroke)
-                        .then(|| (stroke, annotation_color(kind, &self.state.classes)))
-                }),
+                strokes
+                    .into_values()
+                    .filter(|&(kind, stroke)| annotation_visible(&self.state, kind, stroke))
+                    .map(|(kind, stroke)| (stroke, annotation_color(kind, &self.state.classes))),
             );
         } else {
             self.annotation_masks.clear();
@@ -669,7 +688,7 @@ impl AutomaticSegmentation {
         self.current = Some(index);
         Some(index)
     }
-    fn error(&mut self, error: &anyhow::Error) {
+    fn error(&self, error: &anyhow::Error) {
         let _ = self
             .base
             .global_sender
@@ -719,6 +738,10 @@ impl AutomaticSegmentation {
         });
         Ok(())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep exhaustive tool command dispatch in one match"
+    )]
     fn handle(&mut self, message: AutomaticSegmentationMessage) -> Result<()> {
         ensure!(
             !self.importing_dataset()
@@ -754,12 +777,17 @@ impl AutomaticSegmentation {
                     .checked_add(1)
                     .ok_or_else(|| anyhow::anyhow!("Class ID exhausted"))?;
                 let id = ClassId::new(id);
-                let name = self.state.classes.unused_name();
+                let name = self.state.classes.unused_name()?;
+                let palette_len = u64::try_from(CLASS_PALETTE.len())?;
+                let index = usize::try_from(id.get().checked_rem(palette_len).unwrap_or_default())?;
+                let color = *CLASS_PALETTE
+                    .get(index)
+                    .ok_or_else(|| anyhow::anyhow!("Empty class palette"))?;
                 self.state.classes.insert(
                     id,
                     SegmentationClass {
                         name,
-                        color: CLASS_PALETTE[id.get() as usize % CLASS_PALETTE.len()],
+                        color,
                         annotations: HashMap::new(),
                     },
                 )?;
@@ -769,7 +797,7 @@ impl AutomaticSegmentation {
                 self.edited();
             }
             AutomaticSegmentationMessage::RenameClass(id, name) => {
-                self.state.classes.rename(id, name)?;
+                self.state.classes.rename(id, &name)?;
             }
             AutomaticSegmentationMessage::SetClassColor(id, color) => {
                 self.state.classes.set_color(id, color)?;
@@ -783,7 +811,7 @@ impl AutomaticSegmentation {
                     .classes
                     .keys()
                     .next()
-                    .expect("validated class count");
+                    .ok_or_else(|| anyhow::anyhow!("Missing remaining class"))?;
                 if self.state.brush == AnnotationKind::Paint(id) {
                     self.state.brush = AnnotationKind::Paint(fallback);
                 }
@@ -824,7 +852,7 @@ impl AutomaticSegmentation {
                 self.state.overlay_opacity = value.min(100);
             }
             AutomaticSegmentationMessage::ToggleThreshold(value) => {
-                self.state.use_threshold = value
+                self.state.use_threshold = value;
             }
             AutomaticSegmentationMessage::SetThreshold(value) => {
                 ensure!(
@@ -896,11 +924,10 @@ impl AutomaticSegmentation {
                 self.edited();
             }
             AutomaticSegmentationMessage::UndoStroke => {
-                if let Some(sample) = self.current {
-                    if let Some((&id, _)) = self.state.ordered_annotations(sample).last_key_value()
-                    {
-                        self.state.remove_stroke(sample, id);
-                    }
+                if let Some(sample) = self.current
+                    && let Some((&id, _)) = self.state.ordered_annotations(sample).last_key_value()
+                {
+                    self.state.remove_stroke(sample, id);
                 }
                 self.edited();
             }
@@ -925,7 +952,7 @@ impl AutomaticSegmentation {
             }
             AutomaticSegmentationMessage::LoadModel(path) => {
                 let document = ModelDocument::load(&std::fs::read(&path)?)?;
-                self.install_classes(document.classes);
+                self.install_classes(document.classes)?;
                 self.model_class_ids = document.class_ids;
                 let model = document.model;
                 self.training_generation = self.training_generation.wrapping_add(1);
@@ -967,7 +994,7 @@ impl AutomaticSegmentation {
             }
             self.annotation_masks.paint(
                 (width, height),
-                &stroke.stroke.points[appended],
+                stroke.stroke.points.get(appended).unwrap_or_default(),
                 stroke.stroke.radius,
                 annotation_color(stroke.kind, &self.state.classes),
             );
@@ -985,7 +1012,9 @@ impl AutomaticSegmentation {
                 }
             });
         if let Some(result) = result {
-            let job = self.training_job.take().expect("completed training job");
+            let Some(job) = self.training_job.take() else {
+                return;
+            };
             self.state.busy = false;
             match result {
                 _ if job.generation != self.training_generation || !self.state.is_enabled => {}
@@ -1009,8 +1038,8 @@ impl AutomaticSegmentation {
                 PipelineCommand::RequestState() => {
                     self.base
                         .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(self.get_state()),
-                        ))?
+                            FrontendMessage::ReturnState(Box::new(self.get_state())),
+                        ))?;
                 }
                 PipelineCommand::PipelineObject(PipelineObjectMessage::ToggleActive(value)) => {
                     self.state.is_enabled = value;
@@ -1048,35 +1077,35 @@ impl AutomaticSegmentation {
                     }
                 }
                 PipelineCommand::InteractionMove(x, y) if self.stroke.is_some() => {
-                    self.add_point(x, y)
+                    self.add_point(x, y);
                 }
                 PipelineCommand::InteractionEnd => {
-                    if let Some(stroke) = self.stroke.take() {
-                        if !stroke.stroke.points.is_empty() {
-                            if let Some(sample) = self.current {
-                                match stroke.kind {
-                                    AnnotationKind::Paint(id) => {
-                                        if let Some(annotations) =
-                                            self.state.classes.annotations_mut(id)
-                                        {
-                                            annotations
-                                                .entry(sample)
-                                                .or_default()
-                                                .insert(stroke.id, stroke.stroke);
-                                        }
-                                    }
-                                    AnnotationKind::Eraser => {
-                                        self.state
-                                            .erasers
+                    if let Some(stroke) = self.stroke.take()
+                        && !stroke.stroke.points.is_empty()
+                    {
+                        if let Some(sample) = self.current {
+                            match stroke.kind {
+                                AnnotationKind::Paint(id) => {
+                                    if let Some(annotations) =
+                                        self.state.classes.annotations_mut(id)
+                                    {
+                                        annotations
                                             .entry(sample)
                                             .or_default()
                                             .insert(stroke.id, stroke.stroke);
                                     }
                                 }
+                                AnnotationKind::Eraser => {
+                                    self.state
+                                        .erasers
+                                        .entry(sample)
+                                        .or_default()
+                                        .insert(stroke.id, stroke.stroke);
+                                }
                             }
-                            self.dataset_edited();
-                            self.edited();
                         }
+                        self.dataset_edited();
+                        self.edited();
                     }
                 }
                 _ => {}
@@ -1155,8 +1184,7 @@ impl ToolBackend for AutomaticSegmentation {
                 .keys()
                 .next_back()
                 .copied()
-                .map(ClassId::get)
-                .unwrap_or(0)
+                .map_or(0, ClassId::get)
                 .checked_add(1)
                 .ok_or_else(|| anyhow::anyhow!("Class ID exhausted"))?,
         );
@@ -1262,7 +1290,7 @@ impl ToolBackend for AutomaticSegmentation {
             self.refresh_prediction_overlay();
             self.overlays_dirty = true;
         } else if let Some(layer) = images.get_mut(self.state.selected_layer) {
-            *layer = Arc::new(self.render_prediction(&output));
+            *layer = Arc::new(self.render_prediction(&output)?);
         }
 
         Ok(())
@@ -1286,24 +1314,23 @@ impl ToolBackend for AutomaticSegmentation {
             return None;
         }
         let mut elements = Vec::new();
-        if self.state.show_overlay {
-            if let Some(cached) = self.inference_cache.as_ref().filter(|cached| {
+        if self.state.show_overlay
+            && let Some(cached) = self.inference_cache.as_ref().filter(|cached| {
                 self.input
                     .as_ref()
                     .zip(self.model.as_ref())
                     .is_some_and(|(image, model)| {
                         cached.matches(self.state.selected_layer, image, model)
                     })
-            }) {
-                if let Some(overlay) = &cached.overlay {
-                    elements.push(OverlayElement::ImageMask {
-                        x: 0,
-                        y: 0,
-                        opacity: f32::from(self.state.overlay_opacity) / 100.,
-                        image: Some(overlay.image.clone()),
-                    });
-                }
-            }
+            })
+            && let Some(overlay) = &cached.overlay
+        {
+            elements.push(OverlayElement::ImageMask {
+                x: 0,
+                y: 0,
+                opacity: f32::from(self.state.overlay_opacity) / 100.,
+                image: Some(overlay.image.clone()),
+            });
         }
         elements.extend(self.annotation_masks.iter().map(|(&(x, y), image)| {
             OverlayElement::ImageMask {
@@ -1313,20 +1340,18 @@ impl ToolBackend for AutomaticSegmentation {
                 image: Some(image.clone()),
             }
         }));
-        if let Some(sample) = self.current {
-            if let Some(index) = self.state.selected_stroke {
-                if let Some(stroke) = self.state.stroke(sample, index) {
-                    if let Some(&(x, y)) = stroke.points.first() {
-                        elements.push(OverlayElement::Circle {
-                            x: num_traits::cast::<u32, f32>(x).unwrap_or(0.0) + 0.5,
-                            y: num_traits::cast::<u32, f32>(y).unwrap_or(0.0) + 0.5,
-                            radius: num_traits::cast(stroke.radius.get()).unwrap_or(1.0),
-                            color: RgbaColor::WHITE,
-                            style: CircleStyle::Selected { width: 1.0 },
-                        });
-                    }
-                }
-            }
+        if let Some(sample) = self.current
+            && let Some(index) = self.state.selected_stroke
+            && let Some(stroke) = self.state.stroke(sample, index)
+            && let Some(&(x, y)) = stroke.points.first()
+        {
+            elements.push(OverlayElement::Circle {
+                x: num_traits::cast::<u32, f32>(x).unwrap_or(0.0) + 0.5,
+                y: num_traits::cast::<u32, f32>(y).unwrap_or(0.0) + 0.5,
+                radius: num_traits::cast(stroke.radius.get()).unwrap_or(1.0),
+                color: RgbaColor::WHITE,
+                style: CircleStyle::Selected { width: 1.0 },
+            });
         }
         Some(ToolOverlay {
             tool_id: self.iam(),

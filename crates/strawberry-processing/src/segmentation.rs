@@ -24,6 +24,10 @@ const DOG_LARGE_SIGMA: f32 = 10.0;
 const HESSIAN_SIGMA: f32 = 1.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Feature families are independently selectable"
+)]
 pub struct FeatureConfig {
     pub rgb: bool,
     pub gaussian: bool,
@@ -51,6 +55,8 @@ impl Default for FeatureConfig {
     }
 }
 impl FeatureConfig {
+    /// # Errors
+    /// Returns an error if the configuration or model contains unsupported values.
     pub fn validate(&self) -> Result<()> {
         for (name, sigma) in [
             ("Gaussian", self.gaussian_sigma),
@@ -70,12 +76,17 @@ impl FeatureConfig {
     }
     #[must_use]
     pub fn count(&self) -> usize {
-        (1 + usize::from(self.gaussian)
-            + usize::from(self.sobel)
-            + usize::from(self.dog)
-            + 2 * usize::from(self.hessian)
-            + 6 * usize::from(self.membrane))
-            * if self.rgb { 3 } else { 1 }
+        [
+            1,
+            usize::from(self.gaussian),
+            usize::from(self.sobel),
+            usize::from(self.dog),
+            usize::from(self.hessian).saturating_mul(2),
+            usize::from(self.membrane).saturating_mul(6),
+        ]
+        .into_iter()
+        .sum::<usize>()
+        .saturating_mul(if self.rgb { 3 } else { 1 })
     }
     fn halo(&self) -> Result<usize> {
         let mut sigma = if self.gaussian {
@@ -130,6 +141,8 @@ impl Default for ForestConfig {
     }
 }
 impl ForestConfig {
+    /// # Errors
+    /// Returns an error if the configuration or model contains unsupported values.
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.trees > 0 && self.trees <= 4096 && self.depth > 0 && self.depth <= 256,
@@ -143,6 +156,8 @@ impl ForestConfig {
     }
 
     /// Use the same image scale for training features and prediction features.
+    /// # Errors
+    /// Returns an error if the configuration or image dimensions are invalid.
     pub fn rescale_input<'a>(
         &self,
         image: &'a image::RgbaImage,
@@ -152,7 +167,7 @@ impl ForestConfig {
             image.width() > 0 && image.height() > 0,
             "Empty segmentation image"
         );
-        if self.input_scale == 1.0 {
+        if self.input_scale.to_bits() == 1.0_f32.to_bits() {
             return Ok(Cow::Borrowed(image));
         }
         let dimension = |size| -> Result<u32> {
@@ -170,7 +185,7 @@ impl ForestConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InferenceConfig {
     pub max_parallel_tiles: u16,
@@ -189,6 +204,8 @@ impl InferenceConfig {
         rayon::current_num_threads().clamp(1, usize::from(self.max_parallel_tiles))
     }
 
+    /// # Errors
+    /// Returns an error if the configuration or model contains unsupported values.
     pub fn validate(&self) -> Result<()> {
         ensure!(
             (1..=256).contains(&self.max_parallel_tiles),
@@ -211,6 +228,8 @@ pub struct SegmentationModel {
 }
 impl SegmentationModel {
     /// Train a complete model from labeled pixels in images at the configured input scale.
+    /// # Errors
+    /// Returns an error if training data, feature extraction, or forest fitting fails.
     pub async fn train(
         features: FeatureConfig,
         parameters: ForestConfig,
@@ -268,15 +287,21 @@ impl SegmentationModel {
     }
 
     fn prediction_feature_count(&self) -> usize {
-        self.features.count()
-            + if self.parameters.autocontext {
-                self.features.context_features().count() * self.class_count
+        self.features
+            .count()
+            .saturating_add(if self.parameters.autocontext {
+                self.features
+                    .context_features()
+                    .count()
+                    .saturating_mul(self.class_count)
             } else {
                 0
-            }
+            })
     }
 
     /// Predict one byte probability plane per class, in model label order.
+    /// # Errors
+    /// Returns an error if configuration, feature extraction, or inference fails.
     pub async fn predict(
         &self,
         extractor: &FeatureExtractor,
@@ -364,7 +389,7 @@ impl SegmentationModel {
             .collect())
     }
 
-    async fn predict_batches<T>(
+    async fn predict_batches<T: Sync>(
         forest: &Forest,
         class_count: usize,
         dimensions: (u32, u32),
@@ -427,14 +452,19 @@ impl SegmentationModel {
                     );
                     let value = num_traits::cast::<f32, u8>((probability * 255.0).round())
                         .context("Invalid probability pixel")?;
-                    let offset = u32::try_from(row)?;
-                    plane.put_pixel(x + offset % width, y + offset / width, image::Luma([value]));
+                    let (x, y) = pixel_coordinates((x, y), width, row)?;
+                    let pixel = plane
+                        .get_pixel_mut_checked(x, y)
+                        .context("Probability pixel lies outside its image")?;
+                    *pixel = image::Luma([value]);
                 }
             }
         }
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error if the configuration or model contains unsupported values.
     pub fn validate(&self) -> Result<()> {
         ensure!((2..=256).contains(&self.class_count), "Invalid class count");
         self.features.validate()?;
@@ -457,6 +487,18 @@ pub struct FeatureTile {
     pub width: u32,
     pub height: u32,
     pub rows: Vec<Vec<f32>>,
+}
+
+fn pixel_coordinates((x, y): (u32, u32), width: u32, offset: usize) -> Result<(u32, u32)> {
+    let offset = u32::try_from(offset)?;
+    let column = offset.checked_rem(width).context("Empty feature tile")?;
+    let row = offset.checked_div(width).context("Empty feature tile")?;
+    Ok((
+        x.checked_add(column)
+            .context("Feature X coordinate overflow")?,
+        y.checked_add(row)
+            .context("Feature Y coordinate overflow")?,
+    ))
 }
 
 impl FeatureTile {
