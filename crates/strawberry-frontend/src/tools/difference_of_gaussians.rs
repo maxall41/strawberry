@@ -180,7 +180,7 @@ impl ToolFrontend for DifferenceOfGaussiansView {
                     label: "Small sigma (px)".to_string(),
                     id: "dog-small-sigma".to_string(),
                     step: 0.1,
-                    min: 0.0_f32.next_up(),
+                    min: 0.1,
                     max: state.large_sigma.next_down(),
                 },
                 cx,

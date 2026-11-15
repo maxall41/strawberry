@@ -225,8 +225,8 @@ impl GpuFloatFilters {
         sigma: f32,
     ) -> Result<Vec<f32>> {
         ensure!(
-            sigma.is_finite() && sigma > 0.0 && sigma <= 64.0,
-            "Sigma must be in (0,64]"
+            sigma.is_finite() && (0.1..=64.0).contains(&sigma),
+            "Sigma must be between 0.1 and 64"
         );
         self.run(
             width,
