@@ -231,7 +231,6 @@ impl Pipeline {
             std::iter::from_fn(|| self.command_receiver.try_recv().ok()).collect();
         let mut pending_processing_from = PendingProcessing::default();
         for cmd in commands {
-            self.overlays_dirty = true;
             match cmd {
                 PipelineCommand::Load { files, reply } => {
                     let result = self.load_images(&files);
@@ -290,11 +289,11 @@ impl Pipeline {
                     }
                 }
                 PipelineCommand::SubscribePipeline(reply) => {
-                    self.tool_manager.publish();
+                    self.overlays_dirty |= self.tool_manager.publish();
                     let _ = reply.send(self.tool_manager.subscribe_pipeline_state());
                 }
                 PipelineCommand::SubscribeTool { id, reply } => {
-                    self.tool_manager.publish();
+                    self.overlays_dirty |= self.tool_manager.publish();
                     let _ = reply.send(
                         self.tool_manager
                             .tools
@@ -468,7 +467,6 @@ impl Pipeline {
         let result = if let Some(ticket) = ticket.validate()
             && !self.input_images.is_empty()
         {
-            self.last_output = None;
             let result = self.process_from(ticket).await;
             let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
             result
