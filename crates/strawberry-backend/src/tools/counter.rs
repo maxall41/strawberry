@@ -26,6 +26,7 @@ pub struct Counter {
     pub cache: crate::tools::cache::ToolCache<CounterState>,
     pub lasso_points: Vec<(u64, u64)>,
     pub is_lasso_dragging: bool,
+    overlays_dirty: bool,
 }
 
 #[async_trait]
@@ -37,8 +38,12 @@ impl ToolBackend for Counter {
         Some(&mut self.state)
     }
     fn cancel_interaction(&mut self) {
+        self.overlays_dirty |= self.is_lasso_dragging && self.lasso_points.len() > 1;
         self.lasso_points.clear();
         self.is_lasso_dragging = false;
+    }
+    fn take_overlay_changes(&mut self) -> bool {
+        std::mem::take(&mut self.overlays_dirty)
     }
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
@@ -129,14 +134,15 @@ impl ToolBackend for Counter {
                     return Ok(());
                 }
                 if self.state.active_tool == Some(CounterTool::LassoDelete) {
+                    self.cancel_interaction();
                     self.is_lasso_dragging = true;
-                    self.lasso_points.clear();
                     self.lasso_points.push((x, y));
                 }
             }
             ToolInput::InteractionMove(x, y) => {
-                if self.is_lasso_dragging {
+                if self.is_lasso_dragging && self.lasso_points.last() != Some(&(x, y)) {
                     self.lasso_points.push((x, y));
+                    self.overlays_dirty = true;
                 }
             }
             ToolInput::InteractionEnd => {
@@ -151,8 +157,7 @@ impl ToolBackend for Counter {
                                 .insert(*active_count_type, filtered);
                         }
                     }
-                    self.is_lasso_dragging = false;
-                    self.lasso_points.clear();
+                    self.cancel_interaction();
                 }
             }
             ToolInput::Message(message) => {
@@ -501,6 +506,7 @@ impl Counter {
             cache: crate::tools::cache::ToolCache::new(&state),
             lasso_points: Vec::new(),
             is_lasso_dragging: false,
+            overlays_dirty: false,
         }
     }
 }
