@@ -14,12 +14,12 @@ use tokio::sync::watch;
 
 pub struct ToolInstance {
     backend: Box<dyn ToolBackend>,
-    state_sender: watch::Sender<ToolState>,
+    tool_state_sender: watch::Sender<ToolState>,
 }
 impl ToolInstance {
     #[must_use]
     pub fn subscribe_state(&self) -> watch::Receiver<ToolState> {
-        self.state_sender.subscribe()
+        self.tool_state_sender.subscribe()
     }
 }
 impl std::ops::Deref for ToolInstance {
@@ -40,7 +40,7 @@ pub struct ToolManager {
     /// Latest ordered tools, enablement, and selection for pipeline subscribers.
     pipeline_state_sender: watch::Sender<PipelineState>,
     gpu: Arc<GpuImageProcessor>,
-    next_id: u64,
+    next_tool_id: u64,
     processing_order: Vec<ToolId>,
 }
 impl ToolManager {
@@ -51,7 +51,7 @@ impl ToolManager {
             selected_tool: None,
             pipeline_state_sender: watch::channel(PipelineState::default()).0,
             gpu,
-            next_id: 1,
+            next_tool_id: 1,
             processing_order: vec![],
         }
     }
@@ -60,9 +60,9 @@ impl ToolManager {
         self.pipeline_state_sender.subscribe()
     }
     fn allocate_id(&mut self) -> anyhow::Result<ToolId> {
-        let id = ToolId(self.next_id);
-        self.next_id = self
-            .next_id
+        let id = ToolId(self.next_tool_id);
+        self.next_tool_id = self
+            .next_tool_id
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("Tool IDs exhausted"))?;
         Ok(id)
@@ -93,10 +93,10 @@ impl ToolManager {
             BackendToolType::Threshold => Box::new(Threshold::new(events, gpu)),
             BackendToolType::Watershed => Box::new(Watershed::new(events, gpu)),
         };
-        let state_sender = watch::channel(backend.get_state()).0;
+        let tool_state_sender = watch::channel(backend.get_state()).0;
         ToolInstance {
             backend,
-            state_sender,
+            tool_state_sender,
         }
     }
     /// Create, enable, and select a new tool instance.
@@ -106,7 +106,7 @@ impl ToolManager {
     pub fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<ToolId> {
         let mut tool = self.create(kind);
         tool.set_enabled(true);
-        tool.state_sender.send_replace(tool.get_state());
+        tool.tool_state_sender.send_replace(tool.get_state());
         let id = self.allocate_id()?;
         self.tools.insert(id, tool);
         self.select(Some(id));
@@ -178,7 +178,7 @@ impl ToolManager {
         let mut changed = false;
         for tool in self.tools.values_mut() {
             let state = tool.get_state();
-            changed |= tool.state_sender.send_if_modified(|previous| {
+            changed |= tool.tool_state_sender.send_if_modified(|previous| {
                 if *previous == state {
                     false
                 } else {
@@ -234,7 +234,7 @@ impl ToolManager {
             tool.load_persisted_state(entry.state, &entry.assets, cli)?;
             tool.get_state().validate()?;
             tool.cancel_interaction();
-            tool.state_sender.send_replace(tool.get_state());
+            tool.tool_state_sender.send_replace(tool.get_state());
             let id = self.allocate_id()?;
             candidate.insert(id, tool);
         }
