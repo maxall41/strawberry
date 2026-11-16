@@ -762,6 +762,10 @@ pub enum ToolState {
 
 /// Object-safe loading into detached candidate instances.
 pub trait PersistedState {
+    /// Load serialized fields into this state.
+    ///
+    /// # Errors
+    /// Returns an error if the fields cannot be deserialized into this state type.
     fn load_persisted_fields(&mut self, fields: serde_value::Value) -> anyhow::Result<()>;
 }
 impl<T: Clone + serde::de::DeserializeOwned> PersistedState for T {
@@ -774,6 +778,10 @@ impl<T: Clone + serde::de::DeserializeOwned> PersistedState for T {
 }
 
 impl ToolState {
+    /// Check that tool parameters are within their supported ranges.
+    ///
+    /// # Errors
+    /// Returns an error if a checked parameter is non-finite or outside its valid range.
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::ContrastState(s) => ensure!(
@@ -801,7 +809,7 @@ impl ToolState {
                 }
             }
             Self::MorphologyState(s) => {
-                ensure!(s.element_size > 0, "Element size must be positive")
+                ensure!(s.element_size > 0, "Element size must be positive");
             }
             Self::RollingBallState(s) => ensure!(s.ball_radius > 0, "Ball radius must be positive"),
             Self::SobelState(s) => ensure!(

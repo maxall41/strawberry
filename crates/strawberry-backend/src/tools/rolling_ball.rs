@@ -51,17 +51,13 @@ impl ToolBackend for RollingBall {
     }
 
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
-        match message {
-            ToolInput::Message(message) => match message {
-                PipelineObjectMessage::RollingBallMessage(message) => match message {
-                    RollingBallMessage::SetBallRadius(ball_radius) => {
-                        anyhow::ensure!(ball_radius > 0, "Size must be positive");
-                        self.state.ball_radius = ball_radius;
-                    }
-                },
-                _ => {}
-            },
-            _ => {}
+        if let ToolInput::Message(PipelineObjectMessage::RollingBallMessage(message)) = message {
+            match message {
+                RollingBallMessage::SetBallRadius(ball_radius) => {
+                    anyhow::ensure!(ball_radius > 0, "Size must be positive");
+                    self.state.ball_radius = ball_radius;
+                }
+            }
         }
 
         Ok(())

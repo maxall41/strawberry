@@ -47,17 +47,13 @@ impl ToolBackend for GaussianBlur {
     }
 
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
-        match message {
-            ToolInput::Message(message) => match message {
-                PipelineObjectMessage::GaussianBlurMessage(message) => match message {
-                    GaussianBlurMessage::SetSigma(sigma) => {
-                        anyhow::ensure!(sigma.is_finite() && sigma > 0., "Sigma must be positive");
-                        self.state.sigma = sigma;
-                    }
-                },
-                _ => {}
-            },
-            _ => {}
+        if let ToolInput::Message(PipelineObjectMessage::GaussianBlurMessage(message)) = message {
+            match message {
+                GaussianBlurMessage::SetSigma(sigma) => {
+                    anyhow::ensure!(sigma.is_finite() && sigma > 0., "Sigma must be positive");
+                    self.state.sigma = sigma;
+                }
+            }
         }
 
         Ok(())

@@ -51,21 +51,17 @@ impl ToolBackend for Contrast {
     }
 
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
-        match message {
-            ToolInput::Message(message) => match message {
-                PipelineObjectMessage::ContrastMessage(message) => match message {
-                    ContrastMessage::SetMinMax(min, max) => {
-                        anyhow::ensure!(
-                            min.is_finite() && max.is_finite() && min <= max,
-                            "Invalid contrast range"
-                        );
-                        self.state.min = min;
-                        self.state.max = max;
-                    }
-                },
-                _ => {}
-            },
-            _ => {}
+        if let ToolInput::Message(PipelineObjectMessage::ContrastMessage(message)) = message {
+            match message {
+                ContrastMessage::SetMinMax(min, max) => {
+                    anyhow::ensure!(
+                        min.is_finite() && max.is_finite() && min <= max,
+                        "Invalid contrast range"
+                    );
+                    self.state.min = min;
+                    self.state.max = max;
+                }
+            }
         }
 
         Ok(())

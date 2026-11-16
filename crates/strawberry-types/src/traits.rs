@@ -20,10 +20,24 @@ pub trait ToolBackend: Send + Sync {
     /// Check if this tool is currently enabled
     fn is_enabled(&self) -> bool;
 
+    /// Handle a tool message or canvas interaction.
+    ///
+    /// # Errors
+    /// Returns an error if the input cannot be applied.
     fn handle_input(&mut self, input: ToolInput) -> anyhow::Result<()>;
+
+    /// Handle a tool message through the tool's input handler.
+    ///
+    /// # Errors
+    /// Returns an error if the input handler cannot apply the message.
     fn handle_message(&mut self, message: PipelineObjectMessage) -> anyhow::Result<()> {
         self.handle_input(ToolInput::Message(message))
     }
+
+    /// Collect results from background work.
+    ///
+    /// # Errors
+    /// Returns an error if background work fails or its results cannot be applied.
     fn poll_background(&mut self) -> anyhow::Result<()> {
         Ok(())
     }

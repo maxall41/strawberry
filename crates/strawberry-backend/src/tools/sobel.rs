@@ -53,23 +53,19 @@ impl ToolBackend for Sobel {
     }
 
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
-        match message {
-            ToolInput::Message(message) => match message {
-                PipelineObjectMessage::SobelMessage(sobel) => match sobel {
-                    SobelMessage::SetThreshold(value) => {
-                        anyhow::ensure!(
-                            value.is_finite() && (0.0..=1.0).contains(&value),
-                            "Invalid threshold"
-                        );
-                        self.state.threshold_value = value;
-                    }
-                    SobelMessage::ToggleThreshold(enabled) => {
-                        self.state.use_threshold = enabled;
-                    }
-                },
-                _ => {}
-            },
-            _ => {}
+        if let ToolInput::Message(PipelineObjectMessage::SobelMessage(sobel)) = message {
+            match sobel {
+                SobelMessage::SetThreshold(value) => {
+                    anyhow::ensure!(
+                        value.is_finite() && (0.0..=1.0).contains(&value),
+                        "Invalid threshold"
+                    );
+                    self.state.threshold_value = value;
+                }
+                SobelMessage::ToggleThreshold(enabled) => {
+                    self.state.use_threshold = enabled;
+                }
+            }
         }
 
         Ok(())

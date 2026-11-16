@@ -17,6 +17,7 @@ pub struct ToolInstance {
     state_sender: watch::Sender<ToolState>,
 }
 impl ToolInstance {
+    #[must_use]
     pub fn subscribe_state(&self) -> watch::Receiver<ToolState> {
         self.state_sender.subscribe()
     }
@@ -43,6 +44,7 @@ pub struct ToolManager {
     processing_order: Vec<ToolId>,
 }
 impl ToolManager {
+    #[must_use]
     pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         Self {
             tools: IndexMap::new(),
@@ -53,6 +55,7 @@ impl ToolManager {
             processing_order: vec![],
         }
     }
+    #[must_use]
     pub fn subscribe_pipeline_state(&self) -> watch::Receiver<PipelineState> {
         self.pipeline_state_sender.subscribe()
     }
@@ -65,7 +68,7 @@ impl ToolManager {
         Ok(id)
     }
     /// Detached construction has no externally visible side effects.
-    fn create(&self, kind: BackendToolType) -> ToolInstance {
+    fn create(&self, kind: &BackendToolType) -> ToolInstance {
         let events = ToolEvents::default();
         let gpu = self.gpu.clone();
         let backend: Box<dyn ToolBackend> = match kind {
@@ -96,7 +99,11 @@ impl ToolManager {
             state_sender,
         }
     }
-    pub fn add_tool(&mut self, kind: BackendToolType) -> anyhow::Result<ToolId> {
+    /// Create, enable, and select a new tool instance.
+    ///
+    /// # Errors
+    /// Returns an error if the tool ID space is exhausted.
+    pub fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<ToolId> {
         let mut tool = self.create(kind);
         tool.set_enabled(true);
         tool.state_sender.send_replace(tool.get_state());
@@ -202,6 +209,10 @@ impl ToolManager {
         });
         changed
     }
+    /// Save tool settings and assets to a pipeline archive.
+    ///
+    /// # Errors
+    /// Returns an error if tool assets cannot be serialized or the archive cannot be written.
     pub fn save_pipeline(&self, path: &Path) -> anyhow::Result<()> {
         let entries = self
             .tools
@@ -210,11 +221,16 @@ impl ToolManager {
             .collect::<anyhow::Result<Vec<_>>>()?;
         pipeline_io::save(path, &entries)
     }
+    /// Replace the pipeline with validated tool instances from an archive.
+    ///
+    /// # Errors
+    /// Returns an error if the archive, settings, or assets cannot be loaded or
+    /// validated, or if the tool ID space is exhausted.
     pub fn load_pipeline(&mut self, path: &Path, cli: bool) -> anyhow::Result<()> {
         let mut candidate = IndexMap::new();
         for entry in pipeline_io::load(path)? {
             let kind = entry.kind()?;
-            let mut tool = self.create(kind);
+            let mut tool = self.create(&kind);
             tool.load_persisted_state(entry.state, &entry.assets, cli)?;
             tool.get_state().validate()?;
             tool.cancel_interaction();

@@ -51,21 +51,17 @@ impl ToolBackend for Watershed {
     }
 
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
-        match message {
-            ToolInput::Message(message) => match message {
-                PipelineObjectMessage::WatershedMessage(message) => match message {
-                    WatershedMessage::SetParameters(sigma, min_distance) => {
-                        anyhow::ensure!(
-                            sigma.is_finite() && sigma > 0. && min_distance > 0,
-                            "Invalid watershed parameters"
-                        );
-                        self.state.sigma = sigma;
-                        self.state.min_distance = min_distance;
-                    }
-                },
-                _ => {}
-            },
-            _ => {}
+        if let ToolInput::Message(PipelineObjectMessage::WatershedMessage(message)) = message {
+            match message {
+                WatershedMessage::SetParameters(sigma, min_distance) => {
+                    anyhow::ensure!(
+                        sigma.is_finite() && sigma > 0. && min_distance > 0,
+                        "Invalid watershed parameters"
+                    );
+                    self.state.sigma = sigma;
+                    self.state.min_distance = min_distance;
+                }
+            }
         }
 
         Ok(())

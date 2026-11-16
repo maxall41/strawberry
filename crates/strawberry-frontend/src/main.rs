@@ -248,7 +248,7 @@ impl PrimaryViewer {
                             FrontendMessage::PipelineFinished => activity_events.push(None),
                             FrontendMessage::ToolEvent { event, .. } => match *event {
                                 FrontendMessage::UserFeedback(text, level) => {
-                                    toasts.push((text, level))
+                                    toasts.push((text, level));
                                 }
                                 FrontendMessage::SnapToPosition(x, y) => latest_snap = Some((x, y)),
                                 _ => {}

@@ -62,8 +62,8 @@ pub fn spawn_message_processor<V: FrontendMessageHandler>(
         };
         loop {
             let tool_state = receiver.borrow_and_update().clone();
-            if let Some(new_state) = V::extract_state(tool_state) {
-                if this
+            if let Some(new_state) = V::extract_state(tool_state)
+                && this
                     .update(cx, |view, cx| {
                         let mut locked = state
                             .write()
@@ -76,9 +76,8 @@ pub fn spawn_message_processor<V: FrontendMessageHandler>(
                         }
                     })
                     .is_err()
-                {
-                    break;
-                }
+            {
+                break;
             }
             if receiver.changed().await.is_err() {
                 break;

@@ -59,14 +59,12 @@ impl ToolBackend for ObjectSizeFilter {
     }
 
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
-        match message {
-            ToolInput::Message(PipelineObjectMessage::ObjectSizeFilterMessage(message)) => {
-                match message {
-                    ObjectSizeFilterMessage::SetMode(mode) => self.state.mode = mode,
-                    ObjectSizeFilterMessage::SetSize(size) => self.state.size = size,
-                }
+        if let ToolInput::Message(PipelineObjectMessage::ObjectSizeFilterMessage(message)) = message
+        {
+            match message {
+                ObjectSizeFilterMessage::SetMode(mode) => self.state.mode = mode,
+                ObjectSizeFilterMessage::SetSize(size) => self.state.size = size,
             }
-            _ => {}
         }
 
         Ok(())

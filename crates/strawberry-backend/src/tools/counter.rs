@@ -155,8 +155,11 @@ impl ToolBackend for Counter {
                     self.lasso_points.clear();
                 }
             }
-            ToolInput::Message(message) => match message {
-                PipelineObjectMessage::CountMessage(count_message) => match count_message {
+            ToolInput::Message(message) => {
+                let PipelineObjectMessage::CountMessage(count_message) = message else {
+                    return Ok(());
+                };
+                match count_message {
                     CountMessage::NewCountType(id) => {
                         self.state.manual_counts.insert(id, vec![]);
                         self.state.count_type_visibility.insert(id, true);
@@ -383,9 +386,8 @@ impl ToolBackend for Counter {
                             }
                         }
                     }
-                },
-                _ => {}
-            },
+                }
+            }
         }
 
         Ok(())
@@ -396,8 +398,6 @@ impl ToolBackend for Counter {
     }
 
     crate::impl_tool_cache!();
-
-    /// Push state to the frontend without discarding the cached image.
 
     fn get_overlays(&self, id: strawberry_types::ToolId) -> Option<crate::overlay::ToolOverlay> {
         // Only the overlay is rounded to f32; stored count positions remain exact integers.

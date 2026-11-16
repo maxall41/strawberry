@@ -57,26 +57,22 @@ impl ToolBackend for LocalMaxima {
     }
 
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
-        match message {
-            ToolInput::Message(message) => match message {
-                PipelineObjectMessage::LocalMaximaMessage(message) => match message {
-                    LocalMaximaMessage::SetParameters(min_distance, threshold, exclude_border) => {
-                        if let ThresholdType::Absolute(value) | ThresholdType::Relative(value) =
-                            threshold
-                        {
-                            anyhow::ensure!(
-                                value.is_finite() && (0.0..=1.0).contains(&value),
-                                "Invalid maxima threshold"
-                            );
-                        }
-                        self.state.min_distance = min_distance;
-                        self.state.threshold = threshold;
-                        self.state.exclude_border = exclude_border;
+        if let ToolInput::Message(PipelineObjectMessage::LocalMaximaMessage(message)) = message {
+            match message {
+                LocalMaximaMessage::SetParameters(min_distance, threshold, exclude_border) => {
+                    if let ThresholdType::Absolute(value) | ThresholdType::Relative(value) =
+                        threshold
+                    {
+                        anyhow::ensure!(
+                            value.is_finite() && (0.0..=1.0).contains(&value),
+                            "Invalid maxima threshold"
+                        );
                     }
-                },
-                _ => {}
-            },
-            _ => {}
+                    self.state.min_distance = min_distance;
+                    self.state.threshold = threshold;
+                    self.state.exclude_border = exclude_border;
+                }
+            }
         }
 
         Ok(())

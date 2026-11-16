@@ -51,20 +51,16 @@ impl ToolBackend for Threshold {
     }
 
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
-        match message {
-            ToolInput::Message(message) => match message {
-                PipelineObjectMessage::ThresholdMessage(threshold) => match threshold {
-                    ThresholdMessage::SetThresholdValue(value) => {
-                        anyhow::ensure!(
-                            value.is_finite() && (0.0..=1.0).contains(&value),
-                            "Invalid threshold"
-                        );
-                        self.state.threshold_value = value;
-                    }
-                },
-                _ => {}
-            },
-            _ => {}
+        if let ToolInput::Message(PipelineObjectMessage::ThresholdMessage(threshold)) = message {
+            match threshold {
+                ThresholdMessage::SetThresholdValue(value) => {
+                    anyhow::ensure!(
+                        value.is_finite() && (0.0..=1.0).contains(&value),
+                        "Invalid threshold"
+                    );
+                    self.state.threshold_value = value;
+                }
+            }
         }
 
         Ok(())
