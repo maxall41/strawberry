@@ -4,6 +4,10 @@ use anyhow::Result;
 use image::RgbaImage;
 use wgpu::PipelineCompilationOptions;
 
+mod auto;
+pub use auto::AutoThresholdMethod;
+use auto::luminance_histogram;
+
 use super::{
     GpuImageProcessor,
     tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
@@ -14,8 +18,9 @@ use super::{
 struct ThresholdUniforms {
     width: u32,
     height: u32,
-    threshold: f32,
-    _padding: f32,
+    // Histogram bin (0–255), widened only for the WGSL uniform layout.
+    threshold: u32,
+    _padding: u32,
 }
 
 pub struct GpuThreshold {
@@ -53,9 +58,11 @@ impl GpuThreshold {
         }
     }
 
+    /// Apply a histogram-bin cutoff; foreground pixels have levels strictly above it.
+    ///
     /// # Errors
     /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
-    pub async fn apply_threshold(&self, image: &RgbaImage, threshold: f32) -> Result<RgbaImage> {
+    pub async fn apply_threshold(&self, image: &RgbaImage, threshold: u8) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
         let tile_config = TileConfig::from_limits(&self.gpu.device.limits());
 
@@ -70,8 +77,21 @@ impl GpuThreshold {
         }
     }
 
+    /// Select a global threshold from this image's histogram, then apply it on the GPU.
+    ///
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
+    pub async fn apply_auto_threshold(
+        &self,
+        image: &RgbaImage,
+        method: AutoThresholdMethod,
+    ) -> Result<RgbaImage> {
+        let threshold = method.threshold(&luminance_histogram(image));
+        self.apply_threshold(image, threshold).await
+    }
+
     /// Apply threshold operation to a single image (no tiling needed)
-    async fn apply_threshold_single(&self, image: &RgbaImage, threshold: f32) -> Result<RgbaImage> {
+    async fn apply_threshold_single(&self, image: &RgbaImage, threshold: u8) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
         let pixel_count = crate::pixel_count(width, height)?;
 
@@ -84,8 +104,8 @@ impl GpuThreshold {
         let uniforms = ThresholdUniforms {
             width,
             height,
-            threshold: threshold.clamp(0.0, 1.0), // Ensure threshold is in valid range
-            _padding: 0.0,
+            threshold: u32::from(threshold),
+            _padding: 0,
         };
         let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
 
@@ -145,7 +165,7 @@ impl GpuThreshold {
     async fn apply_threshold_tiled(
         &self,
         image: &RgbaImage,
-        threshold: f32,
+        threshold: u8,
         tile_config: &TileConfig,
     ) -> Result<RgbaImage> {
         let (full_width, full_height) = image.dimensions();

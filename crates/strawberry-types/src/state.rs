@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
 };
 use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, InferenceConfig};
+use strawberry_processing::threshold::AutoThresholdMethod;
 use strawberry_processing::{local_maxima::ThresholdType, morphology::MorphologyOperation};
 
 // Counter-specific types
@@ -167,10 +168,12 @@ pub struct SobelState {
     pub is_enabled: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThresholdState {
-    pub threshold_value: f32,
+    pub threshold_value: u8,
     pub is_enabled: bool,
+    pub auto_threshold: bool,
+    pub auto_method: AutoThresholdMethod,
 }
 
 // TOML table keys are strings, including numeric count-type IDs.
@@ -815,10 +818,6 @@ impl ToolState {
             Self::SobelState(s) => ensure!(
                 s.threshold_value.is_finite() && (0.0..=1.0).contains(&s.threshold_value),
                 "Invalid Sobel threshold"
-            ),
-            Self::ThresholdState(s) => ensure!(
-                s.threshold_value.is_finite() && (0.0..=1.0).contains(&s.threshold_value),
-                "Invalid threshold"
             ),
             Self::WatershedState(s) => ensure!(
                 s.sigma.is_finite() && s.sigma > 0.,
