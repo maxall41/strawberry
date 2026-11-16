@@ -81,6 +81,8 @@ fn moments(histogram: &[f64; 256]) -> (f64, f64) {
 
 fn otsu(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
     // Otsu (1979), equation (14): maximize between-class variance.
+    // doi:10.1109/TSMC.1979.4310076. Counts omit the constant factor 1/N².
+    // Equation (19) permits any maximizer; retain the first on ties.
     let (total_count, total_sum) = moments(histogram);
     let (mut lower_count, mut lower_sum) = (0.0, 0.0);
     let mut best_variance = f64::NEG_INFINITY;
@@ -103,7 +105,9 @@ fn otsu(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
 }
 
 fn huang(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
-    // Huang & Wang (1995), equations (2)–(8): minimize Shannon fuzzy entropy.
+    // Huang & Wang (1995), entropy variant, equations (4), (8), (20)–(21).
+    // doi:10.1016/0031-3203(94)E0043-K. Use the base minimum-entropy method,
+    // without the optional, tolerance-dependent valley refinement (22)–(23).
     let (total_count, total_sum) = moments(histogram);
     let range = f64::from(last.saturating_sub(first));
     let (mut lower_count, mut lower_sum) = (0.0, 0.0);
@@ -116,8 +120,9 @@ fn huang(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
         if lower_count <= 0.0 || upper_count <= 0.0 {
             continue;
         }
-        let lower_mean = lower_sum / lower_count;
-        let upper_mean = (total_sum - lower_sum) / upper_count;
+        // The computation procedure rounds both target gray levels to integers.
+        let lower_mean = (lower_sum / lower_count).round();
+        let upper_mean = ((total_sum - lower_sum) / upper_count).round();
         let entropy = histogram
             .iter()
             .zip(0..=u8::MAX)
@@ -147,8 +152,8 @@ fn huang(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
 }
 
 fn triangle(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
-    // Zack et al. (1977): maximize distance below the line joining the mode and tail.
-    // Choose the longer tail to support both bright and dark backgrounds.
+    // Zack et al. (1977), Figure 2, doi:10.1177/25.7.70454: maximize distance
+    // below the mode-to-baseline line.
     let (mut peak, mut peak_count) = (first, 0.0);
     for (&count, level) in histogram.iter().zip(0..=u8::MAX) {
         if count > peak_count {
@@ -156,16 +161,20 @@ fn triangle(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
             peak_count = count;
         }
     }
-    let tail = if peak.saturating_sub(first) >= last.saturating_sub(peak) {
-        first
+    // Include the adjacent empty bin so the line reaches the baseline, where possible.
+    // Choosing the longer tail generalizes the construction to either image polarity.
+    let left = first.saturating_sub(1);
+    let right = last.saturating_add(1);
+    let tail = if peak.saturating_sub(left) >= right.saturating_sub(peak) {
+        left
     } else {
-        last
+        right
     };
     let tail_count = histogram.get(usize::from(tail)).copied().unwrap_or(0.0);
     let width = f64::from(tail) - f64::from(peak);
     let height = tail_count - peak_count;
     let direction = width.signum();
-    let mut threshold = first;
+    let mut threshold = peak;
     let mut best_distance = 0.0;
     for (&count, level) in histogram.iter().zip(0..=u8::MAX) {
         if level < peak.min(tail) || level > peak.max(tail) {
