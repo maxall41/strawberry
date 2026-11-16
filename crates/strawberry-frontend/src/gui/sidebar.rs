@@ -176,7 +176,7 @@ impl ToolSidebar {
     fn pipeline_tools(&self) -> Vec<ToolSummary> {
         self.state.tools.clone()
     }
-    fn remove_tool(&mut self, id: ToolId, window: &mut Window, cx: &mut Context<Self>) {
+    fn remove_tool(&self, id: ToolId, window: &mut Window, cx: &mut Context<Self>) {
         let _ = self.sender.send(PipelineCommand::RemoveTool(id));
         self.focus_handle.focus(window, cx);
         cx.notify();
@@ -480,7 +480,7 @@ impl Render for ToolSidebar {
                 continue;
             };
             let ordinal = occurrences.entry(proxy.kind.clone()).or_default();
-            *ordinal += 1;
+            *ordinal = ordinal.saturating_add(1);
             let repeated = pipeline
                 .iter()
                 .filter(|tool| tool.kind == proxy.kind)
@@ -647,6 +647,10 @@ fn drop_slot(active: bool) -> impl IntoElement {
 }
 
 /// Resolve a visible insertion slot to the stable ID immediately after it.
+#[expect(
+    clippy::option_option,
+    reason = "Distinguish an ignored drop from a move to the end of the stack"
+)]
 fn reorder_target(tools: &[ToolSummary], id: ToolId, slot: usize) -> Option<Option<ToolId>> {
     let from = tools.iter().position(|tool| tool.id == id)?;
     if slot > tools.len() || slot == from || slot == from.saturating_add(1) {

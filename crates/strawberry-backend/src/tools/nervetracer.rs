@@ -68,10 +68,6 @@ impl ToolBackend for NerveTracer {
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Command dispatch as one function is cleaner"
-    )]
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         match message {
             ToolInput::HandleClick(x, y) => {
@@ -98,67 +94,65 @@ impl ToolBackend for NerveTracer {
                 }
             }
 
-            ToolInput::Message(message) => match message {
-                PipelineObjectMessage::NerveTracerMessage(message) => match message {
-                    NerveTracerMessage::CommitCurrentPathSegments() => {
-                        self.state
-                            .paths
-                            .push(self.state.current_path_segments.clone());
-                        self.state.current_path_segments.clear();
+            ToolInput::Message(PipelineObjectMessage::NerveTracerMessage(message)) => match message
+            {
+                NerveTracerMessage::CommitCurrentPathSegments() => {
+                    self.state
+                        .paths
+                        .push(self.state.current_path_segments.clone());
+                    self.state.current_path_segments.clear();
+                }
+                NerveTracerMessage::DeletePath(id) => {
+                    if id < self.state.paths.len() {
+                        self.state.paths.remove(id);
                     }
-                    NerveTracerMessage::DeletePath(id) => {
-                        if id < self.state.paths.len() {
-                            self.state.paths.remove(id);
+                }
+                NerveTracerMessage::DeletePathSegmentInCommitedPath(path_id, segment_id) => {
+                    if let Some(path) = self.state.paths.get_mut(path_id)
+                        && segment_id < path.len()
+                    {
+                        path.remove(segment_id);
+                    }
+                }
+                NerveTracerMessage::DeleteUncomittedPathSegment(id) => {
+                    if id < self.state.current_path_segments.len() {
+                        self.state.current_path_segments.remove(id);
+                    }
+                }
+                NerveTracerMessage::LoadTraces(path) => {
+                    match import_nervetracer_from_xml_file_into(&path, &mut self.state) {
+                        Ok(()) => {
+                            self.events.emit(FrontendMessage::success(
+                                "Traces loaded successfully!".to_string(),
+                            ));
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to load traces from {}: {e}", path.display());
+                            self.events.emit(FrontendMessage::error(format!(
+                                "Failed to load traces: {e}"
+                            )));
                         }
                     }
-                    NerveTracerMessage::DeletePathSegmentInCommitedPath(path_id, segment_id) => {
-                        if let Some(path) = self.state.paths.get_mut(path_id)
-                            && segment_id < path.len()
-                        {
-                            path.remove(segment_id);
+                }
+                NerveTracerMessage::SaveTraces(path) => {
+                    match export_nervetracer_to_xml_file(&self.state, &path, None, None) {
+                        Ok(()) => {
+                            self.events.emit(FrontendMessage::success(format!(
+                                "Traces saved to {}",
+                                path.display()
+                            )));
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to save traces to {}: {e}", path.display());
+                            self.events.emit(FrontendMessage::error(format!(
+                                "Failed to save traces: {e}"
+                            )));
                         }
                     }
-                    NerveTracerMessage::DeleteUncomittedPathSegment(id) => {
-                        if id < self.state.current_path_segments.len() {
-                            self.state.current_path_segments.remove(id);
-                        }
-                    }
-                    NerveTracerMessage::LoadTraces(path) => {
-                        match import_nervetracer_from_xml_file_into(&path, &mut self.state) {
-                            Ok(()) => {
-                                self.events.emit(FrontendMessage::success(
-                                    "Traces loaded successfully!".to_string(),
-                                ));
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to load traces from {}: {e}", path.display());
-                                self.events.emit(FrontendMessage::error(format!(
-                                    "Failed to load traces: {e}"
-                                )));
-                            }
-                        }
-                    }
-                    NerveTracerMessage::SaveTraces(path) => {
-                        match export_nervetracer_to_xml_file(&self.state, &path, None, None) {
-                            Ok(()) => {
-                                self.events.emit(FrontendMessage::success(format!(
-                                    "Traces saved to {}",
-                                    path.display()
-                                )));
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to save traces to {}: {e}", path.display());
-                                self.events.emit(FrontendMessage::error(format!(
-                                    "Failed to save traces: {e}"
-                                )));
-                            }
-                        }
-                    }
-                    NerveTracerMessage::SetSelectedImageIndex(index) => {
-                        self.state.selected_image_index = index;
-                    }
-                },
-                _ => {}
+                }
+                NerveTracerMessage::SetSelectedImageIndex(index) => {
+                    self.state.selected_image_index = index;
+                }
             },
             _ => {}
         }
@@ -195,8 +189,6 @@ impl ToolBackend for NerveTracer {
         self.cache.invalidate();
         self.cached_input = None;
     }
-
-    /// Push state to the frontend without discarding the cached image.
 
     fn get_overlays(&self, id: strawberry_types::ToolId) -> Option<crate::overlay::ToolOverlay> {
         // Only the overlay is rounded to f32; stored trace positions remain exact integers.

@@ -54,20 +54,16 @@ impl ToolBackend for Morphology {
     }
 
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
-        match message {
-            ToolInput::Message(message) => match message {
-                PipelineObjectMessage::MorphologyMessage(message) => match message {
-                    MorphologyMessage::SetOperation(operation) => {
-                        self.state.operation = operation;
-                    }
-                    MorphologyMessage::SetElementSize(element_size) => {
-                        anyhow::ensure!(element_size > 0, "Size must be positive");
-                        self.state.element_size = element_size;
-                    }
-                },
-                _ => {}
-            },
-            _ => {}
+        if let ToolInput::Message(PipelineObjectMessage::MorphologyMessage(message)) = message {
+            match message {
+                MorphologyMessage::SetOperation(operation) => {
+                    self.state.operation = operation;
+                }
+                MorphologyMessage::SetElementSize(element_size) => {
+                    anyhow::ensure!(element_size > 0, "Size must be positive");
+                    self.state.element_size = element_size;
+                }
+            }
         }
 
         Ok(())

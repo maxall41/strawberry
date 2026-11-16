@@ -18,7 +18,7 @@ use strawberry_types::{
     overlay,
 };
 
-use tools::ToolManager;
+use tools::{ToolManager, manager::ToolInstance};
 
 pub mod counter;
 pub mod nervetracer;
@@ -217,6 +217,15 @@ impl Pipeline {
         Ok(())
     }
 
+    /// Apply queued commands, reconcile tool state, and process pending image changes.
+    ///
+    /// # Errors
+    /// Command failures are reported to their reply channels and frontend feedback;
+    /// this method currently always returns `Ok(())`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep ordered command dispatch and its processing barriers together"
+    )]
     pub async fn process_commands(&mut self) -> anyhow::Result<()> {
         let commands: Vec<_> =
             std::iter::from_fn(|| self.command_receiver.try_recv().ok()).collect();
@@ -234,7 +243,7 @@ impl Pipeline {
                     self.complete_operation(reply, result, None);
                 }
                 PipelineCommand::AddTool { kind, reply } => {
-                    let result = self.tool_manager.add_tool(kind).map_err(|e| e.to_string());
+                    let result = self.tool_manager.add_tool(&kind).map_err(|e| e.to_string());
                     if result.is_ok() {
                         self.gesture_owner = None;
                     }
@@ -266,10 +275,10 @@ impl Pipeline {
                     }
                 }
                 PipelineCommand::ToolMessage { id, message } => {
-                    if let Some(tool) = self.tool_manager.tools.get_mut(&id) {
-                        if let Err(error) = tool.handle_message(message) {
-                            self.report_error("Tool command failed", &error);
-                        }
+                    if let Some(tool) = self.tool_manager.tools.get_mut(&id)
+                        && let Err(error) = tool.handle_message(message)
+                    {
+                        self.report_error("Tool command failed", &error);
                     }
                     if let Some(tool) = self.tool_manager.tools.get_mut(&id)
                         && !tool.is_enabled()
@@ -290,7 +299,7 @@ impl Pipeline {
                         self.tool_manager
                             .tools
                             .get(&id)
-                            .map(|tool| tool.subscribe_state()),
+                            .map(ToolInstance::subscribe_state),
                     );
                 }
                 PipelineCommand::SavePipeline { path, reply } => {
@@ -322,7 +331,7 @@ impl Pipeline {
                     ToolInput::HandleClick(x, y),
                 ),
                 PipelineCommand::InteractionMove(x, y) => {
-                    self.route_input(self.gesture_owner, ToolInput::InteractionMove(x, y))
+                    self.route_input(self.gesture_owner, ToolInput::InteractionMove(x, y));
                 }
                 PipelineCommand::InteractionEnd => {
                     self.route_input(self.gesture_owner, ToolInput::InteractionEnd);
@@ -398,10 +407,9 @@ impl Pipeline {
         }
         if let Some(tool) = id.and_then(|id| self.tool_manager.tools.get_mut(&id))
             && tool.is_enabled()
+            && let Err(error) = tool.handle_input(input)
         {
-            if let Err(error) = tool.handle_input(input) {
-                self.report_error("Canvas input failed", &error);
-            }
+            self.report_error("Canvas input failed", &error);
         }
     }
     fn report_error(&self, context: &str, error: &anyhow::Error) {

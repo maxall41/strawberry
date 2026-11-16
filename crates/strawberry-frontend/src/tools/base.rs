@@ -9,7 +9,7 @@ pub struct ToolBase {
     pub processor_spawned: bool,
 }
 impl ToolBase {
-    pub fn new(command_sender: CommandSender, id: ToolId, focus_handle: FocusHandle) -> Self {
+    pub const fn new(command_sender: CommandSender, id: ToolId, focus_handle: FocusHandle) -> Self {
         Self {
             command_sender,
             id,

@@ -67,43 +67,39 @@ impl ToolBackend for Compositor {
     }
 
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
-        match message {
-            ToolInput::Message(message) => match message {
-                PipelineObjectMessage::CompositorMessage(message) => match message {
-                    CompositorMessage::ToggleVisibility(value, layer_index) => {
-                        let mut mutated = self.state.enabled_layers.clone();
-                        let index = usize::from(layer_index);
+        if let ToolInput::Message(PipelineObjectMessage::CompositorMessage(message)) = message {
+            match message {
+                CompositorMessage::ToggleVisibility(value, layer_index) => {
+                    let mut mutated = self.state.enabled_layers.clone();
+                    let index = usize::from(layer_index);
 
-                        if index >= mutated.len() {
-                            let error_msg = format!(
-                                "Compositor: Layer index {} out of bounds (max: {})",
-                                index,
-                                mutated.len()
-                            );
-                            self.base
-                                .events
-                                .emit(FrontendMessage::error(error_msg.clone()));
-                            return Err(anyhow::anyhow!(error_msg));
-                        }
-
-                        if let Some(layer) = mutated.get_mut(index) {
-                            *layer = value;
-                        }
-
-                        let end_range = std::cmp::min(self.state.real_layers_len, mutated.len());
-                        if mutated
-                            .get(0..end_range)
-                            .is_none_or(|slice| slice.iter().all(|&x| !x))
-                        {
-                            return Ok(());
-                        }
-
-                        self.state.enabled_layers = mutated;
+                    if index >= mutated.len() {
+                        let error_msg = format!(
+                            "Compositor: Layer index {} out of bounds (max: {})",
+                            index,
+                            mutated.len()
+                        );
+                        self.base
+                            .events
+                            .emit(FrontendMessage::error(error_msg.clone()));
+                        return Err(anyhow::anyhow!(error_msg));
                     }
-                },
-                _ => {}
-            },
-            _ => {}
+
+                    if let Some(layer) = mutated.get_mut(index) {
+                        *layer = value;
+                    }
+
+                    let end_range = std::cmp::min(self.state.real_layers_len, mutated.len());
+                    if mutated
+                        .get(0..end_range)
+                        .is_none_or(|slice| slice.iter().all(|&x| !x))
+                    {
+                        return Ok(());
+                    }
+
+                    self.state.enabled_layers = mutated;
+                }
+            }
         }
 
         Ok(())

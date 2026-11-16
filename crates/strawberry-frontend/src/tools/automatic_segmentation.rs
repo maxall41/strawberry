@@ -1437,6 +1437,7 @@ impl Render for AutomaticSegmentationView {
             );
         }
         let mut panel = tool_panel::panel()
+            .track_focus(&self.base.focus_handle)
             .child(
                 ToggleButton::new(
                     "Enabled".into(),

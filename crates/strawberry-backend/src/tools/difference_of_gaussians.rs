@@ -52,23 +52,22 @@ impl ToolBackend for DifferenceOfGaussians {
     }
 
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
-        match message {
-            ToolInput::Message(PipelineObjectMessage::DifferenceOfGaussiansMessage(message)) => {
-                match message {
-                    DifferenceOfGaussiansMessage::SetSmallSigma(sigma)
-                        if sigma.is_finite() && sigma >= 0.1 && sigma < self.state.large_sigma =>
-                    {
-                        self.state.small_sigma = sigma;
-                    }
-                    DifferenceOfGaussiansMessage::SetLargeSigma(sigma)
-                        if sigma.is_finite() && sigma > self.state.small_sigma && sigma <= 64.0 =>
-                    {
-                        self.state.large_sigma = sigma;
-                    }
-                    _ => {}
+        if let ToolInput::Message(PipelineObjectMessage::DifferenceOfGaussiansMessage(message)) =
+            message
+        {
+            match message {
+                DifferenceOfGaussiansMessage::SetSmallSigma(sigma)
+                    if sigma.is_finite() && sigma >= 0.1 && sigma < self.state.large_sigma =>
+                {
+                    self.state.small_sigma = sigma;
                 }
+                DifferenceOfGaussiansMessage::SetLargeSigma(sigma)
+                    if sigma.is_finite() && sigma > self.state.small_sigma && sigma <= 64.0 =>
+                {
+                    self.state.large_sigma = sigma;
+                }
+                _ => {}
             }
-            _ => {}
         }
 
         Ok(())

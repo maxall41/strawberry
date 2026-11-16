@@ -25,7 +25,7 @@ pub struct ToolBase {
     pub events: ToolEvents,
 }
 impl ToolBase {
-    pub fn new(events: ToolEvents) -> Self {
+    pub const fn new(events: ToolEvents) -> Self {
         Self { events }
     }
 }

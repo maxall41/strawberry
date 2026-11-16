@@ -185,7 +185,7 @@ pub struct PipelineProgress {
 pub enum FrontendMessage {
     ToolEvent {
         id: super::ToolId,
-        event: Box<FrontendMessage>,
+        event: Box<Self>,
     },
     UserFeedback(String, FeedbackLevel),
     ReturnOverlays(crate::overlay::OverlayCollection),

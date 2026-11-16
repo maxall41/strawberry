@@ -79,10 +79,6 @@ pub struct PalleteCommand {
 }
 
 /// Registers a lazily initialized sidebar view and its command-palette action.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Keep tool metadata, channels and factory in one registration"
-)]
 fn register_tool<T, A>(
     cx: &mut App,
     sidebar: &Entity<ToolSidebar>,
@@ -104,7 +100,7 @@ where
                 let mut tool = constructor(id, view_sender.clone(), cx);
                 let tool = cx.new(|cx| {
                     cx.on_focus_in(&tool.base().focus_handle, window, |tool: &mut T, _, _| {
-                        tool.base().select()
+                        tool.base().select();
                     })
                     .detach();
                     tool.initialize(window, cx);
