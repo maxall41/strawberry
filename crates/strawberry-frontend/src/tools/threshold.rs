@@ -1,6 +1,7 @@
-use crate::gui::Button;
 use crate::gui::actions::actions;
-use crate::gui::theme;
+use crate::gui::{Button, ButtonVariant};
+use crate::gui::{theme, tool_panel};
+use strawberry_processing::threshold::AutoThresholdMethod;
 use strawberry_types::{CommandSender, ToolId};
 // Implements UI for threshold tool
 
@@ -22,6 +23,7 @@ pub struct ThresholdView {
     pub state: Arc<RwLock<ThresholdState>>,
     pub threshold_control: Option<Entity<ValueControl>>,
     pub base: crate::tools::base::ToolBase,
+    method_focus: tool_panel::ListFocus<usize>,
 }
 
 impl Focusable for ThresholdView {
@@ -31,10 +33,17 @@ impl Focusable for ThresholdView {
 }
 
 impl ThresholdView {
+    const METHODS: [(AutoThresholdMethod, &'static str); 3] = [
+        (AutoThresholdMethod::Otsu, "Otsu"),
+        (AutoThresholdMethod::Huang, "Huang"),
+        (AutoThresholdMethod::Triangle, "Triangle"),
+    ];
+
     pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(ThresholdState::default())),
             threshold_control: None,
+            method_focus: tool_panel::ListFocus::new(),
             base: crate::tools::base::ToolBase::new(command_sender, id, cx.focus_handle()),
         }
     }
@@ -65,13 +74,15 @@ impl ThresholdView {
     }
 
     fn update_threshold_value(&self, threshold_value: f32) {
+        self.send_threshold_message(ThresholdMessage::SetThresholdValue(threshold_value));
+    }
+
+    fn send_threshold_message(&self, message: ThresholdMessage) {
         if let Err(e) = self
             .base
-            .send_to_backend(PipelineObjectMessage::ThresholdMessage(
-                ThresholdMessage::SetThresholdValue(threshold_value),
-            ))
+            .send_to_backend(PipelineObjectMessage::ThresholdMessage(message))
         {
-            eprintln!("Failed to send threshold value update: {e}");
+            eprintln!("Failed to send threshold update: {e}");
         }
     }
 
@@ -97,6 +108,24 @@ impl ThresholdView {
         .render(cx)
     }
 
+    fn render_mode_control(state: &ThresholdState, cx: &Context<Self>) -> impl IntoElement + use<> {
+        tool_panel::segmented().children([(false, "Manual"), (true, "Automatic")].into_iter().map(
+            |(automatic, label)| {
+                Button::new(gpui::ElementId::Name(
+                    format!("threshold-mode-{label}").into(),
+                ))
+                .variant(ButtonVariant::Ghost)
+                .selected(state.auto_threshold == automatic)
+                .flex_1()
+                .min_w_0()
+                .label(label)
+                .on_click(cx.listener(move |this, _, _, _| {
+                    this.send_threshold_message(ThresholdMessage::SetAutoThreshold(automatic));
+                }))
+            },
+        ))
+    }
+
     // Threshold value control component
     fn render_threshold_control(
         &self,
@@ -107,6 +136,73 @@ impl ThresholdView {
             || div().into_any_element(),
             gpui::IntoElement::into_any_element,
         )
+    }
+
+    fn render_method_control(
+        &self,
+        state: &ThresholdState,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let method_ids = (0..Self::METHODS.len()).collect::<Vec<_>>();
+        self.method_focus.sync(&method_ids, cx);
+        let choices = div()
+            .id("threshold-method-choices")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let Some(direction) = tool_panel::ListDirection::from_key(event) else {
+                    return;
+                };
+                let state = this
+                    .state
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let method_ids = (0..Self::METHODS.len()).collect::<Vec<_>>();
+                let current = this
+                    .method_focus
+                    .focused_index(&method_ids, window)
+                    .or_else(|| {
+                        Self::METHODS
+                            .iter()
+                            .position(|(method, _)| *method == state.auto_method)
+                    });
+                drop(state);
+                let Some(target) =
+                    tool_panel::next_list_index(current, Self::METHODS.len(), direction)
+                else {
+                    return;
+                };
+                let Some(&(method, _)) = Self::METHODS.get(target) else {
+                    return;
+                };
+                this.send_threshold_message(ThresholdMessage::SetAutoMethod(method));
+                this.method_focus.focus(target, window, cx);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .children(
+                Self::METHODS
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &(method, label))| {
+                        Button::new(gpui::ElementId::Name(
+                            format!("threshold-method-{label}").into(),
+                        ))
+                        .focus_handle(&self.method_focus.handle(index, cx))
+                        .label(label)
+                        .selected(state.auto_method == method)
+                        .on_click(cx.listener(move |this, _, _, _| {
+                            this.send_threshold_message(ThresholdMessage::SetAutoMethod(method));
+                        }))
+                    }),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().font_weight(gpui::FontWeight::BOLD).child("Method:"))
+            .child(choices)
     }
 
     // Preset button component
@@ -164,6 +260,7 @@ impl ThresholdView {
     // Controls section component
     fn render_controls_section(
         &self,
+        state: &ThresholdState,
         cx: &mut Context<Self>,
         window: &Window,
     ) -> impl IntoElement + use<> {
@@ -171,7 +268,13 @@ impl ThresholdView {
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.render_threshold_control(cx, window))
+            .child(Self::render_mode_control(state, cx))
+            .when(state.auto_threshold, |this| {
+                this.child(self.render_method_control(state, cx))
+            })
+            .when(!state.auto_threshold, |this| {
+                this.child(self.render_threshold_control(cx, window))
+            })
     }
 }
 
@@ -252,8 +355,10 @@ impl Render for ThresholdView {
             })
             .on_action(cx.listener(Self::toggle_activity_action))
             .child(Self::render_status(&state, cx))
-            .child(self.render_controls_section(cx, window))
-            .child(Self::render_presets_section(cx))
+            .child(self.render_controls_section(&state, cx, window))
+            .when(!state.auto_threshold, |this| {
+                this.child(Self::render_presets_section(cx))
+            })
     }
 }
 

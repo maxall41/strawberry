@@ -4,6 +4,10 @@ use anyhow::Result;
 use image::RgbaImage;
 use wgpu::PipelineCompilationOptions;
 
+mod auto;
+pub use auto::AutoThresholdMethod;
+use auto::luminance_histogram;
+
 use super::{
     GpuImageProcessor,
     tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
@@ -14,8 +18,9 @@ use super::{
 struct ThresholdUniforms {
     width: u32,
     height: u32,
+    // Normalized cutoff in manual mode, histogram bin (0–255) in automatic mode.
     threshold: f32,
-    _padding: f32,
+    automatic: u32,
 }
 
 pub struct GpuThreshold {
@@ -56,22 +61,55 @@ impl GpuThreshold {
     /// # Errors
     /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
     pub async fn apply_threshold(&self, image: &RgbaImage, threshold: f32) -> Result<RgbaImage> {
+        self.apply_threshold_inner(image, threshold.clamp(0.0, 1.0), false)
+            .await
+    }
+
+    /// Select a global threshold from this image's histogram, then apply it on the GPU.
+    ///
+    /// # Errors
+    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
+    pub async fn apply_auto_threshold(
+        &self,
+        image: &RgbaImage,
+        method: AutoThresholdMethod,
+    ) -> Result<RgbaImage> {
+        let threshold = method.threshold(&luminance_histogram(image));
+        self.apply_threshold_inner(image, f32::from(threshold), true)
+            .await
+    }
+
+    async fn apply_threshold_inner(
+        &self,
+        image: &RgbaImage,
+        threshold: f32,
+        automatic: bool,
+    ) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
+        if width == 0 || height == 0 {
+            return Ok(image.clone());
+        }
         let tile_config = TileConfig::from_limits(&self.gpu.device.limits());
 
         // Check if we need tile-based processing
         if TileGrid::needs_tiling(width, height, &tile_config) {
             println!("Image {width}x{height} requires tile-based processing for GPU limits");
-            self.apply_threshold_tiled(image, threshold, &tile_config)
+            self.apply_threshold_tiled(image, threshold, automatic, &tile_config)
                 .await
         } else {
             // Process as single tile for smaller images
-            self.apply_threshold_single(image, threshold).await
+            self.apply_threshold_single(image, threshold, automatic)
+                .await
         }
     }
 
     /// Apply threshold operation to a single image (no tiling needed)
-    async fn apply_threshold_single(&self, image: &RgbaImage, threshold: f32) -> Result<RgbaImage> {
+    async fn apply_threshold_single(
+        &self,
+        image: &RgbaImage,
+        threshold: f32,
+        automatic: bool,
+    ) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
         let pixel_count = crate::pixel_count(width, height)?;
 
@@ -84,8 +122,8 @@ impl GpuThreshold {
         let uniforms = ThresholdUniforms {
             width,
             height,
-            threshold: threshold.clamp(0.0, 1.0), // Ensure threshold is in valid range
-            _padding: 0.0,
+            threshold,
+            automatic: u32::from(automatic),
         };
         let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
 
@@ -137,7 +175,7 @@ impl GpuThreshold {
             .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)
             .await?;
 
-        println!("Applied threshold with value: {threshold}");
+        println!("Applied threshold with value: {threshold}, automatic: {automatic}");
         Ok(result_image)
     }
 
@@ -146,6 +184,7 @@ impl GpuThreshold {
         &self,
         image: &RgbaImage,
         threshold: f32,
+        automatic: bool,
         tile_config: &TileConfig,
     ) -> Result<RgbaImage> {
         let (full_width, full_height) = image.dimensions();
@@ -176,7 +215,9 @@ impl GpuThreshold {
             let tile_image = extract_rgba_tile(image, tile_info)?;
 
             // Process the tile
-            let processed_tile = self.apply_threshold_single(&tile_image, threshold).await?;
+            let processed_tile = self
+                .apply_threshold_single(&tile_image, threshold, automatic)
+                .await?;
 
             processed_tiles.push((tile_info.clone(), processed_tile));
         }

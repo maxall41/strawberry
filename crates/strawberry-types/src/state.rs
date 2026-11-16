@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
 };
 use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, InferenceConfig};
+use strawberry_processing::threshold::AutoThresholdMethod;
 use strawberry_processing::{local_maxima::ThresholdType, morphology::MorphologyOperation};
 
 // Counter-specific types
@@ -171,6 +172,8 @@ pub struct SobelState {
 pub struct ThresholdState {
     pub threshold_value: f32,
     pub is_enabled: bool,
+    pub auto_threshold: bool,
+    pub auto_method: AutoThresholdMethod,
 }
 
 // TOML table keys are strings, including numeric count-type IDs.
