@@ -1,4 +1,4 @@
-use crate::{BackendToolType, RgbaColor};
+use crate::{RgbaColor, ToolId};
 use serde::{Deserialize, Serialize};
 
 /// Styling options for circles
@@ -60,7 +60,7 @@ pub enum OverlayElement {
 #[derive(Debug, Clone)]
 pub struct ToolOverlay {
     /// Unique identifier for the tool producing these overlays
-    pub tool_id: BackendToolType,
+    pub tool_id: ToolId,
     /// Priority for rendering order (higher = on top)
     pub z_order: i32,
     /// Elements to render

@@ -1,6 +1,7 @@
 use crate::gui::Button;
 use crate::gui::actions::actions;
 use crate::gui::theme;
+use strawberry_types::{CommandSender, ToolId};
 // Implements UI for threshold tool
 
 use std::sync::{Arc, RwLock};
@@ -13,9 +14,7 @@ use gpui::{
 use crate::gui::ToggleButton;
 use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
-use strawberry_types::{
-    PipelineCommand, PipelineObjectMessage, ThresholdMessage, ThresholdState, ToolState,
-};
+use strawberry_types::{PipelineObjectMessage, ThresholdMessage, ThresholdState, ToolState};
 
 use strawberry_types::ToolFrontend;
 
@@ -32,19 +31,11 @@ impl Focusable for ThresholdView {
 }
 
 impl ThresholdView {
-    pub fn new(
-        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(ThresholdState::default())),
             threshold_control: None,
-            base: crate::tools::base::ToolBase::new(
-                command_sender,
-                strawberry_types::BackendToolType::Threshold,
-                cx.focus_handle(),
-            ),
+            base: crate::tools::base::ToolBase::new(command_sender, id, cx.focus_handle()),
         }
     }
 
@@ -53,9 +44,7 @@ impl ThresholdView {
     }
 
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::ToggleActive(!current_value),
-        )) {
+        if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
@@ -76,11 +65,12 @@ impl ThresholdView {
     }
 
     fn update_threshold_value(&self, threshold_value: f32) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::ThresholdMessage(ThresholdMessage::SetThresholdValue(
-                threshold_value,
-            )),
-        )) {
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::ThresholdMessage(
+                ThresholdMessage::SetThresholdValue(threshold_value),
+            ))
+        {
             eprintln!("Failed to send threshold value update: {e}");
         }
     }
@@ -255,6 +245,7 @@ impl Render for ThresholdView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<Self>| {
+                        this.base.select();
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )

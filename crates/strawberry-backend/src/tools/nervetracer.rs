@@ -1,3 +1,4 @@
+use crate::tools::base::ToolEvents;
 use num_traits::ToPrimitive;
 use strawberry_types::RgbaColor;
 
@@ -9,8 +10,8 @@ use strawberry_processing::nervetracer::create_path;
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, NerveTracerMessage, NerveTracerState, PipelineCommand,
-    PipelineObjectMessage, ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, NerveTracerMessage, NerveTracerState, PipelineObjectMessage,
+    ToolBackend, ToolInput, ToolState,
     overlay::{OverlayElement, ToolOverlay},
 };
 
@@ -22,24 +23,23 @@ fn pixel_center((x, y): (u64, u64)) -> Option<(f32, f32)> {
 
 pub struct NerveTracer {
     pub state: NerveTracerState,
-    pub command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    pub sender: flume::Sender<PipelineCommand>,
-    pub receiver: flume::Receiver<PipelineCommand>,
-    pub frontend_senders: Vec<flume::Sender<PipelineCommand>>,
-    pub index: usize,
+    pub events: ToolEvents,
     pub cache: crate::tools::cache::ToolCache<NerveTracerState>,
     pub cached_input: Option<Arc<image::RgbaImage>>,
 }
 
 #[async_trait]
 impl ToolBackend for NerveTracer {
+    fn drain_events(&mut self) -> Vec<FrontendMessage> {
+        self.events.drain()
+    }
+    fn cancel_interaction(&mut self) {
+        self.state.first_point = None;
+    }
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
-    fn get_sender(&self) -> flume::Sender<PipelineCommand> {
-        self.sender.clone()
-    }
+
     fn persisted_state_mut(&mut self) -> Option<&mut dyn strawberry_types::PersistedState> {
         Some(&mut self.state)
     }
@@ -49,12 +49,7 @@ impl ToolBackend for NerveTracer {
     fn get_state(&self) -> ToolState {
         ToolState::NerveTracerState(self.state.clone())
     }
-    fn add_frontend_sender(&mut self, sender: flume::Sender<PipelineCommand>) {
-        self.frontend_senders.push(sender);
-    }
-    fn disconnect(&mut self) {
-        self.frontend_senders.clear();
-    }
+
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         self.state.total_images = input.len();
 
@@ -73,127 +68,93 @@ impl ToolBackend for NerveTracer {
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Command dispatch as one function is cleaner"
-    )]
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands: Vec<PipelineCommand> =
-            std::iter::from_fn(|| self.receiver.try_recv().ok()).collect();
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        match message {
+            ToolInput::HandleClick(x, y) => {
+                if !self.state.is_enabled {
+                    return Ok(());
+                }
+                let Some(image) = &self.cached_input else {
+                    return Ok(());
+                };
 
-        for message in commands {
-            match message {
-                PipelineCommand::HandleClick(x, y) => {
-                    if !self.state.is_enabled {
-                        return Ok(());
+                match self.state.first_point {
+                    None => {
+                        // First click - store the point
+                        self.state.first_point = Some((x, y));
                     }
-                    let Some(image) = &self.cached_input else {
-                        return Ok(());
-                    };
-
-                    match self.state.first_point {
-                        None => {
-                            // First click - store the point
-                            self.state.first_point = Some((x, y));
-                        }
-                        Some(first) => {
-                            // Second click - create path segment
-                            let new_path = create_path(first, (x, y), image);
-                            self.state.first_point = None;
-                            if let Some(new_path) = new_path {
-                                self.state.current_path_segments.push(new_path);
-                            }
+                    Some(first) => {
+                        // Second click - create path segment
+                        let new_path = create_path(first, (x, y), image);
+                        self.state.first_point = None;
+                        if let Some(new_path) = new_path {
+                            self.state.current_path_segments.push(new_path);
                         }
                     }
                 }
-                PipelineCommand::RequestState() => {
-                    self.send_to_frontend(&PipelineCommand::FrontendMessage(
-                        FrontendMessage::ReturnState(Box::new(self.get_state())),
-                    ))?;
-                }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
-                    }
-                    PipelineObjectMessage::NerveTracerMessage(message) => match message {
-                        NerveTracerMessage::CommitCurrentPathSegments() => {
-                            self.state
-                                .paths
-                                .push(self.state.current_path_segments.clone());
-                            self.state.current_path_segments.clear();
-                        }
-                        NerveTracerMessage::DeletePath(id) => {
-                            if id < self.state.paths.len() {
-                                self.state.paths.remove(id);
-                            }
-                        }
-                        NerveTracerMessage::DeletePathSegmentInCommitedPath(
-                            path_id,
-                            segment_id,
-                        ) => {
-                            if let Some(path) = self.state.paths.get_mut(path_id)
-                                && segment_id < path.len()
-                            {
-                                path.remove(segment_id);
-                            }
-                        }
-                        NerveTracerMessage::DeleteUncomittedPathSegment(id) => {
-                            if id < self.state.current_path_segments.len() {
-                                self.state.current_path_segments.remove(id);
-                            }
-                        }
-                        NerveTracerMessage::LoadTraces(path) => {
-                            match import_nervetracer_from_xml_file_into(&path, &mut self.state) {
-                                Ok(()) => {
-                                    self.global_sender.send(PipelineCommand::FrontendMessage(
-                                        FrontendMessage::success(
-                                            "Traces loaded successfully!".to_string(),
-                                        ),
-                                    ))?;
-                                }
-                                Err(e) => {
-                                    eprintln!("Failed to load traces from {}: {e}", path.display());
-                                    if let Err(send_err) = self.global_sender.send(
-                                        PipelineCommand::FrontendMessage(FrontendMessage::error(
-                                            format!("Failed to load traces: {e}"),
-                                        )),
-                                    ) {
-                                        eprintln!("Failed to send error feedback: {send_err}");
-                                    }
-                                }
-                            }
-                        }
-                        NerveTracerMessage::SaveTraces(path) => {
-                            match export_nervetracer_to_xml_file(&self.state, &path, None, None) {
-                                Ok(()) => {
-                                    if let Err(e) = self.global_sender.send(
-                                        PipelineCommand::FrontendMessage(FrontendMessage::success(
-                                            format!("Traces saved to {}", path.display()),
-                                        )),
-                                    ) {
-                                        eprintln!("Failed to send save feedback: {e}");
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("Failed to save traces to {}: {e}", path.display());
-                                    if let Err(send_err) = self.global_sender.send(
-                                        PipelineCommand::FrontendMessage(FrontendMessage::error(
-                                            format!("Failed to save traces: {e}"),
-                                        )),
-                                    ) {
-                                        eprintln!("Failed to send error feedback: {send_err}");
-                                    }
-                                }
-                            }
-                        }
-                        NerveTracerMessage::SetSelectedImageIndex(index) => {
-                            self.state.selected_image_index = index;
-                        }
-                    },
-                    _ => {}
-                },
-                _ => {}
             }
+
+            ToolInput::Message(PipelineObjectMessage::NerveTracerMessage(message)) => match message
+            {
+                NerveTracerMessage::CommitCurrentPathSegments() => {
+                    self.state
+                        .paths
+                        .push(self.state.current_path_segments.clone());
+                    self.state.current_path_segments.clear();
+                }
+                NerveTracerMessage::DeletePath(id) => {
+                    if id < self.state.paths.len() {
+                        self.state.paths.remove(id);
+                    }
+                }
+                NerveTracerMessage::DeletePathSegmentInCommitedPath(path_id, segment_id) => {
+                    if let Some(path) = self.state.paths.get_mut(path_id)
+                        && segment_id < path.len()
+                    {
+                        path.remove(segment_id);
+                    }
+                }
+                NerveTracerMessage::DeleteUncomittedPathSegment(id) => {
+                    if id < self.state.current_path_segments.len() {
+                        self.state.current_path_segments.remove(id);
+                    }
+                }
+                NerveTracerMessage::LoadTraces(path) => {
+                    match import_nervetracer_from_xml_file_into(&path, &mut self.state) {
+                        Ok(()) => {
+                            self.events.emit(FrontendMessage::success(
+                                "Traces loaded successfully!".to_string(),
+                            ));
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to load traces from {}: {e}", path.display());
+                            self.events.emit(FrontendMessage::error(format!(
+                                "Failed to load traces: {e}"
+                            )));
+                        }
+                    }
+                }
+                NerveTracerMessage::SaveTraces(path) => {
+                    match export_nervetracer_to_xml_file(&self.state, &path, None, None) {
+                        Ok(()) => {
+                            self.events.emit(FrontendMessage::success(format!(
+                                "Traces saved to {}",
+                                path.display()
+                            )));
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to save traces to {}: {e}", path.display());
+                            self.events.emit(FrontendMessage::error(format!(
+                                "Failed to save traces: {e}"
+                            )));
+                        }
+                    }
+                }
+                NerveTracerMessage::SetSelectedImageIndex(index) => {
+                    self.state.selected_image_index = index;
+                }
+            },
+            _ => {}
         }
 
         Ok(())
@@ -201,10 +162,6 @@ impl ToolBackend for NerveTracer {
 
     fn iam(&self) -> BackendToolType {
         BackendToolType::NerveTracer
-    }
-
-    fn set_index(&mut self, index: usize) {
-        self.index = index;
     }
 
     fn reconcile_state(&mut self) -> bool {
@@ -233,22 +190,7 @@ impl ToolBackend for NerveTracer {
         self.cached_input = None;
     }
 
-    /// Push state to the frontend without discarding the cached image.
-    fn sync_frontend(&mut self) -> anyhow::Result<()> {
-        if !self.cache.sync.needs_frontend_sync(&self.state) {
-            return Ok(());
-        }
-        self.send_to_frontend(&PipelineCommand::FrontendMessage(
-            FrontendMessage::ReturnState(Box::new(self.get_state())),
-        ))?;
-        self.cache.sync.frontend_latest_state = Some(self.state.clone());
-        self.command_sender
-            .send(PipelineCommand::RequestOverlays)
-            .map_err(|e| anyhow::anyhow!("Failed to request overlay refresh: {e}"))?;
-        Ok(())
-    }
-
-    fn get_overlays(&self) -> Option<crate::overlay::ToolOverlay> {
+    fn get_overlays(&self, id: strawberry_types::ToolId) -> Option<crate::overlay::ToolOverlay> {
         // Only the overlay is rounded to f32; stored trace positions remain exact integers.
         if !self.state.is_enabled {
             return None;
@@ -316,7 +258,7 @@ impl ToolBackend for NerveTracer {
             None
         } else {
             Some(ToolOverlay {
-                tool_id: BackendToolType::NerveTracer,
+                tool_id: id,
                 z_order: 50,
                 elements,
             })
@@ -325,16 +267,8 @@ impl ToolBackend for NerveTracer {
 }
 
 impl NerveTracer {
-    /// # Errors
-    /// Returns an error if a command fails or a communication channel is disconnected.
-    pub fn new(
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-    ) -> anyhow::Result<Self> {
-        let (sender, receiver) = flume::unbounded();
-        command_sender
-            .send(PipelineCommand::RegisterClickReceiver(sender.clone()))
-            .map_err(|e| anyhow::anyhow!("Failed to register click receiver: {e}"))?;
+    #[must_use]
+    pub fn new(events: ToolEvents) -> Self {
         let state = NerveTracerState {
             is_enabled: false,
             paths: vec![],
@@ -343,26 +277,12 @@ impl NerveTracer {
             selected_image_index: 0,
             total_images: 0,
         };
-        Ok(Self {
+        Self {
             state: state.clone(),
-            frontend_senders: Vec::new(),
-            command_sender,
-            global_sender,
-            sender,
-            receiver,
-            index: 0,
+            events,
             cache: crate::tools::cache::ToolCache::new(&state),
             cached_input: None,
-        })
-    }
-
-    fn send_to_frontend(&self, message: &PipelineCommand) -> anyhow::Result<()> {
-        for sender in &self.frontend_senders {
-            sender
-                .try_send(message.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to send message to frontend: {e}"))?;
         }
-        Ok(())
     }
 }
 
@@ -373,16 +293,14 @@ mod tests {
     #[test]
     fn trace_markers_and_segments_use_pixel_centers_without_changing_stored_paths()
     -> anyhow::Result<()> {
-        let (commands, _commands_rx) = tokio::sync::broadcast::channel(16);
-        let (output, _output_rx) = tokio::sync::broadcast::channel(16);
-        let mut tracer = NerveTracer::new(commands, output)?;
+        let mut tracer = NerveTracer::new(ToolEvents::default());
         tracer.state.is_enabled = true;
         tracer.state.first_point = Some((0, 0));
         tracer.state.current_path_segments = vec![vec![(10, 20), (30, 20)]];
         tracer.state.paths = vec![vec![vec![(5, 6), (7, 8)]]];
         let state = tracer.state.clone();
         let overlay = tracer
-            .get_overlays()
+            .get_overlays(strawberry_types::ToolId(1))
             .ok_or_else(|| anyhow::anyhow!("Trace overlay missing"))?;
         let expected = vec![
             OverlayElement::Point {

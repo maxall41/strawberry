@@ -1,4 +1,6 @@
+use crate::tools::base::ToolEvents;
 use std::sync::Arc;
+use strawberry_processing::local_maxima::ThresholdType;
 
 use crate::impl_tool_backend_basics;
 use crate::tools::base::ToolBase;
@@ -7,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, local_maxima::GpuLocalMaxima};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, LocalMaximaMessage, LocalMaximaState, PipelineCommand,
-    PipelineObjectMessage, ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, LocalMaximaMessage, LocalMaximaState, PipelineObjectMessage,
+    ToolBackend, ToolInput, ToolState,
 };
 
 pub struct LocalMaxima {
@@ -45,10 +47,8 @@ impl ToolBackend for LocalMaxima {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
-                        .global_sender
-                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                            format!("Local Maxima error: {e}"),
-                        )))?;
+                        .events
+                        .emit(FrontendMessage::error(format!("Local Maxima error: {e}")));
                     return Err(e);
                 }
             };
@@ -56,35 +56,22 @@ impl ToolBackend for LocalMaxima {
         Ok(())
     }
 
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = self.base.collect_commands();
-
-        for message in commands {
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        if let ToolInput::Message(PipelineObjectMessage::LocalMaximaMessage(message)) = message {
             match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
-                }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
+                LocalMaximaMessage::SetParameters(min_distance, threshold, exclude_border) => {
+                    if let ThresholdType::Absolute(value) | ThresholdType::Relative(value) =
+                        threshold
+                    {
+                        anyhow::ensure!(
+                            value.is_finite() && (0.0..=1.0).contains(&value),
+                            "Invalid maxima threshold"
+                        );
                     }
-                    PipelineObjectMessage::LocalMaximaMessage(message) => match message {
-                        LocalMaximaMessage::SetParameters(
-                            min_distance,
-                            threshold,
-                            exclude_border,
-                        ) => {
-                            self.state.min_distance = min_distance;
-                            self.state.threshold = threshold;
-                            self.state.exclude_border = exclude_border;
-                        }
-                    },
-                    _ => {}
-                },
-                _ => {}
+                    self.state.min_distance = min_distance;
+                    self.state.threshold = threshold;
+                    self.state.exclude_border = exclude_border;
+                }
             }
         }
 
@@ -94,14 +81,11 @@ impl ToolBackend for LocalMaxima {
 
 impl LocalMaxima {
     #[must_use]
-    pub fn new(
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        gpu_image_processor: Arc<GpuImageProcessor>,
-    ) -> Self {
+    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
         let state = LocalMaximaState::default();
         Self {
             state: state.clone(),
-            base: ToolBase::new(global_sender),
+            base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             processor: GpuLocalMaxima::new(gpu_image_processor),
         }

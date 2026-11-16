@@ -53,11 +53,6 @@ impl GenericPicker {
         picker
     }
 
-    pub fn set_labels(&mut self, labels: impl IntoIterator<Item = &'static str>) {
-        self.labels = labels.into_iter().collect();
-        self.recompute();
-    }
-
     pub const fn match_count(&self) -> usize {
         self.matches.len()
     }

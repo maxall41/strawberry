@@ -17,11 +17,12 @@ use std::{
 };
 use strawberry_processing::segmentation::FeatureConfig;
 use strawberry_types::{
-    AnnotationKind, AutomaticSegmentationMessage, AutomaticSegmentationState, BackendToolType,
-    BrushRadius, CLASS_PALETTE, ClassId, DatasetImportMode, DatasetOperation, MAX_CLASSES,
-    PipelineCommand, PipelineObjectMessage, RgbColor, SegmentationClass, SegmentationOutputMode,
-    StrokeId, ToolFrontend, ToolState,
+    AnnotationKind, AutomaticSegmentationMessage, AutomaticSegmentationState, BrushRadius,
+    CLASS_PALETTE, ClassId, DatasetImportMode, DatasetOperation, MAX_CLASSES,
+    PipelineObjectMessage, RgbColor, SegmentationClass, SegmentationOutputMode, StrokeId,
+    ToolFrontend, ToolState,
 };
+use strawberry_types::{CommandSender, ToolId};
 
 #[derive(Clone, Copy)]
 enum FileKind {
@@ -172,18 +173,10 @@ fn import_guard(content: gpui::Div, importing: bool) -> gpui::Div {
     })
 }
 impl AutomaticSegmentationView {
-    pub fn new(
-        _: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: ToolId, sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(AutomaticSegmentationState::default())),
-            base: super::base::ToolBase::new(
-                sender,
-                BackendToolType::AutomaticSegmentation,
-                cx.focus_handle(),
-            ),
+            base: super::base::ToolBase::new(sender, id, cx.focus_handle()),
             controls: Controls::default(),
             dataset_directory: None,
             file_dialog_open: false,
@@ -220,9 +213,10 @@ impl AutomaticSegmentationView {
         }) {
             return;
         }
-        if let Err(error) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::AutomaticSegmentationMessage(message),
-        )) {
+        if let Err(error) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::AutomaticSegmentationMessage(message))
+        {
             eprintln!("{error}");
         }
     }
@@ -1443,16 +1437,13 @@ impl Render for AutomaticSegmentationView {
             );
         }
         let mut panel = tool_panel::panel()
+            .track_focus(&self.base.focus_handle)
             .child(
                 ToggleButton::new(
                     "Enabled".into(),
                     enabled,
                     move |this: &mut Self, _, _, _| {
-                        if let Err(error) =
-                            this.base.send_to_backend(PipelineCommand::PipelineObject(
-                                PipelineObjectMessage::ToggleActive(!enabled),
-                            ))
-                        {
+                        if let Err(error) = this.base.set_enabled(!enabled) {
                             eprintln!("{error}");
                         }
                     },

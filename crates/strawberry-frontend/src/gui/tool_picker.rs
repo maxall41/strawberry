@@ -43,15 +43,6 @@ impl ToolPicker {
         }
     }
 
-    pub fn set_tools(&mut self, tools: Vec<ToolChoice>, cx: &mut Context<Self>) {
-        if self.tools == tools {
-            return;
-        }
-        self.picker.set_labels(tools.iter().map(|tool| tool.label));
-        self.tools = tools;
-        cx.notify();
-    }
-
     fn confirm(&self, index: usize, cx: &mut Context<Self>) {
         if let Some(tool) = self.tools.get(index) {
             cx.emit(ToolPickerEvent::Selected(tool.kind.clone()));
@@ -79,11 +70,7 @@ impl ToolPicker {
 impl Render for ToolPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let max_height = px((f32::from(window.viewport_size().height) - 240.0).clamp(36.0, 420.0));
-        let empty_message = if self.tools.is_empty() {
-            "All tools are in the pipeline"
-        } else {
-            "No matching tools"
-        };
+        let empty_message = "No matching tools";
 
         picker_surface()
             .id("tool-picker")

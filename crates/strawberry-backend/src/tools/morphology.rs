@@ -1,3 +1,4 @@
+use crate::tools::base::ToolEvents;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -10,8 +11,8 @@ use strawberry_processing::{
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, MorphologyMessage, MorphologyState, PipelineCommand,
-    PipelineObjectMessage, ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, MorphologyMessage, MorphologyState, PipelineObjectMessage,
+    ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Morphology {
@@ -43,10 +44,8 @@ impl ToolBackend for Morphology {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
-                        .global_sender
-                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                            format!("Morphology error: {e}"),
-                        )))?;
+                        .events
+                        .emit(FrontendMessage::error(format!("Morphology error: {e}")));
                     return Err(e);
                 }
             };
@@ -54,32 +53,16 @@ impl ToolBackend for Morphology {
         Ok(())
     }
 
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = self.base.collect_commands();
-
-        for message in commands {
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        if let ToolInput::Message(PipelineObjectMessage::MorphologyMessage(message)) = message {
             match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
+                MorphologyMessage::SetOperation(operation) => {
+                    self.state.operation = operation;
                 }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
-                    }
-                    PipelineObjectMessage::MorphologyMessage(message) => match message {
-                        MorphologyMessage::SetOperation(operation) => {
-                            self.state.operation = operation;
-                        }
-                        MorphologyMessage::SetElementSize(element_size) => {
-                            self.state.element_size = element_size;
-                        }
-                    },
-                    _ => {}
-                },
-                _ => {}
+                MorphologyMessage::SetElementSize(element_size) => {
+                    anyhow::ensure!(element_size > 0, "Size must be positive");
+                    self.state.element_size = element_size;
+                }
             }
         }
 
@@ -89,10 +72,7 @@ impl ToolBackend for Morphology {
 
 impl Morphology {
     #[must_use]
-    pub fn new(
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        gpu_image_processor: Arc<GpuImageProcessor>,
-    ) -> Self {
+    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
         let state = MorphologyState {
             is_enabled: false,
             operation: MorphologyOperation::Dilation,
@@ -100,7 +80,7 @@ impl Morphology {
         };
         Self {
             state: state.clone(),
-            base: ToolBase::new(global_sender),
+            base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             processor: GpuMorphology::new(gpu_image_processor),
         }
