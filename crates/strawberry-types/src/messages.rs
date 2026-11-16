@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use strawberry_processing::local_maxima::ThresholdType;
 use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, InferenceConfig};
+use strawberry_processing::threshold::AutoThresholdMethod;
 
 use super::{
     AnnotationKind, BackendToolType, BrushRadius, ClassId, DatasetImportMode, ObjectSizeFilterMode,
@@ -65,7 +66,9 @@ pub enum RollingBallMessage {
 
 #[derive(Debug, Clone)]
 pub enum ThresholdMessage {
-    SetThresholdValue(f32),
+    SetThresholdValue(u8),
+    SetAutoThreshold(bool),
+    SetAutoMethod(AutoThresholdMethod),
 }
 
 #[derive(Debug, Clone)]

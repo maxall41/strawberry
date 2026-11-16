@@ -33,11 +33,16 @@ impl ToolBackend for Threshold {
 
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self
-                .processor
-                .apply_threshold(image, self.state.threshold_value)
-                .await
-            {
+            let result = if self.state.auto_threshold {
+                self.processor
+                    .apply_auto_threshold(image, self.state.auto_method)
+                    .await
+            } else {
+                self.processor
+                    .apply_threshold(image, self.state.threshold_value)
+                    .await
+            };
+            *image = match result {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
@@ -54,11 +59,13 @@ impl ToolBackend for Threshold {
         if let ToolInput::Message(PipelineObjectMessage::ThresholdMessage(threshold)) = message {
             match threshold {
                 ThresholdMessage::SetThresholdValue(value) => {
-                    anyhow::ensure!(
-                        value.is_finite() && (0.0..=1.0).contains(&value),
-                        "Invalid threshold"
-                    );
                     self.state.threshold_value = value;
+                }
+                ThresholdMessage::SetAutoThreshold(enabled) => {
+                    self.state.auto_threshold = enabled;
+                }
+                ThresholdMessage::SetAutoMethod(method) => {
+                    self.state.auto_method = method;
                 }
             }
         }
@@ -72,7 +79,8 @@ impl Threshold {
     pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
         let state = ThresholdState {
             is_enabled: false,
-            threshold_value: 0.5,
+            threshold_value: 128,
+            ..ThresholdState::default()
         };
         Self {
             state: state.clone(),
