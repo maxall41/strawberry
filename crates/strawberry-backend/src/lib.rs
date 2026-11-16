@@ -324,17 +324,23 @@ impl Pipeline {
                 PipelineCommand::RequestOverlays => self.publish_overlays(),
                 PipelineCommand::InteractionStart(x, y) => {
                     self.gesture_owner = self.tool_manager.selected_tool;
-                    self.route_input(self.gesture_owner, ToolInput::InteractionStart(x, y));
+                    self.route_interaction_input(
+                        self.gesture_owner,
+                        ToolInput::InteractionStart(x, y),
+                    );
                 }
-                PipelineCommand::HandleClick(x, y) => self.route_input(
+                PipelineCommand::HandleClick(x, y) => self.route_interaction_input(
                     self.tool_manager.selected_tool,
                     ToolInput::HandleClick(x, y),
                 ),
                 PipelineCommand::InteractionMove(x, y) => {
-                    self.route_input(self.gesture_owner, ToolInput::InteractionMove(x, y));
+                    self.route_interaction_input(
+                        self.gesture_owner,
+                        ToolInput::InteractionMove(x, y),
+                    );
                 }
                 PipelineCommand::InteractionEnd => {
-                    self.route_input(self.gesture_owner, ToolInput::InteractionEnd);
+                    self.route_interaction_input(self.gesture_owner, ToolInput::InteractionEnd);
                     self.gesture_owner = None;
                 }
             }
@@ -401,7 +407,7 @@ impl Pipeline {
         self.load_generation = generation;
         Ok(())
     }
-    fn route_input(&mut self, id: Option<ToolId>, input: ToolInput) {
+    fn route_interaction_input(&mut self, id: Option<ToolId>, input: ToolInput) {
         if id != self.tool_manager.selected_tool {
             return;
         }

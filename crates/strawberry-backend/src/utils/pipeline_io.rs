@@ -87,7 +87,8 @@ pub fn save(path: &Path, entries: &[(ToolState, ToolAssets)]) -> Result<()> {
     let config = toml::to_string(&config)?;
     write_artifact(path, |file| {
         let options = SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
+            .compression_method(CompressionMethod::Zstd)
+            .compression_level(Some(3))
             .large_file(true);
         let mut archive = ZipWriter::new(file);
         archive.start_file("pipeline.toml", options)?;
