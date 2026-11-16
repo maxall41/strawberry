@@ -1,6 +1,7 @@
 use crate::gui::actions::actions;
 use crate::gui::{Button, ButtonVariant};
 use crate::gui::{theme, tool_panel};
+use num_traits::ToPrimitive;
 use strawberry_processing::threshold::AutoThresholdMethod;
 use strawberry_types::{CommandSender, ToolId};
 // Implements UI for threshold tool
@@ -74,7 +75,10 @@ impl ThresholdView {
     }
 
     fn update_threshold_value(&self, threshold_value: f32) {
-        self.send_threshold_message(ThresholdMessage::SetThresholdValue(threshold_value));
+        let threshold_value = (threshold_value.clamp(0.0, 1.0) * f32::from(u8::MAX)).round();
+        if let Some(value) = threshold_value.to_u8() {
+            self.send_threshold_message(ThresholdMessage::SetThresholdValue(value));
+        }
     }
 
     fn send_threshold_message(&self, message: ThresholdMessage) {
@@ -84,11 +88,6 @@ impl ThresholdView {
         {
             eprintln!("Failed to send threshold update: {e}");
         }
-    }
-
-    fn adjust_threshold(&self, new_threshold: f32) {
-        let clamped_threshold = new_threshold.clamp(0.0, 1.0);
-        self.update_threshold_value(clamped_threshold);
     }
 
     // Status component showing enabled/disabled state
@@ -305,7 +304,7 @@ impl FrontendMessageHandler for ThresholdView {
     fn on_state_changed(&mut self, new_state: &ThresholdState, cx: &mut Context<Self>) {
         if let Some(ref ctrl) = self.threshold_control {
             ctrl.update(cx, |c, cx| {
-                c.value = new_state.threshold_value;
+                c.set_value(f32::from(new_state.threshold_value) / f32::from(u8::MAX));
                 cx.notify();
             });
         }
@@ -380,10 +379,11 @@ impl ToolFrontend for ThresholdView {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        let threshold_value = f32::from(state.threshold_value) / f32::from(u8::MAX);
         let threshold_control = cx.new(|cx| {
             ValueControl::new(
-                format!("{:.3}", state.threshold_value),
-                state.threshold_value,
+                format!("{threshold_value:.3}"),
+                threshold_value,
                 ValueControlConfig {
                     label: "Threshold".to_string(),
                     step: 0.01,
@@ -400,7 +400,7 @@ impl ToolFrontend for ThresholdView {
             &threshold_control,
             |this, _control, event: &ValueControlEvent, _cx| {
                 if event.id == "threshold" {
-                    this.adjust_threshold(event.value);
+                    this.update_threshold_value(event.value);
                 }
             },
         )

@@ -66,7 +66,7 @@ pub enum RollingBallMessage {
 
 #[derive(Debug, Clone)]
 pub enum ThresholdMessage {
-    SetThresholdValue(f32),
+    SetThresholdValue(u8),
     SetAutoThreshold(bool),
     SetAutoMethod(AutoThresholdMethod),
 }
