@@ -33,11 +33,16 @@ impl ToolBackend for Threshold {
 
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self
-                .processor
-                .apply_threshold(image, self.state.threshold_value)
-                .await
-            {
+            let result = if self.state.auto_threshold {
+                self.processor
+                    .apply_auto_threshold(image, self.state.auto_method)
+                    .await
+            } else {
+                self.processor
+                    .apply_threshold(image, self.state.threshold_value)
+                    .await
+            };
+            *image = match result {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
@@ -60,6 +65,12 @@ impl ToolBackend for Threshold {
                     );
                     self.state.threshold_value = value;
                 }
+                ThresholdMessage::SetAutoThreshold(enabled) => {
+                    self.state.auto_threshold = enabled;
+                }
+                ThresholdMessage::SetAutoMethod(method) => {
+                    self.state.auto_method = method;
+                }
             }
         }
 
@@ -73,6 +84,7 @@ impl Threshold {
         let state = ThresholdState {
             is_enabled: false,
             threshold_value: 0.5,
+            ..ThresholdState::default()
         };
         Self {
             state: state.clone(),

@@ -2,7 +2,7 @@ struct ThresholdUniforms {
     width: u32,
     height: u32,
     threshold: f32,
-    padding: f32,
+    automatic: u32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: ThresholdUniforms;
@@ -33,12 +33,22 @@ fn luminance(color: vec3<f32>) -> f32 {
 }
 
 // Apply threshold operation
-fn apply_threshold(color: vec4<f32>, threshold_value: f32) -> vec4<f32> {
+fn apply_threshold(packed: u32, threshold_value: f32) -> vec4<f32> {
+    let color = unpack_bgra8(packed);
     // Calculate luminance of the pixel
     let luma = luminance(color.rgb);
 
     // Apply threshold: if luminance >= threshold, output white (1.0), else black (0.0)
-    let threshold_result = select(0.0, 1.0, luma >= threshold_value);
+    var threshold_result = select(0.0, 1.0, luma >= threshold_value);
+    if (uniforms.automatic != 0u) {
+        // Match the histogram's integer BT.601 bins exactly. The selected bin is
+        // the last background level, so foreground starts strictly above it.
+        let b = packed & 0xFFu;
+        let g = (packed >> 8u) & 0xFFu;
+        let r = (packed >> 16u) & 0xFFu;
+        let level = (299u * r + 587u * g + 114u * b) / 1000u;
+        threshold_result = select(0.0, 1.0, f32(level) > threshold_value);
+    }
 
     // Return grayscale result with original alpha
     return vec4<f32>(threshold_result, threshold_result, threshold_result, color.a);
@@ -57,7 +67,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = y * uniforms.width + x;
 
     // Read input pixel
-    let input_pixel = unpack_bgra8(input_buffer[index]);
+    let input_pixel = input_buffer[index];
 
     // Apply threshold operation
     let output_pixel = apply_threshold(input_pixel, uniforms.threshold);
