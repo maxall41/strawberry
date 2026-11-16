@@ -59,10 +59,6 @@ impl ToolBackend for Threshold {
         if let ToolInput::Message(PipelineObjectMessage::ThresholdMessage(threshold)) = message {
             match threshold {
                 ThresholdMessage::SetThresholdValue(value) => {
-                    anyhow::ensure!(
-                        value.is_finite() && (0.0..=1.0).contains(&value),
-                        "Invalid threshold"
-                    );
                     self.state.threshold_value = value;
                 }
                 ThresholdMessage::SetAutoThreshold(enabled) => {
@@ -83,7 +79,7 @@ impl Threshold {
     pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
         let state = ThresholdState {
             is_enabled: false,
-            threshold_value: 0.5,
+            threshold_value: 128,
             ..ThresholdState::default()
         };
         Self {
