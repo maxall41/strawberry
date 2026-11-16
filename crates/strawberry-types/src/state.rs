@@ -35,19 +35,6 @@ pub enum CounterTool {
     Review,
 }
 
-// Manager-specific types
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolProxy {
-    pub name: String,
-    pub position: u16,
-    pub is_enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PipelineConfig {
-    pub tools: HashMap<String, ToolState>,
-}
-
 // Individual tool states
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompositorState {
@@ -128,12 +115,6 @@ impl Default for LocalMaximaState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagerState {
-    pub proxy_tools: Vec<ToolProxy>,
-    pub is_enabled: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MorphologyState {
     pub operation: MorphologyOperation,
     pub element_size: u32,
@@ -192,16 +173,41 @@ pub struct ThresholdState {
     pub is_enabled: bool,
 }
 
+// TOML table keys are strings, including numeric count-type IDs.
+fn deserialize_count_type_map<'de, D, V>(
+    deserializer: D,
+) -> std::result::Result<HashMap<u16, V>, D::Error>
+where
+    D: Deserializer<'de>,
+    V: Deserialize<'de>,
+{
+    let entries = HashMap::<serde_value::Value, V>::deserialize(deserializer)?;
+    let mut result = HashMap::with_capacity(entries.len());
+    for (key, value) in entries {
+        let id = match key {
+            serde_value::Value::String(text) => text.parse().map_err(D::Error::custom)?,
+            numeric => u16::deserialize(numeric).map_err(D::Error::custom)?,
+        };
+        if result.insert(id, value).is_some() {
+            return Err(D::Error::custom("Duplicate count type ID"));
+        }
+    }
+    Ok(result)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CounterState {
     pub is_enabled: bool,
+    #[serde(deserialize_with = "deserialize_count_type_map")]
     pub manual_counts: HashMap<u16, Vec<CountData>>,
     pub auto_counts: Vec<CountData>,
     pub mode: CounterMode,
     pub active_tool: Option<CounterTool>,
     pub active_count_type: Option<u16>,
+    #[serde(deserialize_with = "deserialize_count_type_map")]
     pub count_type_visibility: HashMap<u16, bool>,
     pub review_current_index: usize,
+    #[serde(deserialize_with = "deserialize_count_type_map")]
     pub count_type_names: HashMap<u16, String>,
 }
 
@@ -734,7 +740,7 @@ impl Default for AutomaticSegmentationState {
 }
 
 /// Aggregated tool state enum
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ToolState {
     AutomaticSegmentationState(crate::AutomaticSegmentationState),
     CompositorState(CompositorState),
@@ -743,7 +749,6 @@ pub enum ToolState {
     GaussianBlurState(GaussianBlurState),
     GrayscaleState(GrayscaleState),
     LocalMaximaState(LocalMaximaState),
-    ManagerState(ManagerState),
     MorphologyState(MorphologyState),
     ObjectSizeFilterState(ObjectSizeFilterState),
     RollingBallState(RollingBallState),
@@ -755,27 +760,72 @@ pub enum ToolState {
     NerveTracerState(NerveTracerState),
 }
 
-/// A validated state update that takes effect only when invoked.
-pub type PreparedStateUpdate<'a> = Box<dyn FnOnce() + 'a>;
-
-/// Object-safe access to a concrete state struct's Serde in-place update.
+/// Object-safe loading into detached candidate instances.
 pub trait PersistedState {
-    /// Prepares a state update, retaining fields marked `serde(skip)`. The returned closure must be executed for the state update to take place.
+    /// Load serialized fields into this state.
+    ///
     /// # Errors
-    /// Returns an error if the fields cannot be deserialized; leaves state unchanged.
-    fn prepare_persisted_fields(
-        &mut self,
-        fields: serde_value::Value,
-    ) -> anyhow::Result<PreparedStateUpdate<'_>>;
+    /// Returns an error if the fields cannot be deserialized into this state type.
+    fn load_persisted_fields(&mut self, fields: serde_value::Value) -> anyhow::Result<()>;
 }
-
 impl<T: Clone + serde::de::DeserializeOwned> PersistedState for T {
-    fn prepare_persisted_fields(
-        &mut self,
-        fields: serde_value::Value,
-    ) -> anyhow::Result<PreparedStateUpdate<'_>> {
+    fn load_persisted_fields(&mut self, fields: serde_value::Value) -> anyhow::Result<()> {
         let mut merged = self.clone();
         T::deserialize_in_place(fields, &mut merged)?;
-        Ok(Box::new(move || *self = merged))
+        *self = merged;
+        Ok(())
+    }
+}
+
+impl ToolState {
+    /// Check that tool parameters are within their supported ranges.
+    ///
+    /// # Errors
+    /// Returns an error if a checked parameter is non-finite or outside its valid range.
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::ContrastState(s) => ensure!(
+                s.min.is_finite() && s.max.is_finite() && s.min <= s.max,
+                "Contrast minimum must not exceed maximum"
+            ),
+            Self::GaussianBlurState(s) => ensure!(
+                s.sigma.is_finite() && s.sigma > 0.,
+                "Sigma must be positive"
+            ),
+            Self::DifferenceOfGaussiansState(s) => ensure!(
+                s.small_sigma.is_finite()
+                    && s.small_sigma > 0.
+                    && s.large_sigma.is_finite()
+                    && s.large_sigma > s.small_sigma,
+                "Invalid Gaussian sigmas"
+            ),
+            Self::LocalMaximaState(s) => {
+                if let ThresholdType::Absolute(value) | ThresholdType::Relative(value) = s.threshold
+                {
+                    ensure!(
+                        value.is_finite() && (0.0..=1.0).contains(&value),
+                        "Invalid maxima threshold"
+                    );
+                }
+            }
+            Self::MorphologyState(s) => {
+                ensure!(s.element_size > 0, "Element size must be positive");
+            }
+            Self::RollingBallState(s) => ensure!(s.ball_radius > 0, "Ball radius must be positive"),
+            Self::SobelState(s) => ensure!(
+                s.threshold_value.is_finite() && (0.0..=1.0).contains(&s.threshold_value),
+                "Invalid Sobel threshold"
+            ),
+            Self::ThresholdState(s) => ensure!(
+                s.threshold_value.is_finite() && (0.0..=1.0).contains(&s.threshold_value),
+                "Invalid threshold"
+            ),
+            Self::WatershedState(s) => ensure!(
+                s.sigma.is_finite() && s.sigma > 0.,
+                "Sigma must be positive"
+            ),
+            _ => {}
+        }
+        Ok(())
     }
 }

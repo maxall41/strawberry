@@ -1,6 +1,7 @@
 use crate::gui::Button;
 use crate::gui::actions::actions;
 use num_traits::ToPrimitive;
+use strawberry_types::{CommandSender, ToolId};
 
 use crate::gui::theme;
 // Implements UI for local maxima tool
@@ -16,9 +17,7 @@ use crate::gui::ToggleButton;
 use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_processing::local_maxima::ThresholdType;
-use strawberry_types::{
-    LocalMaximaMessage, LocalMaximaState, PipelineCommand, PipelineObjectMessage, ToolState,
-};
+use strawberry_types::{LocalMaximaMessage, LocalMaximaState, PipelineObjectMessage, ToolState};
 
 use strawberry_types::ToolFrontend;
 
@@ -38,20 +37,12 @@ impl Focusable for LocalMaximaView {
 }
 
 impl LocalMaximaView {
-    pub fn new(
-        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(LocalMaximaState::default())),
             min_distance_control: None,
             threshold_control: None,
-            base: crate::tools::base::ToolBase::new(
-                command_sender,
-                strawberry_types::BackendToolType::LocalMaxima,
-                cx.focus_handle(),
-            ),
+            base: crate::tools::base::ToolBase::new(command_sender, id, cx.focus_handle()),
             last_absolute_value: 0.1,
             last_relative_value: 0.01,
         }
@@ -62,21 +53,18 @@ impl LocalMaximaView {
     }
 
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::ToggleActive(!current_value),
-        )) {
+        if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
     fn update_parameters(&self, min_distance: u32, threshold: ThresholdType, exclude_border: bool) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::LocalMaximaMessage(LocalMaximaMessage::SetParameters(
-                min_distance,
-                threshold,
-                exclude_border,
-            )),
-        )) {
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::LocalMaximaMessage(
+                LocalMaximaMessage::SetParameters(min_distance, threshold, exclude_border),
+            ))
+        {
             eprintln!("Failed to send parameter update: {e}");
         }
     }
@@ -448,6 +436,7 @@ impl Render for LocalMaximaView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<Self>| {
+                        this.base.select();
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )

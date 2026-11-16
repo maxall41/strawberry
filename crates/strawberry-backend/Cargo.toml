@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+indexmap = "2.14.0"
 num-traits = "0.2"
 strawberry-types = { path = "../strawberry-types" }
 strawberry-processing = { path = "../strawberry-processing" }

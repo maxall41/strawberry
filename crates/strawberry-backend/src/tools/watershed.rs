@@ -1,3 +1,4 @@
+use crate::tools::base::ToolEvents;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -7,8 +8,8 @@ use strawberry_processing::{GpuImageProcessor, watershed::GpuWatershed};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, ToolBackend,
-    ToolState, WatershedMessage, WatershedState,
+    BackendToolType, FrontendMessage, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
+    WatershedMessage, WatershedState,
 };
 
 pub struct Watershed {
@@ -40,10 +41,8 @@ impl ToolBackend for Watershed {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
-                        .global_sender
-                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                            format!("Watershed error: {e}"),
-                        )))?;
+                        .events
+                        .emit(FrontendMessage::error(format!("Watershed error: {e}")));
                     return Err(e);
                 }
             };
@@ -51,30 +50,17 @@ impl ToolBackend for Watershed {
         Ok(())
     }
 
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = self.base.collect_commands();
-
-        for message in commands {
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        if let ToolInput::Message(PipelineObjectMessage::WatershedMessage(message)) = message {
             match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
+                WatershedMessage::SetParameters(sigma, min_distance) => {
+                    anyhow::ensure!(
+                        sigma.is_finite() && sigma > 0. && min_distance > 0,
+                        "Invalid watershed parameters"
+                    );
+                    self.state.sigma = sigma;
+                    self.state.min_distance = min_distance;
                 }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
-                    }
-                    PipelineObjectMessage::WatershedMessage(message) => match message {
-                        WatershedMessage::SetParameters(sigma, min_distance) => {
-                            self.state.sigma = sigma;
-                            self.state.min_distance = min_distance;
-                        }
-                    },
-                    _ => {}
-                },
-                _ => {}
             }
         }
 
@@ -84,10 +70,7 @@ impl ToolBackend for Watershed {
 
 impl Watershed {
     #[must_use]
-    pub fn new(
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        gpu_image_processor: Arc<GpuImageProcessor>,
-    ) -> Self {
+    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
         let state = WatershedState {
             is_enabled: false,
             sigma: 1.0,
@@ -95,7 +78,7 @@ impl Watershed {
         };
         Self {
             state: state.clone(),
-            base: ToolBase::new(global_sender),
+            base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             processor: GpuWatershed::new(gpu_image_processor),
         }

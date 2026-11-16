@@ -1,10 +1,11 @@
+use crate::tools::base::ToolEvents;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use strawberry_processing::{GpuImageProcessor, difference_of_gaussians::GpuDifferenceOfGaussians};
 use strawberry_types::{
     BackendToolType, DifferenceOfGaussiansMessage, DifferenceOfGaussiansState, FrontendMessage,
-    PipelineCommand, PipelineObjectMessage, ToolBackend, ToolState,
+    PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
 use crate::{
@@ -40,11 +41,9 @@ impl ToolBackend for DifferenceOfGaussians {
             {
                 Ok(output) => Arc::new(output),
                 Err(error) => {
-                    self.base
-                        .global_sender
-                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                            format!("Difference of Gaussians error: {error}"),
-                        )))?;
+                    self.base.events.emit(FrontendMessage::error(format!(
+                        "Difference of Gaussians error: {error}"
+                    )));
                     return Err(error);
                 }
             };
@@ -52,49 +51,35 @@ impl ToolBackend for DifferenceOfGaussians {
         Ok(())
     }
 
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        for message in self.base.collect_commands() {
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        if let ToolInput::Message(PipelineObjectMessage::DifferenceOfGaussiansMessage(message)) =
+            message
+        {
             match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
+                DifferenceOfGaussiansMessage::SetSmallSigma(sigma)
+                    if sigma.is_finite() && sigma >= 0.1 && sigma < self.state.large_sigma =>
+                {
+                    self.state.small_sigma = sigma;
                 }
-                PipelineCommand::PipelineObject(PipelineObjectMessage::ToggleActive(enabled)) => {
-                    self.state.is_enabled = enabled;
+                DifferenceOfGaussiansMessage::SetLargeSigma(sigma)
+                    if sigma.is_finite() && sigma > self.state.small_sigma && sigma <= 64.0 =>
+                {
+                    self.state.large_sigma = sigma;
                 }
-                PipelineCommand::PipelineObject(
-                    PipelineObjectMessage::DifferenceOfGaussiansMessage(message),
-                ) => match message {
-                    DifferenceOfGaussiansMessage::SetSmallSigma(sigma)
-                        if sigma.is_finite() && sigma >= 0.1 && sigma < self.state.large_sigma =>
-                    {
-                        self.state.small_sigma = sigma;
-                    }
-                    DifferenceOfGaussiansMessage::SetLargeSigma(sigma)
-                        if sigma.is_finite() && sigma > self.state.small_sigma && sigma <= 64.0 =>
-                    {
-                        self.state.large_sigma = sigma;
-                    }
-                    _ => {}
-                },
                 _ => {}
             }
         }
+
         Ok(())
     }
 }
 
 impl DifferenceOfGaussians {
     #[must_use]
-    pub fn new(
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        gpu: Arc<GpuImageProcessor>,
-    ) -> Self {
+    pub fn new(events: ToolEvents, gpu: Arc<GpuImageProcessor>) -> Self {
         let state = DifferenceOfGaussiansState::default();
         Self {
-            base: ToolBase::new(global_sender),
+            base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             state,
             processor: GpuDifferenceOfGaussians::new(gpu),

@@ -1,3 +1,4 @@
+use crate::tools::base::ToolEvents;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -7,8 +8,8 @@ use strawberry_processing::{GpuImageProcessor, sobel::GpuSobel};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, SobelMessage,
-    SobelState, ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, PipelineObjectMessage, SobelMessage, SobelState, ToolBackend,
+    ToolInput, ToolState,
 };
 
 pub struct Sobel {
@@ -42,10 +43,8 @@ impl ToolBackend for Sobel {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
-                        .global_sender
-                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                            format!("Sobel error: {e}"),
-                        )))?;
+                        .events
+                        .emit(FrontendMessage::error(format!("Sobel error: {e}")));
                     return Err(e);
                 }
             };
@@ -53,32 +52,19 @@ impl ToolBackend for Sobel {
         Ok(())
     }
 
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = self.base.collect_commands();
-
-        for message in commands {
-            match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        if let ToolInput::Message(PipelineObjectMessage::SobelMessage(sobel)) = message {
+            match sobel {
+                SobelMessage::SetThreshold(value) => {
+                    anyhow::ensure!(
+                        value.is_finite() && (0.0..=1.0).contains(&value),
+                        "Invalid threshold"
+                    );
+                    self.state.threshold_value = value;
                 }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
-                    }
-                    PipelineObjectMessage::SobelMessage(sobel) => match sobel {
-                        SobelMessage::SetThreshold(value) => {
-                            self.state.threshold_value = value;
-                        }
-                        SobelMessage::ToggleThreshold(enabled) => {
-                            self.state.use_threshold = enabled;
-                        }
-                    },
-                    _ => {}
-                },
-                _ => {}
+                SobelMessage::ToggleThreshold(enabled) => {
+                    self.state.use_threshold = enabled;
+                }
             }
         }
 
@@ -88,10 +74,7 @@ impl ToolBackend for Sobel {
 
 impl Sobel {
     #[must_use]
-    pub fn new(
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        gpu_image_processor: Arc<GpuImageProcessor>,
-    ) -> Self {
+    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
         let state = SobelState {
             is_enabled: false,
             threshold_value: 0.1,
@@ -99,7 +82,7 @@ impl Sobel {
         };
         Self {
             state: state.clone(),
-            base: ToolBase::new(global_sender),
+            base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             processor: GpuSobel::new(gpu_image_processor),
         }

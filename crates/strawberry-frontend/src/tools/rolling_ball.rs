@@ -1,6 +1,7 @@
 use crate::gui::Button;
 use crate::gui::actions::actions;
 use num_traits::ToPrimitive;
+use strawberry_types::{CommandSender, ToolId};
 
 use crate::gui::theme;
 use std::sync::{Arc, RwLock};
@@ -13,9 +14,7 @@ use gpui::{
 use crate::gui::ToggleButton;
 use crate::gui::value_control::{ValueControl, ValueControlConfig, ValueControlEvent};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
-use strawberry_types::{
-    PipelineCommand, PipelineObjectMessage, RollingBallMessage, RollingBallState, ToolState,
-};
+use strawberry_types::{PipelineObjectMessage, RollingBallMessage, RollingBallState, ToolState};
 
 use strawberry_types::ToolFrontend;
 
@@ -32,19 +31,11 @@ impl Focusable for RollingBallView {
 }
 
 impl RollingBallView {
-    pub fn new(
-        _command_receiver: tokio::sync::broadcast::Receiver<PipelineCommand>,
-        command_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        cx: &App,
-    ) -> Self {
+    pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(RollingBallState::default())),
             ball_radius_control: None,
-            base: crate::tools::base::ToolBase::new(
-                command_sender,
-                strawberry_types::BackendToolType::RollingBall,
-                cx.focus_handle(),
-            ),
+            base: crate::tools::base::ToolBase::new(command_sender, id, cx.focus_handle()),
         }
     }
 
@@ -53,9 +44,7 @@ impl RollingBallView {
     }
 
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::ToggleActive(!current_value),
-        )) {
+        if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
@@ -76,11 +65,12 @@ impl RollingBallView {
     }
 
     fn update_ball_radius(&self, ball_radius: u32) {
-        if let Err(e) = self.base.send_to_backend(PipelineCommand::PipelineObject(
-            PipelineObjectMessage::RollingBallMessage(RollingBallMessage::SetBallRadius(
-                ball_radius,
-            )),
-        )) {
+        if let Err(e) = self
+            .base
+            .send_to_backend(PipelineObjectMessage::RollingBallMessage(
+                RollingBallMessage::SetBallRadius(ball_radius),
+            ))
+        {
             eprintln!("Failed to send ball radius update: {e}");
         }
     }
@@ -259,6 +249,7 @@ impl Render for RollingBallView {
                           _event: &MouseDownEvent,
                           window: &mut Window,
                           cx: &mut Context<Self>| {
+                        this.base.select();
                         this.focus_handle(cx).focus(window, cx);
                     },
                 )

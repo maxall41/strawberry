@@ -50,7 +50,6 @@ pub enum BackendToolType {
     GaussianBlur,
     Grayscale,
     LocalMaxima,
-    Manager,
     Morphology,
     ObjectSizeFilter,
     RollingBall,
@@ -65,4 +64,30 @@ impl fmt::Display for BackendToolType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{self:?}")
     }
+}
+
+/// Stable identity within a pipeline session. Runtime IDs are never persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ToolId(pub u64);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolSummary {
+    pub id: ToolId,
+    pub kind: BackendToolType,
+    pub is_enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PipelineState {
+    pub tools: Vec<ToolSummary>,
+    pub selected_tool: Option<ToolId>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ToolInput {
+    Message(crate::PipelineObjectMessage),
+    HandleClick(u64, u64),
+    InteractionStart(u64, u64),
+    InteractionMove(u64, u64),
+    InteractionEnd,
 }

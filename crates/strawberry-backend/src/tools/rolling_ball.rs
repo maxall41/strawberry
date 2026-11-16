@@ -1,3 +1,4 @@
+use crate::tools::base::ToolEvents;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -7,8 +8,8 @@ use strawberry_processing::{GpuImageProcessor, rolling_ball::GpuRollingBall};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, PipelineCommand, PipelineObjectMessage, RollingBallMessage,
-    RollingBallState, ToolBackend, ToolState,
+    BackendToolType, FrontendMessage, PipelineObjectMessage, RollingBallMessage, RollingBallState,
+    ToolBackend, ToolInput, ToolState,
 };
 
 pub struct RollingBall {
@@ -40,10 +41,8 @@ impl ToolBackend for RollingBall {
                 Ok(img) => Arc::new(img),
                 Err(e) => {
                     self.base
-                        .global_sender
-                        .send(PipelineCommand::FrontendMessage(FrontendMessage::error(
-                            format!("Rolling Ball error: {e}"),
-                        )))?;
+                        .events
+                        .emit(FrontendMessage::error(format!("Rolling Ball error: {e}")));
                     return Err(e);
                 }
             };
@@ -51,29 +50,13 @@ impl ToolBackend for RollingBall {
         Ok(())
     }
 
-    fn receive_messages(&mut self) -> anyhow::Result<()> {
-        let commands = self.base.collect_commands();
-
-        for message in commands {
+    fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
+        if let ToolInput::Message(PipelineObjectMessage::RollingBallMessage(message)) = message {
             match message {
-                PipelineCommand::RequestState() => {
-                    self.base
-                        .send_to_frontend(&PipelineCommand::FrontendMessage(
-                            FrontendMessage::ReturnState(Box::new(self.get_state())),
-                        ))?;
+                RollingBallMessage::SetBallRadius(ball_radius) => {
+                    anyhow::ensure!(ball_radius > 0, "Size must be positive");
+                    self.state.ball_radius = ball_radius;
                 }
-                PipelineCommand::PipelineObject(message) => match message {
-                    PipelineObjectMessage::ToggleActive(value) => {
-                        self.state.is_enabled = value;
-                    }
-                    PipelineObjectMessage::RollingBallMessage(message) => match message {
-                        RollingBallMessage::SetBallRadius(ball_radius) => {
-                            self.state.ball_radius = ball_radius;
-                        }
-                    },
-                    _ => {}
-                },
-                _ => {}
             }
         }
 
@@ -83,14 +66,11 @@ impl ToolBackend for RollingBall {
 
 impl RollingBall {
     #[must_use]
-    pub fn new(
-        global_sender: tokio::sync::broadcast::Sender<PipelineCommand>,
-        gpu_image_processor: Arc<GpuImageProcessor>,
-    ) -> Self {
+    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
         let state = RollingBallState::default();
         Self {
             state: state.clone(),
-            base: ToolBase::new(global_sender),
+            base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             processor: GpuRollingBall::new(gpu_image_processor),
         }

@@ -84,3 +84,7 @@ Do not use a BTreeMap unless determinstic ordering is desired; use a regular Has
 ## Imports
 
 Avoid using methods with their full qualifiers like `std::collections::HashSet::new();`. Instead, import such that they can be used like `HashSet::new();`
+
+## Clippy
+
+Check all clippy lints and fix issues before finishing.
