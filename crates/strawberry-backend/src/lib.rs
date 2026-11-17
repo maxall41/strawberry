@@ -14,8 +14,7 @@ use strawberry_processing::{
 // Import all types from strawberry-types
 use strawberry_types::{
     CommandSender, FrontendMessage, OutputFrame, PendingProcessing, PipelineCommand,
-    PipelineProgress, ToolId, ToolInput,
-    overlay,
+    PipelineProgress, ToolId, ToolInput, overlay,
 };
 
 use tools::{ToolManager, manager::ToolInstance};
