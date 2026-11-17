@@ -451,7 +451,7 @@ impl Pipeline {
     fn invalidate_output(&mut self) {
         self.output_is_current = false;
         for tool in self.tool_manager.tools.values_mut() {
-            tool.invalidate_cache();
+            tool.invalidate_cached_output();
         }
     }
     fn ensure_no_stage_gpu_errors(&mut self, operation: &str) -> anyhow::Result<()> {

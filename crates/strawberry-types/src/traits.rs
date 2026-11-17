@@ -126,7 +126,12 @@ pub trait ToolBackend: Send + Sync {
     /// Cache the output
     fn set_cached_output(&mut self, _output: Vec<Arc<RgbaImage>>) {}
 
-    /// Invalidate the cache
+    /// Invalidate reusable output while retaining input needed for canvas interactions.
+    fn invalidate_cached_output(&mut self) {
+        self.invalidate_cache();
+    }
+
+    /// Invalidate all processing caches, including cached input.
     fn invalidate_cache(&mut self) {}
 
     /// Get overlay elements to render on the primary viewer.
