@@ -374,25 +374,9 @@ impl GpuWatershed {
             })
             .await?;
 
-        let distance_buffer = self
-            .gpu
-            .create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Distance Buffer"),
-                size: crate::buffer_size(pixel_count, 4)?,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            })
-            .await?;
+        let distance_buffer = self.gpu.create_output_buffer(pixel_count).await?;
 
-        let staging_buffer = self
-            .gpu
-            .create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Distance Staging Buffer"),
-                size: crate::buffer_size(pixel_count, 4)?,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-            .await?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count).await?;
 
         Ok(DistanceBuffers {
             binary: binary_buffer,
@@ -415,14 +399,7 @@ impl GpuWatershed {
     ) -> Result<()> {
         let (width, height) = dimensions;
         let uniforms = [width, height, step_size, 0];
-        let uniform_buffer = self
-            .gpu
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Distance Uniform Buffer"),
-                contents: bytemuck::cast_slice(&uniforms),
-                usage: wgpu::BufferUsages::UNIFORM,
-            })
-            .await?;
+        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms).await?;
 
         let bind_group = self
             .gpu
@@ -457,9 +434,7 @@ impl GpuWatershed {
             )
             .await?;
 
-        self.gpu.submit(encoder).await?;
-        self.gpu.poll().await?;
-        Ok(())
+        self.gpu.submit(encoder).await
     }
 
     /// Read the GPU distance buffer into a vector of floating-point distances.
@@ -498,25 +473,9 @@ impl GpuWatershed {
             })
             .await?;
 
-        let output_buffer = self
-            .gpu
-            .create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Markers Buffer"),
-                size: crate::buffer_size(pixel_count, 4)?,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            })
-            .await?;
+        let output_buffer = self.gpu.create_output_buffer(pixel_count).await?;
 
-        let staging_buffer = self
-            .gpu
-            .create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Staging Buffer"),
-                size: crate::buffer_size(pixel_count, 4)?,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-            .await?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count).await?;
 
         let uniforms = WatershedUniforms {
             width,
@@ -525,14 +484,7 @@ impl GpuWatershed {
             min_distance,
         };
 
-        let uniform_buffer = self
-            .gpu
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Watershed Uniform Buffer"),
-                contents: bytemuck::cast_slice(&[uniforms]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            })
-            .await?;
+        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms).await?;
 
         let bind_group = self
             .gpu

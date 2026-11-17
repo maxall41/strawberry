@@ -131,59 +131,12 @@ impl GpuCompositor {
 
         let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms).await?;
 
-        // Create bind group with separate buffers
-        let mut entries = vec![
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: output_buffer.as_entire_binding(),
-            },
-        ];
-
-        // Add input image buffers
-        for (i, buffer) in image_buffers.iter().enumerate() {
-            entries.push(wgpu::BindGroupEntry {
-                binding: u32::try_from(i)?
-                    .checked_add(2)
-                    .ok_or_else(|| anyhow::anyhow!("Binding index overflow"))?,
-                resource: buffer.as_entire_binding(),
-            });
-        }
-
-        // Fill remaining slots with dummy buffers if needed
-        let dummy_buffer = self
-            .gpu
-            .create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Dummy Buffer"),
-                size: 4, // Minimum size
-                usage: wgpu::BufferUsages::STORAGE,
-                mapped_at_creation: false,
-            })
-            .await?;
-
-        for i in image_buffers.len()..7 {
-            entries.push(wgpu::BindGroupEntry {
-                binding: u32::try_from(i)?
-                    .checked_add(2)
-                    .ok_or_else(|| anyhow::anyhow!("Binding index overflow"))?,
-                resource: dummy_buffer.as_entire_binding(),
-            });
-        }
-
-        let bind_group_layout = self
-            .gpu
-            .get_bind_group_layout(&self.compute_pipeline, 0)
-            .await?;
+        let mut buffers = vec![&uniform_buffer, &output_buffer];
+        // Repeat input bindings to fill unused slots. The shader stops at layer_count.
+        buffers.extend(image_buffers.iter().cycle().take(7));
         let bind_group = self
             .gpu
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &entries,
-                label: Some("Composite Bind Group"),
-            })
+            .create_buffer_bind_group(&self.compute_pipeline, &buffers, "Composite Bind Group")
             .await?;
 
         // Dispatch compute shader

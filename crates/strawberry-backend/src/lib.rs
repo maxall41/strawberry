@@ -459,13 +459,13 @@ impl Pipeline {
     }
     /// Reject GPU failures and invalidate output before returning an error.
     fn ensure_no_stage_gpu_errors(&mut self, operation: &str) -> anyhow::Result<()> {
-        if let Err(error) = self.gpu.ensure_device_availability(operation) {
-            self.invalidate_output();
-            return Err(error);
-        }
         if let Some(error) = self.gpu.take_uncaptured_error() {
             self.invalidate_output();
             return Err(anyhow::Error::new(error).context(operation.to_owned()));
+        }
+        if let Err(error) = self.gpu.ensure_device_availability(operation) {
+            self.invalidate_output();
+            return Err(error);
         }
         Ok(())
     }

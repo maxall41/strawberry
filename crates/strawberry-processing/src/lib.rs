@@ -1,6 +1,8 @@
 // wgpu auto-trait checks exceed the default compiler recursion depth.
 #![recursion_limit = "256"]
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use anyhow::{Result, anyhow};
 use image::RgbaImage;
 
@@ -8,7 +10,7 @@ pub(crate) mod gpu_error;
 use gpu_error::GpuErrors;
 
 pub use gpu_error::{GpuError, GpuErrorKind};
-use wgpu::{Trace, util::DeviceExt};
+use wgpu::Trace;
 
 pub mod colorspace;
 pub mod compositor;
@@ -254,10 +256,34 @@ impl GpuImageProcessor {
         &self,
         descriptor: &wgpu::util::BufferInitDescriptor<'_>,
     ) -> Result<wgpu::Buffer> {
-        self.checked(descriptor.label.unwrap_or("Initialize buffer"), || {
-            Ok(self.device.create_buffer_init(descriptor))
-        })
-        .await
+        let contents = descriptor.contents;
+        let size = u64::try_from(contents.len())?
+            .checked_next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+            .ok_or_else(|| anyhow!("Initialized GPU buffer size overflow"))?;
+        let buffer = self
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: descriptor.label,
+                size,
+                usage: descriptor.usage,
+                mapped_at_creation: !contents.is_empty(),
+            })
+            .await?;
+        if !contents.is_empty() {
+            let operation = descriptor.label.unwrap_or("Initialize buffer");
+            self.checked(operation, || {
+                buffer
+                    .get_mapped_range_mut(..)
+                    .map_err(|error| {
+                        GpuError::new(GpuErrorKind::Internal, operation, error.to_string())
+                    })?
+                    .slice(..contents.len())
+                    .copy_from_slice(contents);
+                buffer.unmap();
+                Ok(())
+            })
+            .await?;
+        }
+        Ok(buffer)
     }
 
     /// # Errors
@@ -369,19 +395,24 @@ impl GpuImageProcessor {
     }
 
     /// Wait for GPU work to complete and report polling or device errors.
-    pub(crate) async fn poll(&self) -> Result<()> {
-        self.checked("Wait for GPU completion", || {
-            self.device
-                .poll(wgpu::PollType::wait_indefinitely())
-                .map(|_| ())
-                .map_err(|error| {
-                    GpuError::new(
-                        GpuErrorKind::Polling,
-                        "Wait for GPU completion",
-                        error.to_string(),
-                    )
-                    .into()
-                })
+    async fn poll(&self) -> Result<()> {
+        let operation = "Wait for GPU completion";
+        self.checked(operation, || {
+            // wgpu's native backend panics on fatal fence errors. The checked
+            // operation gives the device-loss callback diagnostic precedence.
+            catch_unwind(AssertUnwindSafe(|| {
+                self.device.poll(wgpu::PollType::wait_indefinitely())
+            }))
+            .map_err(|panic| {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("GPU backend panicked during polling");
+                GpuError::new(GpuErrorKind::Polling, operation, message)
+            })?
+            .map_err(|error| GpuError::new(GpuErrorKind::Polling, operation, error.to_string()))?;
+            Ok(())
         })
         .await
     }
