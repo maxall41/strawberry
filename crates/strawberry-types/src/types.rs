@@ -18,30 +18,6 @@ impl PendingProcessing {
     }
 }
 
-pub struct ReconcilliationTicket {
-    pub index: Option<usize>,
-}
-
-pub struct ValidReconcilliationTicket {
-    index: usize,
-}
-
-impl ReconcilliationTicket {
-    /// Return a validated ticket when a processing index is present.
-    #[must_use]
-    pub fn validate(&self) -> Option<ValidReconcilliationTicket> {
-        self.index.map(|index| ValidReconcilliationTicket { index })
-    }
-}
-
-impl ValidReconcilliationTicket {
-    /// Return the validated processing index.
-    #[must_use]
-    pub const fn take(&self) -> usize {
-        self.index
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BackendToolType {
     AutomaticSegmentation,

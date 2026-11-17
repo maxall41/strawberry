@@ -14,7 +14,7 @@ use strawberry_processing::{
 // Import all types from strawberry-types
 use strawberry_types::{
     CommandSender, FrontendMessage, OutputFrame, PendingProcessing, PipelineCommand,
-    PipelineProgress, ReconcilliationTicket, ToolId, ToolInput, ValidReconcilliationTicket,
+    PipelineProgress, ToolId, ToolInput,
     overlay,
 };
 
@@ -110,7 +110,7 @@ impl Pipeline {
     ///
     /// # Errors
     /// Returns an error if configuration, image processing, file I/O, or communication fails.
-    async fn process_from(&mut self, ticket: ValidReconcilliationTicket) -> anyhow::Result<()> {
+    async fn process_from(&mut self, start_index: usize) -> anyhow::Result<()> {
         self.output_is_current = false;
         let start_time = std::time::Instant::now();
         println!("Got process_from command!");
@@ -118,7 +118,6 @@ impl Pipeline {
             return Err(anyhow!("No input images provided"));
         }
 
-        let start_index = ticket.take();
         let mut earliest_processing_index = start_index;
         let mut resume_images = None;
 
@@ -522,13 +521,10 @@ impl Pipeline {
                 pending.request_processing(index);
             }
         }
-        let ticket = ReconcilliationTicket {
-            index: pending.take(),
-        };
-        let result = if let Some(ticket) = ticket.validate()
+        let result = if let Some(index) = pending.take()
             && !self.input_images.is_empty()
         {
-            let result = self.process_from(ticket).await;
+            let result = self.process_from(index).await;
             let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
             result
         } else {
