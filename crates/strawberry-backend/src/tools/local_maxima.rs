@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 use strawberry_processing::local_maxima::ThresholdType;
 
@@ -9,8 +10,8 @@ use strawberry_processing::{GpuImageProcessor, local_maxima::GpuLocalMaxima};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, LocalMaximaMessage, LocalMaximaState, PipelineObjectMessage,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, LocalMaximaMessage, LocalMaximaState, PipelineObjectMessage, ToolBackend,
+    ToolInput, ToolState,
 };
 
 pub struct LocalMaxima {
@@ -34,24 +35,16 @@ impl ToolBackend for LocalMaxima {
 
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self
-                .processor
-                .apply_local_maxima(
-                    image,
-                    self.state.min_distance,
-                    self.state.threshold.clone(),
-                    self.state.exclude_border,
-                )
-                .await
-            {
-                Ok(img) => Arc::new(img),
-                Err(e) => {
-                    self.base
-                        .events
-                        .emit(FrontendMessage::error(format!("Local Maxima error: {e}")));
-                    return Err(e);
-                }
-            };
+            *image = Arc::new(
+                self.processor
+                    .apply_local_maxima(
+                        image,
+                        self.state.min_distance,
+                        self.state.threshold.clone(),
+                        self.state.exclude_border,
+                    )
+                    .await?,
+            );
         }
         Ok(())
     }
@@ -80,14 +73,18 @@ impl ToolBackend for LocalMaxima {
 }
 
 impl LocalMaxima {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = LocalMaximaState::default();
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            processor: GpuLocalMaxima::new(gpu_image_processor),
-        }
+            processor: GpuLocalMaxima::new(gpu_image_processor).await?,
+        })
     }
 }

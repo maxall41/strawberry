@@ -305,11 +305,12 @@ pub struct AutomaticSegmentation {
     overlays_dirty: bool,
 }
 impl AutomaticSegmentation {
-    #[must_use]
-    pub fn new(output: ToolEvents, gpu: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(output: ToolEvents, gpu: Arc<GpuImageProcessor>) -> Result<Self> {
         let state = AutomaticSegmentationState::default();
         let base = ToolBase::new(output);
-        Self {
+        Ok(Self {
             dataset_revision: 0,
             dataset_job: None,
             training_generation: 0,
@@ -317,7 +318,7 @@ impl AutomaticSegmentation {
             cache: ToolCache::new(&state),
             state,
             base,
-            extractor: Arc::new(FeatureExtractor::new(gpu)),
+            extractor: Arc::new(FeatureExtractor::new(gpu).await?),
             model: None,
             model_class_ids: Vec::new(),
             inference_cache: None,
@@ -328,7 +329,7 @@ impl AutomaticSegmentation {
             annotation_masks: AnnotationMask::default(),
             overlays_dirty: false,
             training_job: None,
-        }
+        })
     }
     fn importing_dataset(&self) -> bool {
         self.state
@@ -678,9 +679,10 @@ impl AutomaticSegmentation {
         Some(index)
     }
     fn error(&self, error: &anyhow::Error) {
+        eprintln!("Segmentation: {error:#}");
         self.base
             .events
-            .emit(FrontendMessage::error(format!("Segmentation: {error}")));
+            .emit(FrontendMessage::error(format!("Segmentation: {error:#}")));
     }
     fn start_training(&mut self) -> Result<()> {
         ensure!(self.training_job.is_none(), "Training is already running");

@@ -24,33 +24,34 @@ pub struct GpuDecomposer {
 }
 
 impl GpuDecomposer {
-    #[must_use]
-    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Result<Self> {
         // Compute shader for channel decomposition
         let shader = gpu
-            .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Decomposer Shader"),
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
                     "shaders/decomposer.wgsl"
                 ))),
-            });
+            })
+            .await?;
 
-        let compute_pipeline =
-            gpu.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Decomposer Pipeline"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("main"),
-                    compilation_options: PipelineCompilationOptions::default(),
-                    cache: None,
-                });
+        let compute_pipeline = gpu
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Decomposer Pipeline"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                cache: None,
+            })
+            .await?;
 
-        Self {
+        Ok(Self {
             compute_pipeline,
             gpu,
-        }
+        })
     }
 
     /// # Errors
@@ -75,17 +76,17 @@ impl GpuDecomposer {
         let pixel_count = crate::pixel_count(width, height)?;
 
         // Create input buffer
-        let input_buffer = self.gpu.create_input_buffer(image);
+        let input_buffer = self.gpu.create_input_buffer(image).await?;
 
         // Create output buffers for all three channels
-        let red_output_buffer = self.gpu.create_output_buffer(pixel_count)?;
-        let green_output_buffer = self.gpu.create_output_buffer(pixel_count)?;
-        let blue_output_buffer = self.gpu.create_output_buffer(pixel_count)?;
+        let red_output_buffer = self.gpu.create_output_buffer(pixel_count).await?;
+        let green_output_buffer = self.gpu.create_output_buffer(pixel_count).await?;
+        let blue_output_buffer = self.gpu.create_output_buffer(pixel_count).await?;
 
         // Create staging buffers for all three channels
-        let red_staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
-        let green_staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
-        let blue_staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
+        let red_staging_buffer = self.gpu.create_staging_buffer(pixel_count).await?;
+        let green_staging_buffer = self.gpu.create_staging_buffer(pixel_count).await?;
+        let blue_staging_buffer = self.gpu.create_staging_buffer(pixel_count).await?;
 
         // Uniform buffer for dimensions
         let uniforms = DecomposerUniforms {
@@ -95,59 +96,45 @@ impl GpuDecomposer {
             _padding2: 0,
         };
 
-        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
+        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms).await?;
 
         // Create bind group with all output buffers
-        let bind_group_layout = self.compute_pipeline.get_bind_group_layout(0);
         let bind_group = self
             .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: red_output_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: green_output_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: blue_output_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: input_buffer.as_entire_binding(),
-                    },
+            .create_buffer_bind_group(
+                &self.compute_pipeline,
+                &[
+                    &uniform_buffer,
+                    &red_output_buffer,
+                    &green_output_buffer,
+                    &blue_output_buffer,
+                    &input_buffer,
                 ],
-                label: Some("Decomposer Bind Group"),
-            });
+                "Decomposer Bind Group",
+            )
+            .await?;
 
         // Dispatch compute shader once for all channels
         let mut encoder = self
             .gpu
-            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Decomposer Encoder"),
-            });
+            })
+            .await?;
 
-        self.gpu.dispatch_compute_with_encoder(
-            &mut encoder,
-            &self.compute_pipeline,
-            &bind_group,
-            width,
-            height,
-            "Decomposer Pass",
-        );
+        self.gpu
+            .dispatch_compute_with_encoder(
+                &mut encoder,
+                &self.compute_pipeline,
+                &bind_group,
+                width,
+                height,
+                "Decomposer Pass",
+            )
+            .await?;
 
         // Submit commands
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        self.gpu.submit(encoder).await?;
 
         // Read results for all three channels
         let red_image = self

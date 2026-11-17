@@ -6,7 +6,7 @@ use std::{sync::Arc, time::Instant};
 use image::{ImageReader, RgbaImage};
 use tokio::sync::{broadcast, mpsc, watch};
 
-use anyhow::anyhow;
+use anyhow::{Context as _, anyhow, ensure};
 use strawberry_processing::{
     GpuImageProcessor, colorspace::GpuColorspaceConverter, compositor::GpuCompositor,
 };
@@ -45,6 +45,9 @@ pub struct Pipeline {
     overlays_dirty: bool,
     /// Last output images
     last_output: Option<Arc<RgbaImage>>,
+    /// The canvas may retain an older successful frame after a failed run.
+    output_is_current: bool,
+    gpu: Arc<GpuImageProcessor>,
     /// Colorspace conversions
     colorspace_converter: GpuColorspaceConverter,
     /// Composite all remaining layers independently, if the user compositor is disabled and multiple images remain.
@@ -78,8 +81,10 @@ impl Pipeline {
             gesture_owner: None,
             overlays_dirty: true,
             last_output: None,
-            fallback_compositor: GpuCompositor::new(gpu_image_processor.clone()),
-            colorspace_converter: GpuColorspaceConverter::new(gpu_image_processor),
+            output_is_current: false,
+            gpu: gpu_image_processor.clone(),
+            fallback_compositor: GpuCompositor::new(gpu_image_processor.clone()).await?,
+            colorspace_converter: GpuColorspaceConverter::new(gpu_image_processor).await?,
         };
 
         Ok((pipeline, command_tx, output_rx, frame_rx))
@@ -106,6 +111,7 @@ impl Pipeline {
     /// # Errors
     /// Returns an error if configuration, image processing, file I/O, or communication fails.
     async fn process_from(&mut self, ticket: ValidReconcilliationTicket) -> anyhow::Result<()> {
+        self.output_is_current = false;
         let start_time = std::time::Instant::now();
         println!("Got process_from command!");
         if self.input_images.is_empty() {
@@ -174,7 +180,9 @@ impl Pipeline {
                 stage = stage.saturating_add(1);
                 let result = tool.process(&mut images).await;
                 tool.acknowledge_processed_state();
-                result?;
+                result.with_context(|| format!("{:?} processing failed", tool.iam()))?;
+                self.gpu
+                    .ensure_device_availability("Complete pipeline stage")?;
                 tool.set_cached_output(images.clone());
             }
         }
@@ -189,12 +197,14 @@ impl Pipeline {
             .first()
             .ok_or_else(|| anyhow::anyhow!("No output image available from pipeline"))?;
 
+        self.ensure_no_stage_gpu_errors("Publish pipeline output")?;
         self.output_frame_sender.send_replace(Some(OutputFrame {
             load_generation: self.load_generation,
             image: output_image.clone(),
         }));
 
         self.last_output = Some(output_image.clone());
+        self.output_is_current = true;
 
         let duration = start_time.elapsed();
         println!("Pipeline processing took: {duration:?}");
@@ -205,6 +215,11 @@ impl Pipeline {
     /// Convert the last output back out of the internal BGRA representation and
     /// write it to `file`.
     async fn save_output(&self, file: &std::path::Path) -> anyhow::Result<()> {
+        ensure!(
+            self.output_is_current,
+            "No current pipeline output to save; process the image successfully first"
+        );
+        self.ensure_no_stage_gpu_errors("Save pipeline output")?;
         let last_output = self
             .last_output
             .as_ref()
@@ -213,6 +228,7 @@ impl Pipeline {
             .colorspace_converter
             .convert_bgra_to_rgba(last_output)
             .await?;
+        self.ensure_no_stage_gpu_errors("Write pipeline output")?;
         out_img.save(file)?;
         Ok(())
     }
@@ -227,6 +243,7 @@ impl Pipeline {
         reason = "Keep ordered command dispatch and its processing barriers together"
     )]
     pub async fn process_commands(&mut self) -> anyhow::Result<()> {
+        self.ensure_no_remaining_gpu_errors();
         let commands: Vec<_> =
             std::iter::from_fn(|| self.command_receiver.try_recv().ok()).collect();
         let mut pending_processing_from = PendingProcessing::default();
@@ -242,11 +259,13 @@ impl Pipeline {
                     self.complete_operation(reply, result, None);
                 }
                 PipelineCommand::AddTool { kind, reply } => {
-                    let result = self.tool_manager.add_tool(&kind).map_err(|e| e.to_string());
+                    let result = self.tool_manager.add_tool(&kind).await;
                     if result.is_ok() {
                         self.gesture_owner = None;
+                    } else if let Err(error) = &result {
+                        self.report_error("Tool initialization failed", error);
                     }
-                    let _ = reply.send(result);
+                    let _ = reply.send(result.map_err(|error| format!("{error:#}")));
                 }
                 PipelineCommand::RemoveTool(id) => {
                     if self.gesture_owner == Some(id) {
@@ -306,7 +325,7 @@ impl Pipeline {
                     self.complete_operation(reply, result, Some("Pipeline saved"));
                 }
                 PipelineCommand::LoadPipeline { path, cli, reply } => {
-                    let result = self.tool_manager.load_pipeline(&path, cli);
+                    let result = self.tool_manager.load_pipeline(&path, cli).await;
                     if result.is_ok() {
                         self.gesture_owner = None;
                         pending_processing_from.request_processing(0);
@@ -318,6 +337,10 @@ impl Pipeline {
                         Ok(()) => self.save_output(&path).await,
                         Err(error) => Err(error),
                     };
+                    // Save replies already produce GUI feedback, unlike background processing.
+                    if let Err(error) = &result {
+                        eprintln!("Image save failed: {error:#}");
+                    }
                     let _ = reply.send(result.map_err(|e| format!("{e:#}")));
                 }
                 PipelineCommand::RequestOverlays => self.publish_overlays(),
@@ -347,6 +370,7 @@ impl Pipeline {
         if let Err(error) = self.flush_processing(&mut pending_processing_from).await {
             self.report_error("Pipeline processing failed", &error);
         }
+        self.ensure_no_remaining_gpu_errors();
         Ok(())
     }
     fn complete_operation(
@@ -404,6 +428,7 @@ impl Pipeline {
         self.gesture_owner = None;
         self.input_images = images.into_iter().map(Arc::new).collect();
         self.load_generation = generation;
+        self.output_is_current = false;
         Ok(())
     }
     fn route_interaction_input(&mut self, id: Option<ToolId>, input: ToolInput) {
@@ -418,9 +443,27 @@ impl Pipeline {
         }
     }
     fn report_error(&self, context: &str, error: &anyhow::Error) {
+        eprintln!("{context}: {error:#}");
         let _ = self
             .output_sender
-            .send(FrontendMessage::error(format!("{context}: {error}")));
+            .send(FrontendMessage::error(format!("{context}: {error:#}")));
+    }
+    fn ensure_no_stage_gpu_errors(&self, operation: &str) -> anyhow::Result<()> {
+        self.gpu.ensure_device_availability(operation)?;
+        if let Some(error) = self.gpu.take_uncaptured_error() {
+            return Err(anyhow::Error::new(error).context(operation.to_owned()));
+        }
+        Ok(())
+    }
+    fn ensure_no_remaining_gpu_errors(&mut self) {
+        while let Some(error) = self.gpu.take_uncaptured_error() {
+            self.output_is_current = false;
+            for tool in self.tool_manager.tools.values_mut() {
+                tool.invalidate_cache();
+            }
+            self.report_error("GPU failure", &error.into());
+            let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
+        }
     }
     fn publish_overlays(&self) {
         let _ = self
@@ -450,6 +493,7 @@ impl Pipeline {
     async fn flush_processing(&mut self, pending: &mut PendingProcessing) -> anyhow::Result<()> {
         for tool in self.tool_manager.tools.values_mut() {
             if let Err(error) = tool.poll_background() {
+                eprintln!("Background task failed: {error:#}");
                 let _ = self.output_sender.send(FrontendMessage::error(format!(
                     "Background task failed: {error}"
                 )));

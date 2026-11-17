@@ -15,12 +15,13 @@ pub struct GpuDifferenceOfGaussians {
 }
 
 impl GpuDifferenceOfGaussians {
-    #[must_use]
-    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
-        Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Result<Self> {
+        Ok(Self {
             tile_config: TileConfig::from_limits(&gpu.device.limits()),
-            filters: GpuFloatFilters::new(gpu),
-        }
+            filters: GpuFloatFilters::new(gpu).await?,
+        })
     }
 
     /// Apply small Gaussian minus large Gaussian to internal BGRA luminance.

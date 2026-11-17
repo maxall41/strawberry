@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -54,15 +55,7 @@ impl ToolBackend for Decomposer {
             anyhow::anyhow!(error_msg)
         })?;
 
-        let decomposed = match self.processor.apply_decomposition(first_image).await {
-            Ok(result) => result,
-            Err(e) => {
-                self.base
-                    .events
-                    .emit(FrontendMessage::error(format!("Decomposer error: {e}")));
-                return Err(e);
-            }
-        };
+        let decomposed = self.processor.apply_decomposition(first_image).await?;
 
         let images: Vec<image::RgbaImage> = decomposed
             .into_iter()
@@ -76,15 +69,7 @@ impl ToolBackend for Decomposer {
             })
             .collect();
 
-        let composited = match self.compositer.composite_images(&images).await {
-            Ok(image) => image,
-            Err(e) => {
-                self.base.events.emit(FrontendMessage::error(format!(
-                    "Decomposer compositor error: {e}"
-                )));
-                return Err(e);
-            }
-        };
+        let composited = self.compositer.composite_images(&images).await?;
 
         *input = vec![Arc::new(composited)];
 
@@ -123,18 +108,22 @@ impl ToolBackend for Decomposer {
 }
 
 impl Decomposer {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = DecomposerState {
             is_enabled: false,
             enabled_layers: vec![true; 3],
         };
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            compositer: GpuCompositor::new(gpu_image_processor.clone()),
-            processor: GpuDecomposer::new(gpu_image_processor),
-        }
+            compositer: GpuCompositor::new(gpu_image_processor.clone()).await?,
+            processor: GpuDecomposer::new(gpu_image_processor).await?,
+        })
     }
 }

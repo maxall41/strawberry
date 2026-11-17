@@ -562,14 +562,15 @@ impl FeatureTile {
 }
 
 impl FeatureExtractor {
-    #[must_use]
-    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Result<Self> {
         let mut config = TileConfig::from_limits(&gpu.device.limits());
         config.max_tile_pixels = config.max_tile_pixels.min(512 * 512);
-        Self {
-            filters: GpuFloatFilters::new(gpu),
+        Ok(Self {
+            filters: GpuFloatFilters::new(gpu).await?,
             config,
-        }
+        })
     }
     /// # Errors
     /// Returns an error if no features are selected or their halo is invalid.

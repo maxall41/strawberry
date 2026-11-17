@@ -68,43 +68,43 @@ impl ToolManager {
         Ok(id)
     }
     /// Detached construction has no externally visible side effects.
-    fn create(&self, kind: &BackendToolType) -> ToolInstance {
+    async fn create(&self, kind: &BackendToolType) -> anyhow::Result<ToolInstance> {
         let events = ToolEvents::default();
         let gpu = self.gpu.clone();
         let backend: Box<dyn ToolBackend> = match kind {
             BackendToolType::AutomaticSegmentation => {
-                Box::new(AutomaticSegmentation::new(events, gpu))
+                Box::new(AutomaticSegmentation::new(events, gpu).await?)
             }
-            BackendToolType::Compositor => Box::new(Compositor::new(events, gpu)),
-            BackendToolType::Contrast => Box::new(Contrast::new(events, gpu)),
+            BackendToolType::Compositor => Box::new(Compositor::new(events, gpu).await?),
+            BackendToolType::Contrast => Box::new(Contrast::new(events, gpu).await?),
             BackendToolType::Counter => Box::new(Counter::new(events)),
-            BackendToolType::Decomposer => Box::new(Decomposer::new(events, gpu)),
+            BackendToolType::Decomposer => Box::new(Decomposer::new(events, gpu).await?),
             BackendToolType::DifferenceOfGaussians => {
-                Box::new(DifferenceOfGaussians::new(events, gpu))
+                Box::new(DifferenceOfGaussians::new(events, gpu).await?)
             }
-            BackendToolType::GaussianBlur => Box::new(GaussianBlur::new(events, gpu)),
-            BackendToolType::Grayscale => Box::new(Grayscale::new(events, gpu)),
-            BackendToolType::LocalMaxima => Box::new(LocalMaxima::new(events, gpu)),
-            BackendToolType::Morphology => Box::new(Morphology::new(events, gpu)),
+            BackendToolType::GaussianBlur => Box::new(GaussianBlur::new(events, gpu).await?),
+            BackendToolType::Grayscale => Box::new(Grayscale::new(events, gpu).await?),
+            BackendToolType::LocalMaxima => Box::new(LocalMaxima::new(events, gpu).await?),
+            BackendToolType::Morphology => Box::new(Morphology::new(events, gpu).await?),
             BackendToolType::NerveTracer => Box::new(NerveTracer::new(events)),
             BackendToolType::ObjectSizeFilter => Box::new(ObjectSizeFilter::new(events)),
-            BackendToolType::RollingBall => Box::new(RollingBall::new(events, gpu)),
-            BackendToolType::Sobel => Box::new(Sobel::new(events, gpu)),
-            BackendToolType::Threshold => Box::new(Threshold::new(events, gpu)),
-            BackendToolType::Watershed => Box::new(Watershed::new(events, gpu)),
+            BackendToolType::RollingBall => Box::new(RollingBall::new(events, gpu).await?),
+            BackendToolType::Sobel => Box::new(Sobel::new(events, gpu).await?),
+            BackendToolType::Threshold => Box::new(Threshold::new(events, gpu).await?),
+            BackendToolType::Watershed => Box::new(Watershed::new(events, gpu).await?),
         };
         let tool_state_sender = watch::channel(backend.get_state()).0;
-        ToolInstance {
+        Ok(ToolInstance {
             backend,
             tool_state_sender,
-        }
+        })
     }
     /// Create, enable, and select a new tool instance.
     ///
     /// # Errors
-    /// Returns an error if the tool ID space is exhausted.
-    pub fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<ToolId> {
-        let mut tool = self.create(kind);
+    /// Returns an error if GPU initialization fails or the tool ID space is exhausted.
+    pub async fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<ToolId> {
+        let mut tool = self.create(kind).await?;
         tool.set_enabled(true);
         tool.tool_state_sender.send_replace(tool.get_state());
         let id = self.allocate_id()?;
@@ -226,11 +226,11 @@ impl ToolManager {
     /// # Errors
     /// Returns an error if the archive, settings, or assets cannot be loaded or
     /// validated, or if the tool ID space is exhausted.
-    pub fn load_pipeline(&mut self, path: &Path, cli: bool) -> anyhow::Result<()> {
+    pub async fn load_pipeline(&mut self, path: &Path, cli: bool) -> anyhow::Result<()> {
         let mut candidate = IndexMap::new();
         for entry in pipeline_io::load(path)? {
             let kind = entry.kind()?;
-            let mut tool = self.create(&kind);
+            let mut tool = self.create(&kind).await?;
             tool.load_persisted_state(entry.state, &entry.assets, cli)?;
             tool.get_state().validate()?;
             tool.cancel_interaction();
