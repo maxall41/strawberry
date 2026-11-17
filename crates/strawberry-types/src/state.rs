@@ -67,6 +67,7 @@ pub struct DifferenceOfGaussiansState {
 }
 
 impl Default for DifferenceOfGaussiansState {
+    /// Create disabled difference-of-Gaussians settings with default blur scales.
     fn default() -> Self {
         Self {
             small_sigma: 1.0,
@@ -105,6 +106,7 @@ pub struct LocalMaximaState {
 }
 
 impl Default for LocalMaximaState {
+    /// Create disabled local-maxima settings with border exclusion enabled.
     fn default() -> Self {
         Self {
             min_distance: 5,
@@ -137,6 +139,7 @@ pub struct ObjectSizeFilterState {
 }
 
 impl Default for ObjectSizeFilterState {
+    /// Create disabled object-size filtering settings with a default size cutoff.
     fn default() -> Self {
         Self {
             is_enabled: false,
@@ -153,6 +156,7 @@ pub struct RollingBallState {
 }
 
 impl Default for RollingBallState {
+    /// Create disabled rolling-ball settings with the default radius.
     fn default() -> Self {
         Self {
             ball_radius: 50,
@@ -177,6 +181,7 @@ pub struct ThresholdState {
 }
 
 // TOML table keys are strings, including numeric count-type IDs.
+/// Deserialize numeric or string count-type keys, rejecting duplicate IDs.
 fn deserialize_count_type_map<'de, D, V>(
     deserializer: D,
 ) -> std::result::Result<HashMap<u16, V>, D::Error>
@@ -236,6 +241,7 @@ impl BrushRadius {
     pub const MIN: u32 = 1;
     pub const MAX: u32 = 128;
 
+    /// Return the validated brush radius in pixels.
     #[must_use]
     pub const fn get(self) -> u32 {
         self.0
@@ -243,6 +249,7 @@ impl BrushRadius {
 }
 
 impl Default for BrushRadius {
+    /// Create a brush with the minimum supported radius.
     fn default() -> Self {
         Self(1)
     }
@@ -251,6 +258,7 @@ impl Default for BrushRadius {
 impl TryFrom<u32> for BrushRadius {
     type Error = String;
 
+    /// Validate a pixel radius against the supported brush range.
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         if (Self::MIN..=Self::MAX).contains(&value) {
             Ok(Self(value))
@@ -265,6 +273,7 @@ impl TryFrom<u32> for BrushRadius {
 }
 
 impl From<BrushRadius> for u32 {
+    /// Extract the brush radius as an unsigned integer.
     fn from(radius: BrushRadius) -> Self {
         radius.get()
     }
@@ -275,10 +284,12 @@ impl From<BrushRadius> for u32 {
 pub struct ClassId(u64);
 
 impl ClassId {
+    /// Wrap a numeric segmentation class identifier.
     #[must_use]
     pub const fn new(id: u64) -> Self {
         Self(id)
     }
+    /// Return the numeric segmentation class identifier.
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0
@@ -286,12 +297,14 @@ impl ClassId {
 }
 
 impl Display for ClassId {
+    /// Format the class identifier as a decimal number.
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
     }
 }
 
 impl From<ClassId> for String {
+    /// Convert the class identifier to its decimal string representation.
     fn from(id: ClassId) -> Self {
         id.0.to_string()
     }
@@ -299,6 +312,7 @@ impl From<ClassId> for String {
 
 impl TryFrom<String> for ClassId {
     type Error = ParseIntError;
+    /// Parse a decimal string into a class identifier.
     fn try_from(id: String) -> Result<Self, Self::Error> {
         id.parse().map(Self)
     }
@@ -335,6 +349,7 @@ impl SegmentationClasses {
         Ok(())
     }
 
+    /// Reject empty class names and names used by another class.
     fn check_name(&self, id: ClassId, name: &str) -> Result<()> {
         ensure!(!name.is_empty(), "Class names cannot be empty");
         ensure!(
@@ -389,10 +404,12 @@ impl SegmentationClasses {
         Ok(())
     }
 
+    /// Return mutable annotations for the specified class, if it exists.
     pub fn annotations_mut(&mut self, id: ClassId) -> Option<&mut AnnotationsBySample> {
         self.0.get_mut(&id).map(|class| &mut class.annotations)
     }
 
+    /// Clone the class definitions with all sample annotations removed.
     #[must_use]
     pub fn without_annotations(&self) -> Self {
         Self(
@@ -426,6 +443,7 @@ impl SegmentationClasses {
 impl TryFrom<BTreeMap<ClassId, SegmentationClass>> for SegmentationClasses {
     type Error = anyhow::Error;
 
+    /// Trim class names and validate the supplied class collection.
     fn try_from(mut classes: BTreeMap<ClassId, SegmentationClass>) -> Result<Self> {
         for class in classes.values_mut() {
             class.name = class.name.trim().into();
@@ -437,6 +455,7 @@ impl TryFrom<BTreeMap<ClassId, SegmentationClass>> for SegmentationClasses {
 }
 
 impl<'de> Deserialize<'de> for SegmentationClasses {
+    /// Deserialize and validate an ordered segmentation class collection.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         BTreeMap::deserialize(deserializer)?
             .try_into()
@@ -446,6 +465,7 @@ impl<'de> Deserialize<'de> for SegmentationClasses {
 
 impl Deref for SegmentationClasses {
     type Target = BTreeMap<ClassId, SegmentationClass>;
+    /// Expose the ordered class map for read-only access.
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -454,6 +474,7 @@ impl Deref for SegmentationClasses {
 impl IntoIterator for SegmentationClasses {
     type Item = (ClassId, SegmentationClass);
     type IntoIter = btree_map::IntoIter<ClassId, SegmentationClass>;
+    /// Consume the collection and iterate over classes in identifier order.
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
     }
@@ -462,6 +483,7 @@ impl IntoIterator for SegmentationClasses {
 impl<'a> IntoIterator for &'a SegmentationClasses {
     type Item = (&'a ClassId, &'a SegmentationClass);
     type IntoIter = btree_map::Iter<'a, ClassId, SegmentationClass>;
+    /// Iterate over borrowed classes in identifier order.
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
     }
@@ -475,11 +497,13 @@ pub struct SegmentationClass {
     pub annotations: AnnotationsBySample,
 }
 impl SegmentationClass {
+    /// Return the class color in BGRA layout with the requested opacity.
     #[must_use]
     pub const fn bgra(&self, alpha: u8) -> BgraColor {
         self.color.with_alpha(alpha).to_bgra()
     }
 
+    /// Count this class’s annotation strokes across all samples.
     pub fn annotation_count(&self) -> usize {
         self.annotations.values().map(BTreeMap::len).sum()
     }
@@ -500,6 +524,7 @@ pub enum AnnotationKind {
     Eraser,
 }
 impl Default for AnnotationKind {
+    /// Select the foreground class for painting by default.
     fn default() -> Self {
         Self::Paint(ClassId::new(1))
     }
@@ -531,6 +556,7 @@ pub enum DatasetOperation {
 }
 
 impl DatasetOperation {
+    /// Return whether this operation loads or merges a dataset.
     #[must_use]
     pub const fn is_importing(self) -> bool {
         matches!(self, Self::Loading | Self::Merging)
@@ -593,6 +619,7 @@ pub struct AutomaticSegmentationState {
 }
 
 impl AutomaticSegmentationState {
+    /// Count paint and eraser strokes across all samples.
     pub fn annotation_count(&self) -> usize {
         self.classes
             .values()
@@ -601,6 +628,7 @@ impl AutomaticSegmentationState {
             .sum()
     }
 
+    /// Iterate over a sample’s paint and eraser strokes with their identities.
     pub fn sample_annotations(
         &self,
         sample: SampleId,
@@ -625,6 +653,7 @@ impl AutomaticSegmentationState {
             }))
     }
 
+    /// Iterate over annotations belonging to the current sample.
     pub fn current_annotations(
         &self,
     ) -> impl Iterator<Item = (AnnotationKind, StrokeId, &AnnotationStroke)> {
@@ -633,6 +662,7 @@ impl AutomaticSegmentationState {
             .flat_map(|sample| self.sample_annotations(sample))
     }
 
+    /// Collect a sample’s annotations in stroke identifier order.
     #[must_use]
     pub fn ordered_annotations(
         &self,
@@ -643,6 +673,7 @@ impl AutomaticSegmentationState {
             .collect()
     }
 
+    /// Find a sample’s stroke among eraser and class annotations.
     #[must_use]
     pub fn stroke(&self, sample: SampleId, id: StrokeId) -> Option<&AnnotationStroke> {
         self.erasers
@@ -655,6 +686,7 @@ impl AutomaticSegmentationState {
             })
     }
 
+    /// Return mutable access to a sample’s eraser or class stroke.
     pub fn stroke_mut(&mut self, sample: SampleId, id: StrokeId) -> Option<&mut AnnotationStroke> {
         self.erasers
             .get_mut(&sample)
@@ -667,6 +699,7 @@ impl AutomaticSegmentationState {
             })
     }
 
+    /// Remove the stroke identifier from every annotation kind for a sample.
     pub fn remove_stroke(&mut self, sample: SampleId, id: StrokeId) {
         if let Some(strokes) = self.erasers.get_mut(&sample) {
             strokes.remove(&id);
@@ -678,6 +711,7 @@ impl AutomaticSegmentationState {
         }
     }
 
+    /// Remove all paint and eraser annotations for a sample.
     pub fn clear_sample_annotations(&mut self, sample: SampleId) {
         self.erasers.remove(&sample);
         for class in self.classes.0.values_mut() {
@@ -687,6 +721,7 @@ impl AutomaticSegmentationState {
 }
 
 impl Default for AutomaticSegmentationState {
+    /// Create default segmentation settings with background and foreground classes.
     fn default() -> Self {
         Self {
             is_enabled: false,
@@ -772,6 +807,7 @@ pub trait PersistedState {
     fn load_persisted_fields(&mut self, fields: serde_value::Value) -> anyhow::Result<()>;
 }
 impl<T: Clone + serde::de::DeserializeOwned> PersistedState for T {
+    /// Deserialize fields into a clone and replace this state only on success.
     fn load_persisted_fields(&mut self, fields: serde_value::Value) -> anyhow::Result<()> {
         let mut merged = self.clone();
         T::deserialize_in_place(fields, &mut merged)?;

@@ -35,12 +35,14 @@ pub struct CounterView {
 }
 
 impl Focusable for CounterView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
 }
 
 impl CounterView {
+    /// Create the counter tool view and its initial controls.
     pub fn new(
         id: ToolId,
         command_sender: CommandSender,
@@ -58,10 +60,12 @@ impl CounterView {
         }
     }
 
+    /// Start receiving backend state updates for this tool view.
     fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
+    /// Prompt for a path and request count export.
     fn save_counts(&self, window: &Window, cx: &Context<Self>) {
         let image_directory = self.image_directory.clone();
 
@@ -97,6 +101,7 @@ impl CounterView {
         .detach();
     }
 
+    /// Prompt for a counts file and request its import.
     fn load_counts(&self, window: &Window, cx: &Context<Self>) {
         let last_directory = self.last_directory.clone();
         let image_directory = self.image_directory.clone();
@@ -144,6 +149,7 @@ impl CounterView {
         .detach();
     }
 
+    /// Request a new count category.
     fn add_count_type(&self) {
         let Ok(hint) = self.next_count_type_id.read() else {
             return;
@@ -182,6 +188,7 @@ impl CounterView {
         println!("Added count type {new_id}");
     }
 
+    /// Request removal of a count category.
     fn delete_count_type(&self, count_type_id: u16) {
         if let Err(e) = self
             .base
@@ -221,6 +228,7 @@ impl CounterView {
         }
     }
 
+    /// Select the category used for counting.
     fn select_count_type(&self, count_type_id: u16, _window: &Window, _cx: &Context<Self>) {
         if let Err(e) = self
             .base
@@ -232,6 +240,7 @@ impl CounterView {
         }
     }
 
+    /// Copy automatic counts into the manual counting state.
     fn copy_to_manual(&self) {
         if let Err(e) = self
             .base
@@ -243,6 +252,7 @@ impl CounterView {
         }
     }
 
+    /// Toggle overlay visibility for a count category.
     fn toggle_count_type_visibility(&self, count_type_id: u16) {
         if let Err(e) = self
             .base
@@ -254,6 +264,7 @@ impl CounterView {
         }
     }
 
+    /// Select the active canvas counting tool.
     fn set_tool(&self, tool: Option<CounterTool>, _window: &Window, _cx: &Context<Self>) {
         if let Err(e) = self
             .base
@@ -265,12 +276,14 @@ impl CounterView {
         }
     }
 
+    /// Send the opposite enabled state to the backend.
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &Context<Self>) {
         if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &CounterToggleActivity,
@@ -286,6 +299,7 @@ impl CounterView {
         self.toggle_enabled(current_enabled, window, cx);
     }
 
+    /// Handle the keyboard action to place tool.
     fn place_tool_action(
         &mut self,
         _: &CounterPlaceTool,
@@ -304,6 +318,7 @@ impl CounterView {
         }
     }
 
+    /// Handle the keyboard action to delete tool.
     fn delete_tool_action(
         &mut self,
         _: &CounterDeleteTool,
@@ -322,6 +337,7 @@ impl CounterView {
         }
     }
 
+    /// Handle the keyboard action to lasso tool.
     fn lasso_tool_action(
         &mut self,
         _: &CounterLassoTool,
@@ -340,6 +356,7 @@ impl CounterView {
         }
     }
 
+    /// Handle the keyboard action to review tool.
     fn review_tool_action(
         &mut self,
         _: &CounterReviewTool,
@@ -358,6 +375,7 @@ impl CounterView {
         }
     }
 
+    /// Handle the keyboard action to review previous.
     fn review_previous_action(
         &mut self,
         _: &CounterReviewPrevious,
@@ -368,6 +386,7 @@ impl CounterView {
         cx.notify();
     }
 
+    /// Handle the keyboard action to review next.
     fn review_next_action(
         &mut self,
         _: &CounterReviewNext,
@@ -378,6 +397,7 @@ impl CounterView {
         cx.notify();
     }
 
+    /// Handle the keyboard action to delete count.
     fn delete_count_action(
         &mut self,
         _: &CounterDeleteCount,
@@ -388,6 +408,7 @@ impl CounterView {
         cx.notify();
     }
 
+    /// Handle the keyboard action to save counts.
     fn save_counts_action(
         &mut self,
         _: &CounterSaveCounts,
@@ -397,6 +418,7 @@ impl CounterView {
         self.save_counts(window, cx);
     }
 
+    /// Handle the keyboard action to load counts.
     fn load_counts_action(
         &mut self,
         _: &CounterLoadCounts,
@@ -406,6 +428,7 @@ impl CounterView {
         self.load_counts(window, cx);
     }
 
+    /// Handle the keyboard action to new count type.
     fn new_count_type_action(
         &mut self,
         _: &CounterNewCountType,
@@ -416,12 +439,14 @@ impl CounterView {
         cx.notify();
     }
 
+    /// Return count category IDs in display order.
     fn sorted_count_type_ids(state: &CounterState) -> Vec<u16> {
         let mut ids: Vec<_> = state.manual_counts.keys().copied().collect();
         ids.sort_unstable();
         ids
     }
 
+    /// Select a count category by its displayed position.
     fn select_count_type_by_position(&self, position: usize, window: &Window, cx: &Context<Self>) {
         let count_type_id = match self.state.read() {
             Ok(state) => Self::sorted_count_type_ids(&state).get(position).copied(),
@@ -433,6 +458,7 @@ impl CounterView {
         }
     }
 
+    /// Handle the keyboard action to select count type 1.
     fn select_count_type_1_action(
         &mut self,
         _: &CounterSelectType1,
@@ -442,6 +468,7 @@ impl CounterView {
         self.select_count_type_by_position(0, window, cx);
     }
 
+    /// Handle the keyboard action to select count type 2.
     fn select_count_type_2_action(
         &mut self,
         _: &CounterSelectType2,
@@ -451,6 +478,7 @@ impl CounterView {
         self.select_count_type_by_position(1, window, cx);
     }
 
+    /// Handle the keyboard action to select count type 3.
     fn select_count_type_3_action(
         &mut self,
         _: &CounterSelectType3,
@@ -460,6 +488,7 @@ impl CounterView {
         self.select_count_type_by_position(2, window, cx);
     }
 
+    /// Handle the keyboard action to select count type 4.
     fn select_count_type_4_action(
         &mut self,
         _: &CounterSelectType4,
@@ -469,6 +498,7 @@ impl CounterView {
         self.select_count_type_by_position(3, window, cx);
     }
 
+    /// Handle the keyboard action to select count type 5.
     fn select_count_type_5_action(
         &mut self,
         _: &CounterSelectType5,
@@ -478,6 +508,7 @@ impl CounterView {
         self.select_count_type_by_position(4, window, cx);
     }
 
+    /// Handle the keyboard action to select count type 6.
     fn select_count_type_6_action(
         &mut self,
         _: &CounterSelectType6,
@@ -487,6 +518,7 @@ impl CounterView {
         self.select_count_type_by_position(5, window, cx);
     }
 
+    /// Handle the keyboard action to select count type 7.
     fn select_count_type_7_action(
         &mut self,
         _: &CounterSelectType7,
@@ -496,6 +528,7 @@ impl CounterView {
         self.select_count_type_by_position(6, window, cx);
     }
 
+    /// Handle the keyboard action to select count type 8.
     fn select_count_type_8_action(
         &mut self,
         _: &CounterSelectType8,
@@ -505,6 +538,7 @@ impl CounterView {
         self.select_count_type_by_position(7, window, cx);
     }
 
+    /// Handle the keyboard action to select count type 9.
     fn select_count_type_9_action(
         &mut self,
         _: &CounterSelectType9,
@@ -514,6 +548,7 @@ impl CounterView {
         self.select_count_type_by_position(8, window, cx);
     }
 
+    /// Send the selected processing mode to the backend.
     fn set_mode(&self, mode: CounterMode) {
         if let Err(error) = self
             .base
@@ -525,6 +560,7 @@ impl CounterView {
         }
     }
 
+    /// Build the status for the counter view.
     fn render_status(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let enabled = state.is_enabled;
         ToggleButton::new(
@@ -537,6 +573,7 @@ impl CounterView {
         .render(cx)
     }
 
+    /// Build the mode toggle for the counter view.
     fn render_mode_toggle(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
         tool_panel::segmented().children(
             [
@@ -560,6 +597,7 @@ impl CounterView {
         clippy::too_many_arguments,
         reason = "Keep count row data and interaction metadata together"
     )]
+    /// Build the count type item for the counter view.
     fn render_count_type_item(
         count_type_id: u16,
         name: &str,
@@ -669,6 +707,7 @@ impl CounterView {
             )
     }
 
+    /// Build the count types list for the counter view.
     fn render_count_types_list(
         state: &CounterState,
         scroll: &gpui::ScrollHandle,
@@ -748,6 +787,7 @@ impl CounterView {
         list
     }
 
+    /// Build the add button for the counter view.
     fn render_add_button(cx: &Context<Self>) -> impl IntoElement + use<> {
         Button::new("add-count-type-button")
             .compact()
@@ -758,6 +798,7 @@ impl CounterView {
             .on_click(cx.listener(|this, _, _, _| this.add_count_type()))
     }
 
+    /// Build the tool button for the counter view.
     fn render_tool_button(
         tool: CounterTool,
         label: &'static str,
@@ -779,6 +820,7 @@ impl CounterView {
             }))
     }
 
+    /// Build the tools bar for the counter view.
     fn render_tools_bar(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
         tool_panel::segmented().children(
             [
@@ -794,6 +836,7 @@ impl CounterView {
         )
     }
 
+    /// Build the storage buttons for the counter view.
     fn render_storage_buttons(cx: &Context<Self>) -> impl IntoElement + use<> {
         tool_panel::section("Count data").child(
             tool_panel::file_actions()
@@ -818,6 +861,7 @@ impl CounterView {
         )
     }
 
+    /// Build the manual ui for the counter view.
     fn render_manual_ui(
         &self,
         state: &CounterState,
@@ -846,6 +890,7 @@ impl CounterView {
         ui
     }
 
+    /// Build the auto ui for the counter view.
     fn render_auto_ui(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
         tool_panel::section("Detection")
             .child(
@@ -870,6 +915,7 @@ impl CounterView {
             )
     }
 
+    /// Build the review ui for the counter view.
     fn render_review_ui(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let counts = state
             .active_count_type
@@ -937,7 +983,7 @@ impl CounterView {
         review
     }
 
-    // Review functionality methods - now sends messages to backend
+    /// Request the previous count in review mode.
     fn send_review_navigate_previous(&self) {
         if let Err(e) = self
             .base
@@ -949,6 +995,7 @@ impl CounterView {
         }
     }
 
+    /// Request the next count in review mode.
     fn send_review_navigate_next(&self) {
         if let Err(e) = self
             .base
@@ -960,6 +1007,7 @@ impl CounterView {
         }
     }
 
+    /// Request deletion of the count currently under review.
     fn send_delete_current_count(&self) {
         if let Err(e) = self
             .base
@@ -998,18 +1046,22 @@ actions!([
 impl FrontendMessageHandler for CounterView {
     type State = CounterState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &crate::tools::ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(tool_state: ToolState) -> Option<Self::State> {
         match tool_state {
             ToolState::CounterState(s) => Some(s),
@@ -1017,6 +1069,7 @@ impl FrontendMessageHandler for CounterView {
         }
     }
 
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, new_state: &CounterState, _cx: &mut Context<Self>) {
         if let Ok(mut next_id) = self.next_count_type_id.write() {
             *next_id = new_state
@@ -1029,6 +1082,7 @@ impl FrontendMessageHandler for CounterView {
 }
 
 impl Render for CounterView {
+    /// Build the counter view and its interaction handlers.
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state,
@@ -1092,6 +1146,7 @@ impl Render for CounterView {
 }
 
 impl ToolFrontend for CounterView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;

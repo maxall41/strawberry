@@ -17,6 +17,7 @@ pub struct ToolInstance {
     tool_state_sender: watch::Sender<ToolState>,
 }
 impl ToolInstance {
+    /// Subscribe to the latest state of this tool instance.
     #[must_use]
     pub fn subscribe_state(&self) -> watch::Receiver<ToolState> {
         self.tool_state_sender.subscribe()
@@ -24,11 +25,13 @@ impl ToolInstance {
 }
 impl std::ops::Deref for ToolInstance {
     type Target = dyn ToolBackend;
+    /// Borrow the wrapped tool backend.
     fn deref(&self) -> &Self::Target {
         self.backend.as_ref()
     }
 }
 impl std::ops::DerefMut for ToolInstance {
+    /// Borrow the wrapped tool backend mutably.
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.backend.as_mut()
     }
@@ -44,6 +47,7 @@ pub struct ToolManager {
     processing_order: Vec<ToolId>,
 }
 impl ToolManager {
+    /// Create an empty tool manager sharing the supplied GPU processor.
     #[must_use]
     pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         Self {
@@ -55,10 +59,12 @@ impl ToolManager {
             processing_order: vec![],
         }
     }
+    /// Subscribe to ordered tool summaries and the selected instance.
     #[must_use]
     pub fn subscribe_pipeline_state(&self) -> watch::Receiver<PipelineState> {
         self.pipeline_state_sender.subscribe()
     }
+    /// Allocate a unique tool identity or report exhaustion.
     fn allocate_id(&mut self) -> anyhow::Result<ToolId> {
         let id = ToolId(self.next_tool_id);
         self.next_tool_id = self
@@ -68,43 +74,43 @@ impl ToolManager {
         Ok(id)
     }
     /// Detached construction has no externally visible side effects.
-    fn create(&self, kind: &BackendToolType) -> ToolInstance {
+    async fn create(&self, kind: &BackendToolType) -> anyhow::Result<ToolInstance> {
         let events = ToolEvents::default();
         let gpu = self.gpu.clone();
         let backend: Box<dyn ToolBackend> = match kind {
             BackendToolType::AutomaticSegmentation => {
-                Box::new(AutomaticSegmentation::new(events, gpu))
+                Box::new(AutomaticSegmentation::new(events, gpu).await?)
             }
-            BackendToolType::Compositor => Box::new(Compositor::new(events, gpu)),
-            BackendToolType::Contrast => Box::new(Contrast::new(events, gpu)),
+            BackendToolType::Compositor => Box::new(Compositor::new(events, gpu).await?),
+            BackendToolType::Contrast => Box::new(Contrast::new(events, gpu).await?),
             BackendToolType::Counter => Box::new(Counter::new(events)),
-            BackendToolType::Decomposer => Box::new(Decomposer::new(events, gpu)),
+            BackendToolType::Decomposer => Box::new(Decomposer::new(events, gpu).await?),
             BackendToolType::DifferenceOfGaussians => {
-                Box::new(DifferenceOfGaussians::new(events, gpu))
+                Box::new(DifferenceOfGaussians::new(events, gpu).await?)
             }
-            BackendToolType::GaussianBlur => Box::new(GaussianBlur::new(events, gpu)),
-            BackendToolType::Grayscale => Box::new(Grayscale::new(events, gpu)),
-            BackendToolType::LocalMaxima => Box::new(LocalMaxima::new(events, gpu)),
-            BackendToolType::Morphology => Box::new(Morphology::new(events, gpu)),
+            BackendToolType::GaussianBlur => Box::new(GaussianBlur::new(events, gpu).await?),
+            BackendToolType::Grayscale => Box::new(Grayscale::new(events, gpu).await?),
+            BackendToolType::LocalMaxima => Box::new(LocalMaxima::new(events, gpu).await?),
+            BackendToolType::Morphology => Box::new(Morphology::new(events, gpu).await?),
             BackendToolType::NerveTracer => Box::new(NerveTracer::new(events)),
             BackendToolType::ObjectSizeFilter => Box::new(ObjectSizeFilter::new(events)),
-            BackendToolType::RollingBall => Box::new(RollingBall::new(events, gpu)),
-            BackendToolType::Sobel => Box::new(Sobel::new(events, gpu)),
-            BackendToolType::Threshold => Box::new(Threshold::new(events, gpu)),
-            BackendToolType::Watershed => Box::new(Watershed::new(events, gpu)),
+            BackendToolType::RollingBall => Box::new(RollingBall::new(events, gpu).await?),
+            BackendToolType::Sobel => Box::new(Sobel::new(events, gpu).await?),
+            BackendToolType::Threshold => Box::new(Threshold::new(events, gpu).await?),
+            BackendToolType::Watershed => Box::new(Watershed::new(events, gpu).await?),
         };
         let tool_state_sender = watch::channel(backend.get_state()).0;
-        ToolInstance {
+        Ok(ToolInstance {
             backend,
             tool_state_sender,
-        }
+        })
     }
     /// Create, enable, and select a new tool instance.
     ///
     /// # Errors
-    /// Returns an error if the tool ID space is exhausted.
-    pub fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<ToolId> {
-        let mut tool = self.create(kind);
+    /// Returns an error if GPU initialization fails or the tool ID space is exhausted.
+    pub async fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<ToolId> {
+        let mut tool = self.create(kind).await?;
         tool.set_enabled(true);
         tool.tool_state_sender.send_replace(tool.get_state());
         let id = self.allocate_id()?;
@@ -112,6 +118,7 @@ impl ToolManager {
         self.select(Some(id));
         Ok(id)
     }
+    /// Select an existing tool and cancel the previous selection's interaction.
     pub fn select(&mut self, id: Option<ToolId>) {
         if id.is_some_and(|id| !self.tools.contains_key(&id)) {
             return;
@@ -123,12 +130,14 @@ impl ToolManager {
             self.selected_tool = id;
         }
     }
+    /// Remove a tool instance and clear its selection when needed.
     pub fn remove_tool(&mut self, id: ToolId) {
         if self.selected_tool == Some(id) {
             self.select(None);
         }
         self.tools.shift_remove(&id);
     }
+    /// Move a tool before another instance, or to the end of the stack.
     pub fn move_tool(&mut self, id: ToolId, before: Option<ToolId>) {
         let Some(from) = self.tools.get_index_of(&id) else {
             return;
@@ -151,6 +160,7 @@ impl ToolManager {
         };
         self.tools.move_index(from, to);
     }
+    /// Request processing from the first changed enabled tool position.
     pub fn reconcile(&mut self, pending: &mut PendingProcessing) {
         let current: Vec<_> = self
             .tools
@@ -174,6 +184,7 @@ impl ToolManager {
         }
         self.processing_order = current.into_iter().map(|(_, id)| id).collect();
     }
+    /// Publish changed tool snapshots and pipeline summaries to subscribers.
     pub fn publish(&mut self) -> bool {
         let mut changed = false;
         for tool in self.tools.values_mut() {
@@ -226,11 +237,11 @@ impl ToolManager {
     /// # Errors
     /// Returns an error if the archive, settings, or assets cannot be loaded or
     /// validated, or if the tool ID space is exhausted.
-    pub fn load_pipeline(&mut self, path: &Path, cli: bool) -> anyhow::Result<()> {
+    pub async fn load_pipeline(&mut self, path: &Path, cli: bool) -> anyhow::Result<()> {
         let mut candidate = IndexMap::new();
         for entry in pipeline_io::load(path)? {
             let kind = entry.kind()?;
-            let mut tool = self.create(&kind);
+            let mut tool = self.create(&kind).await?;
             tool.load_persisted_state(entry.state, &entry.assets, cli)?;
             tool.get_state().validate()?;
             tool.cancel_interaction();

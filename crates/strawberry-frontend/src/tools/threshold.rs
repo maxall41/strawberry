@@ -28,6 +28,7 @@ pub struct ThresholdView {
 }
 
 impl Focusable for ThresholdView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
@@ -40,6 +41,7 @@ impl ThresholdView {
         (AutoThresholdMethod::Triangle, "Triangle"),
     ];
 
+    /// Create the threshold tool view and its initial controls.
     pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(ThresholdState::default())),
@@ -49,16 +51,19 @@ impl ThresholdView {
         }
     }
 
+    /// Start receiving backend state updates for this tool view.
     fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
+    /// Send the opposite enabled state to the backend.
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &ThresholdToggleActivity,
@@ -74,6 +79,7 @@ impl ThresholdView {
         self.toggle_enabled(current_enabled, window, cx);
     }
 
+    /// Send the updated threshold value to the backend.
     fn update_threshold_value(&self, threshold_value: f32) {
         let threshold_value = (threshold_value.clamp(0.0, 1.0) * f32::from(u8::MAX)).round();
         if let Some(value) = threshold_value.to_u8() {
@@ -81,6 +87,7 @@ impl ThresholdView {
         }
     }
 
+    /// Send a threshold settings message to this tool instance.
     fn send_threshold_message(&self, message: ThresholdMessage) {
         if let Err(e) = self
             .base
@@ -91,6 +98,7 @@ impl ThresholdView {
     }
 
     // Status component showing enabled/disabled state
+    /// Build the status for the threshold view.
     fn render_status(state: &ThresholdState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
@@ -107,6 +115,7 @@ impl ThresholdView {
         .render(cx)
     }
 
+    /// Build the mode control for the threshold view.
     fn render_mode_control(state: &ThresholdState, cx: &Context<Self>) -> impl IntoElement + use<> {
         tool_panel::segmented().children([(false, "Manual"), (true, "Automatic")].into_iter().map(
             |(automatic, label)| {
@@ -126,6 +135,7 @@ impl ThresholdView {
     }
 
     // Threshold value control component
+    /// Build the threshold control for the threshold view.
     fn render_threshold_control(
         &self,
         _cx: &mut Context<Self>,
@@ -137,6 +147,7 @@ impl ThresholdView {
         )
     }
 
+    /// Build the method control for the threshold view.
     fn render_method_control(
         &self,
         state: &ThresholdState,
@@ -205,6 +216,7 @@ impl ThresholdView {
     }
 
     // Preset button component
+    /// Build the preset button for the threshold view.
     fn render_preset_button(
         label: String,
         threshold_value: f32,
@@ -226,6 +238,7 @@ impl ThresholdView {
     }
 
     // Presets section component
+    /// Build the presets section for the threshold view.
     fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -257,6 +270,7 @@ impl ThresholdView {
     }
 
     // Controls section component
+    /// Build the controls section for the threshold view.
     fn render_controls_section(
         &self,
         state: &ThresholdState,
@@ -282,18 +296,22 @@ actions!([ThresholdToggleActivity]);
 impl FrontendMessageHandler for ThresholdView {
     type State = ThresholdState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &crate::tools::ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(tool_state: ToolState) -> Option<Self::State> {
         match tool_state {
             ToolState::ThresholdState(s) => Some(s),
@@ -301,6 +319,7 @@ impl FrontendMessageHandler for ThresholdView {
         }
     }
 
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, new_state: &ThresholdState, cx: &mut Context<Self>) {
         if let Some(ref ctrl) = self.threshold_control {
             ctrl.update(cx, |c, cx| {
@@ -312,6 +331,7 @@ impl FrontendMessageHandler for ThresholdView {
 }
 
 impl Render for ThresholdView {
+    /// Build the threshold view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
@@ -362,6 +382,7 @@ impl Render for ThresholdView {
 }
 
 impl ToolFrontend for ThresholdView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;

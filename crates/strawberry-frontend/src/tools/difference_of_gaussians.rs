@@ -30,12 +30,14 @@ pub struct DifferenceOfGaussiansView {
 actions!([DifferenceOfGaussiansToggleActivity]);
 
 impl Focusable for DifferenceOfGaussiansView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
 }
 
 impl DifferenceOfGaussiansView {
+    /// Create the difference of gaussians tool view and its initial controls.
     pub fn new(id: ToolId, sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(DifferenceOfGaussiansState::default())),
@@ -45,12 +47,14 @@ impl DifferenceOfGaussiansView {
         }
     }
 
+    /// Send a settings message to this tool’s backend instance.
     fn send(&self, message: PipelineObjectMessage) {
         if let Err(error) = self.base.send_to_backend(message) {
             eprintln!("Failed to update Difference of Gaussians: {error}");
         }
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &DifferenceOfGaussiansToggleActivity,
@@ -69,18 +73,22 @@ impl DifferenceOfGaussiansView {
 impl FrontendMessageHandler for DifferenceOfGaussiansView {
     type State = DifferenceOfGaussiansState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(state: ToolState) -> Option<Self::State> {
         match state {
             ToolState::DifferenceOfGaussiansState(state) => Some(state),
@@ -88,6 +96,7 @@ impl FrontendMessageHandler for DifferenceOfGaussiansView {
         }
     }
 
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, state: &Self::State, cx: &mut Context<Self>) {
         if let Some(control) = &self.small_sigma_control {
             control.update(cx, |control, cx| {
@@ -107,6 +116,7 @@ impl FrontendMessageHandler for DifferenceOfGaussiansView {
 }
 
 impl Render for DifferenceOfGaussiansView {
+    /// Build the difference of gaussians view and its interaction handlers.
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = self
             .state
@@ -149,6 +159,7 @@ impl Render for DifferenceOfGaussiansView {
 }
 
 impl ToolFrontend for DifferenceOfGaussiansView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;

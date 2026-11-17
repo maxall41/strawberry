@@ -25,12 +25,14 @@ pub struct GaussianBlurView {
 }
 
 impl Focusable for GaussianBlurView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
 }
 
 impl GaussianBlurView {
+    /// Create the gaussian blur tool view and its initial controls.
     pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(GaussianBlurState::default())),
@@ -39,16 +41,19 @@ impl GaussianBlurView {
         }
     }
 
+    /// Start receiving backend state updates for this tool view.
     fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
+    /// Send the opposite enabled state to the backend.
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
+    /// Send the updated sigma to the backend.
     fn update_sigma(&self, sigma: f32) {
         if let Err(e) = self
             .base
@@ -60,6 +65,7 @@ impl GaussianBlurView {
         }
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &GaussianBlurToggleActivity,
@@ -76,6 +82,7 @@ impl GaussianBlurView {
     }
 
     // Status component showing enabled/disabled state
+    /// Build the status for the gaussian blur view.
     fn render_status(state: &GaussianBlurState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
@@ -93,6 +100,7 @@ impl GaussianBlurView {
     }
 
     // Value control component for radius and sigma
+    /// Build the sigma control for the gaussian blur view.
     fn render_sigma_control(
         &self,
         _cx: &mut Context<Self>,
@@ -104,6 +112,7 @@ impl GaussianBlurView {
         )
     }
 
+    /// Build the preset button for the gaussian blur view.
     fn render_preset_button(
         label: String,
         sigma: f32,
@@ -124,6 +133,7 @@ impl GaussianBlurView {
         ))
     }
 
+    /// Build the presets section for the gaussian blur view.
     fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -142,6 +152,7 @@ impl GaussianBlurView {
             )
     }
 
+    /// Build the controls section for the gaussian blur view.
     fn render_controls_section(
         &self,
         cx: &mut Context<Self>,
@@ -160,18 +171,22 @@ actions!([GaussianBlurToggleActivity]);
 impl FrontendMessageHandler for GaussianBlurView {
     type State = GaussianBlurState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &crate::tools::ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(tool_state: ToolState) -> Option<Self::State> {
         match tool_state {
             ToolState::GaussianBlurState(s) => Some(s),
@@ -179,6 +194,7 @@ impl FrontendMessageHandler for GaussianBlurView {
         }
     }
 
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, new_state: &GaussianBlurState, cx: &mut Context<Self>) {
         if let Some(ref ctrl) = self.sigma_control {
             ctrl.update(cx, |c, cx| {
@@ -190,6 +206,7 @@ impl FrontendMessageHandler for GaussianBlurView {
 }
 
 impl Render for GaussianBlurView {
+    /// Build the gaussian blur view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
@@ -238,6 +255,7 @@ impl Render for GaussianBlurView {
 }
 
 impl ToolFrontend for GaussianBlurView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;

@@ -7,6 +7,7 @@ pub struct TooltipView {
 }
 
 impl Render for TooltipView {
+    /// Build the tooltip view and its interaction handlers.
     fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .px_2()

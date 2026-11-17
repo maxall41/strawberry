@@ -67,12 +67,14 @@ struct PipelineActivity {
 }
 
 impl AssetSource for Assets {
+    /// Load an embedded application asset by its path.
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
         fs::read(self.base.join(path))
             .map(|data| Some(std::borrow::Cow::Owned(data)))
             .map_err(std::convert::Into::into)
     }
 
+    /// List embedded application assets matching the path.
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         fs::read_dir(self.base.join(path))
             .map(|entries| {
@@ -120,10 +122,12 @@ struct PrimaryViewer {
 }
 
 impl PrimaryViewer {
+    /// Return the available image canvas dimensions.
     fn canvas_size(&self, window: &Window) -> gpui::Size<Pixels> {
         self.layout.canvas_size(window.viewport_size())
     }
 
+    /// Toggle sidebar visibility and update the image viewport.
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
         self.layout.sidebar_visible = !self.layout.sidebar_visible;
         self.pressed_keys.clear();
@@ -131,6 +135,7 @@ impl PrimaryViewer {
         cx.notify();
     }
 
+    /// Fit the image within the current canvas.
     fn fit_image(&mut self, _: &ZoomFit, window: &mut Window, cx: &mut Context<Self>) {
         let viewport = self.canvas_size(window);
         let width = f32::from(Pixels::from(self.original_width));
@@ -143,6 +148,7 @@ impl PrimaryViewer {
         cx.notify();
     }
 
+    /// Build the toolbar for the main view.
     fn render_toolbar(&self) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -210,6 +216,7 @@ impl PrimaryViewer {
         clippy::too_many_lines,
         reason = "Keep viewer message polling and dispatch in one task"
     )]
+    /// Poll backend events and output frames to update the viewer.
     pub fn process_messages(&self, window: &Window, cx: &Context<Self>) {
         let mut receiver = self.command_receiver.resubscribe();
         let mut output_frames = self.output_frame_receiver.clone();
@@ -347,6 +354,7 @@ impl PrimaryViewer {
         .detach();
     }
 
+    /// Display a processed image and refresh its canvas overlays.
     fn show_output(&mut self, image: Arc<RgbaImage>, window: &mut Window, cx: &mut Context<Self>) {
         let img_data = Arc::new(RenderImage::new(vec![Frame::new(Arc::unwrap_or_clone(
             image,
@@ -383,6 +391,7 @@ impl PrimaryViewer {
         }
     }
 
+    /// Update busy indicators and progress from a pipeline event.
     fn pipeline_progress(
         &mut self,
         progress: &strawberry_types::PipelineProgress,
@@ -423,6 +432,7 @@ impl PrimaryViewer {
         .detach();
     }
 
+    /// Clear pipeline progress and busy indicators.
     fn pipeline_finished(&mut self, cx: &Context<Self>) {
         let Some(activity) = &mut self.activity else {
             return;
@@ -451,6 +461,7 @@ impl PrimaryViewer {
         .detach();
     }
 
+    /// Show a temporary notification at the requested feedback level.
     fn add_toast(&mut self, text: String, level: FeedbackLevel, cx: &mut Context<Self>) {
         println!("Toast added {text}");
         let modal = cx.new(|cx| {
@@ -464,6 +475,7 @@ impl PrimaryViewer {
         cx.notify();
     }
 
+    /// Prompt for input images and queue them for loading.
     fn handle_open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         let sender_p = self.command_sender.clone();
         let image_dir = self.image_directory.clone();
@@ -493,6 +505,7 @@ impl PrimaryViewer {
         .detach();
     }
 
+    /// Prompt for an output path and request the processed image be saved.
     fn handle_save_image(&mut self, _: &SaveImage, window: &mut Window, cx: &mut Context<Self>) {
         let sender_p = self.command_sender.clone();
 
@@ -526,6 +539,7 @@ impl PrimaryViewer {
         .detach();
     }
 
+    /// Increase image magnification around the canvas center.
     fn zoom_in(&mut self, window: &Window, cx: &mut Context<Self>) {
         let old_zoom = self.zoom_level;
         self.zoom_level *= 1.25;
@@ -533,6 +547,7 @@ impl PrimaryViewer {
         cx.notify();
     }
 
+    /// Decrease image magnification around the canvas center.
     fn zoom_out(&mut self, window: &Window, cx: &mut Context<Self>) {
         let old_zoom = self.zoom_level;
         self.zoom_level /= 1.25;
@@ -540,6 +555,7 @@ impl PrimaryViewer {
         cx.notify();
     }
 
+    /// Apply the new pan for center zoom while retaining the other settings.
     fn adjust_pan_for_center_zoom(&mut self, window: &Window, old_zoom: f32, new_zoom: f32) {
         let viewport = self.canvas_size(window);
         let center = Point::new(
@@ -549,6 +565,7 @@ impl PrimaryViewer {
         self.adjust_pan_around_point(center, old_zoom, new_zoom);
     }
 
+    /// Apply the new pan around point while retaining the other settings.
     fn adjust_pan_around_point(&mut self, center: Point<Pixels>, old_zoom: f32, new_zoom: f32) {
         let center_x = center.x;
         let center_y = center.y;
@@ -562,6 +579,7 @@ impl PrimaryViewer {
         self.pan_y = image_center_y.mul_add(-new_zoom, f32::from(center_y));
     }
 
+    /// Apply scroll input to image zoom or pan.
     fn on_scroll_wheel(
         &mut self,
         event: &ScrollWheelEvent,
@@ -589,14 +607,17 @@ impl PrimaryViewer {
         cx.notify();
     }
 
+    /// Handle the action that increases image magnification.
     fn handle_zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
         self.zoom_in(window, cx);
     }
 
+    /// Handle the action that decreases image magnification.
     fn handle_zoom_out(&mut self, _: &ZoomOut, window: &mut Window, cx: &mut Context<Self>) {
         self.zoom_out(window, cx);
     }
 
+    /// Move the image according to held navigation keys and elapsed time.
     fn apply_held_pan(&mut self, dt: f32, cx: &mut Context<Self>) {
         let mut dx: f32 = 0.0;
         let mut dy: f32 = 0.0;
@@ -623,6 +644,7 @@ impl PrimaryViewer {
         }
     }
 
+    /// Animate image panning while navigation keys remain held.
     fn start_pan_loop(&mut self, window: &Window, cx: &Context<Self>) {
         if self.pan_loop_running {
             return;
@@ -658,6 +680,7 @@ impl PrimaryViewer {
         .detach();
     }
 
+    /// Handle keyboard shortcuts and navigation key presses.
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Don't handle keys as panning when pallete is open.
         if self.palette.is_some() || !self.focus_handle.is_focused(window) {
@@ -673,6 +696,7 @@ impl PrimaryViewer {
         }
     }
 
+    /// Update interaction state when keyboard modifiers change.
     fn on_modifiers_changed(
         &mut self,
         event: &ModifiersChangedEvent,
@@ -684,6 +708,7 @@ impl PrimaryViewer {
         }
     }
 
+    /// Open or close the command palette.
     fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette.take().is_some() {
             self.focus_handle.focus(window, cx);
@@ -710,6 +735,7 @@ impl PrimaryViewer {
         cx.notify();
     }
 
+    /// Stop navigation for a released key.
     fn on_key_up(&mut self, event: &KeyUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
         let key = &event.keystroke.key;
         if matches!(key.as_str(), "w" | "a" | "s" | "d") {
@@ -718,6 +744,7 @@ impl PrimaryViewer {
     }
 
     // Helper method to convert screen coordinates to image coordinates
+    /// Convert a screen position to an in-bounds image pixel.
     fn screen_to_image_coords(&self, screen_x: f32, screen_y: f32) -> Option<(u64, u64)> {
         let coords = (*self
             .img_coords
@@ -746,6 +773,7 @@ impl PrimaryViewer {
     }
 
     // Render a single overlay element
+    /// Build the overlay element for the main view.
     fn render_overlay_element(
         &self,
         (index, element): (usize, &OverlayElement),
@@ -852,6 +880,7 @@ impl PrimaryViewer {
 }
 
 impl Focusable for PrimaryViewer {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
@@ -862,6 +891,7 @@ impl Render for PrimaryViewer {
         clippy::too_many_lines,
         reason = "Keep declarative GPUI layout and its event bindings together"
     )]
+    /// Build the main view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = self.canvas_size(window);
         if let Some(previous) = self.last_viewport_size {
@@ -1173,6 +1203,7 @@ impl Render for PrimaryViewer {
     }
 }
 
+/// Build a labeled toolbar button that dispatches an application action.
 fn workspace_button(
     id: &'static str,
     label: &'static str,
@@ -1185,6 +1216,7 @@ fn workspace_button(
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }
 
+/// Build an accessible toolbar icon button that dispatches an application action.
 fn workspace_icon_button(
     id: &'static str,
     icon: Icon,
@@ -1215,6 +1247,7 @@ fn humanize_tool_name(name: &str) -> String {
     clippy::too_many_lines,
     reason = "Keep declarative GPUI layout and its event bindings together"
 )]
+/// Initialize the application, backend, and primary viewer window.
 async fn main() -> Result<()> {
     env_logger::init();
 

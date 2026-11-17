@@ -12,6 +12,7 @@ pub struct WorkspaceLayout {
 }
 
 impl Default for WorkspaceLayout {
+    /// Create the default configuration for this component.
     fn default() -> Self {
         Self {
             sidebar_visible: true,
@@ -22,6 +23,7 @@ impl Default for WorkspaceLayout {
 }
 
 impl WorkspaceLayout {
+    /// Return the available image canvas dimensions.
     pub fn canvas_size(&self, viewport: Size<Pixels>) -> Size<Pixels> {
         let sidebar = if self.sidebar_visible {
             self.sidebar_width + SIDEBAR_GRIP_WIDTH
@@ -34,6 +36,7 @@ impl WorkspaceLayout {
         )
     }
 
+    /// Return the canvas origin within the workspace.
     pub fn canvas_position(position: Point<Pixels>) -> Point<Pixels> {
         point(position.x, px(f32::from(position.y) - TOOLBAR_HEIGHT))
     }

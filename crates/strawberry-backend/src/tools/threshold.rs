@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -8,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, threshold::GpuThreshold};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, PipelineObjectMessage, ThresholdMessage, ThresholdState,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, PipelineObjectMessage, ThresholdMessage, ThresholdState, ToolBackend,
+    ToolInput, ToolState,
 };
 
 pub struct Threshold {
@@ -23,14 +24,17 @@ pub struct Threshold {
 impl ToolBackend for Threshold {
     impl_tool_backend_basics!(Threshold);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::ThresholdState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Threshold
     }
 
+    /// Apply the configured thresholding method to each input layer.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             let result = if self.state.auto_threshold {
@@ -42,19 +46,12 @@ impl ToolBackend for Threshold {
                     .apply_threshold(image, self.state.threshold_value)
                     .await
             };
-            *image = match result {
-                Ok(img) => Arc::new(img),
-                Err(e) => {
-                    self.base
-                        .events
-                        .emit(FrontendMessage::error(format!("Threshold error: {e}")));
-                    return Err(e);
-                }
-            };
+            *image = Arc::new(result?);
         }
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::ThresholdMessage(threshold)) = message {
             match threshold {
@@ -75,18 +72,22 @@ impl ToolBackend for Threshold {
 }
 
 impl Threshold {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = ThresholdState {
             is_enabled: false,
             threshold_value: 128,
             ..ThresholdState::default()
         };
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            processor: GpuThreshold::new(gpu_image_processor),
-        }
+            processor: GpuThreshold::new(gpu_image_processor).await?,
+        })
     }
 }

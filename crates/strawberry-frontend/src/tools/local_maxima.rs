@@ -31,12 +31,14 @@ pub struct LocalMaximaView {
 }
 
 impl Focusable for LocalMaximaView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
 }
 
 impl LocalMaximaView {
+    /// Create the local maxima tool view and its initial controls.
     pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(LocalMaximaState::default())),
@@ -48,16 +50,19 @@ impl LocalMaximaView {
         }
     }
 
+    /// Start receiving backend state updates for this tool view.
     fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
+    /// Send the opposite enabled state to the backend.
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
+    /// Send the updated parameters to the backend.
     fn update_parameters(&self, min_distance: u32, threshold: ThresholdType, exclude_border: bool) {
         if let Err(e) = self
             .base
@@ -69,6 +74,7 @@ impl LocalMaximaView {
         }
     }
 
+    /// Apply the new min distance value while retaining the other settings.
     fn adjust_min_distance_value(&self, new_value: u32) {
         let current_state = self
             .state
@@ -80,6 +86,7 @@ impl LocalMaximaView {
         self.update_parameters(new_value, threshold, exclude_border);
     }
 
+    /// Apply the new threshold value while retaining the other settings.
     fn adjust_threshold_value(&self, new_value: f32) {
         let current_state = self
             .state
@@ -95,6 +102,7 @@ impl LocalMaximaView {
         self.update_parameters(min_distance, new_threshold, exclude_border);
     }
 
+    /// Toggle exclusion of local maxima near image borders.
     fn toggle_exclude_border(
         &self,
         current_value: bool,
@@ -115,6 +123,7 @@ impl LocalMaximaView {
         );
     }
 
+    /// Switch between relative and absolute threshold values.
     fn toggle_threshold_mode(&mut self, _window: &Window, _cx: &mut Context<Self>) {
         let current_state = match self.state.read() {
             Ok(state) => state.clone(),
@@ -142,6 +151,7 @@ impl LocalMaximaView {
         );
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &LocalMaximaToggleActivity,
@@ -158,6 +168,7 @@ impl LocalMaximaView {
     }
 
     // Status component showing enabled/disabled state
+    /// Build the status for the local maxima view.
     fn render_status(state: &LocalMaximaState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
@@ -175,6 +186,7 @@ impl LocalMaximaView {
     }
 
     // Min distance control component
+    /// Build the min distance control for the local maxima view.
     fn render_min_distance_control(
         &self,
         _cx: &mut Context<Self>,
@@ -187,6 +199,7 @@ impl LocalMaximaView {
     }
 
     // Threshold control component with mode toggle
+    /// Build the threshold control for the local maxima view.
     fn render_threshold_control(
         &self,
         cx: &Context<Self>,
@@ -237,6 +250,7 @@ impl LocalMaximaView {
     }
 
     // Exclude border toggle component
+    /// Build the exclude border control for the local maxima view.
     fn render_exclude_border_control(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let exclude_border = self
             .state
@@ -270,6 +284,7 @@ impl LocalMaximaView {
     }
 
     // Preset button component
+    /// Build the preset button for the local maxima view.
     fn render_preset_button(
         label: String,
         min_distance: u32,
@@ -293,6 +308,7 @@ impl LocalMaximaView {
     }
 
     // Presets section component
+    /// Build the presets section for the local maxima view.
     fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -336,6 +352,7 @@ impl LocalMaximaView {
     }
 
     // Controls section component
+    /// Build the controls section for the local maxima view.
     fn render_controls_section(
         &self,
         cx: &mut Context<Self>,
@@ -356,18 +373,22 @@ actions!([LocalMaximaToggleActivity]);
 impl FrontendMessageHandler for LocalMaximaView {
     type State = LocalMaximaState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &crate::tools::ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(tool_state: ToolState) -> Option<Self::State> {
         match tool_state {
             ToolState::LocalMaximaState(s) => Some(s),
@@ -375,6 +396,7 @@ impl FrontendMessageHandler for LocalMaximaView {
         }
     }
 
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, new_state: &LocalMaximaState, cx: &mut Context<Self>) {
         if let Some(ref ctrl) = self.min_distance_control {
             ctrl.update(cx, |c, cx| {
@@ -401,6 +423,7 @@ impl FrontendMessageHandler for LocalMaximaView {
 }
 
 impl Render for LocalMaximaView {
+    /// Build the local maxima view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
@@ -449,6 +472,7 @@ impl Render for LocalMaximaView {
 }
 
 impl ToolFrontend for LocalMaximaView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;

@@ -78,6 +78,7 @@ struct Stroke {
     points: Arc<Vec<(u32, u32)>>,
 }
 
+/// Calculate the RGBA byte count with overflow checks.
 fn image_bytes(width: u32, height: u32) -> Result<usize> {
     ensure!(
         width > 0 && height > 0,
@@ -92,6 +93,7 @@ fn image_bytes(width: u32, height: u32) -> Result<usize> {
 }
 
 impl Document {
+    /// Validate dataset class definitions and their identities.
     fn validate_classes(&self) -> Result<()> {
         ensure!(
             !self.classes.is_empty() && self.classes.len() <= MAX_CLASSES,
@@ -113,6 +115,7 @@ impl Document {
         Ok(())
     }
 
+    /// Validate dataset metadata and compatibility with an existing dataset.
     fn validate(&self, existing: Option<&Self>) -> Result<()> {
         ensure!(
             self.format == FORMAT,
@@ -214,6 +217,7 @@ impl Document {
 }
 
 impl Dataset {
+    /// Build the archive document describing classes, samples, and annotations.
     fn document(&self) -> Result<Document> {
         ensure!(
             self.classes.len() <= MAX_CLASSES,
@@ -297,6 +301,7 @@ impl Dataset {
         Ok(document)
     }
 
+    /// Write dataset metadata and sample images to an archive.
     pub(crate) fn save(&self, path: &Path) -> Result<()> {
         let document = self.document()?;
         document.validate(None)?;
@@ -333,6 +338,7 @@ impl Dataset {
         })
     }
 
+    /// Load and validate a dataset archive, optionally merging existing samples.
     pub(crate) fn load(path: &Path, existing: Option<&Self>) -> Result<Self> {
         let existing = existing.map(Self::document).transpose()?;
         existing
@@ -434,6 +440,7 @@ impl Dataset {
     }
 }
 
+/// Read and deserialize the dataset archive document.
 fn read_document(archive: &mut ZipArchive<File>) -> Result<Document> {
     let mut entry = archive
         .by_name(MANIFEST)
@@ -447,6 +454,7 @@ fn read_document(archive: &mut ZipArchive<File>) -> Result<Document> {
     serde_json::from_slice(&bytes).context("Invalid dataset metadata")
 }
 
+/// Reject archive entries that exceed the supported size limit.
 fn validate_entry<R: Read>(entry: &zip::read::ZipFile<'_, R>) -> Result<()> {
     ensure!(
         entry.compression() == CompressionMethod::Zstd,
@@ -459,6 +467,7 @@ fn validate_entry<R: Read>(entry: &zip::read::ZipFile<'_, R>) -> Result<()> {
     Ok(())
 }
 
+/// Read an archive entry and verify its declared length.
 fn read_exact_entry<R: Read>(entry: &mut zip::read::ZipFile<'_, R>) -> Result<Vec<u8>> {
     let size = usize::try_from(entry.size()).context("Dataset entry size overflow")?;
     let mut bytes = Vec::new();
@@ -486,6 +495,7 @@ struct LimitedWriter<W> {
 }
 
 impl<W: Write> Write for LimitedWriter<W> {
+    /// Write bytes while enforcing the configured output size limit.
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() > self.remaining {
             return Err(io::Error::other("Dataset metadata limit exceeded"));
@@ -498,6 +508,7 @@ impl<W: Write> Write for LimitedWriter<W> {
         Ok(written)
     }
 
+    /// Flush the wrapped output writer.
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
     }

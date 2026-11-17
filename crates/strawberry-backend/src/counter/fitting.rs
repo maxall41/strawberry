@@ -3,6 +3,7 @@ use strawberry_types::CountData;
 
 const EPSILON: f64 = 10.0;
 
+/// Simplify a path by removing points within the fixed distance tolerance.
 #[must_use]
 pub fn ramer_douglas_peucker(points: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     if points.len() <= 2 {
@@ -11,6 +12,7 @@ pub fn ramer_douglas_peucker(points: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     rdp_recursive(&points)
 }
 
+/// Recursively simplify path sections around their most distant points.
 fn rdp_recursive(points: &[(u64, u64)]) -> Vec<(u64, u64)> {
     let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
         return Vec::new();
@@ -45,6 +47,7 @@ fn rdp_recursive(points: &[(u64, u64)]) -> Vec<(u64, u64)> {
 }
 
 // Subtract in the integer domain first to retain small distances near u64::MAX.
+/// Return an exactly representable signed difference between coordinates.
 fn delta(a: u64, b: u64) -> Option<f64> {
     let distance = a.abs_diff(b);
     let magnitude = distance.to_f64()?;
@@ -56,6 +59,7 @@ fn delta(a: u64, b: u64) -> Option<f64> {
     Some(if a < b { -magnitude } else { magnitude })
 }
 
+/// Calculate distance from a point to a line when differences are representable.
 fn perpendicular_distance(point: (u64, u64), start: (u64, u64), end: (u64, u64)) -> Option<f64> {
     let dx = delta(end.0, start.0)?;
     let dy = delta(end.1, start.1)?;
@@ -67,6 +71,7 @@ fn perpendicular_distance(point: (u64, u64), start: (u64, u64), end: (u64, u64))
     Some(dx.mul_add(py, -(px * dy)).abs() / dx.hypot(dy))
 }
 
+/// Close a polygon path before simplifying its points.
 #[must_use]
 pub fn ramer_douglas_peucker_closed(mut points: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     if points.len() < 3 {
@@ -80,6 +85,7 @@ pub fn ramer_douglas_peucker_closed(mut points: Vec<(u64, u64)>) -> Vec<(u64, u6
     ramer_douglas_peucker(points)
 }
 
+/// Remove counts inside the polygon and return the remaining counts.
 #[must_use]
 pub fn find_counts_within_polygon(
     polygon: &[(u64, u64)],

@@ -25,44 +25,45 @@ struct RollingBallUniforms {
 }
 
 impl GpuRollingBall {
-    #[must_use]
-    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Result<Self> {
         let shader = gpu
-            .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Rolling Ball Shader"),
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
                     "shaders/rolling_ball.wgsl"
                 ))),
-            });
+            })
+            .await?;
 
-        let erosion_pipeline =
-            gpu.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Rolling Ball Erosion Pipeline"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("erosion_pass"),
-                    compilation_options: PipelineCompilationOptions::default(),
-                    cache: None,
-                });
+        let erosion_pipeline = gpu
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Rolling Ball Erosion Pipeline"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("erosion_pass"),
+                compilation_options: PipelineCompilationOptions::default(),
+                cache: None,
+            })
+            .await?;
 
-        let reconstruction_pipeline =
-            gpu.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Rolling Ball Reconstruction Pipeline"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("main"),
-                    compilation_options: PipelineCompilationOptions::default(),
-                    cache: None,
-                });
+        let reconstruction_pipeline = gpu
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Rolling Ball Reconstruction Pipeline"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                cache: None,
+            })
+            .await?;
 
-        Self {
+        Ok(Self {
             erosion_pipeline,
             reconstruction_pipeline,
             gpu,
-        }
+        })
     }
 
     /// Apply rolling ball background subtraction to an image.
@@ -98,6 +99,7 @@ impl GpuRollingBall {
         }
     }
 
+    /// Estimate and subtract rolling-ball background for a single image.
     async fn apply_rolling_ball_single(
         &self,
         image: &RgbaImage,
@@ -106,15 +108,18 @@ impl GpuRollingBall {
         let (width, height) = image.dimensions();
         let pixel_count = crate::pixel_count(width, height)?;
 
-        let input_buffer = self.gpu.create_input_buffer(image);
-        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
-        let eroded_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Rolling Ball Eroded Luminance Buffer"),
-            size: crate::buffer_size(pixel_count, 4)?,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
+        let input_buffer = self.gpu.create_input_buffer(image).await?;
+        let output_buffer = self.gpu.create_output_buffer(pixel_count).await?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count).await?;
+        let eroded_buffer = self
+            .gpu
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Rolling Ball Eroded Luminance Buffer"),
+                size: crate::buffer_size(pixel_count, 4)?,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            })
+            .await?;
 
         let uniforms = RollingBallUniforms {
             width,
@@ -123,84 +128,73 @@ impl GpuRollingBall {
             _padding: 0,
         };
 
-        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
+        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms).await?;
 
-        let erosion_bind_group_layout = self.erosion_pipeline.get_bind_group_layout(0);
+        let erosion_layout = self
+            .gpu
+            .get_bind_group_layout(&self.erosion_pipeline, 0)
+            .await?;
+        let erosion_entries = [
+            (0, &uniform_buffer),
+            (2, &input_buffer),
+            (3, &eroded_buffer),
+        ]
+        .map(|(binding, buffer)| wgpu::BindGroupEntry {
+            binding,
+            resource: buffer.as_entire_binding(),
+        });
         let erosion_bind_group = self
             .gpu
-            .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &erosion_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: input_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: eroded_buffer.as_entire_binding(),
-                    },
-                ],
                 label: Some("Rolling Ball Erosion Bind Group"),
-            });
+                layout: &erosion_layout,
+                entries: &erosion_entries,
+            })
+            .await?;
 
-        let reconstruction_bind_group_layout =
-            self.reconstruction_pipeline.get_bind_group_layout(0);
-        let reconstruction_bind_group =
-            self.gpu
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    layout: &reconstruction_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: uniform_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: output_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: input_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: eroded_buffer.as_entire_binding(),
-                        },
-                    ],
-                    label: Some("Rolling Ball Reconstruction Bind Group"),
-                });
+        let reconstruction_bind_group = self
+            .gpu
+            .create_buffer_bind_group(
+                &self.reconstruction_pipeline,
+                &[
+                    &uniform_buffer,
+                    &output_buffer,
+                    &input_buffer,
+                    &eroded_buffer,
+                ],
+                "Rolling Ball Reconstruction Bind Group",
+            )
+            .await?;
 
         let mut encoder = self
             .gpu
-            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Rolling Ball Encoder"),
-            });
+            })
+            .await?;
 
-        self.gpu.dispatch_compute_with_encoder(
-            &mut encoder,
-            &self.erosion_pipeline,
-            &erosion_bind_group,
-            width,
-            height,
-            "Rolling Ball Erosion Pass",
-        );
-        self.gpu.dispatch_compute_with_encoder(
-            &mut encoder,
-            &self.reconstruction_pipeline,
-            &reconstruction_bind_group,
-            width,
-            height,
-            "Rolling Ball Reconstruction Pass",
-        );
+        self.gpu
+            .dispatch_compute_with_encoder(
+                &mut encoder,
+                &self.erosion_pipeline,
+                &erosion_bind_group,
+                width,
+                height,
+                "Rolling Ball Erosion Pass",
+            )
+            .await?;
+        self.gpu
+            .dispatch_compute_with_encoder(
+                &mut encoder,
+                &self.reconstruction_pipeline,
+                &reconstruction_bind_group,
+                width,
+                height,
+                "Rolling Ball Reconstruction Pass",
+            )
+            .await?;
 
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        self.gpu.submit(encoder).await?;
         let result_image = self
             .gpu
             .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)
@@ -210,6 +204,7 @@ impl GpuRollingBall {
         Ok(result_image)
     }
 
+    /// Subtract rolling-ball background from overlapping tiles and merge their cores.
     async fn apply_rolling_ball_tiled(
         &self,
         image: &RgbaImage,

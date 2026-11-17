@@ -38,6 +38,7 @@ enum SigmaKind {
 }
 
 impl SigmaKind {
+    /// Return the stable element ID for this control kind.
     const fn id(self) -> &'static str {
         match self {
             Self::Gaussian => "segmentation-gaussian-sigma",
@@ -46,6 +47,7 @@ impl SigmaKind {
         }
     }
 
+    /// Return the sigma value and valid limits for this feature control.
     fn parameters(self, features: &FeatureConfig) -> (f32, f32, f32) {
         match self {
             Self::Gaussian => (features.gaussian_sigma, 0.1, 64.0),
@@ -79,6 +81,7 @@ enum FloatControlKind {
 }
 
 impl ControlKind {
+    /// Return the stable element ID for this control kind.
     const fn id(self) -> &'static str {
         match self {
             Self::BrushRadius => "segmentation-brush-radius",
@@ -105,6 +108,7 @@ struct Controls {
 }
 
 impl Controls {
+    /// Return the cached control slot for a floating-point setting.
     const fn float_slot(&mut self, kind: FloatControlKind) -> &mut Option<Entity<ValueControl>> {
         match kind {
             FloatControlKind::InputScale => &mut self.input_scale,
@@ -112,6 +116,7 @@ impl Controls {
         }
     }
 
+    /// Return the cached control slot for a sigma setting.
     const fn sigma_slot(&mut self, kind: SigmaKind) -> &mut Option<Entity<ValueControl>> {
         match kind {
             SigmaKind::Gaussian => &mut self.gaussian_sigma,
@@ -120,6 +125,7 @@ impl Controls {
         }
     }
 
+    /// Return the cached control slot for the requested setting.
     const fn slot(&mut self, kind: ControlKind) -> &mut Option<Entity<ValueControl>> {
         match kind {
             ControlKind::BrushRadius => &mut self.brush_radius,
@@ -155,14 +161,17 @@ pub struct AutomaticSegmentationView {
     output_class_focus: tool_panel::ListFocus<ClassId>,
 }
 impl Focusable for AutomaticSegmentationView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
 }
+/// Convert a segmentation class color to a GPUI color.
 fn class_color(class: &SegmentationClass) -> GpuiRgba {
     class.color.into()
 }
 
+/// Dim content and block editing interactions during dataset import.
 fn import_guard(content: gpui::Div, importing: bool) -> gpui::Div {
     content.when(importing, |el| {
         el.opacity(0.5)
@@ -173,6 +182,7 @@ fn import_guard(content: gpui::Div, importing: bool) -> gpui::Div {
     })
 }
 impl AutomaticSegmentationView {
+    /// Create the automatic segmentation tool view and its initial controls.
     pub fn new(id: ToolId, sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(AutomaticSegmentationState::default())),
@@ -194,6 +204,7 @@ impl AutomaticSegmentationView {
             output_class_focus: tool_panel::ListFocus::new(),
         }
     }
+    /// Send a settings message to this tool’s backend instance.
     fn send(&self, message: AutomaticSegmentationMessage) {
         if self.state.read().is_ok_and(|s| {
             s.dataset_operation
@@ -220,6 +231,7 @@ impl AutomaticSegmentationView {
             eprintln!("{error}");
         }
     }
+    /// Build a button that sends a segmentation settings message.
     fn button(
         id: impl Into<gpui::ElementId>,
         label: impl Into<gpui::SharedString>,
@@ -230,6 +242,7 @@ impl AutomaticSegmentationView {
             .label(label)
             .on_click(cx.listener(move |this, _, _, _| this.send(message.clone())))
     }
+    /// Build a button that opens a model or dataset file dialog.
     fn file_button(
         &self,
         id: &'static str,
@@ -246,6 +259,7 @@ impl AutomaticSegmentationView {
             .label(label)
             .on_click(cx.listener(move |this, _, window, cx| this.file(kind, save, window, cx)))
     }
+    /// Commit an edited class name or color to the backend.
     fn commit_class_edit(&mut self) {
         let Some((id, color, draft)) = &self.class_edit else {
             return;
@@ -268,6 +282,7 @@ impl AutomaticSegmentationView {
         self.send(message);
         self.class_edit = None;
     }
+    /// Build the inline editor for a class name or color.
     fn class_edit_field(&self, draft: &str, cx: &Context<Self>) -> gpui::Stateful<gpui::Div> {
         div()
             .id("class-editor")
@@ -359,6 +374,7 @@ impl AutomaticSegmentationView {
         clippy::too_many_lines,
         reason = "Keep declarative GPUI layout and its event bindings together"
     )]
+    /// Build the class list and class management controls.
     fn classes(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
         let class_ids = state.classes.keys().copied().collect::<Vec<_>>();
         self.class_focus.sync(&class_ids, cx);
@@ -651,6 +667,7 @@ impl AutomaticSegmentationView {
         clippy::too_many_lines,
         reason = "Keep declarative GPUI layout and its event bindings together"
     )]
+    /// Build the annotation list and its editing controls.
     fn annotations(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
         let stroke_ids = state
             .current_annotations()
@@ -825,6 +842,7 @@ impl AutomaticSegmentationView {
         clippy::too_many_lines,
         reason = "Keep declarative GPUI layout and its event bindings together"
     )]
+    /// Build the feature extraction settings section.
     fn feature_controls(
         &mut self,
         s: &AutomaticSegmentationState,
@@ -979,6 +997,7 @@ impl AutomaticSegmentationView {
             )
             .child(channels)
     }
+    /// Build dataset import, export, and training controls.
     fn dataset(&self, state: &AutomaticSegmentationState, cx: &Context<Self>) -> gpui::Div {
         let unavailable = state.busy || state.dataset_operation.is_some() || self.file_dialog_open;
         let mut status = div()
@@ -1044,6 +1063,7 @@ impl AutomaticSegmentationView {
         )
     }
 
+    /// Open the requested model or dataset file dialog.
     fn file(&mut self, kind: FileKind, save: bool, window: &Window, cx: &mut Context<Self>) {
         if self.file_dialog_open {
             return;
@@ -1143,6 +1163,7 @@ impl AutomaticSegmentationView {
         .detach();
     }
 
+    /// Build or reuse a floating-point segmentation control.
     fn float_control(
         &mut self,
         kind: FloatControlKind,
@@ -1198,6 +1219,7 @@ impl AutomaticSegmentationView {
         control
     }
 
+    /// Build or reuse a sigma control with valid parameter limits.
     fn sigma_control(
         &mut self,
         kind: SigmaKind,
@@ -1242,6 +1264,7 @@ impl AutomaticSegmentationView {
         control
     }
 
+    /// Build or reuse a whole-number segmentation control.
     fn integer_control(
         &mut self,
         kind: ControlKind,
@@ -1321,15 +1344,19 @@ impl AutomaticSegmentationView {
 }
 impl FrontendMessageHandler for AutomaticSegmentationView {
     type State = AutomaticSegmentationState;
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &super::ToolBase {
         &self.base
     }
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut super::ToolBase {
         &mut self.base
     }
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(state: ToolState) -> Option<Self::State> {
         if let ToolState::AutomaticSegmentationState(state) = state {
             Some(state)
@@ -1337,6 +1364,7 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
             None
         }
     }
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, state: &Self::State, cx: &mut Context<Self>) {
         if state
             .dataset_operation
@@ -1399,6 +1427,7 @@ impl FrontendMessageHandler for AutomaticSegmentationView {
     }
 }
 impl ToolFrontend for AutomaticSegmentationView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.base.connect() {
             spawn_message_processor(self, window, cx);
@@ -1410,6 +1439,7 @@ impl Render for AutomaticSegmentationView {
         clippy::too_many_lines,
         reason = "Keep declarative GPUI layout and its event bindings together"
     )]
+    /// Build the automatic segmentation view and its interaction handlers.
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let s = self
             .state

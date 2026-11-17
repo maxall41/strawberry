@@ -21,12 +21,14 @@ pub struct CompositorView {
 }
 
 impl Focusable for CompositorView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
 }
 
 impl CompositorView {
+    /// Create the compositor tool view and its initial controls.
     pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(CompositorState::default())),
@@ -34,10 +36,12 @@ impl CompositorView {
         }
     }
 
+    /// Start receiving backend state updates for this tool view.
     fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
+    /// Send a layer visibility change to the backend.
     fn toggle_layer(
         &self,
         current_value: bool,
@@ -59,12 +63,14 @@ impl CompositorView {
         }
     }
 
+    /// Send the opposite enabled state to the backend.
     fn toggle_enabled(&self, current_value: bool, _window: &mut Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &CompositorToggleActivity,
@@ -80,6 +86,7 @@ impl CompositorView {
         self.toggle_enabled(current_enabled, window, cx);
     }
 
+    /// Toggle a layer using its position in the current state.
     fn toggle_layer_by_index(
         &self,
         layer_index: usize,
@@ -96,6 +103,7 @@ impl CompositorView {
         }
     }
 
+    /// Handle the keyboard action to toggle layer 1.
     fn toggle_layer_1_action(
         &mut self,
         _: &CompositorToggleLayer1,
@@ -105,6 +113,7 @@ impl CompositorView {
         self.toggle_layer_by_index(0, window, cx);
     }
 
+    /// Handle the keyboard action to toggle layer 2.
     fn toggle_layer_2_action(
         &mut self,
         _: &CompositorToggleLayer2,
@@ -114,6 +123,7 @@ impl CompositorView {
         self.toggle_layer_by_index(1, window, cx);
     }
 
+    /// Handle the keyboard action to toggle layer 3.
     fn toggle_layer_3_action(
         &mut self,
         _: &CompositorToggleLayer3,
@@ -123,6 +133,7 @@ impl CompositorView {
         self.toggle_layer_by_index(2, window, cx);
     }
 
+    /// Handle the keyboard action to toggle layer 4.
     fn toggle_layer_4_action(
         &mut self,
         _: &CompositorToggleLayer4,
@@ -132,6 +143,7 @@ impl CompositorView {
         self.toggle_layer_by_index(3, window, cx);
     }
 
+    /// Handle the keyboard action to toggle layer 5.
     fn toggle_layer_5_action(
         &mut self,
         _: &CompositorToggleLayer5,
@@ -141,6 +153,7 @@ impl CompositorView {
         self.toggle_layer_by_index(4, window, cx);
     }
 
+    /// Handle the keyboard action to toggle layer 6.
     fn toggle_layer_6_action(
         &mut self,
         _: &CompositorToggleLayer6,
@@ -150,6 +163,7 @@ impl CompositorView {
         self.toggle_layer_by_index(5, window, cx);
     }
 
+    /// Handle the keyboard action to toggle layer 7.
     fn toggle_layer_7_action(
         &mut self,
         _: &CompositorToggleLayer7,
@@ -159,6 +173,7 @@ impl CompositorView {
         self.toggle_layer_by_index(6, window, cx);
     }
 
+    /// Handle the keyboard action to toggle layer 8.
     fn toggle_layer_8_action(
         &mut self,
         _: &CompositorToggleLayer8,
@@ -168,6 +183,7 @@ impl CompositorView {
         self.toggle_layer_by_index(7, window, cx);
     }
 
+    /// Handle the keyboard action to toggle layer 9.
     fn toggle_layer_9_action(
         &mut self,
         _: &CompositorToggleLayer9,
@@ -178,6 +194,7 @@ impl CompositorView {
     }
 
     // Status component showing enabled/disabled state
+    /// Build the status for the compositor view.
     fn render_status(state: &CompositorState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
@@ -195,6 +212,7 @@ impl CompositorView {
     }
 
     // Individual layer item component
+    /// Build the layer item for the compositor view.
     fn render_layer_item(
         index: usize,
         is_enabled: bool,
@@ -217,6 +235,7 @@ impl CompositorView {
     }
 
     // Layers section component
+    /// Build the layers section for the compositor view.
     fn render_layers_section(
         state: &CompositorState,
         cx: &Context<Self>,
@@ -260,18 +279,22 @@ actions!([
 impl FrontendMessageHandler for CompositorView {
     type State = CompositorState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &crate::tools::ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(tool_state: ToolState) -> Option<Self::State> {
         match tool_state {
             ToolState::CompositorState(s) => Some(s),
@@ -281,6 +304,7 @@ impl FrontendMessageHandler for CompositorView {
 }
 
 impl Render for CompositorView {
+    /// Build the compositor view and its interaction handlers.
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state,
@@ -337,6 +361,7 @@ impl Render for CompositorView {
 }
 
 impl ToolFrontend for CompositorView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;

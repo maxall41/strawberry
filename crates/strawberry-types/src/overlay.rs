@@ -74,11 +74,13 @@ pub struct OverlayCollection {
 }
 
 impl OverlayCollection {
+    /// Create an empty overlay collection.
     #[must_use]
     pub const fn new() -> Self {
         Self { overlays: vec![] }
     }
 
+    /// Replace this tool’s overlays and sort the collection by drawing priority.
     pub fn merge(&mut self, overlay: ToolOverlay) {
         // Remove existing overlay from same tool
         self.overlays.retain(|o| o.tool_id != overlay.tool_id);
@@ -87,6 +89,7 @@ impl OverlayCollection {
         self.overlays.sort_by_key(|o| o.z_order);
     }
 
+    /// Iterate over all overlay elements in drawing order.
     pub fn all_elements(&self) -> impl Iterator<Item = &OverlayElement> {
         self.overlays.iter().flat_map(|o| o.elements.iter())
     }

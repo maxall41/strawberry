@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -8,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, rolling_ball::GpuRollingBall};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, PipelineObjectMessage, RollingBallMessage, RollingBallState,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, PipelineObjectMessage, RollingBallMessage, RollingBallState, ToolBackend,
+    ToolInput, ToolState,
 };
 
 pub struct RollingBall {
@@ -23,33 +24,29 @@ pub struct RollingBall {
 impl ToolBackend for RollingBall {
     impl_tool_backend_basics!(RollingBall);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::RollingBallState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::RollingBall
     }
 
+    /// Subtract the configured rolling-ball background from each input layer.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self
-                .processor
-                .apply_rolling_ball(image, self.state.ball_radius)
-                .await
-            {
-                Ok(img) => Arc::new(img),
-                Err(e) => {
-                    self.base
-                        .events
-                        .emit(FrontendMessage::error(format!("Rolling Ball error: {e}")));
-                    return Err(e);
-                }
-            };
+            *image = Arc::new(
+                self.processor
+                    .apply_rolling_ball(image, self.state.ball_radius)
+                    .await?,
+            );
         }
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::RollingBallMessage(message)) = message {
             match message {
@@ -65,14 +62,18 @@ impl ToolBackend for RollingBall {
 }
 
 impl RollingBall {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = RollingBallState::default();
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            processor: GpuRollingBall::new(gpu_image_processor),
-        }
+            processor: GpuRollingBall::new(gpu_image_processor).await?,
+        })
     }
 }

@@ -29,6 +29,7 @@ pub struct MorphologyView {
 }
 
 impl Focusable for MorphologyView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
@@ -42,6 +43,7 @@ impl MorphologyView {
         (MorphologyOperation::Closing, "Closing"),
     ];
 
+    /// Create the morphology tool view and its initial controls.
     pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(MorphologyState::default())),
@@ -51,16 +53,19 @@ impl MorphologyView {
         }
     }
 
+    /// Start receiving backend state updates for this tool view.
     fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
+    /// Send the opposite enabled state to the backend.
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &Context<Self>) {
         if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
+    /// Send the updated operation and size to the backend.
     fn update_operation_and_size(
         &self,
         operation: MorphologyOperation,
@@ -86,6 +91,7 @@ impl MorphologyView {
         }
     }
 
+    /// Select a morphology operation while retaining the element size.
     fn set_operation(&self, operation: MorphologyOperation, window: &Window, cx: &Context<Self>) {
         let element_size = match self.state.read() {
             Ok(state) => state.element_size,
@@ -97,6 +103,7 @@ impl MorphologyView {
         self.update_operation_and_size(operation, element_size, window, cx);
     }
 
+    /// Apply the new element size value while retaining the other settings.
     fn adjust_element_size_value(&self, new_size: u32) {
         let current_state = self
             .state
@@ -124,6 +131,7 @@ impl MorphologyView {
         }
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &MorphologyToggleActivity,
@@ -140,6 +148,7 @@ impl MorphologyView {
     }
 
     // Status component showing enabled/disabled state
+    /// Build the status for the morphology view.
     fn render_status(state: &MorphologyState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
@@ -157,6 +166,7 @@ impl MorphologyView {
     }
 
     // Operation selection component
+    /// Build the operation control for the morphology view.
     fn render_operation_control(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let operation = self
             .state
@@ -225,6 +235,7 @@ impl MorphologyView {
             .child(choices)
     }
 
+    /// Build the operation button for the morphology view.
     fn render_operation_button(
         label: String,
         operation: MorphologyOperation,
@@ -249,6 +260,7 @@ impl MorphologyView {
     }
 
     // Element size control component
+    /// Build the element size control for the morphology view.
     fn render_element_size_control(
         &self,
         _cx: &Context<Self>,
@@ -261,6 +273,7 @@ impl MorphologyView {
     }
 
     // Preset button component
+    /// Build the preset button for the morphology view.
     fn render_preset_button(
         label: String,
         operation: MorphologyOperation,
@@ -282,6 +295,7 @@ impl MorphologyView {
     }
 
     // Presets section component
+    /// Build the presets section for the morphology view.
     fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -321,6 +335,7 @@ impl MorphologyView {
     }
 
     // Controls section component
+    /// Build the controls section for the morphology view.
     fn render_controls_section(
         &self,
         cx: &Context<Self>,
@@ -340,18 +355,22 @@ actions!([MorphologyToggleActivity]);
 impl FrontendMessageHandler for MorphologyView {
     type State = MorphologyState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &crate::tools::ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(tool_state: ToolState) -> Option<Self::State> {
         match tool_state {
             ToolState::MorphologyState(s) => Some(s),
@@ -359,6 +378,7 @@ impl FrontendMessageHandler for MorphologyView {
         }
     }
 
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, new_state: &MorphologyState, cx: &mut Context<Self>) {
         if let Some(ref ctrl) = self.element_size_control {
             ctrl.update(cx, |c, cx| {
@@ -375,6 +395,7 @@ impl FrontendMessageHandler for MorphologyView {
 }
 
 impl Render for MorphologyView {
+    /// Build the morphology view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
@@ -423,6 +444,7 @@ impl Render for MorphologyView {
 }
 
 impl ToolFrontend for MorphologyView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;
