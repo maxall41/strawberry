@@ -1305,6 +1305,11 @@ impl ToolBackend for AutomaticSegmentation {
     fn handle_input(&mut self, input: ToolInput) -> Result<()> {
         self.receive_commands(input)
     }
+    /// Discard rejected output and prediction overlays while preserving annotation input.
+    fn invalidate_cached_output(&mut self) {
+        self.cache.invalidate();
+        self.overlays_dirty |= self.inference_cache.take().is_some();
+    }
     /// Return and clear the pending overlay change flag.
     fn take_overlay_changes(&mut self) -> bool {
         std::mem::take(&mut self.overlays_dirty)

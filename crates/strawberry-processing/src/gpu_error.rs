@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fmt,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, OnceLock},
 };
 
 /// The GPU stage or error category that failed.
@@ -61,13 +61,8 @@ impl fmt::Display for GpuError {
 
 impl Error for GpuError {}
 
-struct DeviceLoss {
-    error: GpuError,
-    pending_notification: bool,
-}
-
 pub struct GpuErrors {
-    lost: Arc<Mutex<Option<DeviceLoss>>>,
+    lost: Arc<OnceLock<GpuError>>,
     receiver: flume::Receiver<GpuError>,
 }
 
@@ -75,7 +70,8 @@ impl GpuErrors {
     /// Install callbacks that collect uncaptured errors and remember device loss.
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         let (sender, receiver) = flume::unbounded();
-        let lost = Arc::new(Mutex::new(None));
+        let lost = Arc::new(OnceLock::new());
+        let loss_sender = sender.clone();
         device.on_uncaptured_error(Arc::new(move |error| {
             // An unbounded channel never waits for consumer capacity. During shutdown
             // the receiver may already be gone; the callback must not panic then.
@@ -83,33 +79,21 @@ impl GpuErrors {
         }));
         let device_lost = lost.clone();
         device.set_device_lost_callback(move |reason, message| {
-            let mut state = device_lost.lock().unwrap_or_else(PoisonError::into_inner);
-            if state.is_none() {
-                *state = Some(DeviceLoss {
-                    error: GpuError::new(
-                        GpuErrorKind::DeviceLost,
-                        "GPU device lost; restart Strawberry to use the GPU again",
-                        format!("{reason:?}: {message}"),
-                    ),
-                    pending_notification: true,
-                });
+            let error = GpuError::new(
+                GpuErrorKind::DeviceLost,
+                "GPU device lost; restart Strawberry to use the GPU again",
+                format!("{reason:?}: {message}"),
+            );
+            if device_lost.set(error.clone()).is_ok() {
+                let _ = loss_sender.send(error);
             }
         });
         Self { lost, receiver }
     }
 
-    /// Return any recorded device-loss error and consume its pending notification.
+    /// Return any recorded device-loss error without consuming the pipeline notification.
     pub(crate) fn check_device_availability(&self, operation: &str) -> anyhow::Result<()> {
-        let lost = {
-            let mut state = self.lost.lock().unwrap_or_else(PoisonError::into_inner);
-            state.as_mut().map(|loss| {
-                // This operation returns the failure to its caller; an idle device-loss
-                // notification would report the same failure again.
-                loss.pending_notification = false;
-                loss.error.clone()
-            })
-        };
-        if let Some(mut error) = lost {
+        if let Some(mut error) = self.lost.get().cloned() {
             error.operation = format!("{operation}: {}", error.operation);
             return Err(error.into());
         }
@@ -118,18 +102,6 @@ impl GpuErrors {
 
     /// Retrieve the next uncaptured error or unreported device-loss notification.
     pub(crate) fn next(&self) -> Option<GpuError> {
-        if let Ok(error) = self.receiver.try_recv() {
-            return Some(error);
-        }
-        let mut state = self.lost.lock().unwrap_or_else(PoisonError::into_inner);
-        let notification = state
-            .as_mut()
-            .filter(|loss| loss.pending_notification)
-            .map(|loss| {
-                loss.pending_notification = false;
-                loss.error.clone()
-            });
-        drop(state);
-        notification
+        self.receiver.try_recv().ok()
     }
 }
