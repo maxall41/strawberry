@@ -23,12 +23,14 @@ pub struct SobelView {
 }
 
 impl Focusable for SobelView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
 }
 
 impl SobelView {
+    /// Create the sobel tool view and its initial controls.
     pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(SobelState::default())),
@@ -37,16 +39,19 @@ impl SobelView {
         }
     }
 
+    /// Start receiving backend state updates for this tool view.
     fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
+    /// Send the opposite enabled state to the backend.
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &SobelToggleActivity,
@@ -62,6 +67,7 @@ impl SobelView {
         self.toggle_enabled(current_enabled, window, cx);
     }
 
+    /// Toggle thresholding of the Sobel output.
     fn toggle_threshold_enabled(&self, current_value: bool) {
         if let Err(e) = self
             .base
@@ -73,6 +79,7 @@ impl SobelView {
         }
     }
 
+    /// Send the updated threshold value to the backend.
     fn update_threshold_value(&self, threshold_value: f32) {
         if let Err(e) = self
             .base
@@ -84,11 +91,13 @@ impl SobelView {
         }
     }
 
+    /// Apply the new threshold while retaining the other settings.
     fn adjust_threshold(&self, new_threshold: f32) {
         let clamped_threshold = new_threshold.clamp(0.0, 1.0);
         self.update_threshold_value(clamped_threshold);
     }
 
+    /// Build the status for the sobel view.
     fn render_status(state: &SobelState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
@@ -105,6 +114,7 @@ impl SobelView {
         .render(cx)
     }
 
+    /// Build the threshold toggle for the sobel view.
     fn render_threshold_toggle(state: &SobelState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let threshold_enabled = state.use_threshold;
         ToggleButton::new(
@@ -120,6 +130,7 @@ impl SobelView {
         .render(cx)
     }
 
+    /// Build the threshold control for the sobel view.
     fn render_threshold_control(
         &self,
         state: &SobelState,
@@ -136,6 +147,7 @@ impl SobelView {
         }
     }
 
+    /// Build the preset button for the sobel view.
     fn render_preset_button(
         label: String,
         threshold_value: f32,
@@ -156,6 +168,7 @@ impl SobelView {
         ))
     }
 
+    /// Build the presets section for the sobel view.
     fn render_presets_section(state: &SobelState, cx: &Context<Self>) -> impl IntoElement + use<> {
         if state.use_threshold {
             div()
@@ -190,6 +203,7 @@ impl SobelView {
         }
     }
 
+    /// Build the controls section for the sobel view.
     fn render_controls_section(
         &self,
         state: &SobelState,
@@ -210,18 +224,22 @@ actions!([SobelToggleActivity]);
 impl FrontendMessageHandler for SobelView {
     type State = SobelState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &crate::tools::ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(tool_state: ToolState) -> Option<Self::State> {
         match tool_state {
             ToolState::SobelState(s) => Some(s),
@@ -229,6 +247,7 @@ impl FrontendMessageHandler for SobelView {
         }
     }
 
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, new_state: &SobelState, cx: &mut Context<Self>) {
         if let Some(ref ctrl) = self.threshold_control {
             ctrl.update(cx, |c, cx| {
@@ -240,6 +259,7 @@ impl FrontendMessageHandler for SobelView {
 }
 
 impl Render for SobelView {
+    /// Build the sobel view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
@@ -288,6 +308,7 @@ impl Render for SobelView {
 }
 
 impl ToolFrontend for SobelView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;

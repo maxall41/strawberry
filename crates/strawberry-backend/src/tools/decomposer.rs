@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -26,14 +27,17 @@ pub struct Decomposer {
 impl ToolBackend for Decomposer {
     impl_tool_backend_basics!(Decomposer);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::DecomposerState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Decomposer
     }
 
+    /// Decompose one image and composite the enabled channel layers.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         if input.len() > 1 {
             let error_msg = format!(
@@ -54,15 +58,7 @@ impl ToolBackend for Decomposer {
             anyhow::anyhow!(error_msg)
         })?;
 
-        let decomposed = match self.processor.apply_decomposition(first_image).await {
-            Ok(result) => result,
-            Err(e) => {
-                self.base
-                    .events
-                    .emit(FrontendMessage::error(format!("Decomposer error: {e}")));
-                return Err(e);
-            }
-        };
+        let decomposed = self.processor.apply_decomposition(first_image).await?;
 
         let images: Vec<image::RgbaImage> = decomposed
             .into_iter()
@@ -76,21 +72,14 @@ impl ToolBackend for Decomposer {
             })
             .collect();
 
-        let composited = match self.compositer.composite_images(&images).await {
-            Ok(image) => image,
-            Err(e) => {
-                self.base.events.emit(FrontendMessage::error(format!(
-                    "Decomposer compositor error: {e}"
-                )));
-                return Err(e);
-            }
-        };
+        let composited = self.compositer.composite_images(&images).await?;
 
         *input = vec![Arc::new(composited)];
 
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::DecomposerMessage(message)) = message {
             match message {
@@ -123,18 +112,22 @@ impl ToolBackend for Decomposer {
 }
 
 impl Decomposer {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = DecomposerState {
             is_enabled: false,
             enabled_layers: vec![true; 3],
         };
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            compositer: GpuCompositor::new(gpu_image_processor.clone()),
-            processor: GpuDecomposer::new(gpu_image_processor),
-        }
+            compositer: GpuCompositor::new(gpu_image_processor.clone()).await?,
+            processor: GpuDecomposer::new(gpu_image_processor).await?,
+        })
     }
 }

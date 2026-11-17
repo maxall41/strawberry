@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -8,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, sobel::GpuSobel};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, PipelineObjectMessage, SobelMessage, SobelState, ToolBackend,
-    ToolInput, ToolState,
+    BackendToolType, PipelineObjectMessage, SobelMessage, SobelState, ToolBackend, ToolInput,
+    ToolState,
 };
 
 pub struct Sobel {
@@ -23,14 +24,17 @@ pub struct Sobel {
 impl ToolBackend for Sobel {
     impl_tool_backend_basics!(Sobel);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::SobelState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Sobel
     }
 
+    /// Apply Sobel edge detection to each input layer.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         let threshold = if self.state.use_threshold {
             Some(self.state.threshold_value)
@@ -39,19 +43,12 @@ impl ToolBackend for Sobel {
         };
 
         for image in input {
-            *image = match self.processor.apply_sobel(image, threshold).await {
-                Ok(img) => Arc::new(img),
-                Err(e) => {
-                    self.base
-                        .events
-                        .emit(FrontendMessage::error(format!("Sobel error: {e}")));
-                    return Err(e);
-                }
-            };
+            *image = Arc::new(self.processor.apply_sobel(image, threshold).await?);
         }
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::SobelMessage(sobel)) = message {
             match sobel {
@@ -73,18 +70,22 @@ impl ToolBackend for Sobel {
 }
 
 impl Sobel {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = SobelState {
             is_enabled: false,
             threshold_value: 0.1,
             use_threshold: false,
         };
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            processor: GpuSobel::new(gpu_image_processor),
-        }
+            processor: GpuSobel::new(gpu_image_processor).await?,
+        })
     }
 }

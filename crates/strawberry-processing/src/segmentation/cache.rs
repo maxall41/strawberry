@@ -22,6 +22,7 @@ pub(super) struct CachedTile {
 }
 
 impl FeatureCache {
+    /// Create a temporary on-disk cache for tiles with the given feature count.
     pub fn new(feature_count: usize) -> Result<Self> {
         Ok(Self {
             file: tempfile::tempfile()?,
@@ -30,6 +31,7 @@ impl FeatureCache {
         })
     }
 
+    /// Write feature rows to disk and record their tile and labeled sample metadata.
     pub fn store(
         &mut self,
         image_index: usize,
@@ -49,6 +51,7 @@ impl FeatureCache {
         Ok(())
     }
 
+    /// Load an indexed feature tile from the temporary cache.
     pub fn load(&mut self, index: usize) -> Result<FeatureTile> {
         self.tiles
             .get(index)
@@ -56,10 +59,12 @@ impl FeatureCache {
             .load(&mut self.file, self.feature_count)
     }
 
+    /// Load the requested cached feature tiles in the supplied order.
     pub fn load_batch(&mut self, indices: &[usize]) -> Result<Vec<FeatureTile>> {
         indices.iter().map(|&index| self.load(index)).collect()
     }
 
+    /// Collect cache indices for all tiles belonging to an image.
     pub fn image_tiles(&self, image_index: usize) -> Vec<usize> {
         self.tiles
             .iter()
@@ -70,6 +75,7 @@ impl FeatureCache {
 }
 
 impl CachedTile {
+    /// Read cached feature values and rebuild the tile core rows.
     fn load(&self, file: &mut File, feature_count: usize) -> Result<FeatureTile> {
         let count = crate::pixel_count(self.tile.core_width, self.tile.core_height)?
             .checked_mul(feature_count)

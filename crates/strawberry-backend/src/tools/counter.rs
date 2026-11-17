@@ -31,31 +31,39 @@ pub struct Counter {
 
 #[async_trait]
 impl ToolBackend for Counter {
+    /// Return and clear queued frontend events.
     fn drain_events(&mut self) -> Vec<FrontendMessage> {
         self.events.drain()
     }
+    /// Expose mutable settings for pipeline persistence.
     fn persisted_state_mut(&mut self) -> Option<&mut dyn strawberry_types::PersistedState> {
         Some(&mut self.state)
     }
+    /// Cancel the active canvas interaction.
     fn cancel_interaction(&mut self) {
         self.overlays_dirty |= self.is_lasso_dragging && self.lasso_points.len() > 1;
         self.lasso_points.clear();
         self.is_lasso_dragging = false;
     }
+    /// Return and clear the pending overlay change flag.
     fn take_overlay_changes(&mut self) -> bool {
         std::mem::take(&mut self.overlays_dirty)
     }
+    /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
 
+    /// Update whether this tool participates in the pipeline.
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
     }
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::CounterState(self.state.clone())
     }
 
+    /// Detect connected components and update automatic counts when automatic mode is active.
     async fn process(
         &mut self,
         output_images: &mut Vec<Arc<image::RgbaImage>>,
@@ -88,6 +96,7 @@ impl ToolBackend for Counter {
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     #[expect(
         clippy::too_many_lines,
         reason = "Command dispatch as one function is cleaner"
@@ -398,12 +407,14 @@ impl ToolBackend for Counter {
         Ok(())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Counter
     }
 
     crate::impl_tool_cache!();
 
+    /// Build the canvas overlays for this tool.
     fn get_overlays(&self, id: strawberry_types::ToolId) -> Option<crate::overlay::ToolOverlay> {
         // Only the overlay is rounded to f32; stored count positions remain exact integers.
         if !self.state.is_enabled {
@@ -487,6 +498,7 @@ impl ToolBackend for Counter {
 }
 
 impl Counter {
+    /// Construct the tool with its initial settings and required resources.
     #[must_use]
     pub fn new(events: ToolEvents) -> Self {
         let state = CounterState {

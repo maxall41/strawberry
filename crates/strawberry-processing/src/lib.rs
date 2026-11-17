@@ -1,9 +1,16 @@
 // wgpu auto-trait checks exceed the default compiler recursion depth.
 #![recursion_limit = "256"]
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use anyhow::{Result, anyhow};
 use image::RgbaImage;
-use wgpu::{Trace, util::DeviceExt};
+
+pub(crate) mod gpu_error;
+use gpu_error::GpuErrors;
+
+pub use gpu_error::{GpuError, GpuErrorKind};
+use wgpu::Trace;
 
 pub mod colorspace;
 pub mod compositor;
@@ -22,10 +29,12 @@ pub mod tiling;
 pub mod watershed;
 
 pub struct GpuImageProcessor {
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
+    errors: GpuErrors,
 }
 
+/// Calculate the image pixel count with checked dimension conversion.
 pub(crate) fn pixel_count(width: u32, height: u32) -> Result<usize> {
     Ok(usize::try_from(
         u64::from(width)
@@ -34,6 +43,7 @@ pub(crate) fn pixel_count(width: u32, height: u32) -> Result<usize> {
     )?)
 }
 
+/// Calculate a GPU buffer size, rejecting multiplication overflow.
 pub(crate) fn buffer_size(pixel_count: usize, bytes_per_pixel: u64) -> Result<u64> {
     u64::try_from(pixel_count)?
         .checked_mul(bytes_per_pixel)
@@ -74,57 +84,271 @@ impl GpuImageProcessor {
             })
             .await
             .map_err(|e| anyhow!("Failed to create GPU device: {e}"))?;
+        let errors = GpuErrors::new(&device);
         println!(
             "GPU Device created max_storage_buffer_binding_size: {:?}",
             device.limits().max_storage_buffer_binding_size
         );
 
-        Ok(Self { device, queue })
+        Ok(Self {
+            device,
+            queue,
+            errors,
+        })
     }
 
-    // Helper methods for common GPU operations
+    /// Return the next unexpected callback failure for the backend to report.
     #[must_use]
-    pub fn create_input_buffer(&self, image: &RgbaImage) -> wgpu::Buffer {
-        self.device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Input Image Buffer"),
-                contents: bytemuck::cast_slice(image.as_raw()),
-                usage: wgpu::BufferUsages::STORAGE,
+    pub fn take_uncaptured_error(&self) -> Option<GpuError> {
+        self.errors.next()
+    }
+
+    /// Check whether the device can still accept work.
+    ///
+    /// # Errors
+    /// Returns the recorded device-loss error until the application restarts.
+    pub fn ensure_device_availability(&self, operation: &str) -> Result<()> {
+        self.errors.check_device_availability(operation)
+    }
+
+    // The closure is deliberately synchronous: wgpu 30 error scopes are thread-local
+    // and !Send. All guards are consumed before the first suspension point.
+    /// Run a synchronous GPU operation and collect scoped errors before returning its result.
+    pub(crate) async fn checked<T>(
+        &self,
+        operation: &str,
+        work: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        self.ensure_device_availability(operation)?;
+        let (result, pending) = {
+            let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+            let result = work();
+            (result, (internal.pop(), memory.pop(), validation.pop()))
+        };
+        let (internal, memory, validation) = futures::join!(pending.0, pending.1, pending.2);
+        self.ensure_device_availability(operation)?;
+        let failures: Vec<_> = [memory, internal, validation]
+            .into_iter()
+            .flatten()
+            .collect();
+        if let Some(first) = failures.first() {
+            let mut error = GpuError::from_wgpu(operation, first);
+            error.diagnostic = failures
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(error.into());
+        }
+        result
+    }
+
+    /// Create a shader module and report GPU validation or allocation failures.
+    pub(crate) async fn create_shader_module(
+        &self,
+        descriptor: wgpu::ShaderModuleDescriptor<'_>,
+    ) -> Result<wgpu::ShaderModule> {
+        let label = descriptor.label.unwrap_or("Create shader").to_owned();
+        self.checked(&label, || Ok(self.device.create_shader_module(descriptor)))
+            .await
+    }
+
+    /// Create a compute pipeline through the checked GPU error scopes.
+    pub(crate) async fn create_compute_pipeline(
+        &self,
+        descriptor: &wgpu::ComputePipelineDescriptor<'_>,
+    ) -> Result<wgpu::ComputePipeline> {
+        self.checked(
+            descriptor.label.unwrap_or("Create compute pipeline"),
+            || Ok(self.device.create_compute_pipeline(descriptor)),
+        )
+        .await
+    }
+
+    /// Create a bind group layout through the checked GPU error scopes.
+    pub(crate) async fn create_bind_group_layout(
+        &self,
+        descriptor: &wgpu::BindGroupLayoutDescriptor<'_>,
+    ) -> Result<wgpu::BindGroupLayout> {
+        self.checked(
+            descriptor.label.unwrap_or("Create bind group layout"),
+            || Ok(self.device.create_bind_group_layout(descriptor)),
+        )
+        .await
+    }
+
+    /// Create a pipeline layout through the checked GPU error scopes.
+    pub(crate) async fn create_pipeline_layout(
+        &self,
+        descriptor: &wgpu::PipelineLayoutDescriptor<'_>,
+    ) -> Result<wgpu::PipelineLayout> {
+        self.checked(descriptor.label.unwrap_or("Create pipeline layout"), || {
+            Ok(self.device.create_pipeline_layout(descriptor))
+        })
+        .await
+    }
+
+    /// Retrieve a compute pipeline binding layout while checking GPU errors.
+    pub(crate) async fn get_bind_group_layout(
+        &self,
+        pipeline: &wgpu::ComputePipeline,
+        index: u32,
+    ) -> Result<wgpu::BindGroupLayout> {
+        self.checked("Get compute bindings", || {
+            Ok(pipeline.get_bind_group_layout(index))
+        })
+        .await
+    }
+
+    /// Create a bind group through the checked GPU error scopes.
+    pub(crate) async fn create_bind_group(
+        &self,
+        descriptor: &wgpu::BindGroupDescriptor<'_>,
+    ) -> Result<wgpu::BindGroup> {
+        self.checked(descriptor.label.unwrap_or("Create bind group"), || {
+            Ok(self.device.create_bind_group(descriptor))
+        })
+        .await
+    }
+
+    // Convenience for consecutive buffer bindings starting at zero.
+    /// Bind entire buffers at consecutive binding indices starting at zero.
+    pub(crate) async fn create_buffer_bind_group(
+        &self,
+        pipeline: &wgpu::ComputePipeline,
+        buffers: &[&wgpu::Buffer],
+        label: &str,
+    ) -> Result<wgpu::BindGroup> {
+        let layout = self.get_bind_group_layout(pipeline, 0).await?;
+        let entries = buffers
+            .iter()
+            .enumerate()
+            .map(|(index, buffer)| {
+                Ok(wgpu::BindGroupEntry {
+                    binding: u32::try_from(index)?,
+                    resource: buffer.as_entire_binding(),
+                })
             })
+            .collect::<Result<Vec<_>>>()?;
+        self.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout: &layout,
+            entries: &entries,
+        })
+        .await
+    }
+
+    /// Allocate a GPU buffer through the checked error scopes.
+    pub(crate) async fn create_buffer(
+        &self,
+        descriptor: &wgpu::BufferDescriptor<'_>,
+    ) -> Result<wgpu::Buffer> {
+        self.checked(descriptor.label.unwrap_or("Create buffer"), || {
+            Ok(self.device.create_buffer(descriptor))
+        })
+        .await
+    }
+
+    /// Allocate and initialize a GPU buffer through the checked error scopes.
+    pub(crate) async fn create_buffer_init(
+        &self,
+        descriptor: &wgpu::util::BufferInitDescriptor<'_>,
+    ) -> Result<wgpu::Buffer> {
+        let contents = descriptor.contents;
+        let size = u64::try_from(contents.len())?
+            .checked_next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+            .ok_or_else(|| anyhow!("Initialized GPU buffer size overflow"))?;
+        let buffer = self
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: descriptor.label,
+                size,
+                usage: descriptor.usage,
+                mapped_at_creation: !contents.is_empty(),
+            })
+            .await?;
+        if !contents.is_empty() {
+            let operation = descriptor.label.unwrap_or("Initialize buffer");
+            self.checked(operation, || {
+                buffer
+                    .get_mapped_range_mut(..)
+                    .map_err(|error| {
+                        GpuError::new(GpuErrorKind::Internal, operation, error.to_string())
+                    })?
+                    .slice(..contents.len())
+                    .copy_from_slice(contents);
+                buffer.unmap();
+                Ok(())
+            })
+            .await?;
+        }
+        Ok(buffer)
     }
 
     /// # Errors
-    /// Returns an error if the buffer byte count overflows.
-    pub fn create_output_buffer(&self, pixel_count: usize) -> Result<wgpu::Buffer> {
-        Ok(self.device.create_buffer(&wgpu::BufferDescriptor {
+    /// Returns an error if the input buffer cannot be created.
+    pub async fn create_input_buffer(&self, image: &RgbaImage) -> Result<wgpu::Buffer> {
+        self.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Input Image Buffer"),
+            contents: bytemuck::cast_slice(image.as_raw()),
+            usage: wgpu::BufferUsages::STORAGE,
+        })
+        .await
+    }
+
+    /// # Errors
+    /// Returns an error if the size overflows or the output buffer cannot be created.
+    pub async fn create_output_buffer(&self, pixel_count: usize) -> Result<wgpu::Buffer> {
+        self.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Output Buffer"),
-            size: crate::buffer_size(pixel_count, 4)?, // 4 bytes per RGBA pixel
+            size: crate::buffer_size(pixel_count, 4)?,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
-        }))
+        })
+        .await
     }
 
     /// # Errors
-    /// Returns an error if the buffer byte count overflows.
-    pub fn create_staging_buffer(&self, pixel_count: usize) -> Result<wgpu::Buffer> {
-        Ok(self.device.create_buffer(&wgpu::BufferDescriptor {
+    /// Returns an error if the size overflows or the staging buffer cannot be created.
+    pub async fn create_staging_buffer(&self, pixel_count: usize) -> Result<wgpu::Buffer> {
+        self.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Staging Buffer"),
             size: crate::buffer_size(pixel_count, 4)?,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        }))
+        })
+        .await
     }
 
-    pub fn create_uniform_buffer<T: bytemuck::Pod>(&self, data: &T) -> wgpu::Buffer {
-        self.device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Uniform Buffer"),
-                contents: bytemuck::cast_slice(std::slice::from_ref(data)),
-                usage: wgpu::BufferUsages::UNIFORM,
-            })
+    /// # Errors
+    /// Returns an error if the uniform buffer cannot be created.
+    pub async fn create_uniform_buffer<T: bytemuck::Pod + Sync>(
+        &self,
+        data: &T,
+    ) -> Result<wgpu::Buffer> {
+        self.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Uniform Buffer"),
+            contents: bytemuck::cast_slice(std::slice::from_ref(data)),
+            usage: wgpu::BufferUsages::UNIFORM,
+        })
+        .await
     }
 
-    pub fn dispatch_compute_with_encoder(
+    /// Create a command encoder through the checked GPU error scopes.
+    pub(crate) async fn create_command_encoder(
+        &self,
+        descriptor: &wgpu::CommandEncoderDescriptor<'_>,
+    ) -> Result<wgpu::CommandEncoder> {
+        self.checked(descriptor.label.unwrap_or("Create command encoder"), || {
+            Ok(self.device.create_command_encoder(descriptor))
+        })
+        .await
+    }
+
+    /// # Errors
+    /// Returns an error if the compute pass cannot be encoded.
+    pub async fn dispatch_compute_with_encoder(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         pipeline: &wgpu::ComputePipeline,
@@ -132,24 +356,141 @@ impl GpuImageProcessor {
         width: u32,
         height: u32,
         pass_label: &str,
-    ) {
-        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some(pass_label),
-            timestamp_writes: None,
-        });
+    ) -> Result<()> {
+        self.checked(pass_label, || {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(pass_label),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
+            Ok(())
+        })
+        .await
+    }
 
-        compute_pass.set_pipeline(pipeline);
-        compute_pass.set_bind_group(0, bind_group, &[]);
+    /// Finish and submit encoded GPU commands while checking submission errors.
+    pub(crate) async fn submit(&self, encoder: wgpu::CommandEncoder) -> Result<()> {
+        self.checked("Submit GPU commands", || {
+            self.queue.submit([encoder.finish()]);
+            Ok(())
+        })
+        .await
+    }
 
-        // Dispatch with 8x8 work groups (matching the shader workgroup size)
-        let workgroup_size = 8;
-        let dispatch_x = width.div_ceil(workgroup_size);
-        let dispatch_y = height.div_ceil(workgroup_size);
-        compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+    /// Encode a checked copy between the beginnings of two GPU buffers.
+    pub(crate) async fn copy_buffer(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::Buffer,
+        destination: &wgpu::Buffer,
+        size: u64,
+    ) -> Result<()> {
+        self.checked("Copy GPU buffer", || {
+            encoder.copy_buffer_to_buffer(source, 0, destination, 0, size);
+            Ok(())
+        })
+        .await
+    }
+
+    /// Wait for GPU work to complete and report polling or device errors.
+    async fn poll(&self) -> Result<()> {
+        let operation = "Wait for GPU completion";
+        self.checked(operation, || {
+            // wgpu's native backend panics on fatal fence errors. The checked
+            // operation gives the device-loss callback diagnostic precedence.
+            catch_unwind(AssertUnwindSafe(|| {
+                self.device.poll(wgpu::PollType::wait_indefinitely())
+            }))
+            .map_err(|panic| {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("GPU backend panicked during polling");
+                GpuError::new(GpuErrorKind::Polling, operation, message)
+            })?
+            .map_err(|error| GpuError::new(GpuErrorKind::Polling, operation, error.to_string()))?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Map a staging buffer, copy its typed values, and unmap it on completion or cancellation.
+    pub(crate) async fn read_mapped_buffer<T: bytemuck::Pod + Send>(
+        &self,
+        staging: &wgpu::Buffer,
+    ) -> Result<Vec<T>> {
+        let (_mapping, receiver) = self
+            .checked("Map GPU readback", || {
+                let mapping = UnmapOnDrop {
+                    device: &self.device,
+                    buffer: staging,
+                };
+                let (sender, receiver) = flume::bounded(1);
+                staging
+                    .slice(..)
+                    .map_async(wgpu::MapMode::Read, move |result| {
+                        let _ = sender.try_send(result);
+                    });
+                Ok((mapping, receiver))
+            })
+            .await?;
+        self.poll().await?;
+        receiver
+            .recv_async()
+            .await
+            .map_err(|error| {
+                GpuError::new(
+                    GpuErrorKind::Readback,
+                    "Receive GPU readback",
+                    error.to_string(),
+                )
+            })?
+            .map_err(|error| {
+                GpuError::new(
+                    GpuErrorKind::Readback,
+                    "Map GPU readback",
+                    error.to_string(),
+                )
+            })?;
+        self.checked("Read GPU buffer", || {
+            let data = staging.slice(..).get_mapped_range().map_err(|error| {
+                GpuError::new(GpuErrorKind::Readback, "Read GPU buffer", error.to_string())
+            })?;
+            let values = bytemuck::try_cast_slice(&data).map_err(|error| {
+                GpuError::new(
+                    GpuErrorKind::Readback,
+                    "Decode GPU readback",
+                    error.to_string(),
+                )
+            })?;
+            Ok(values.to_vec())
+        })
+        .await
+    }
+
+    /// Copy GPU output into a staging buffer and read its typed values.
+    pub(crate) async fn read_buffer<T: bytemuck::Pod + Send>(
+        &self,
+        output: &wgpu::Buffer,
+        staging: &wgpu::Buffer,
+        size: u64,
+    ) -> Result<Vec<T>> {
+        let mut encoder = self
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Buffer Copy Encoder"),
+            })
+            .await?;
+        self.copy_buffer(&mut encoder, output, staging, size)
+            .await?;
+        self.submit(encoder).await?;
+        self.read_mapped_buffer(staging).await
     }
 
     /// # Errors
-    /// Returns an error if image sizes overflow, tile data is invalid, or GPU readback fails.
+    /// Returns an error if image sizes overflow, image data is invalid, or GPU readback fails.
     pub async fn read_buffer_to_image(
         &self,
         output_buffer: &wgpu::Buffer,
@@ -158,45 +499,33 @@ impl GpuImageProcessor {
         height: u32,
         pixel_count: usize,
     ) -> Result<RgbaImage> {
-        // Create encoder for copy operation
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Buffer Copy Encoder"),
-            });
+        let bytes = self
+            .read_buffer(
+                output_buffer,
+                staging_buffer,
+                crate::buffer_size(pixel_count, 4)?,
+            )
+            .await?;
+        RgbaImage::from_raw(width, height, bytes)
+            .ok_or_else(|| anyhow!("Failed to create image from GPU buffer data"))
+    }
+}
 
-        // Copy result to staging buffer
-        encoder.copy_buffer_to_buffer(
-            output_buffer,
-            0,
-            staging_buffer,
-            0,
-            crate::buffer_size(pixel_count, 4)?,
-        );
-
-        // Submit commands
-        self.queue.submit(std::iter::once(encoder.finish()));
-
-        // Read back results
-        let buffer_slice = staging_buffer.slice(..);
-        let (sender, receiver) = flume::unbounded();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-
-        self.device.poll(wgpu::PollType::wait_indefinitely())?;
-        let map_result = receiver
-            .recv_async()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {e}"))?;
-        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {e:?}"))?;
-
-        let data = buffer_slice.get_mapped_range()?;
-        let result_bytes: &[u8] = &data;
-
-        // Create result image from the GPU buffer data
-        RgbaImage::from_raw(width, height, result_bytes.to_vec())
-            .ok_or_else(|| anyhow::anyhow!("Failed to create image from GPU buffer data"))
+// Unmapping also cancels a pending mapping. This synchronous cleanup is required if
+// readback is cancelled or fails, and runs after every mapped view has been dropped.
+struct UnmapOnDrop<'a> {
+    device: &'a wgpu::Device,
+    buffer: &'a wgpu::Buffer,
+}
+impl Drop for UnmapOnDrop<'_> {
+    /// Unmap the readback buffer while suppressing secondary cleanup validation errors.
+    fn drop(&mut self) {
+        // A failed mapping is already idle, and unmap then produces a secondary
+        // validation error. Cancellation races with that completion, so cleanup
+        // captures and discards this secondary error; readback reports the cause.
+        let cleanup = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        self.buffer.unmap();
+        drop(cleanup);
     }
 }
 

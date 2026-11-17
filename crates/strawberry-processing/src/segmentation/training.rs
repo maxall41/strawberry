@@ -21,6 +21,7 @@ pub(super) struct TrainingData {
     feature_count: usize,
 }
 
+/// Validate selected training coordinates and group them by source image.
 fn index_selected(
     images: &[Cow<'_, image::RgbaImage>],
     selected: &HashMap<(usize, u32, u32), u8>,
@@ -39,6 +40,7 @@ fn index_selected(
     Ok(by_image)
 }
 
+/// Keep tiles containing labeled pixels, or all tiles when context caching is needed.
 fn training_tiles(
     mut tiles: Vec<TileInfo>,
     pixels: &[(u32, u32)],
@@ -71,6 +73,7 @@ fn training_tiles(
 }
 
 impl TrainingData {
+    /// Extract labeled feature rows and optionally cache complete tiles for context training.
     pub async fn extract(
         extractor: &FeatureExtractor,
         features: &FeatureConfig,
@@ -122,6 +125,7 @@ impl TrainingData {
         })
     }
 
+    /// Append features from first-stage class probabilities to the labeled training rows.
     pub async fn add_context(
         &mut self,
         first_stage_forest: &Forest,
@@ -184,6 +188,7 @@ impl TrainingData {
         Ok(())
     }
 
+    /// Train a random forest and return its out-of-bag classification error.
     pub fn fit(&self, parameters: &ForestConfig) -> Result<(Forest, f64)> {
         let rows = &self.rows;
         let labels = &self.labels;

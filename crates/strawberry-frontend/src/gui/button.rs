@@ -20,6 +20,7 @@ pub enum ButtonVariant {
 }
 
 impl ButtonVariant {
+    /// Return the normal, hovered, and selected backgrounds for this button variant.
     fn colors(self) -> (Rgba, Rgba, Rgba) {
         match self {
             Self::Secondary => (theme::CONTROL, theme::CONTROL_HOVER, theme::CONTROL_ACTIVE),
@@ -52,6 +53,7 @@ pub struct Button {
 }
 
 impl Button {
+    /// Create `Button` with its initial state and configuration.
     pub fn new(id: impl Into<ElementId>) -> Self {
         let id = id.into();
         Self {
@@ -80,37 +82,44 @@ impl Button {
         }
     }
 
+    /// Set the focus handle used for keyboard interaction.
     pub fn focus_handle(mut self, focus: &FocusHandle) -> Self {
         self.focus_handle = Some(focus.clone());
         self
     }
 
+    /// Set the text shown by the button.
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         let label = label.into();
         self.element = self.element.aria_label(label.clone()).child(label);
         self
     }
 
+    /// Set the visual button variant.
     pub const fn variant(mut self, variant: ButtonVariant) -> Self {
         self.variant = variant;
         self
     }
 
+    /// Set whether the button displays a selected state.
     pub const fn selected(mut self, selected: bool) -> Self {
         self.selected = Some(selected);
         self
     }
 
+    /// Set whether button interactions are disabled.
     pub const fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
+    /// Use compact button spacing.
     pub fn compact(mut self) -> Self {
         self.element = self.element.min_h(px(26.)).px_2().text_xs();
         self
     }
 
+    /// Use larger button spacing.
     pub fn large(mut self) -> Self {
         self.element = self.element.min_h(px(36.)).px_4().py_2();
         self
@@ -127,11 +136,13 @@ impl Button {
             .child(icon)
     }
 
+    /// Set the tooltip shown when hovering over the button.
     pub fn tooltip_text(mut self, text: impl Into<SharedString>) -> Self {
         self.tooltip_text = Some(text.into());
         self
     }
 
+    /// Attach a click handler to the button.
     pub fn on_click(
         mut self,
         listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -142,18 +153,21 @@ impl Button {
 }
 
 impl Styled for Button {
+    /// Return the wrapped element’s mutable style settings.
     fn style(&mut self) -> &mut StyleRefinement {
         self.element.style()
     }
 }
 
 impl ParentElement for Button {
+    /// Append child elements to the wrapped button.
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
         self.element.extend(elements);
     }
 }
 
 impl InteractiveElement for Button {
+    /// Return the wrapped element’s interaction handlers.
     fn interactivity(&mut self) -> &mut Interactivity {
         self.element.interactivity()
     }
@@ -162,6 +176,7 @@ impl InteractiveElement for Button {
 impl StatefulInteractiveElement for Button {}
 
 impl RenderOnce for Button {
+    /// Build the button view and its interaction handlers.
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus = if let Some(focus) = self.focus_handle {
             focus

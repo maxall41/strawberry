@@ -17,6 +17,7 @@ pub struct FeedbackModal {
 }
 
 impl FeedbackModal {
+    /// Create `FeedbackModal` with its initial state and configuration.
     pub const fn new(message: String, level: FeedbackLevel) -> Self {
         Self {
             message,
@@ -27,6 +28,7 @@ impl FeedbackModal {
         }
     }
 
+    /// Schedule this notification to close automatically.
     pub fn enable_auto_close(cx: &Context<Self>) {
         cx.spawn(async move |this, cx| {
             let total_duration = Duration::from_millis(3000);
@@ -68,6 +70,7 @@ impl FeedbackModal {
 }
 
 impl Render for FeedbackModal {
+    /// Build the feedback view and its interaction handlers.
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let bar_color = match self.level {
             FeedbackLevel::Success => theme::SUCCESS,

@@ -199,10 +199,12 @@ pub enum FrontendMessage {
 }
 
 impl FrontendMessage {
+    /// Create an error feedback message.
     pub fn error(message: impl Into<String>) -> Self {
         Self::UserFeedback(message.into(), FeedbackLevel::Error)
     }
 
+    /// Create a success feedback message.
     pub fn success(message: impl Into<String>) -> Self {
         Self::UserFeedback(message.into(), FeedbackLevel::Success)
     }

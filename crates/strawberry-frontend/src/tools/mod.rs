@@ -43,6 +43,7 @@ pub trait FrontendMessageHandler: Sized + 'static {
     fn on_state_changed(&mut self, _new_state: &Self::State, _cx: &mut Context<Self>) {}
 }
 
+/// Watch backend tool state and refresh the view when settings change.
 pub fn spawn_message_processor<V: FrontendMessageHandler>(
     view: &mut V,
     window: &Window,

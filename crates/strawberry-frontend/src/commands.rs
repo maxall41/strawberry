@@ -65,6 +65,7 @@ pub enum CommandHint {
 }
 
 impl CommandHint {
+    /// Set the text shown by the button.
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Shortcut(text) | Self::Category(text) => text,

@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -11,8 +12,8 @@ use strawberry_processing::{
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, MorphologyMessage, MorphologyState, PipelineObjectMessage,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, MorphologyMessage, MorphologyState, PipelineObjectMessage, ToolBackend,
+    ToolInput, ToolState,
 };
 
 pub struct Morphology {
@@ -26,33 +27,29 @@ pub struct Morphology {
 impl ToolBackend for Morphology {
     impl_tool_backend_basics!(Morphology);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::MorphologyState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Morphology
     }
 
+    /// Apply the selected morphological operation to each input layer.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self
-                .processor
-                .apply_morphology(image, self.state.operation, self.state.element_size)
-                .await
-            {
-                Ok(img) => Arc::new(img),
-                Err(e) => {
-                    self.base
-                        .events
-                        .emit(FrontendMessage::error(format!("Morphology error: {e}")));
-                    return Err(e);
-                }
-            };
+            *image = Arc::new(
+                self.processor
+                    .apply_morphology(image, self.state.operation, self.state.element_size)
+                    .await?,
+            );
         }
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::MorphologyMessage(message)) = message {
             match message {
@@ -71,18 +68,22 @@ impl ToolBackend for Morphology {
 }
 
 impl Morphology {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = MorphologyState {
             is_enabled: false,
             operation: MorphologyOperation::Dilation,
             element_size: 3,
         };
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            processor: GpuMorphology::new(gpu_image_processor),
-        }
+            processor: GpuMorphology::new(gpu_image_processor).await?,
+        })
     }
 }

@@ -22,32 +22,33 @@ pub struct GpuGrayscale {
 }
 
 impl GpuGrayscale {
-    #[must_use]
-    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Result<Self> {
         let shader = gpu
-            .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Grayscale Shader"),
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
                     "shaders/grayscale.wgsl"
                 ))),
-            });
+            })
+            .await?;
 
-        let compute_pipeline =
-            gpu.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Grayscale Pipeline"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("main"),
-                    compilation_options: PipelineCompilationOptions::default(),
-                    cache: None,
-                });
+        let compute_pipeline = gpu
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Grayscale Pipeline"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                cache: None,
+            })
+            .await?;
 
-        Self {
+        Ok(Self {
             compute_pipeline,
             gpu,
-        }
+        })
     }
 
     /// # Errors
@@ -65,58 +66,47 @@ impl GpuGrayscale {
         }
     }
 
+    /// Convert a single image to grayscale with the GPU pipeline.
     async fn apply_grayscale_single(&self, image: &RgbaImage) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
         let pixel_count = crate::pixel_count(width, height)?;
 
-        let input_buffer = self.gpu.create_input_buffer(image);
-        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
+        let input_buffer = self.gpu.create_input_buffer(image).await?;
+        let output_buffer = self.gpu.create_output_buffer(pixel_count).await?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count).await?;
 
         let uniforms = GrayscaleUniforms { width, height };
 
-        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
+        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms).await?;
 
-        let bind_group_layout = self.compute_pipeline.get_bind_group_layout(0);
         let bind_group = self
             .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: output_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: input_buffer.as_entire_binding(),
-                    },
-                ],
-                label: Some("Grayscale Bind Group"),
-            });
+            .create_buffer_bind_group(
+                &self.compute_pipeline,
+                &[&uniform_buffer, &output_buffer, &input_buffer],
+                "Grayscale Bind Group",
+            )
+            .await?;
 
         let mut encoder = self
             .gpu
-            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Grayscale Encoder"),
-            });
+            })
+            .await?;
 
-        self.gpu.dispatch_compute_with_encoder(
-            &mut encoder,
-            &self.compute_pipeline,
-            &bind_group,
-            width,
-            height,
-            "Grayscale Pass",
-        );
+        self.gpu
+            .dispatch_compute_with_encoder(
+                &mut encoder,
+                &self.compute_pipeline,
+                &bind_group,
+                width,
+                height,
+                "Grayscale Pass",
+            )
+            .await?;
 
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        self.gpu.submit(encoder).await?;
         let result_image = self
             .gpu
             .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)
@@ -126,6 +116,7 @@ impl GpuGrayscale {
         Ok(result_image)
     }
 
+    /// Convert overlapping image tiles to grayscale and merge their cores.
     async fn apply_grayscale_tiled(
         &self,
         image: &RgbaImage,

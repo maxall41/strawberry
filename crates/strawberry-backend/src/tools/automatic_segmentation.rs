@@ -61,6 +61,7 @@ struct PreparedDataset {
 }
 
 impl PreparedDataset {
+    /// Prepare imported samples, class mappings, and annotations before installation.
     fn new(
         mut state: AutomaticSegmentationState,
         mut samples: Vec<Sample>,
@@ -161,6 +162,7 @@ impl PreparedDataset {
     }
 }
 
+/// Collect classes and annotated samples into a dataset snapshot.
 fn dataset_snapshot(state: &AutomaticSegmentationState, samples: &[Sample]) -> Dataset {
     let classes = state.classes.without_annotations();
     let samples = samples
@@ -181,6 +183,7 @@ fn dataset_snapshot(state: &AutomaticSegmentationState, samples: &[Sample]) -> D
     Dataset { classes, samples }
 }
 
+/// Match model class identities to incoming classes by name.
 fn remap_model_classes(
     current: &SegmentationClasses,
     incoming: &SegmentationClasses,
@@ -213,6 +216,7 @@ struct ModelDocument {
 impl ModelDocument {
     const VERSION: u32 = 1;
 
+    /// Deserialize and validate a saved segmentation model document.
     fn load(bytes: &[u8]) -> Result<Self> {
         let document: Self = serde_json::from_slice(bytes)?;
         ensure!(
@@ -231,6 +235,7 @@ impl ModelDocument {
         Ok(document)
     }
 }
+/// Return whether a stroke passes the current visibility filters.
 fn annotation_visible(
     state: &AutomaticSegmentationState,
     kind: AnnotationKind,
@@ -246,6 +251,7 @@ fn annotation_visible(
         }
 }
 
+/// Return the annotation class color, using transparency for erasers.
 fn annotation_color(kind: AnnotationKind, classes: &SegmentationClasses) -> BgraColor {
     match kind {
         AnnotationKind::Paint(id) => classes
@@ -271,6 +277,7 @@ struct PredictionOverlay {
 }
 
 impl InferenceCache {
+    /// Check whether cached inference belongs to this layer, input, and model.
     fn matches(
         &self,
         layer: usize,
@@ -305,11 +312,12 @@ pub struct AutomaticSegmentation {
     overlays_dirty: bool,
 }
 impl AutomaticSegmentation {
-    #[must_use]
-    pub fn new(output: ToolEvents, gpu: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(output: ToolEvents, gpu: Arc<GpuImageProcessor>) -> Result<Self> {
         let state = AutomaticSegmentationState::default();
         let base = ToolBase::new(output);
-        Self {
+        Ok(Self {
             dataset_revision: 0,
             dataset_job: None,
             training_generation: 0,
@@ -317,7 +325,7 @@ impl AutomaticSegmentation {
             cache: ToolCache::new(&state),
             state,
             base,
-            extractor: Arc::new(FeatureExtractor::new(gpu)),
+            extractor: Arc::new(FeatureExtractor::new(gpu).await?),
             model: None,
             model_class_ids: Vec::new(),
             inference_cache: None,
@@ -328,14 +336,16 @@ impl AutomaticSegmentation {
             annotation_masks: AnnotationMask::default(),
             overlays_dirty: false,
             training_job: None,
-        }
+        })
     }
+    /// Return whether a dataset import is in progress.
     fn importing_dataset(&self) -> bool {
         self.state
             .dataset_operation
             .is_some_and(DatasetOperation::is_importing)
     }
 
+    /// Clear dataset status and invalidate any pending dataset operation.
     fn reset_dataset_status(&mut self) {
         self.dataset_revision = self.dataset_revision.wrapping_add(1);
         self.state.dataset_samples = 0;
@@ -345,6 +355,7 @@ impl AutomaticSegmentation {
         self.state.dataset_operation = None;
     }
 
+    /// Mark the dataset dirty and refresh its annotated sample count.
     fn dataset_edited(&mut self) {
         self.dataset_revision = self.dataset_revision.wrapping_add(1);
         self.state.dataset_dirty = true;
@@ -353,6 +364,7 @@ impl AutomaticSegmentation {
             .count();
     }
 
+    /// Start saving a validated dataset snapshot in a background worker.
     fn start_dataset_save(&mut self, path: PathBuf) -> Result<()> {
         ensure!(
             self.dataset_job.is_none(),
@@ -381,6 +393,7 @@ impl AutomaticSegmentation {
         Ok(())
     }
 
+    /// Start loading or merging a dataset in a background worker.
     fn start_dataset_import(&mut self, path: PathBuf, mode: DatasetImportMode) -> Result<()> {
         ensure!(
             self.dataset_job.is_none(),
@@ -432,6 +445,7 @@ impl AutomaticSegmentation {
         Ok(())
     }
 
+    /// Apply completed dataset work if its source revision is still current.
     fn finish_dataset_job(&mut self) {
         let Some(job) = self.dataset_job.as_ref() else {
             return;
@@ -508,16 +522,19 @@ impl AutomaticSegmentation {
         }
     }
 
+    /// Publish successful dataset operation feedback.
     fn dataset_feedback(&self, message: &str) {
         self.base.events.emit(FrontendMessage::success(message));
     }
 
+    /// Look up a segmentation class or report an unknown identity.
     fn class(&self, id: ClassId) -> Result<&SegmentationClass> {
         self.state
             .classes
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("Unknown class"))
     }
+    /// Install model classes and reset annotations and dataset state.
     fn install_classes(&mut self, classes: SegmentationClasses) -> Result<()> {
         let active = *classes
             .keys()
@@ -546,6 +563,7 @@ impl AutomaticSegmentation {
         self.reset_dataset_status();
         Ok(())
     }
+    /// Serialize the current model with its classes and class mapping.
     fn model_bytes(&self) -> Result<Vec<u8>> {
         let model = self
             .model
@@ -558,6 +576,7 @@ impl AutomaticSegmentation {
             model: Arc::clone(model),
         })?)
     }
+    /// Render prediction planes as class colors or the selected class mask.
     fn render_prediction(&self, planes: &[image::GrayImage]) -> Result<RgbaImage> {
         if self.state.output_mode == SegmentationOutputMode::ClassMask {
             let plane = self
@@ -577,6 +596,7 @@ impl AutomaticSegmentation {
             .collect::<Result<_>>()?;
         render_class_prediction(planes, &colors)
     }
+    /// Refresh cached prediction colors when overlay visibility changes.
     fn refresh_prediction_overlay(&mut self) {
         if !self.state.is_enabled || !self.state.training || !self.state.show_overlay {
             return;
@@ -626,6 +646,7 @@ impl AutomaticSegmentation {
             cached.overlay = Some(PredictionOverlay { colors, image });
         }
     }
+    /// Rebuild the visible annotation mask for the current sample.
     fn rebuild_mask(&mut self) {
         if let Some((index, sample)) = self
             .current
@@ -643,11 +664,13 @@ impl AutomaticSegmentation {
             self.annotation_masks.clear();
         }
     }
+    /// Mark overlays dirty and refresh the current sample and prediction overlay.
     fn changed(&mut self) {
         self.overlays_dirty = true;
         self.state.current_sample = self.current;
         self.refresh_prediction_overlay();
     }
+    /// Finish annotation editing and rebuild visible overlays.
     fn edited(&mut self) {
         // Training inputs can change while the last trained model remains usable.
         self.stroke = None;
@@ -655,6 +678,7 @@ impl AutomaticSegmentation {
         self.rebuild_mask();
         self.changed();
     }
+    /// Discard the trained model and invalidate pending training results.
     fn invalidate_model(&mut self) {
         self.training_generation = self.training_generation.wrapping_add(1);
         self.model = None;
@@ -665,6 +689,7 @@ impl AutomaticSegmentation {
         self.state.oob_error = None;
         self.state.model_revision = self.state.model_revision.wrapping_add(1);
     }
+    /// Return the current sample or create one from the current input.
     fn ensure_sample(&mut self) -> Option<usize> {
         if let Some(index) = self.current {
             return Some(index);
@@ -677,11 +702,14 @@ impl AutomaticSegmentation {
         self.current = Some(index);
         Some(index)
     }
+    /// Log a segmentation error and publish frontend feedback.
     fn error(&self, error: &anyhow::Error) {
+        eprintln!("Segmentation: {error:#}");
         self.base
             .events
-            .emit(FrontendMessage::error(format!("Segmentation: {error}")));
+            .emit(FrontendMessage::error(format!("Segmentation: {error:#}")));
     }
+    /// Start background model training from the current annotated samples.
     fn start_training(&mut self) -> Result<()> {
         ensure!(self.training_job.is_none(), "Training is already running");
         ensure!(!self.importing_dataset(), "A dataset import is running");
@@ -724,6 +752,7 @@ impl AutomaticSegmentation {
         });
         Ok(())
     }
+    /// Validate and apply a segmentation settings command.
     #[expect(
         clippy::too_many_lines,
         reason = "Keep exhaustive tool command dispatch in one match"
@@ -957,6 +986,7 @@ impl AutomaticSegmentation {
         self.changed();
         Ok(())
     }
+    /// Append an in-bounds brush point and paint its interpolated stroke.
     fn add_point(&mut self, x: u64, y: u64) {
         let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
             return;
@@ -986,6 +1016,7 @@ impl AutomaticSegmentation {
             );
         }
     }
+    /// Install a completed training result when its generation is still valid.
     fn finish_training(&mut self) {
         let result = self
             .training_job
@@ -1018,6 +1049,7 @@ impl AutomaticSegmentation {
         }
     }
 
+    /// Route segmentation commands and brush gestures to their handlers.
     fn receive_commands(&mut self, message: ToolInput) -> Result<()> {
         match message {
             ToolInput::Message(PipelineObjectMessage::AutomaticSegmentationMessage(message)) => {
@@ -1084,6 +1116,7 @@ impl AutomaticSegmentation {
 #[async_trait]
 impl ToolBackend for AutomaticSegmentation {
     crate::impl_tool_backend_basics!(AutomaticSegmentation);
+    /// Serialize the trained model as an optional pipeline asset.
     fn pipeline_assets(&self) -> Result<ToolAssets> {
         let mut assets = ToolAssets::new();
         if self.model.is_some() {
@@ -1091,6 +1124,7 @@ impl ToolBackend for AutomaticSegmentation {
         }
         Ok(assets)
     }
+    /// Load and validate persisted settings and the optional model asset.
     fn load_fields(
         &mut self,
         fields: serde_value::Value,
@@ -1189,12 +1223,15 @@ impl ToolBackend for AutomaticSegmentation {
         }
         Ok(())
     }
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::AutomaticSegmentation
     }
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::AutomaticSegmentationState(self.state.clone())
     }
+    /// Cache training input or render model predictions according to the current mode.
     async fn process(&mut self, images: &mut Vec<Arc<RgbaImage>>) -> Result<()> {
         self.state.total_layers = images.len();
         if self.state.selected_layer >= images.len() {
@@ -1264,18 +1301,27 @@ impl ToolBackend for AutomaticSegmentation {
 
         Ok(())
     }
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, input: ToolInput) -> Result<()> {
         self.receive_commands(input)
     }
+    /// Discard rejected output and prediction overlays while preserving annotation input.
+    fn invalidate_cached_output(&mut self) {
+        self.cache.invalidate();
+        self.overlays_dirty |= self.inference_cache.take().is_some();
+    }
+    /// Return and clear the pending overlay change flag.
     fn take_overlay_changes(&mut self) -> bool {
         std::mem::take(&mut self.overlays_dirty)
     }
+    /// Cancel the active canvas interaction.
     fn cancel_interaction(&mut self) {
         if self.stroke.take().is_some() {
             self.rebuild_mask();
             self.changed();
         }
     }
+    /// Collect completed background work and update tool state.
     fn poll_background(&mut self) -> Result<()> {
         // Disabling or leaving training mode cancels the transient stroke.
         if (!self.state.is_enabled || !self.state.training) && self.stroke.take().is_some() {
@@ -1286,6 +1332,7 @@ impl ToolBackend for AutomaticSegmentation {
         self.finish_dataset_job();
         Ok(())
     }
+    /// Build the canvas overlays for this tool.
     fn get_overlays(&self, id: strawberry_types::ToolId) -> Option<ToolOverlay> {
         if !self.state.is_enabled || !self.state.training {
             return None;

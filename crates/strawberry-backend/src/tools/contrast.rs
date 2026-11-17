@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -8,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, contrast::GpuContrast};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, ContrastMessage, ContrastState, FrontendMessage, PipelineObjectMessage,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, ContrastMessage, ContrastState, PipelineObjectMessage, ToolBackend, ToolInput,
+    ToolState,
 };
 
 pub struct Contrast {
@@ -23,33 +24,29 @@ pub struct Contrast {
 impl ToolBackend for Contrast {
     impl_tool_backend_basics!(Contrast);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::ContrastState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Contrast
     }
 
+    /// Apply the configured contrast adjustment to each input layer.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self
-                .processor
-                .apply_contrast(image, self.state.min, self.state.max)
-                .await
-            {
-                Ok(img) => Arc::new(img),
-                Err(e) => {
-                    self.base
-                        .events
-                        .emit(FrontendMessage::error(format!("Contrast error: {e}")));
-                    return Err(e);
-                }
-            };
+            *image = Arc::new(
+                self.processor
+                    .apply_contrast(image, self.state.min, self.state.max)
+                    .await?,
+            );
         }
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::ContrastMessage(message)) = message {
             match message {
@@ -69,18 +66,22 @@ impl ToolBackend for Contrast {
 }
 
 impl Contrast {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = ContrastState {
             is_enabled: false,
             min: 0.0,
             max: 1.0,
         };
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            processor: GpuContrast::new(gpu_image_processor),
-        }
+            processor: GpuContrast::new(gpu_image_processor).await?,
+        })
     }
 }

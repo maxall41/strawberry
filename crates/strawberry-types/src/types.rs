@@ -18,28 +18,6 @@ impl PendingProcessing {
     }
 }
 
-pub struct ReconcilliationTicket {
-    pub index: Option<usize>,
-}
-
-pub struct ValidReconcilliationTicket {
-    index: usize,
-}
-
-impl ReconcilliationTicket {
-    #[must_use]
-    pub fn validate(&self) -> Option<ValidReconcilliationTicket> {
-        self.index.map(|index| ValidReconcilliationTicket { index })
-    }
-}
-
-impl ValidReconcilliationTicket {
-    #[must_use]
-    pub const fn take(&self) -> usize {
-        self.index
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BackendToolType {
     AutomaticSegmentation,
@@ -61,6 +39,7 @@ pub enum BackendToolType {
 }
 
 impl fmt::Display for BackendToolType {
+    /// Format the tool kind using its variant name.
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{self:?}")
     }

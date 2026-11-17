@@ -30,26 +30,33 @@ pub struct NerveTracer {
 
 #[async_trait]
 impl ToolBackend for NerveTracer {
+    /// Return and clear queued frontend events.
     fn drain_events(&mut self) -> Vec<FrontendMessage> {
         self.events.drain()
     }
+    /// Cancel the active canvas interaction.
     fn cancel_interaction(&mut self) {
         self.state.first_point = None;
     }
+    /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool {
         self.state.is_enabled
     }
 
+    /// Expose mutable settings for pipeline persistence.
     fn persisted_state_mut(&mut self) -> Option<&mut dyn strawberry_types::PersistedState> {
         Some(&mut self.state)
     }
+    /// Update whether this tool participates in the pipeline.
     fn set_enabled(&mut self, enabled: bool) {
         self.state.is_enabled = enabled;
     }
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::NerveTracerState(self.state.clone())
     }
 
+    /// Cache the selected input layer for tracing and refresh the available layer count.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         self.state.total_images = input.len();
 
@@ -68,6 +75,7 @@ impl ToolBackend for NerveTracer {
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         match message {
             ToolInput::HandleClick(x, y) => {
@@ -160,10 +168,12 @@ impl ToolBackend for NerveTracer {
         Ok(())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::NerveTracer
     }
 
+    /// Reconcile settings and report whether processing is needed.
     fn reconcile_state(&mut self) -> bool {
         let (invalidate, process) = self.cache.sync.reconcile(&self.state);
         if invalidate {
@@ -172,24 +182,34 @@ impl ToolBackend for NerveTracer {
         process
     }
 
+    /// Record the settings acknowledged by processing.
     fn acknowledge_processed_state(&mut self) {
         self.cache.sync.acknowledge(&self.state);
     }
 
+    /// Return cached output when its processing settings still match.
     fn valid_cached_output(&self) -> Option<Vec<Arc<image::RgbaImage>>> {
         self.cache.valid_output(&self.state)
     }
 
+    /// Cache processed images together with their settings.
     fn set_cached_output(&mut self, output: Vec<Arc<image::RgbaImage>>) {
         self.cache.cached_output = Some(output);
         self.cache.cached_state = Some(self.state.clone());
     }
 
-    fn invalidate_cache(&mut self) {
+    /// Discard cached output while preserving input needed for interaction.
+    fn invalidate_cached_output(&mut self) {
         self.cache.invalidate();
+    }
+
+    /// Discard cached processing data.
+    fn invalidate_cache(&mut self) {
+        self.invalidate_cached_output();
         self.cached_input = None;
     }
 
+    /// Build the canvas overlays for this tool.
     fn get_overlays(&self, id: strawberry_types::ToolId) -> Option<crate::overlay::ToolOverlay> {
         // Only the overlay is rounded to f32; stored trace positions remain exact integers.
         if !self.state.is_enabled {
@@ -267,6 +287,7 @@ impl ToolBackend for NerveTracer {
 }
 
 impl NerveTracer {
+    /// Construct the tool with its initial settings and required resources.
     #[must_use]
     pub fn new(events: ToolEvents) -> Self {
         let state = NerveTracerState {
@@ -290,6 +311,7 @@ impl NerveTracer {
 mod tests {
     use super::*;
 
+    /// Verify trace overlays use pixel centers without modifying stored paths.
     #[test]
     fn trace_markers_and_segments_use_pixel_centers_without_changing_stored_paths()
     -> anyhow::Result<()> {

@@ -8,11 +8,13 @@ pub struct RgbColor {
 }
 
 impl RgbColor {
+    /// Create an RGB color from byte channel values.
     #[must_use]
     pub const fn new(red: u8, green: u8, blue: u8) -> Self {
         Self { red, green, blue }
     }
 
+    /// Add the given opacity to this RGB color.
     #[must_use]
     pub const fn with_alpha(self, alpha: u8) -> RgbaColor {
         RgbaColor {
@@ -23,11 +25,13 @@ impl RgbColor {
         }
     }
 
+    /// Pack the RGB channels into a hexadecimal color value.
     #[must_use]
     pub const fn hex(self) -> u32 {
         u32::from_be_bytes([0, self.red, self.green, self.blue])
     }
 
+    /// Read RGB channels from the low three bytes of a hexadecimal value.
     #[must_use]
     pub const fn from_hex(hex: u32) -> Self {
         let [_, red, green, blue] = hex.to_be_bytes();
@@ -46,6 +50,7 @@ pub struct RgbaColor {
 impl RgbaColor {
     pub const WHITE: Self = Self::new(255, 255, 255, 255);
 
+    /// Create an RGBA color from byte channel values.
     #[must_use]
     pub const fn new(red: u8, green: u8, blue: u8, alpha: u8) -> Self {
         Self {
@@ -56,6 +61,7 @@ impl RgbaColor {
         }
     }
 
+    /// Convert this color to the pipeline BGRA channel layout.
     #[must_use]
     pub const fn to_bgra(self) -> BgraColor {
         BgraColor {
@@ -91,12 +97,14 @@ impl BgraColor {
 }
 
 impl From<RgbColor> for gpui::Rgba {
+    /// Convert an RGB color to an opaque GPUI color.
     fn from(color: RgbColor) -> Self {
         color.with_alpha(255).into()
     }
 }
 
 impl From<RgbaColor> for gpui::Rgba {
+    /// Normalize RGBA byte channels into a GPUI color.
     fn from(color: RgbaColor) -> Self {
         Self {
             r: f32::from(color.red) / 255.0,

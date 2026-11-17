@@ -60,12 +60,14 @@ pub struct ValueControl {
 pub struct DragDummy {}
 
 impl Render for DragDummy {
+    /// Build the value control view
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
     }
 }
 
 impl ValueControl {
+    /// Create `ValueControl` with its initial state and configuration.
     pub fn new(text: String, value: f32, config: ValueControlConfig, cx: &App) -> Self {
         Self {
             kind: ValueKind::Decimal,
@@ -91,6 +93,7 @@ impl ValueControl {
         control
     }
 
+    /// Clamp and store an exact integer value and refresh its text.
     pub fn set_integer_value(&mut self, value: u32) {
         let (min, max) = self.integer_bounds();
         let value = value.clamp(min, max);
@@ -100,6 +103,7 @@ impl ValueControl {
         self.input_error = None;
     }
 
+    /// Return the inclusive whole-number limits for this control.
     fn integer_bounds(&self) -> (u32, u32) {
         (
             self.config.min.ceil().to_u32().unwrap_or_default(),
@@ -107,6 +111,7 @@ impl ValueControl {
         )
     }
 
+    /// Format the current value for display and editing.
     fn formatted_value(&self) -> String {
         match self.kind {
             ValueKind::Integer(value) => value.to_string(),
@@ -114,6 +119,7 @@ impl ValueControl {
         }
     }
 
+    /// Clamp and store a finite numeric value and refresh its text.
     pub fn set_value(&mut self, value: f32) {
         if !value.is_finite() {
             return;
@@ -127,6 +133,7 @@ impl ValueControl {
         self.input_error = None;
     }
 
+    /// Publish the current numeric value to control subscribers.
     fn emit_change(&self, cx: &mut Context<Self>) {
         cx.emit(ValueControlEvent {
             id: self.config.id.clone(),
@@ -135,6 +142,7 @@ impl ValueControl {
         });
     }
 
+    /// Return the exact integer value when this is an integer control.
     pub const fn integer_value(&self) -> Option<u32> {
         match self.kind {
             ValueKind::Integer(value) => Some(value),
@@ -142,6 +150,7 @@ impl ValueControl {
         }
     }
 
+    /// Step the value in the requested direction and publish the change.
     fn adjust(&mut self, direction: f32, cx: &mut Context<Self>) {
         if let ValueKind::Integer(value) = self.kind {
             let step = self.config.step.round().to_u32().unwrap_or(1).max(1);
@@ -157,6 +166,7 @@ impl ValueControl {
         cx.notify();
     }
 
+    /// Update the value from horizontal drag distance.
     fn drag_to(&mut self, delta: f32) {
         let range = f64::from(self.config.max) - f64::from(self.config.min);
         if matches!(self.kind, ValueKind::Integer(_)) {
@@ -179,6 +189,7 @@ impl ValueControl {
         }
     }
 
+    /// Connect the view’s subscriptions and event handlers.
     pub fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.on_focus(&self.focus_handle, window, |this, _window, cx| {
             if !this.last_focus {
@@ -207,6 +218,7 @@ impl ValueControl {
         .detach();
         self.initialized = true;
     }
+    /// Prepare the current value for selected text entry.
     fn begin_edit(&mut self) {
         if !self.last_focus && self.input_error.is_none() {
             self.text = self.formatted_value();
@@ -215,6 +227,7 @@ impl ValueControl {
         self.last_focus = true;
     }
 
+    /// Validate entered text and publish a changed value.
     fn commit_input(&mut self, cx: &mut Context<Self>) -> bool {
         let changed = match self.kind {
             ValueKind::Integer(previous) => {
@@ -252,6 +265,7 @@ impl ValueControl {
         }
         true
     }
+    /// Apply numeric editing keys to the value field.
     fn handle_keystroke(&mut self, event: &Keystroke, cx: &mut Context<Self>) {
         if event.modifiers.modified() {
             return;
@@ -293,6 +307,7 @@ impl ValueControl {
         self.highlight = false;
     }
 
+    /// Build a button that increments or decrements the value.
     fn step_button(id: String, direction: f32, cx: &Context<Self>) -> impl IntoElement + use<> {
         Button::new(ElementId::Name(SharedString::from(id)))
             .child(if direction > 0.0 {
@@ -314,6 +329,7 @@ impl ValueControl {
 }
 
 impl Focusable for ValueControl {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
@@ -324,6 +340,7 @@ impl Render for ValueControl {
         clippy::too_many_lines,
         reason = "Keep declarative GPUI layout and its event bindings together"
     )]
+    /// Build the value control view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.initialized {
             self.initialize(window, cx);

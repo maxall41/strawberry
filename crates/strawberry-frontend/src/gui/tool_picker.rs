@@ -29,12 +29,14 @@ pub struct ToolPicker {
 impl EventEmitter<ToolPickerEvent> for ToolPicker {}
 
 impl Focusable for ToolPicker {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
 impl ToolPicker {
+    /// Create `ToolPicker` with its initial state and configuration.
     pub fn new(tools: Vec<ToolChoice>, cx: &Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
@@ -43,12 +45,14 @@ impl ToolPicker {
         }
     }
 
+    /// Activate the selected picker entry.
     fn confirm(&self, index: usize, cx: &mut Context<Self>) {
         if let Some(tool) = self.tools.get(index) {
             cx.emit(ToolPickerEvent::Selected(tool.kind.clone()));
         }
     }
 
+    /// Handle keyboard shortcuts and navigation key presses.
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         match self.picker.handle_key(event, cx) {
             Some(PickerAction::Confirm(index)) => self.confirm(index, cx),
@@ -57,6 +61,7 @@ impl ToolPicker {
         }
     }
 
+    /// Build the row for the tool picker view.
     fn render_row(&self, row: usize, cx: &Context<Self>) -> gpui::AnyElement {
         let Some((index, element)) = self.picker.render_row(row) else {
             return div().into_any_element();
@@ -68,6 +73,7 @@ impl ToolPicker {
 }
 
 impl Render for ToolPicker {
+    /// Build the tool picker view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let max_height = px((f32::from(window.viewport_size().height) - 240.0).clamp(36.0, 420.0));
         let empty_message = "No matching tools";

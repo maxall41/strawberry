@@ -6,8 +6,10 @@ use strawberry_types::{
 
 pub trait SyncState: Clone + PartialEq {
     // Check if enabled
+    /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool;
     // Check if processing specific data mismatches. Does not include UI data in check.
+    /// Return whether settings affecting image processing differ.
     fn processing_differs(&self, other: &Self) -> bool {
         self != other
     }
@@ -17,6 +19,7 @@ macro_rules! processing_states {
     ($($state:ty),* $(,)?) => {
         $(
             impl SyncState for $state {
+                /// Return whether this tool is enabled.
                 fn is_enabled(&self) -> bool { self.is_enabled }
             }
         )*
@@ -38,25 +41,31 @@ processing_states!(
 );
 
 impl SyncState for CompositorState {
+    /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool {
         self.is_enabled
     }
+    /// Return whether settings affecting image processing differ.
     fn processing_differs(&self, other: &Self) -> bool {
         self.is_enabled != other.is_enabled || self.enabled_layers != other.enabled_layers
     }
 }
 impl SyncState for CounterState {
+    /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool {
         self.is_enabled
     }
+    /// Return whether settings affecting image processing differ.
     fn processing_differs(&self, other: &Self) -> bool {
         self.is_enabled != other.is_enabled || self.mode != other.mode
     }
 }
 impl SyncState for NerveTracerState {
+    /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool {
         self.is_enabled
     }
+    /// Return whether settings affecting image processing differ.
     fn processing_differs(&self, other: &Self) -> bool {
         self.is_enabled != other.is_enabled
             || self.selected_image_index != other.selected_image_index
@@ -69,6 +78,7 @@ pub struct ToolSync<TState> {
 }
 
 impl<TState: SyncState> ToolSync<TState> {
+    /// Initialize synchronization or caching from the supplied settings.
     #[must_use]
     pub fn new(state: &TState) -> Self {
         Self {
@@ -84,6 +94,7 @@ impl<TState: SyncState> ToolSync<TState> {
         (changed, process)
     }
 
+    /// Record the latest reconciled settings without changing cached images.
     pub fn acknowledge(&mut self, state: &TState) {
         if self.reconciled != *state {
             self.reconciled = state.clone();
@@ -98,6 +109,7 @@ pub struct ToolCache<TState> {
 }
 
 impl<TState: SyncState> ToolCache<TState> {
+    /// Initialize synchronization or caching from the supplied settings.
     #[must_use]
     pub fn new(state: &TState) -> Self {
         Self {
@@ -107,6 +119,7 @@ impl<TState: SyncState> ToolCache<TState> {
         }
     }
 
+    /// Invalidate stale cached output and report whether processing is needed.
     pub fn reconcile(&mut self, state: &TState) -> bool {
         let (invalidate, process) = self.sync.reconcile(state);
         if invalidate {
@@ -115,6 +128,7 @@ impl<TState: SyncState> ToolCache<TState> {
         process
     }
 
+    /// Return cached images when the processing settings still match.
     #[must_use]
     pub fn valid_output(&self, state: &TState) -> Option<Vec<std::sync::Arc<image::RgbaImage>>> {
         self.cached_state
@@ -123,6 +137,7 @@ impl<TState: SyncState> ToolCache<TState> {
             .and_then(|_| self.cached_output.clone())
     }
 
+    /// Clear cached output and its associated settings.
     pub fn invalidate(&mut self) {
         self.cached_output = None;
         self.cached_state = None;
@@ -130,9 +145,11 @@ impl<TState: SyncState> ToolCache<TState> {
 }
 
 impl SyncState for strawberry_types::AutomaticSegmentationState {
+    /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool {
         self.is_enabled
     }
+    /// Return whether settings affecting image processing differ.
     fn processing_differs(&self, other: &Self) -> bool {
         self.is_enabled != other.is_enabled
             || self.training != other.training

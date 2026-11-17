@@ -21,37 +21,79 @@ cargo test -p strawberry-processing tiling   # run a single test module
 
 ## Workspace layout
 
-Five crates with a strict dependency direction: `processing` ← `strawberry-types` ← `strawberry-backend` ← (`strawberry-frontend`, `strawberry-cli`).
+Five crates share the processing engine. Dependencies flow from the frontend and CLI through the backend to shared types and processing; crates also depend directly on lower layers where needed. `strawberry-frontend` is the default workspace member.
 
-- **`crates/processing`** — raw GPU compute kernels on wgpu (`GpuImageProcessor` wraps device+queue). Each operation is a `src/<op>.rs` paired with a WGSL shader in `src/shaders/<op>.wgsl`. No pipeline/tool logic here.
-- **`crates/strawberry-types`** — everything shared: `PipelineCommand`, `FrontendMessage`, per-tool message enums (`messages.rs`), `ToolState` (`state.rs`), overlay types (`overlay.rs`), and the `ToolBackend`/`ToolFrontend` traits (`traits.rs`).
-- **`crates/strawberry-backend`** — the `Pipeline` (`lib.rs`) plus one `ToolBackend` impl per tool in `src/tools/`. Also holds non-image tool logic: `counter/` (cell counting, XML count I/O) and `nervetracer/` (A* tracing).
-- **`crates/strawberry-frontend`** — GPUI app. `main.rs` owns the `PrimaryViewer` (image canvas, pan/zoom, overlays, toasts) and hosts the pipeline sidebar (`src/gui/sidebar.rs`); `src/tools/` has one `ToolFrontend` view per tool; `src/gui/` has shared widgets (button, value_control, feedback toasts, theme).
-- **`crates/strawberry-cli`** — batch runner; drives the same `Pipeline` via `PipelineCommand::CLILoadPipeline` (skips the discovery handshake), with regex file filtering and grouping modes.
+- **`crates/strawberry-processing`** — image algorithms and GPU infrastructure. `src/lib.rs` owns `GpuImageProcessor`, checked GPU operations, buffers, and readback; operation modules use WGSL in `src/shaders/` and shared tiling helpers. Also contains CPU nerve tracing and segmentation feature extraction, model training, and inference. Pipeline state and frontend controls live in other crates.
+- **`crates/strawberry-types`** — the shared protocol and state. `src/messages.rs` defines commands, replies, events, and output frames; `src/types.rs` defines tool kinds, instance IDs, pipeline summaries, and processing requests; `src/state.rs` defines tool settings, persistence, and validation. Backend/frontend traits and canvas overlays are in `src/traits.rs` and `src/overlay.rs`.
+- **`crates/strawberry-backend`** — owns the mutable `Pipeline` in `src/lib.rs`. `src/tools/manager.rs` creates and orders tool instances; other tool modules implement `ToolBackend`, using shared lifecycle code in `base.rs` and `cache.rs`. `src/segmentation/` coordinates annotations, datasets, predictions, and training; `src/counter/` and `src/nervetracer/` hold counting and trace I/O helpers. `src/utils/pipeline_io.rs` reads and writes pipeline archives.
+- **`crates/strawberry-frontend`** — the GPUI desktop app. `src/main.rs` hosts `PrimaryViewer`, image interaction, overlays, and feedback. `src/commands.rs` registers tools and palette actions; `src/tools/` contains tool views and state subscriptions. `src/gui/` contains the pipeline sidebar, workspace layout, pickers, and shared controls, icons, and theme.
+- **`crates/strawberry-cli`** — headless batch processing with file filtering and grouping. It drives the same backend with `LoadPipeline { cli: true, .. }`, `Load`, and `SaveOutput`, using command replies and output-frame generations to track completion.
 
-Both `image` and `gpui` are custom forks (github.com/maxall41): `image` has single-channel support, `gpui-m` is pinned to a specific rev. Don't bump these to upstream versions.
+Preserve the custom dependencies: `image` uses the `maxall41/image` single-channel-support branch, GPUI packages use a pinned revision of `maxall41/gpui-m`, and `smartcore` uses the `maxall41/smartcore` parallel branch. Do not replace these forks with upstream packages.
 
 ## Architecture
 
-**Message-passing everywhere; no shared state between frontend and backend.** The backend `Pipeline` runs in a tokio task polling `process_commands()` at ~30 FPS; the GPUI frontend polls its receiver on the same cadence. They exchange `PipelineCommand`s over tokio `broadcast` channels (frontend→backend commands, backend→frontend `Output`/`FrontendMessage`).
+**Ownership and communication:** the backend owns mutable tool state; frontend views maintain local snapshots. All frontend and CLI mutations enter one ordered tokio unbounded `mpsc` queue as `PipelineCommand`s. Commands requiring a result carry `oneshot` replies. `SubscribePipeline` and `SubscribeTool` return `watch` receivers for current pipeline and tool state; output images use a separate latest-only `watch` channel carrying `OutputFrame { load_generation, image }`. Transient feedback, progress, tool events, and overlays use a `broadcast` channel. The backend polls `process_commands()` about every 33 ms; tool views await watched state changes.
 
-**Tool discovery handshake:** a tool view sends `DiscoverBackend(BackendToolType, flume::Sender)`; the pipeline replies with `ReturnBackendTools(indices, senders)` giving the view direct per-tool flume channels. Views send `DisconnectFrontend` when released (handled by `CleanupGuard` in frontend `tools/mod.rs`). `ToolBase` (frontend `tools/base.rs`) holds this plumbing for every view. The sidebar connects to the Manager backend and renders its tool stack in pipeline order, including disabled tools. Stack membership is independent of enabled state. Tool controls initialize lazily when expanded and stay alive when collapsed or removed. `ManagerMessage::AddTool` enables and appends a tool; `RemoveTool` removes it from the stack and disables it while retaining its settings. Pipeline files retain all stack members, including disabled tools. Dragging a row sends `ReorderTool` with backend indices, which can differ from visible row numbers.
+**Tool instances and sidebar:** `ToolManager` stores an ordered `IndexMap<ToolId, ToolInstance>`. A `ToolId` identifies one instance, so multiple tools of the same `BackendToolType` can coexist. `AddTool` constructs, enables, appends, and selects an instance; `RemoveTool` destroys it. Disabling preserves its settings and stack position. `MoveTool { id, before }` reorders by identity, with `None` meaning the end. The sidebar renders all instances, including disabled ones, from watched `PipelineState`. Controls initialize when expanded, survive collapse, and are released when their instance disappears.
 
-**Pipeline processing:** tools run in `ToolManager` order over a `Vec<RgbaImage>`. Each tool caches its output; `process_from(index)` walks back to the earliest invalid cache and reprocesses from there, so state changes only rerun downstream tools. `Refresh` commands are deduplicated per poll (debouncing). Whenever more than one image remains at the end, the enabled user compositor is force-run; if it is disabled, a separate stateless compositor combines all remaining layers, ignoring the user tool's visibility settings.
+**Processing and reconciliation:** tools process a `Vec<Arc<RgbaImage>>` in manager order. At each processing boundary, `flush_processing` polls background jobs, reconciles enabled tool order, and reconciles tool settings. `PendingProcessing` coalesces requests at the earliest affected index; saving output first flushes pending work. `ToolCache` and `ToolSync` separate reusable output from the last reconciled settings, and `SyncState::processing_differs` determines which changes require image processing. Publishing state to a frontend does not acknowledge processing. `process_from` checks earlier caches, moves the start back if necessary, invalidates downstream caches, and caches each successful stage. If multiple layers remain at the end, a separate fallback compositor combines them; enabled user compositor instances run at their own stack positions.
 
-**Pixel format gotcha:** images are held in **BGRA** internally because GPUI renders BGRA. Single images get their R/B channels swapped on load (`PipelineCommand::Load` in backend `lib.rs`); `GpuColorspaceConverter` converts back to RGBA on save. Multi-image loads skip the swap because the decomposer/compositor path handles channels itself — mixing these up causes the classic red/blue swap bug.
+**GPU failures and cache lifetime:** GPU construction, submission, and readback use the checked helpers on `GpuImageProcessor` and return errors. Uncaptured GPU errors clear `output_is_current` and invalidate cached outputs before being reported or propagated. The viewer may retain the last successful frame, but saving requires current output. `invalidate_cached_output` must preserve CPU input needed for canvas interaction; `invalidate_cache` performs full invalidation when inputs or processing state change. Nerve tracing uses this distinction to keep clicks working after a GPU failure without reusing failed pipeline output.
 
-**Interaction routing:** the viewer converts screen→image pixel coords and broadcasts `HandleClick`/`InteractionStart`/`InteractionMove`/`InteractionEnd`; interactive tools (counter, nervetracer) register via `RegisterClickReceiver`. Tools draw on the viewer by returning `ToolOverlay`s (circles, points, polylines), fetched via `RequestOverlays` after every output frame.
+**Pixel format:** pipeline images contain **BGRA** bytes even though their Rust type is `RgbaImage`. `load_images` swaps red and blue for every loaded image, including multi-image loads. Processing and compositor/decomposer code must preserve that convention. `save_output` uses `GpuColorspaceConverter` to convert back to RGBA before writing a file.
 
-**Pipeline save/load:** tool states serialize to TOML as `ToolState` keyed by `BackendToolType` debug name; the CLI reuses this format.
+**Canvas interaction and overlays:** the viewer converts screen positions to image pixel coordinates and sends `HandleClick` and `InteractionStart`/`InteractionMove`/`InteractionEnd` commands. Clicks go to the selected enabled instance. Gestures capture their owning `ToolId` at the start; changing selection, disabling, or removing that instance cancels routing. Tools handle `ToolInput`, expose `ToolOverlay`s, and signal overlay changes through state publication or `take_overlay_changes`. The pipeline publishes merged overlays for enabled tools; the viewer also requests them after displaying a new frame.
+
+**Pipeline persistence:** `.sbp` files are versioned ZIP archives containing `pipeline.toml` and optional assets under `tools/<index>/<name>`. The TOML stores an ordered list of tagged `ToolState` entries, including disabled and repeated tool kinds. Runtime `ToolId`s are not persisted. Loading builds detached candidates, loads settings and assets, validates them, and replaces the live stack only after every entry succeeds. `#[serde(skip)]` marks runtime-only state; in-place deserialization preserves constructor values for those fields. The CLI loads the same archive format and uses `OutputFrame::load_generation` to match results to each image group.
 
 ## Adding a new processing tool
 
-Touch all of these, mirroring an existing simple tool (e.g. Sobel):
-1. `processing/src/<tool>.rs` + `processing/src/shaders/<tool>.wgsl` (GPU kernel).
-2. `strawberry-types`: message enum in `messages.rs`, a `PipelineObjectMessage` variant, a `BackendToolType` variant, state in `state.rs`.
-3. `strawberry-backend/src/tools/<tool>.rs` implementing `ToolBackend`; register it in `Pipeline::new` (backend `lib.rs`).
-4. `strawberry-frontend/src/tools/<tool>.rs` implementing `ToolFrontend`; in frontend `commands.rs` add the action to the tool `actions!` list and a `register_tool` call in `install`. Pass its `BackendToolType` to that call; it registers the sidebar controls, Add Tool option, and command-palette action together — there is no separate menu to update.
+Use Sobel as a reference for a simple GPU filter. Paths below are relative to `crates/`.
+
+1. **Implement the algorithm.** Add `strawberry-processing/src/<tool>.rs`, any WGSL under `src/shaders/`, and a module export in processing `src/lib.rs`. Reuse `GpuImageProcessor` helpers for checked resource creation, dispatch, submission, and readback. Preserve BGRA layout, handle GPU limits with the shared tiling helpers where needed, and propagate failures with `Result`.
+2. **Define the protocol and settings.** Add a `BackendToolType` variant in `strawberry-types/src/types.rs`, a settings struct and `ToolState` variant in `src/state.rs`, and any required per-tool message enum and `PipelineObjectMessage` variant in `src/messages.rs`. Settings should support cloning, equality, defaults, and serde; keep runtime-only fields out of archives with `#[serde(skip)]`. Validate parameter ranges in message handling and add archive validation in `ToolState::validate` where applicable. Keep the tool kind and `<Tool>State` tag consistent with persistence loading.
+3. **Implement and register the backend.** Add `strawberry-backend/src/tools/<tool>.rs`, export it through `src/tools/mod.rs`, and add its constructor to `ToolManager::create` in `src/tools/manager.rs`. Implement `ToolBackend` using `ToolBase`, `ToolCache`, and `impl_tool_backend_basics!` when suitable. Register the settings in `processing_states!` in `src/tools/cache.rs`, or implement `SyncState` explicitly when only some settings affect processing. Interactive tools must keep output-cache invalidation separate from clearing the input used for clicks or gestures.
+4. **Wire archive loading.** Add the serialized state tag to `LoadedEntry::kind` in `strawberry-backend/src/utils/pipeline_io.rs`. Expose settings through `persisted_state_mut` (provided by the backend basics macro). Tools with embedded files or special loading behavior should implement `pipeline_assets` and the relevant loading hooks on `ToolBackend`; construct and validate candidates before changing the live pipeline.
+5. **Implement the frontend view.** Add `strawberry-frontend/src/tools/<tool>.rs` and export it in `src/tools/mod.rs`. Follow an existing view's `ToolFrontend`, `FrontendMessageHandler`, `Render`, and `Focusable` implementations. Accept the instance `ToolId` and `CommandSender`, use frontend `ToolBase::connect` and `spawn_message_processor` for watched state, and send edits through `ToolBase`. Build controls from the shared GUI widgets and theme.
+6. **Register the UI entry points.** In `strawberry-frontend/src/commands.rs`, add the action to the tool `actions!` list and a `register_tool` call in `install`, supplying the label, `BackendToolType`, and view constructor. This registers the sidebar factory, Add Tool choice, and command-palette action together.
+
+Verify processing, archive round trips, multiple instances of the new tool, and enabled/disabled behavior. For a new UI, render it with the GPUI test fixtures and inspect a screenshot for consistency with existing controls. Follow the Unit Tests and Clippy rules below.
+
+## Reviewing
+
+- Make sure code is not being excessivley duplicated: if a method is defined to perform a task but is not being used in liue of custom code; flag this. This instruction, however, should not be interpreted to excess: DRY is only true up to a point and should not be taken as a maxim.
+
+- Do not review simply to find bugs; also review to find unnecessary abstraction, locations where abstraction should be used, locations where different data structures would be simpler/more elegant/eloquent/superior--and, generally, for unnecessary code and areas where architecture can be improved.
+
+- Analyze frontend UI layout across components to ensure consistency of UI design idioms. Use the gpui test fixtures to render a new UI to a screenshot when implementing a new ui.
+
+- On Minimalism: consider where code may be significantly simplified by use of an external library, the removal of superflous guard statements, removal of abstraction, addition of abstraction, changes in data types, changes in trait structures, or in any other manner. 
+
+- Decoherence: you must review for decoherence; this is a phenomena in which patterns which make sense in isolation within a code base become nonsensical or overcomplicated when combined. For instance, some code performing thresholding on a f32 between 0 and 1, while another part of the code performs thresholding on a u8 between 0 and 255 is one example of decoherence. 
+
+## BTreeMaps
+
+Do not use a BTreeMap unless determinstic ordering is desired; use a regular HashMap instead for simplicity.
+
+## Imports
+
+Avoid using methods with their full qualifiers like `std::collections::HashSet::new();`. Instead, import such that they can be used like `HashSet::new();`. Furthermore, avoid the use of the `crate::` qualifier where possible. Never import inline inside a function, unless absolutely required.
+
+## Clippy
+
+Check all clippy lints and fix issues before finishing.
+
+## Naming
+
+All functions should be clearly named---in such a way that the intent and purpose of the function is clear from the name---and should contain a verb. Examples:
+
+BAD: `check_gpu_state`
+GOOD: `ensure_no_stage_gpu_errors` -- this name makes the purpose of the function much clearer than `check_gpu_state`, as `check_gpu_state` could mean almost anything.
+
+## Comments
+
+All functions should have a one to two line doc comment simply explaining their function. This comment should be clear and simply worded, while not being reductive. Multiple revisions of comments advised.
 
 ## Unit Tests
 
@@ -68,23 +110,3 @@ Do NOT write custom SVG icons. Use phosphor icons instead: https://phosphoricons
 ## UI Text
 
 Do not add superflous text to the UI describing how the internals of Strawberry function, how to interpret results, or anything else not required to make the UI clear and readable.
-
-## Reviewing
-
-- Make sure code is not being excessivley duplicated: if a method is defined to perform a task but is not being used in liue of custom code; flag this. This instruction, however, should not be interpreted to excess: DRY is only true up to a point and should not be taken as a maxim.
-
-- Do not review simply to find bugs; also review to find unnecessary abstraction, locations where abstraction should be used, locations where different data structures would be simpler/more elegant/eloquent/superior--and, generally, for unnecessary code and areas where architecture can be improved.
-
-- Analyze frontend UI layout across components to ensure consistency of UI design idioms. Use the gpui test fixtures to render a new UI to a screenshot when implementing a new ui.
- 
-## BTreeMaps
-
-Do not use a BTreeMap unless determinstic ordering is desired; use a regular HashMap instead for simplicity.
-
-## Imports
-
-Avoid using methods with their full qualifiers like `std::collections::HashSet::new();`. Instead, import such that they can be used like `HashSet::new();`
-
-## Clippy
-
-Check all clippy lints and fix issues before finishing.

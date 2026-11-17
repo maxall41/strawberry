@@ -16,6 +16,7 @@ pub struct FuzzyMatcher {
 }
 
 impl FuzzyMatcher {
+    /// Create `FuzzyMatcher` with its initial state and configuration.
     pub fn new() -> Self {
         Self {
             matcher: Matcher::new(Config::DEFAULT),
@@ -48,6 +49,7 @@ impl FuzzyMatcher {
 }
 
 impl Default for FuzzyMatcher {
+    /// Create the default configuration for this component.
     fn default() -> Self {
         Self::new()
     }

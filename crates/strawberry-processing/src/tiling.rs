@@ -8,6 +8,7 @@ pub struct TileConfig {
 }
 
 impl Default for TileConfig {
+    /// Set fallback tile capacity for eight-byte pixels and a sixteen-pixel overlap.
     fn default() -> Self {
         const FALLBACK_BUFFER_SIZE: usize = 134_217_728; // 128MB fallback
         const BYTES_PER_PIXEL_WORST_CASE: usize = 8; // vec2<i32> in watershed
@@ -21,6 +22,7 @@ impl Default for TileConfig {
 }
 
 impl TileConfig {
+    /// Derive tile capacity from the device storage-buffer and allocation limits.
     #[must_use]
     pub fn from_limits(limits: &wgpu::Limits) -> Self {
         const BYTES_PER_PIXEL_WORST_CASE: u64 = 8; // vec2<i32> in watershed
@@ -55,12 +57,14 @@ pub struct TileGrid {
 }
 
 impl TileGrid {
+    /// Construct a grid of overlapping tiles covering the image.
     #[must_use]
     pub fn new(width: u32, height: u32, config: &TileConfig) -> Self {
         let tiles = Self::calculate_tiles(width, height, config);
         Self { tiles }
     }
 
+    /// Partition the image into tile cores with clipped overlapping borders.
     fn calculate_tiles(width: u32, height: u32, config: &TileConfig) -> Vec<TileInfo> {
         let mut tiles = Vec::new();
         let total_pixels = u64::from(width).saturating_mul(u64::from(height));
@@ -123,6 +127,7 @@ impl TileGrid {
         tiles
     }
 
+    /// Check whether the image pixel count exceeds the configured tile capacity.
     #[must_use]
     pub fn needs_tiling(width: u32, height: u32, config: &TileConfig) -> bool {
         let total_pixels = u64::from(width).saturating_mul(u64::from(height));

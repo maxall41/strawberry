@@ -41,10 +41,13 @@ pub trait ToolBackend: Send + Sync {
     fn poll_background(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
+    /// Cancel any active canvas interaction owned by this tool.
     fn cancel_interaction(&mut self) {}
+    /// Report and consume pending overlay changes; return false by default.
     fn take_overlay_changes(&mut self) -> bool {
         false
     }
+    /// Drain transient events queued by this tool.
     fn drain_events(&mut self) -> Vec<crate::FrontendMessage>;
 
     /// Reconcile backend mutations against last known pipeline run; returns whether the pipeline needs processing.
@@ -126,7 +129,12 @@ pub trait ToolBackend: Send + Sync {
     /// Cache the output
     fn set_cached_output(&mut self, _output: Vec<Arc<RgbaImage>>) {}
 
-    /// Invalidate the cache
+    /// Invalidate reusable output while retaining input needed for canvas interactions.
+    fn invalidate_cached_output(&mut self) {
+        self.invalidate_cache();
+    }
+
+    /// Invalidate all processing caches, including cached input.
     fn invalidate_cache(&mut self) {}
 
     /// Get overlay elements to render on the primary viewer.
@@ -138,6 +146,7 @@ pub trait ToolBackend: Send + Sync {
 
 /// Trait for frontend tool views (GPUI)
 pub trait ToolFrontend {
+    /// Initialize the tool view and connect its controls to the window.
     fn initialize(&mut self, window: &mut gpui::Window, cx: &mut gpui::Context<Self>)
     where
         Self: Sized;

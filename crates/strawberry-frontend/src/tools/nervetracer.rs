@@ -27,12 +27,14 @@ pub struct NerveTracerView {
 }
 
 impl Focusable for NerveTracerView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
 }
 
 impl NerveTracerView {
+    /// Create the nervetracer tool view and its initial controls.
     pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(NerveTracerState::default())),
@@ -43,10 +45,12 @@ impl NerveTracerView {
         }
     }
 
+    /// Start receiving backend state updates for this tool view.
     fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
+    /// Prompt for a path and request trace export.
     fn save_traces(&self, window: &Window, cx: &Context<Self>) {
         let last_directory = self.last_directory.clone();
 
@@ -80,6 +84,7 @@ impl NerveTracerView {
         .detach();
     }
 
+    /// Prompt for a traces file and request its import.
     fn load_traces(&self, window: &Window, cx: &Context<Self>) {
         let last_directory = self.last_directory.clone();
 
@@ -120,6 +125,7 @@ impl NerveTracerView {
         .detach();
     }
 
+    /// Commit the pending trace segments to a path.
     fn commit_segments(&self) {
         if let Err(e) = self
             .base
@@ -131,6 +137,7 @@ impl NerveTracerView {
         }
     }
 
+    /// Request removal of a pending trace segment.
     fn delete_uncommitted_segment(&self, segment_id: usize) {
         if let Err(e) = self
             .base
@@ -142,6 +149,7 @@ impl NerveTracerView {
         }
     }
 
+    /// Request removal of a committed trace path.
     fn delete_path(&self, path_id: usize) {
         if let Err(e) = self
             .base
@@ -153,6 +161,7 @@ impl NerveTracerView {
         }
     }
 
+    /// Request removal of a segment from a committed trace path.
     fn delete_path_segment(&self, path_id: usize, segment_id: usize) {
         if let Err(e) = self
             .base
@@ -164,12 +173,14 @@ impl NerveTracerView {
         }
     }
 
+    /// Send the opposite enabled state to the backend.
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
+    /// Select the image layer used for tracing.
     fn set_selected_image(&self, image_index: usize) {
         if let Err(e) = self
             .base
@@ -181,6 +192,7 @@ impl NerveTracerView {
         }
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &NerveTracerToggleActivity,
@@ -196,6 +208,7 @@ impl NerveTracerView {
         self.toggle_enabled(current_enabled, window, cx);
     }
 
+    /// Handle the keyboard action to commit segments.
     fn commit_segments_action(
         &mut self,
         _: &NerveTracerCommitSegments,
@@ -206,6 +219,7 @@ impl NerveTracerView {
         cx.notify();
     }
 
+    /// Handle the keyboard action to save traces.
     fn save_traces_action(
         &mut self,
         _: &NerveTracerSaveTraces,
@@ -215,6 +229,7 @@ impl NerveTracerView {
         self.save_traces(window, cx);
     }
 
+    /// Handle the keyboard action to load traces.
     fn load_traces_action(
         &mut self,
         _: &NerveTracerLoadTraces,
@@ -224,6 +239,7 @@ impl NerveTracerView {
         self.load_traces(window, cx);
     }
     // Status component showing enabled/disabled state
+    /// Build the status for the nervetracer view.
     fn render_status(state: &NerveTracerState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
@@ -241,6 +257,7 @@ impl NerveTracerView {
         .render(cx)
     }
 
+    /// Build the image selector for the nervetracer view.
     fn render_image_selector(
         state: &NerveTracerState,
         cx: &Context<Self>,
@@ -256,6 +273,7 @@ impl NerveTracerView {
         ))
     }
 
+    /// Build the segments section for the nervetracer view.
     fn render_segments_section(
         &self,
         state: &NerveTracerState,
@@ -301,6 +319,7 @@ impl NerveTracerView {
         )
     }
 
+    /// Build the paths section for the nervetracer view.
     fn render_paths_section(
         &self,
         state: &NerveTracerState,
@@ -374,6 +393,7 @@ impl NerveTracerView {
             .child(Self::render_storage_buttons(cx))
     }
 
+    /// Build the storage buttons for the nervetracer view.
     fn render_storage_buttons(cx: &Context<Self>) -> impl IntoElement + use<> {
         tool_panel::file_actions()
             .child(
@@ -407,18 +427,22 @@ actions!([
 impl FrontendMessageHandler for NerveTracerView {
     type State = NerveTracerState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &crate::tools::ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(tool_state: ToolState) -> Option<Self::State> {
         match tool_state {
             ToolState::NerveTracerState(s) => Some(s),
@@ -428,6 +452,7 @@ impl FrontendMessageHandler for NerveTracerView {
 }
 
 impl Render for NerveTracerView {
+    /// Build the nervetracer view and its interaction handlers.
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state,
@@ -474,6 +499,7 @@ impl Render for NerveTracerView {
 }
 
 impl ToolFrontend for NerveTracerView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;
