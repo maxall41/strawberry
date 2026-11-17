@@ -214,7 +214,7 @@ impl Pipeline {
 
     /// Convert the last output back out of the internal BGRA representation and
     /// write it to `file`.
-    async fn save_output(&self, file: &std::path::Path) -> anyhow::Result<()> {
+    async fn save_output(&mut self, file: &std::path::Path) -> anyhow::Result<()> {
         ensure!(
             self.output_is_current,
             "No current pipeline output to save; process the image successfully first"
@@ -448,19 +448,26 @@ impl Pipeline {
             .output_sender
             .send(FrontendMessage::error(format!("{context}: {error:#}")));
     }
-    fn ensure_no_stage_gpu_errors(&self, operation: &str) -> anyhow::Result<()> {
-        self.gpu.ensure_device_availability(operation)?;
+    fn invalidate_output(&mut self) {
+        self.output_is_current = false;
+        for tool in self.tool_manager.tools.values_mut() {
+            tool.invalidate_cache();
+        }
+    }
+    fn ensure_no_stage_gpu_errors(&mut self, operation: &str) -> anyhow::Result<()> {
+        if let Err(error) = self.gpu.ensure_device_availability(operation) {
+            self.invalidate_output();
+            return Err(error);
+        }
         if let Some(error) = self.gpu.take_uncaptured_error() {
+            self.invalidate_output();
             return Err(anyhow::Error::new(error).context(operation.to_owned()));
         }
         Ok(())
     }
     fn ensure_no_remaining_gpu_errors(&mut self) {
         while let Some(error) = self.gpu.take_uncaptured_error() {
-            self.output_is_current = false;
-            for tool in self.tool_manager.tools.values_mut() {
-                tool.invalidate_cache();
-            }
+            self.invalidate_output();
             self.report_error("GPU failure", &error.into());
             let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
         }
