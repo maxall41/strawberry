@@ -37,6 +37,7 @@ pub struct LoadedEntry {
     pub assets: ToolAssets,
 }
 impl LoadedEntry {
+    /// Identify the tool kind from the serialized state tag.
     pub fn kind(&self) -> Result<BackendToolType> {
         let Value::Map(variants) = &self.state else {
             anyhow::bail!("Expected tagged tool state");
@@ -66,6 +67,7 @@ impl LoadedEntry {
         })
     }
 }
+/// Return whether an asset name is safe for a tool archive entry.
 fn valid_asset(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']),
@@ -73,6 +75,7 @@ fn valid_asset(name: &str) -> Result<()> {
     );
     Ok(())
 }
+/// Write ordered tool settings and assets to a versioned pipeline archive.
 pub fn save(path: &Path, entries: &[(ToolState, ToolAssets)]) -> Result<()> {
     let config = SavedConfig {
         version: VERSION,
@@ -104,6 +107,7 @@ pub fn save(path: &Path, entries: &[(ToolState, ToolAssets)]) -> Result<()> {
         Ok(())
     })
 }
+/// Read and validate pipeline archive settings and embedded tool assets.
 pub fn load(path: &Path) -> Result<Vec<LoadedEntry>> {
     let mut archive =
         ZipArchive::new(File::open(path)?).context("Invalid .sbp pipeline archive")?;

@@ -25,14 +25,17 @@ pub struct LocalMaxima {
 impl ToolBackend for LocalMaxima {
     impl_tool_backend_basics!(LocalMaxima);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::LocalMaximaState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::LocalMaxima
     }
 
+    /// Detect local maxima in each input layer using the configured neighborhood.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = Arc::new(
@@ -49,6 +52,7 @@ impl ToolBackend for LocalMaxima {
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::LocalMaximaMessage(message)) = message {
             match message {

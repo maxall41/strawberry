@@ -40,6 +40,7 @@ pub struct FeatureConfig {
     pub dog_large_sigma: f32,
 }
 impl Default for FeatureConfig {
+    /// Enable the standard grayscale feature families with their default scales.
     fn default() -> Self {
         Self {
             rgb: false,
@@ -74,6 +75,7 @@ impl FeatureConfig {
         );
         Ok(())
     }
+    /// Count the feature columns produced by the enabled families and channels.
     #[must_use]
     pub fn count(&self) -> usize {
         [
@@ -88,6 +90,7 @@ impl FeatureConfig {
         .sum::<usize>()
         .saturating_mul(if self.rgb { 3 } else { 1 })
     }
+    /// Calculate the surrounding pixels needed by all enabled feature filters.
     fn halo(&self) -> Result<usize> {
         let mut sigma = if self.gaussian {
             self.gaussian_sigma
@@ -111,6 +114,7 @@ impl FeatureConfig {
         num_traits::cast(radius).context("Invalid feature halo")
     }
 
+    /// Use the same feature families with grayscale channels for probability context.
     fn context_features(&self) -> Self {
         Self {
             rgb: false,
@@ -129,6 +133,7 @@ pub struct ForestConfig {
     pub autocontext: bool,
 }
 impl Default for ForestConfig {
+    /// Set the default forest size, depth, seed, and input-processing options.
     fn default() -> Self {
         Self {
             trees: 100,
@@ -192,6 +197,7 @@ pub struct InferenceConfig {
 }
 
 impl Default for InferenceConfig {
+    /// Limit inference to eight parallel tiles by default.
     fn default() -> Self {
         Self {
             max_parallel_tiles: 8,
@@ -200,6 +206,7 @@ impl Default for InferenceConfig {
 }
 
 impl InferenceConfig {
+    /// Choose a tile batch size bounded by worker threads and the configured limit.
     fn batch_size(&self) -> usize {
         rayon::current_num_threads().clamp(1, usize::from(self.max_parallel_tiles))
     }
@@ -286,6 +293,7 @@ impl SegmentationModel {
         })
     }
 
+    /// Count standard features and any per-class context features used for prediction.
     fn prediction_feature_count(&self) -> usize {
         self.features
             .count()
@@ -389,6 +397,7 @@ impl SegmentationModel {
             .collect())
     }
 
+    /// Load and predict bounded batches of tiles into per-class probability images.
     async fn predict_batches<T: Sync>(
         forest: &Forest,
         class_count: usize,
@@ -420,6 +429,7 @@ impl SegmentationModel {
         Ok(output)
     }
 
+    /// Predict tile probabilities in parallel and write them into the output planes.
     fn predict_tiles(
         forest: &Forest,
         tiles: Vec<FeatureTile>,
@@ -489,6 +499,7 @@ pub struct FeatureTile {
     pub rows: Vec<Vec<f32>>,
 }
 
+/// Convert a tile-row offset into checked image pixel coordinates.
 fn pixel_coordinates((x, y): (u32, u32), width: u32, offset: usize) -> Result<(u32, u32)> {
     let offset = u32::try_from(offset)?;
     let column = offset.checked_rem(width).context("Empty feature tile")?;
@@ -502,6 +513,7 @@ fn pixel_coordinates((x, y): (u32, u32), width: u32, offset: usize) -> Result<(u
 }
 
 impl FeatureTile {
+    /// Convert feature planes into per-pixel rows for the tile core.
     fn from_columns(tile: &TileInfo, columns: &[Vec<f32>]) -> Result<Self> {
         let offset_x = usize::try_from(
             tile.core_x
@@ -681,6 +693,7 @@ impl FeatureExtractor {
         FeatureTile::from_columns(tile, &columns)
     }
 
+    /// Extract and concatenate features from each class probability plane for a tile.
     async fn extract_context(
         &self,
         context: &[image::GrayImage],

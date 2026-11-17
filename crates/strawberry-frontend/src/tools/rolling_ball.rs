@@ -25,12 +25,14 @@ pub struct RollingBallView {
 }
 
 impl Focusable for RollingBallView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
 }
 
 impl RollingBallView {
+    /// Create the rolling ball tool view and its initial controls.
     pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(RollingBallState::default())),
@@ -39,16 +41,19 @@ impl RollingBallView {
         }
     }
 
+    /// Start receiving backend state updates for this tool view.
     fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
+    /// Send the opposite enabled state to the backend.
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &RollingBallToggleActivity,
@@ -64,6 +69,7 @@ impl RollingBallView {
         self.toggle_enabled(current_enabled, window, cx);
     }
 
+    /// Send the updated ball radius to the backend.
     fn update_ball_radius(&self, ball_radius: u32) {
         if let Err(e) = self
             .base
@@ -75,11 +81,13 @@ impl RollingBallView {
         }
     }
 
+    /// Apply the new ball radius while retaining the other settings.
     fn adjust_ball_radius(&self, new_radius: u32) {
         let clamped_radius = new_radius.clamp(1, 200);
         self.update_ball_radius(clamped_radius);
     }
 
+    /// Build the status for the rolling ball view.
     fn render_status(state: &RollingBallState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
@@ -96,6 +104,7 @@ impl RollingBallView {
         .render(cx)
     }
 
+    /// Build the ball radius control for the rolling ball view.
     fn render_ball_radius_control(
         &self,
         _cx: &mut Context<Self>,
@@ -107,6 +116,7 @@ impl RollingBallView {
         )
     }
 
+    /// Build the preset button for the rolling ball view.
     fn render_preset_button(
         label: String,
         ball_radius: u32,
@@ -127,6 +137,7 @@ impl RollingBallView {
         ))
     }
 
+    /// Build the presets section for the rolling ball view.
     fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -161,6 +172,7 @@ impl RollingBallView {
             )
     }
 
+    /// Build the controls section for the rolling ball view.
     fn render_controls_section(
         &self,
         cx: &mut Context<Self>,
@@ -179,18 +191,22 @@ actions!([RollingBallToggleActivity]);
 impl FrontendMessageHandler for RollingBallView {
     type State = RollingBallState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &crate::tools::ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(tool_state: ToolState) -> Option<Self::State> {
         match tool_state {
             ToolState::RollingBallState(s) => Some(s),
@@ -198,6 +214,7 @@ impl FrontendMessageHandler for RollingBallView {
         }
     }
 
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, new_state: &RollingBallState, cx: &mut Context<Self>) {
         if let Some(ref ctrl) = self.ball_radius_control {
             ctrl.update(cx, |c, cx| {
@@ -214,6 +231,7 @@ impl FrontendMessageHandler for RollingBallView {
 }
 
 impl Render for RollingBallView {
+    /// Build the rolling ball view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
@@ -262,6 +280,7 @@ impl Render for RollingBallView {
 }
 
 impl ToolFrontend for RollingBallView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;

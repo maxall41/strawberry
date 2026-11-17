@@ -6,6 +6,7 @@ use gpui::Rgba;
     clippy::as_conversions,
     reason = "Converting u8 color channels to f32 is exact; From is not const"
 )]
+/// Convert a packed RGB color to an opaque GPUI color.
 const fn hex(hex: u32) -> Rgba {
     let [_, r, g, b] = hex.to_be_bytes();
     Rgba {

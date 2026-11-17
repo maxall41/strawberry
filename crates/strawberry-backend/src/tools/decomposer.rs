@@ -27,14 +27,17 @@ pub struct Decomposer {
 impl ToolBackend for Decomposer {
     impl_tool_backend_basics!(Decomposer);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::DecomposerState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Decomposer
     }
 
+    /// Decompose one image and composite the enabled channel layers.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         if input.len() > 1 {
             let error_msg = format!(
@@ -76,6 +79,7 @@ impl ToolBackend for Decomposer {
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::DecomposerMessage(message)) = message {
             match message {

@@ -24,14 +24,17 @@ pub struct Watershed {
 impl ToolBackend for Watershed {
     impl_tool_backend_basics!(Watershed);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::WatershedState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Watershed
     }
 
+    /// Apply the configured watershed segmentation to each input layer.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = Arc::new(
@@ -43,6 +46,7 @@ impl ToolBackend for Watershed {
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::WatershedMessage(message)) = message {
             match message {

@@ -99,6 +99,7 @@ impl GpuRollingBall {
         }
     }
 
+    /// Estimate and subtract rolling-ball background for a single image.
     async fn apply_rolling_ball_single(
         &self,
         image: &RgbaImage,
@@ -203,6 +204,7 @@ impl GpuRollingBall {
         Ok(result_image)
     }
 
+    /// Subtract rolling-ball background from overlapping tiles and merge their cores.
     async fn apply_rolling_ball_tiled(
         &self,
         image: &RgbaImage,

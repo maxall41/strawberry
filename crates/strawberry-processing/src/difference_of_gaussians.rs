@@ -68,6 +68,7 @@ impl GpuDifferenceOfGaussians {
         merge_rgba_tiles(&processed, image.width(), image.height())
     }
 
+    /// Compute a luminance difference-of-Gaussians response and preserve the source alpha.
     async fn apply_single(
         &self,
         image: &RgbaImage,

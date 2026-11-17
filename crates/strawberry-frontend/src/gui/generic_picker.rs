@@ -39,6 +39,7 @@ pub struct GenericPicker {
 }
 
 impl GenericPicker {
+    /// Create `GenericPicker` with its initial state and configuration.
     pub fn new(labels: impl IntoIterator<Item = &'static str>) -> Self {
         let mut picker = Self {
             labels: labels.into_iter().collect(),
@@ -53,10 +54,12 @@ impl GenericPicker {
         picker
     }
 
+    /// Return the number of picker entries matching the query.
     pub const fn match_count(&self) -> usize {
         self.matches.len()
     }
 
+    /// Rebuild filtered picker results and reset the selected row.
     fn recompute(&mut self) {
         self.matcher.set_query(&self.query);
 
@@ -85,6 +88,7 @@ impl GenericPicker {
         self.list_scroll.scroll_to_item(0, ScrollStrategy::Top);
     }
 
+    /// Move the selected picker row and scroll it into view.
     fn move_selection(&mut self, delta: isize) {
         let direction = if delta < 0 {
             ListDirection::Up
@@ -120,6 +124,7 @@ impl GenericPicker {
             .map_or(self.cursor, |c| self.cursor.saturating_add(c.len_utf8()))
     }
 
+    /// Insert text at the query cursor and refresh matching results.
     fn insert(&mut self, text: &str) {
         self.query.insert_str(self.cursor, text);
         self.cursor = self.cursor.saturating_add(text.len());
@@ -137,6 +142,7 @@ impl GenericPicker {
         self.recompute();
     }
 
+    /// Delete the character after the query cursor and refresh matches.
     fn delete_forward(&mut self) {
         let to = self.next_boundary();
         if to == self.cursor {
@@ -146,10 +152,12 @@ impl GenericPicker {
         self.recompute();
     }
 
+    /// Set the insertion cursor’s byte offset within the query.
     const fn move_cursor(&mut self, to: usize) {
         self.cursor = to;
     }
 
+    /// Insert the first clipboard text line into the search query.
     pub fn paste(&mut self, cx: &App) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
@@ -158,6 +166,7 @@ impl GenericPicker {
         self.insert(&line);
     }
 
+    /// Handle picker editing, navigation, confirmation, and dismissal keys.
     pub fn handle_key<T: 'static>(
         &mut self,
         event: &KeyDownEvent,
@@ -229,6 +238,7 @@ impl GenericPicker {
         action
     }
 
+    /// Build the query for the generic picker view.
     pub fn render_query(
         &self,
         placeholder: &'static str,
@@ -294,6 +304,7 @@ impl GenericPicker {
             )
     }
 
+    /// Build the row for the generic picker view.
     pub fn render_row(&self, row: usize) -> Option<(usize, gpui::Stateful<gpui::Div>)> {
         let candidate = self.matches.get(row)?;
         let label = *self.labels.get(candidate.index)?;
@@ -337,6 +348,7 @@ impl GenericPicker {
         Some((candidate.index, element))
     }
 
+    /// Build the results for the generic picker view.
     pub fn render_results<T: 'static>(
         &self,
         max_height: Pixels,
@@ -372,6 +384,7 @@ impl GenericPicker {
     }
 }
 
+/// Build the shared floating picker container.
 pub fn picker_surface() -> gpui::Div {
     div()
         .occlude()

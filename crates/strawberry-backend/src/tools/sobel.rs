@@ -24,14 +24,17 @@ pub struct Sobel {
 impl ToolBackend for Sobel {
     impl_tool_backend_basics!(Sobel);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::SobelState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Sobel
     }
 
+    /// Apply Sobel edge detection to each input layer.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         let threshold = if self.state.use_threshold {
             Some(self.state.threshold_value)
@@ -45,6 +48,7 @@ impl ToolBackend for Sobel {
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::SobelMessage(sobel)) = message {
             match sobel {

@@ -11,10 +11,12 @@ pub struct PipelineBusy(pub bool);
 
 impl Global for PipelineBusy {}
 
+/// Return whether pipeline processing is currently busy.
 pub fn pipeline_busy(cx: &App) -> bool {
     cx.try_global::<PipelineBusy>().is_some_and(|busy| busy.0)
 }
 
+/// Update the shared pipeline busy flag.
 pub fn set_pipeline_busy(cx: &mut App, busy: bool) {
     if pipeline_busy(cx) != busy {
         cx.set_global(PipelineBusy(busy));
@@ -28,6 +30,7 @@ pub struct BusyOverlay {
 }
 
 impl BusyOverlay {
+    /// Create `BusyOverlay` with its initial state and configuration.
     pub fn new(blocking: bool, cx: &mut Context<Self>) -> Self {
         cx.observe_global::<PipelineBusy>(|_, cx| cx.notify())
             .detach();
@@ -38,6 +41,7 @@ impl BusyOverlay {
         }
     }
 
+    /// Build the spinner for the busy view.
     fn render_spinner(position: Point<Pixels>) -> impl IntoElement {
         div()
             .absolute()
@@ -62,6 +66,7 @@ impl BusyOverlay {
 }
 
 impl Render for BusyOverlay {
+    /// Build the busy view and its interaction handlers.
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = pipeline_busy(cx);
         if !busy {

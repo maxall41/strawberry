@@ -34,6 +34,7 @@ pub struct ToolRegistration {
 }
 
 impl ToolRegistration {
+    /// Create `ToolRegistration` with its initial state and configuration.
     pub fn new(
         kind: BackendToolType,
         label: &'static str,
@@ -63,6 +64,7 @@ struct DraggedTool {
 struct ToolDragPreview(DraggedTool);
 
 impl Render for ToolDragPreview {
+    /// Build the sidebar view and its interaction handlers.
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w(self.0.width)
@@ -98,6 +100,7 @@ pub struct ToolSidebar {
 impl EventEmitter<ToolSelected> for ToolSidebar {}
 
 impl ToolSidebar {
+    /// Create `ToolSidebar` with its initial state and configuration.
     pub fn new(sender: CommandSender, window: &Window, cx: &mut Context<Self>) -> Self {
         let (reply, subscription) = tokio::sync::oneshot::channel();
         let _ = sender.send(PipelineCommand::SubscribePipeline(reply));
@@ -151,16 +154,19 @@ impl ToolSidebar {
         }
     }
 
+    /// Register a tool kind and its panel factory with the sidebar.
     pub fn register(&mut self, tool: ToolRegistration) {
         self.tools.push(tool);
     }
 
+    /// Reveal the sidebar and dismiss its add-tool menu.
     pub fn reveal(&mut self, cx: &mut Context<Self>) {
         self.add_menu = None;
         cx.emit(ToolSelected);
         cx.notify();
     }
 
+    /// Request a new tool instance and reveal the sidebar.
     pub fn add_tool(&mut self, kind: &BackendToolType, cx: &mut Context<Self>) {
         let (reply, result) = tokio::sync::oneshot::channel();
         let _ = self.sender.send(PipelineCommand::AddTool {
@@ -173,14 +179,17 @@ impl ToolSidebar {
         .detach();
         self.reveal(cx);
     }
+    /// Return the current ordered tool summaries.
     fn pipeline_tools(&self) -> Vec<ToolSummary> {
         self.state.tools.clone()
     }
+    /// Request removal of a tool and return focus to the sidebar.
     fn remove_tool(&self, id: ToolId, window: &mut Window, cx: &mut Context<Self>) {
         let _ = self.sender.send(PipelineCommand::RemoveTool(id));
         self.focus_handle.focus(window, cx);
         cx.notify();
     }
+    /// Select a tool and toggle its controls in the sidebar.
     fn toggle_expanded(&mut self, id: ToolId, window: &mut Window, cx: &mut Context<Self>) {
         let _ = self.sender.send(PipelineCommand::SelectTool(Some(id)));
         let tool = self.instances.entry(id).or_default();
@@ -193,6 +202,7 @@ impl ToolSidebar {
         cx.notify();
     }
 
+    /// Prompt for a pipeline archive to save or load.
     fn pipeline_file(save: bool, window: &Window, cx: &Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
             let dialog = FileDialog::new().add_filter("Strawberry pipeline", &["sbp"]);
@@ -227,6 +237,7 @@ impl ToolSidebar {
         .detach();
     }
 
+    /// Update the candidate insertion slot during a tool drag.
     fn track_drag(
         &mut self,
         row: usize,
@@ -252,6 +263,7 @@ impl ToolSidebar {
         }
     }
 
+    /// Queue the tool move represented by the current drop slot.
     fn commit_drop(&mut self, cx: &mut Context<Self>) {
         let dragged = self.drag_tool.take();
         let slot = self.drop_slot.take();
@@ -267,6 +279,7 @@ impl ToolSidebar {
         clippy::too_many_lines,
         reason = "Keep tool card layout and bindings together"
     )]
+    /// Build the row for the sidebar view.
     fn render_row(
         &self,
         row: usize,
@@ -416,6 +429,7 @@ impl ToolSidebar {
             .into_any_element()
     }
 
+    /// Build the choices offered by the add-tool picker.
     fn available_tools(&self) -> Vec<ToolChoice> {
         self.tools
             .iter()
@@ -426,6 +440,7 @@ impl ToolSidebar {
             .collect()
     }
 
+    /// Open or close the add-tool picker.
     fn toggle_add_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.add_menu.take().is_some() {
             self.focus_handle.focus(window, cx);
@@ -451,6 +466,7 @@ impl ToolSidebar {
         cx.notify();
     }
 
+    /// Build the add menu for the sidebar view.
     fn render_add_menu(&self) -> impl IntoElement + use<> {
         div()
             .id("add-tool-menu")
@@ -467,6 +483,7 @@ impl Render for ToolSidebar {
         clippy::too_many_lines,
         reason = "Keep sidebar layout and bindings together"
     )]
+    /// Build the sidebar view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.drag_tool.is_some() && !cx.has_active_drag() {
             self.drag_tool = None;
@@ -621,6 +638,7 @@ impl Render for ToolSidebar {
     }
 }
 
+/// Build the visual handle used to drag a tool row.
 fn drag_grip() -> impl IntoElement {
     div().flex().gap(px(2.5)).children((0..2).map(|_| {
         div()
@@ -631,6 +649,7 @@ fn drag_grip() -> impl IntoElement {
     }))
 }
 
+/// Build an insertion target between sidebar tool rows.
 fn drop_slot(active: bool) -> impl IntoElement {
     div()
         .h(px(SLOT_HEIGHT))
@@ -662,6 +681,7 @@ fn reorder_target(tools: &[ToolSummary], id: ToolId, slot: usize) -> Option<Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Build a pipeline state fixture for sidebar ordering tests.
     fn pipeline() -> Vec<ToolSummary> {
         [2, 5, 9]
             .into_iter()
@@ -673,6 +693,7 @@ mod tests {
             .collect()
     }
     #[test]
+    /// Verify that sidebar reordering follows backend order and includes disabled tools.
     fn reorder_uses_backend_positions_and_includes_disabled_stack_items() {
         assert_eq!(
             reorder_target(&pipeline(), ToolId(9), 0),
@@ -685,6 +706,7 @@ mod tests {
         );
     }
     #[test]
+    /// Verify that adjacent and invalid drop positions produce no tool move.
     fn adjacent_and_invalid_drops_do_not_reorder() {
         assert_eq!(reorder_target(&pipeline(), ToolId(5), 1), None);
         assert_eq!(reorder_target(&pipeline(), ToolId(5), 2), None);

@@ -11,23 +11,27 @@ struct Node {
 
 // Min-heap ordering (reverse the comparison)
 impl Ord for Node {
+    /// Reverse cost ordering so the heap visits the least expensive node first.
     fn cmp(&self, other: &Self) -> Ordering {
         other.cost.cmp(&self.cost)
     }
 }
 
 impl PartialOrd for Node {
+    /// Compare nodes using their reversed traversal-cost ordering.
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
+/// Read the mean color-channel intensity at a valid image coordinate.
 fn get_intensity(image: &RgbaImage, pos: (u64, u64)) -> Option<f64> {
     let pixel = image.get_pixel_checked(u32::try_from(pos.0).ok()?, u32::try_from(pos.1).ok()?)?;
     let [r, g, b, _] = pixel.0;
     Some((f64::from(r) + f64::from(g) + f64::from(b)) / 3.0)
 }
 
+/// Calculate a distance-based traversal cost that favors brighter pixels.
 fn edge_weight(image: &RgbaImage, from: (u64, u64), to: (u64, u64)) -> Option<f64> {
     let dx = f64::from(u32::try_from(to.0).ok()?) - f64::from(u32::try_from(from.0).ok()?);
     let dy = f64::from(u32::try_from(to.1).ok()?) - f64::from(u32::try_from(from.1).ok()?);
@@ -39,6 +43,7 @@ fn edge_weight(image: &RgbaImage, from: (u64, u64), to: (u64, u64)) -> Option<f6
     Some(euclidean_dist / (1.0 + intensity_avg))
 }
 
+/// Collect the eight neighboring coordinates that fall within the image.
 fn get_neighbors(pos: (u64, u64), width: u64, height: u64) -> Vec<(u64, u64)> {
     let mut neighbors = Vec::new();
     let (x, y) = pos;
@@ -62,6 +67,7 @@ fn get_neighbors(pos: (u64, u64), width: u64, height: u64) -> Vec<(u64, u64)> {
     neighbors
 }
 
+/// Trace a brightness-weighted path between endpoints, rejecting out-of-bounds coordinates.
 #[must_use]
 pub fn create_path(
     start_point: (u64, u64),
@@ -81,10 +87,12 @@ pub fn create_path(
     trace_path(start_point, end_point, image, width, height)
 }
 
+/// Create a search queue containing one zero-cost starting node.
 fn initial_queue(position: (u64, u64)) -> BinaryHeap<Node> {
     BinaryHeap::from([Node { position, cost: 0 }])
 }
 
+/// Search from both endpoints and reconstruct the best meeting path.
 fn trace_path(
     start_point: (u64, u64),
     end_point: (u64, u64),
@@ -223,6 +231,7 @@ fn trace_path(
     )
 }
 
+/// Update the best meeting point when both searches have reached a cheaper connection.
 fn consider_meeting(
     position: (u64, u64),
     current_cost: f64,
@@ -239,6 +248,7 @@ fn consider_meeting(
     }
 }
 
+/// Join both parent chains into an ordered path from the start to the end.
 fn reconstruct_path(
     meet: (u64, u64),
     start: (u64, u64),

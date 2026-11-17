@@ -24,6 +24,7 @@ pub struct GpuError {
 }
 
 impl GpuError {
+    /// Construct a GPU error with its category, operation, and diagnostic.
     pub(crate) fn new(
         kind: GpuErrorKind,
         operation: impl Into<String>,
@@ -36,6 +37,7 @@ impl GpuError {
         }
     }
 
+    /// Translate a wgpu error into the corresponding operation-specific GPU error.
     pub(crate) fn from_wgpu(operation: &str, error: &wgpu::Error) -> Self {
         let kind = match error {
             wgpu::Error::Validation { .. } => GpuErrorKind::Validation,
@@ -47,6 +49,7 @@ impl GpuError {
 }
 
 impl fmt::Display for GpuError {
+    /// Format the failed operation, error category, and diagnostic for display.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -69,6 +72,7 @@ pub struct GpuErrors {
 }
 
 impl GpuErrors {
+    /// Install callbacks that collect uncaptured errors and remember device loss.
     pub(crate) fn new(device: &wgpu::Device) -> Self {
         let (sender, receiver) = flume::unbounded();
         let lost = Arc::new(Mutex::new(None));
@@ -94,6 +98,7 @@ impl GpuErrors {
         Self { lost, receiver }
     }
 
+    /// Return any recorded device-loss error and consume its pending notification.
     pub(crate) fn check_device_availability(&self, operation: &str) -> anyhow::Result<()> {
         let lost = {
             let mut state = self.lost.lock().unwrap_or_else(PoisonError::into_inner);
@@ -111,6 +116,7 @@ impl GpuErrors {
         Ok(())
     }
 
+    /// Retrieve the next uncaptured error or unreported device-loss notification.
     pub(crate) fn next(&self) -> Option<GpuError> {
         if let Ok(error) = self.receiver.try_recv() {
             return Some(error);

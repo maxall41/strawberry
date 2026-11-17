@@ -28,12 +28,14 @@ pub struct WatershedView {
 }
 
 impl Focusable for WatershedView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
 }
 
 impl WatershedView {
+    /// Create the watershed tool view and its initial controls.
     pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(WatershedState::default())),
@@ -43,16 +45,19 @@ impl WatershedView {
         }
     }
 
+    /// Start receiving backend state updates for this tool view.
     fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
+    /// Send the opposite enabled state to the backend.
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
+    /// Send the updated parameters to the backend.
     fn update_parameters(&self, sigma: f32, min_distance: u32) {
         if let Err(e) = self
             .base
@@ -64,14 +69,17 @@ impl WatershedView {
         }
     }
 
+    /// Apply the new sigma while retaining the other settings.
     fn adjust_sigma(&self, new_sigma: f32, current_min_distance: u32) {
         self.update_parameters(new_sigma, current_min_distance);
     }
 
+    /// Apply the new min distance while retaining the other settings.
     fn adjust_min_distance(&self, current_sigma: f32, new_min_distance: u32) {
         self.update_parameters(current_sigma, new_min_distance);
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &WatershedToggleActivity,
@@ -88,6 +96,7 @@ impl WatershedView {
     }
 
     // Status component showing enabled/disabled state
+    /// Build the status for the watershed view.
     fn render_status(state: &WatershedState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
@@ -105,6 +114,7 @@ impl WatershedView {
     }
 
     // Sigma control component
+    /// Build the sigma control for the watershed view.
     fn render_sigma_control(
         &self,
         _cx: &mut Context<Self>,
@@ -117,6 +127,7 @@ impl WatershedView {
     }
 
     // Min Distance control component
+    /// Build the min distance control for the watershed view.
     fn render_min_distance_control(
         &self,
         _cx: &mut Context<Self>,
@@ -129,6 +140,7 @@ impl WatershedView {
     }
 
     // Preset button component
+    /// Build the preset button for the watershed view.
     fn render_preset_button(
         label: String,
         sigma: f32,
@@ -151,6 +163,7 @@ impl WatershedView {
     }
 
     // Presets section component
+    /// Build the presets section for the watershed view.
     fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -185,6 +198,7 @@ impl WatershedView {
     }
 
     // Controls section component
+    /// Build the controls section for the watershed view.
     fn render_controls_section(
         &self,
         cx: &mut Context<Self>,
@@ -204,18 +218,22 @@ actions!([WatershedToggleActivity]);
 impl FrontendMessageHandler for WatershedView {
     type State = WatershedState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &crate::tools::ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(tool_state: ToolState) -> Option<Self::State> {
         match tool_state {
             ToolState::WatershedState(s) => Some(s),
@@ -223,6 +241,7 @@ impl FrontendMessageHandler for WatershedView {
         }
     }
 
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, new_state: &WatershedState, cx: &mut Context<Self>) {
         if let Some(ref ctrl) = self.sigma_control {
             ctrl.update(cx, |c, cx| {
@@ -245,6 +264,7 @@ impl FrontendMessageHandler for WatershedView {
 }
 
 impl Render for WatershedView {
+    /// Build the watershed view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state.clone(),
@@ -293,6 +313,7 @@ impl Render for WatershedView {
 }
 
 impl ToolFrontend for WatershedView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;

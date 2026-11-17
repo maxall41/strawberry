@@ -67,6 +67,7 @@ impl GpuColorspaceConverter {
         }
     }
 
+    /// Swap the red and blue channels of a single image on the GPU.
     async fn convert_bgra_to_rgba_single(&self, image: &RgbaImage) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
         let pixel_count = crate::pixel_count(width, height)?;
@@ -121,6 +122,7 @@ impl GpuColorspaceConverter {
         Ok(result_image)
     }
 
+    /// Convert BGRA tiles to RGBA and merge them into the full image.
     async fn convert_bgra_to_rgba_tiled(
         &self,
         image: &RgbaImage,

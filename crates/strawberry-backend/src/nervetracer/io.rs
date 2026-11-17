@@ -86,6 +86,7 @@ pub struct PointElement {
 }
 
 impl Default for SampleSpacing {
+    /// Create the default values for this type.
     fn default() -> Self {
         Self {
             x: 1.0,
@@ -97,6 +98,7 @@ impl Default for SampleSpacing {
 }
 
 impl Default for ImageSize {
+    /// Create the default values for this type.
     fn default() -> Self {
         Self {
             width: 0,
