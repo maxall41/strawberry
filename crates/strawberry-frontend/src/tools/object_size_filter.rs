@@ -31,6 +31,7 @@ pub struct ObjectSizeFilterView {
 actions!([ObjectSizeFilterToggleActivity]);
 
 impl Focusable for ObjectSizeFilterView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
@@ -45,6 +46,7 @@ impl ObjectSizeFilterView {
         (ObjectSizeFilterMode::RemoveLargerThan, "Remove larger than"),
     ];
 
+    /// Create the object size filter tool view and its initial controls.
     pub fn new(id: ToolId, sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(ObjectSizeFilterState::default())),
@@ -54,18 +56,21 @@ impl ObjectSizeFilterView {
         }
     }
 
+    /// Send a settings message to this tool’s backend instance.
     fn send(&self, message: PipelineObjectMessage) {
         if let Err(error) = self.base.send_to_backend(message) {
             eprintln!("Failed to update Object Size Filter: {error}");
         }
     }
 
+    /// Send the selected processing mode to the backend.
     fn set_mode(&self, mode: ObjectSizeFilterMode) {
         self.send(PipelineObjectMessage::ObjectSizeFilterMessage(
             ObjectSizeFilterMessage::SetMode(mode),
         ));
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &ObjectSizeFilterToggleActivity,
@@ -80,6 +85,7 @@ impl ObjectSizeFilterView {
         let _ = self.base.set_enabled(!enabled);
     }
 
+    /// Build the modes for the object size filter view.
     fn render_modes(
         &self,
         mode: ObjectSizeFilterMode,
@@ -124,18 +130,22 @@ impl ObjectSizeFilterView {
 impl FrontendMessageHandler for ObjectSizeFilterView {
     type State = ObjectSizeFilterState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(state: ToolState) -> Option<Self::State> {
         match state {
             ToolState::ObjectSizeFilterState(state) => Some(state),
@@ -143,6 +153,7 @@ impl FrontendMessageHandler for ObjectSizeFilterView {
         }
     }
 
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, state: &Self::State, cx: &mut Context<Self>) {
         if let Some(control) = &self.size_control {
             control.update(cx, |control, cx| {
@@ -154,6 +165,7 @@ impl FrontendMessageHandler for ObjectSizeFilterView {
 }
 
 impl Render for ObjectSizeFilterView {
+    /// Build the object size filter view and its interaction handlers.
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self
             .state
@@ -188,6 +200,7 @@ impl Render for ObjectSizeFilterView {
 }
 
 impl ToolFrontend for ObjectSizeFilterView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;

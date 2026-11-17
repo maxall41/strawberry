@@ -24,6 +24,7 @@ enum FilterOperation {
 }
 
 impl FilterOperation {
+    /// Return the shader operation identifier for this filter.
     const fn code(self) -> u32 {
         match self {
             Self::Channel => 0,
@@ -85,6 +86,7 @@ impl GpuFloatFilters {
             membrane_kernels: membrane_kernels(),
         })
     }
+    /// Dispatch a floating-point filter and read back its output planes.
     async fn run(
         &self,
         (width, height): (u32, u32),
@@ -341,6 +343,7 @@ impl GpuFloatFilters {
     }
 }
 
+/// Build rotated line-kernel offsets for the membrane projection filters.
 fn membrane_kernels() -> Vec<f32> {
     let mut kernels = Vec::new();
     for angle in 0..30 {

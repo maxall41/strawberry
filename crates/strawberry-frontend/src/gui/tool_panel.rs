@@ -11,12 +11,14 @@ pub struct ListFocus<K> {
 }
 
 impl<K: Copy + Eq + Hash> ListFocus<K> {
+    /// Create `ListFocus` with its initial state and configuration.
     pub fn new() -> Self {
         Self {
             handles: RefCell::new(HashMap::new()),
         }
     }
 
+    /// Keep focus handles for the supplied IDs and discard removed entries.
     pub fn sync(&self, ids: &[K], cx: &App) {
         let current_ids: HashSet<_> = ids.iter().copied().collect();
         let mut handles = self.handles.borrow_mut();
@@ -26,6 +28,7 @@ impl<K: Copy + Eq + Hash> ListFocus<K> {
         }
     }
 
+    /// Return or create the focus handle for an item.
     pub fn handle(&self, id: K, cx: &App) -> FocusHandle {
         self.handles
             .borrow_mut()
@@ -34,11 +37,13 @@ impl<K: Copy + Eq + Hash> ListFocus<K> {
             .clone()
     }
 
+    /// Move keyboard focus to the requested item.
     pub fn focus(&self, id: K, window: &mut Window, cx: &mut App) {
         let focus = self.handle(id, cx);
         focus.focus(window, cx);
     }
 
+    /// Find the position of the currently focused item.
     pub fn focused_index(&self, ids: &[K], window: &Window) -> Option<usize> {
         let handles = self.handles.borrow();
         ids.iter().position(|id| {
@@ -56,6 +61,7 @@ pub enum ListDirection {
 }
 
 impl ListDirection {
+    /// Recognize an unmodified up or down navigation key.
     pub fn from_key(event: &gpui::KeyDownEvent) -> Option<Self> {
         let keystroke = &event.keystroke;
         if keystroke.modifiers.modified() {
@@ -69,6 +75,7 @@ impl ListDirection {
     }
 }
 
+/// Find the next list position, wrapping at either end.
 pub fn next_list_index(
     current: Option<usize>,
     len: usize,
@@ -94,6 +101,7 @@ pub fn next_list_index(
     })
 }
 
+/// Build the shared inspector panel container.
 pub fn panel() -> Div {
     div()
         .flex()
@@ -107,6 +115,7 @@ pub fn panel() -> Div {
         .bg(theme::WINDOW_BG)
 }
 
+/// Build a themed inspector section with a text heading.
 pub fn section(title: &'static str) -> Div {
     section_with_header(
         div()
@@ -116,6 +125,7 @@ pub fn section(title: &'static str) -> Div {
     )
 }
 
+/// Build a themed inspector section with a custom header.
 pub fn section_with_header(header: impl IntoElement) -> Div {
     div()
         .flex()
@@ -132,6 +142,7 @@ pub fn section_with_header(header: impl IntoElement) -> Div {
         .child(header)
 }
 
+/// Build the container for a segmented control.
 pub fn segmented() -> Div {
     div()
         .flex()
@@ -141,6 +152,7 @@ pub fn segmented() -> Div {
         .bg(theme::SURFACE_DEEP)
 }
 
+/// List embedded application assets matching the path.
 pub fn list(id: impl Into<ElementId>, scroll: &ScrollHandle) -> Stateful<Div> {
     let scroll = scroll.clone();
     div()
@@ -179,6 +191,7 @@ pub fn list_for_tool(
     })
 }
 
+/// Build a themed inspector list row.
 pub fn row() -> Div {
     div()
         .flex()
@@ -194,6 +207,7 @@ pub fn row() -> Div {
         .bg(theme::SURFACE_DEEP)
 }
 
+/// Build a placeholder for an empty inspector list.
 pub fn empty(label: &'static str) -> Div {
     div()
         .flex_none()
@@ -203,6 +217,7 @@ pub fn empty(label: &'static str) -> Div {
         .child(label)
 }
 
+/// Build a container for related file action buttons.
 pub fn file_actions() -> Div {
     div().flex().gap_2().min_w_0()
 }

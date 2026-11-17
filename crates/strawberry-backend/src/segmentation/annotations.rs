@@ -5,6 +5,7 @@ use strawberry_types::{AnnotationKind, AnnotationStroke, BgraColor, BrushRadius,
 
 const MASK_TILE_SIZE: u32 = 256;
 
+/// Visit clipped horizontal spans covered by a circular brush.
 fn brush_spans(
     width: u32,
     height: u32,
@@ -41,6 +42,7 @@ fn brush_spans(
     }
 }
 
+/// Interpolate brush points and return the range of appended positions.
 pub fn append_stroke_points(
     points: &mut Arc<Vec<(u32, u32)>>,
     (x, y): (u32, u32),
@@ -82,6 +84,7 @@ pub fn append_stroke_points(
     first_new..points.len()
 }
 
+/// Rasterize ordered paint and eraser strokes into scaled class labels.
 pub(super) fn rasterize_labels<'a>(
     (source_width, source_height): (u32, u32),
     (width, height): (u32, u32),
@@ -156,10 +159,12 @@ pub struct AnnotationMask {
 }
 
 impl AnnotationMask {
+    /// Remove all annotation mask tiles.
     pub(crate) fn clear(&mut self) {
         self.tiles.clear();
     }
 
+    /// Paint brush points into the affected annotation mask tiles.
     pub(crate) fn paint(
         &mut self,
         (width, height): (u32, u32),
@@ -198,6 +203,7 @@ impl AnnotationMask {
         }
     }
 
+    /// Rebuild mask tiles from strokes while reusing unchanged tile images.
     pub(crate) fn rebuild<'a>(
         &mut self,
         dimensions: (u32, u32),
@@ -217,6 +223,7 @@ impl AnnotationMask {
         *self = mask;
     }
 
+    /// Iterate over mask tile origins and their images.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&(u32, u32), &Arc<RgbaImage>)> {
         self.tiles.iter()
     }

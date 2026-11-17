@@ -24,14 +24,17 @@ pub struct Compositor {
 impl ToolBackend for Compositor {
     impl_tool_backend_basics!(Compositor);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::CompositorState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Compositor
     }
 
+    /// Composite enabled input layers into a single BGRA image.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         self.state.real_layers_len = input.len();
 
@@ -59,6 +62,7 @@ impl ToolBackend for Compositor {
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::CompositorMessage(message)) = message {
             match message {

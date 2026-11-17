@@ -32,6 +32,7 @@ pub struct GpuImageProcessor {
     errors: GpuErrors,
 }
 
+/// Calculate the image pixel count with checked dimension conversion.
 pub(crate) fn pixel_count(width: u32, height: u32) -> Result<usize> {
     Ok(usize::try_from(
         u64::from(width)
@@ -40,6 +41,7 @@ pub(crate) fn pixel_count(width: u32, height: u32) -> Result<usize> {
     )?)
 }
 
+/// Calculate a GPU buffer size, rejecting multiplication overflow.
 pub(crate) fn buffer_size(pixel_count: usize, bytes_per_pixel: u64) -> Result<u64> {
     u64::try_from(pixel_count)?
         .checked_mul(bytes_per_pixel)
@@ -109,6 +111,7 @@ impl GpuImageProcessor {
 
     // The closure is deliberately synchronous: wgpu 30 error scopes are thread-local
     // and !Send. All guards are consumed before the first suspension point.
+    /// Run a synchronous GPU operation and collect scoped errors before returning its result.
     pub(crate) async fn checked<T>(
         &self,
         operation: &str,
@@ -140,6 +143,7 @@ impl GpuImageProcessor {
         result
     }
 
+    /// Create a shader module and report GPU validation or allocation failures.
     pub(crate) async fn create_shader_module(
         &self,
         descriptor: wgpu::ShaderModuleDescriptor<'_>,
@@ -149,6 +153,7 @@ impl GpuImageProcessor {
             .await
     }
 
+    /// Create a compute pipeline through the checked GPU error scopes.
     pub(crate) async fn create_compute_pipeline(
         &self,
         descriptor: &wgpu::ComputePipelineDescriptor<'_>,
@@ -160,6 +165,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Create a bind group layout through the checked GPU error scopes.
     pub(crate) async fn create_bind_group_layout(
         &self,
         descriptor: &wgpu::BindGroupLayoutDescriptor<'_>,
@@ -171,6 +177,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Create a pipeline layout through the checked GPU error scopes.
     pub(crate) async fn create_pipeline_layout(
         &self,
         descriptor: &wgpu::PipelineLayoutDescriptor<'_>,
@@ -181,6 +188,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Retrieve a compute pipeline binding layout while checking GPU errors.
     pub(crate) async fn get_bind_group_layout(
         &self,
         pipeline: &wgpu::ComputePipeline,
@@ -192,6 +200,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Create a bind group through the checked GPU error scopes.
     pub(crate) async fn create_bind_group(
         &self,
         descriptor: &wgpu::BindGroupDescriptor<'_>,
@@ -203,6 +212,7 @@ impl GpuImageProcessor {
     }
 
     // Convenience for consecutive buffer bindings starting at zero.
+    /// Bind entire buffers at consecutive binding indices starting at zero.
     pub(crate) async fn create_buffer_bind_group(
         &self,
         pipeline: &wgpu::ComputePipeline,
@@ -228,6 +238,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Allocate a GPU buffer through the checked error scopes.
     pub(crate) async fn create_buffer(
         &self,
         descriptor: &wgpu::BufferDescriptor<'_>,
@@ -238,6 +249,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Allocate and initialize a GPU buffer through the checked error scopes.
     pub(crate) async fn create_buffer_init(
         &self,
         descriptor: &wgpu::util::BufferInitDescriptor<'_>,
@@ -297,6 +309,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Create a command encoder through the checked GPU error scopes.
     pub(crate) async fn create_command_encoder(
         &self,
         descriptor: &wgpu::CommandEncoderDescriptor<'_>,
@@ -331,6 +344,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Finish and submit encoded GPU commands while checking submission errors.
     pub(crate) async fn submit(&self, encoder: wgpu::CommandEncoder) -> Result<()> {
         self.checked("Submit GPU commands", || {
             self.queue.submit([encoder.finish()]);
@@ -339,6 +353,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Encode a checked copy between the beginnings of two GPU buffers.
     pub(crate) async fn copy_buffer(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -353,6 +368,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Wait for GPU work to complete and report polling or device errors.
     pub(crate) async fn poll(&self) -> Result<()> {
         self.checked("Wait for GPU completion", || {
             self.device
@@ -370,6 +386,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Map a staging buffer, copy its typed values, and unmap it on completion or cancellation.
     pub(crate) async fn read_mapped_buffer<T: bytemuck::Pod + Send>(
         &self,
         staging: &wgpu::Buffer,
@@ -423,6 +440,7 @@ impl GpuImageProcessor {
         .await
     }
 
+    /// Copy GPU output into a staging buffer and read its typed values.
     pub(crate) async fn read_buffer<T: bytemuck::Pod + Send>(
         &self,
         output: &wgpu::Buffer,
@@ -469,6 +487,7 @@ struct UnmapOnDrop<'a> {
     buffer: &'a wgpu::Buffer,
 }
 impl Drop for UnmapOnDrop<'_> {
+    /// Unmap the readback buffer while suppressing secondary cleanup validation errors.
     fn drop(&mut self) {
         // A failed mapping is already idle, and unmap then produces a secondary
         // validation error. Cancellation races with that completion, so cleanup

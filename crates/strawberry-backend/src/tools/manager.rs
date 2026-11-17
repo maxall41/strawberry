@@ -17,6 +17,7 @@ pub struct ToolInstance {
     tool_state_sender: watch::Sender<ToolState>,
 }
 impl ToolInstance {
+    /// Subscribe to the latest state of this tool instance.
     #[must_use]
     pub fn subscribe_state(&self) -> watch::Receiver<ToolState> {
         self.tool_state_sender.subscribe()
@@ -24,11 +25,13 @@ impl ToolInstance {
 }
 impl std::ops::Deref for ToolInstance {
     type Target = dyn ToolBackend;
+    /// Borrow the wrapped tool backend.
     fn deref(&self) -> &Self::Target {
         self.backend.as_ref()
     }
 }
 impl std::ops::DerefMut for ToolInstance {
+    /// Borrow the wrapped tool backend mutably.
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.backend.as_mut()
     }
@@ -44,6 +47,7 @@ pub struct ToolManager {
     processing_order: Vec<ToolId>,
 }
 impl ToolManager {
+    /// Create an empty tool manager sharing the supplied GPU processor.
     #[must_use]
     pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
         Self {
@@ -55,10 +59,12 @@ impl ToolManager {
             processing_order: vec![],
         }
     }
+    /// Subscribe to ordered tool summaries and the selected instance.
     #[must_use]
     pub fn subscribe_pipeline_state(&self) -> watch::Receiver<PipelineState> {
         self.pipeline_state_sender.subscribe()
     }
+    /// Allocate a unique tool identity or report exhaustion.
     fn allocate_id(&mut self) -> anyhow::Result<ToolId> {
         let id = ToolId(self.next_tool_id);
         self.next_tool_id = self
@@ -112,6 +118,7 @@ impl ToolManager {
         self.select(Some(id));
         Ok(id)
     }
+    /// Select an existing tool and cancel the previous selection's interaction.
     pub fn select(&mut self, id: Option<ToolId>) {
         if id.is_some_and(|id| !self.tools.contains_key(&id)) {
             return;
@@ -123,12 +130,14 @@ impl ToolManager {
             self.selected_tool = id;
         }
     }
+    /// Remove a tool instance and clear its selection when needed.
     pub fn remove_tool(&mut self, id: ToolId) {
         if self.selected_tool == Some(id) {
             self.select(None);
         }
         self.tools.shift_remove(&id);
     }
+    /// Move a tool before another instance, or to the end of the stack.
     pub fn move_tool(&mut self, id: ToolId, before: Option<ToolId>) {
         let Some(from) = self.tools.get_index_of(&id) else {
             return;
@@ -151,6 +160,7 @@ impl ToolManager {
         };
         self.tools.move_index(from, to);
     }
+    /// Request processing from the first changed enabled tool position.
     pub fn reconcile(&mut self, pending: &mut PendingProcessing) {
         let current: Vec<_> = self
             .tools
@@ -174,6 +184,7 @@ impl ToolManager {
         }
         self.processing_order = current.into_iter().map(|(_, id)| id).collect();
     }
+    /// Publish changed tool snapshots and pipeline summaries to subscribers.
     pub fn publish(&mut self) -> bool {
         let mut changed = false;
         for tool in self.tools.values_mut() {

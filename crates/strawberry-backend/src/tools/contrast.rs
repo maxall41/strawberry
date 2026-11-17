@@ -24,14 +24,17 @@ pub struct Contrast {
 impl ToolBackend for Contrast {
     impl_tool_backend_basics!(Contrast);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::ContrastState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Contrast
     }
 
+    /// Apply the configured contrast adjustment to each input layer.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = Arc::new(
@@ -43,6 +46,7 @@ impl ToolBackend for Contrast {
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::ContrastMessage(message)) = message {
             match message {

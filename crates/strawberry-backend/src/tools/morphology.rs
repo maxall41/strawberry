@@ -27,14 +27,17 @@ pub struct Morphology {
 impl ToolBackend for Morphology {
     impl_tool_backend_basics!(Morphology);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::MorphologyState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Morphology
     }
 
+    /// Apply the selected morphological operation to each input layer.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = Arc::new(
@@ -46,6 +49,7 @@ impl ToolBackend for Morphology {
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::MorphologyMessage(message)) = message {
             match message {

@@ -11,6 +11,7 @@ pub struct Polyline {
 }
 
 impl Polyline {
+    /// Create `Polyline` with its initial state and configuration.
     pub const fn new(points: Vec<(f32, f32)>, color: Rgba, stroke_width: Pixels) -> Self {
         Self {
             points,
@@ -19,6 +20,7 @@ impl Polyline {
             image_dimensions: None,
         }
     }
+    /// Set image dimensions for scaling pixel coordinates into the canvas.
     pub const fn with_image_dimensions(mut self, width: u32, height: u32) -> Self {
         self.image_dimensions = Some((width, height));
         self
@@ -53,6 +55,7 @@ fn build_window_path(
 impl IntoElement for Polyline {
     type Element = gpui::Div;
 
+    /// Convert this component into its GPUI element.
     fn into_element(self) -> Self::Element {
         let Self {
             points,
@@ -90,6 +93,7 @@ impl IntoElement for Polyline {
 }
 
 impl RenderOnce for Polyline {
+    /// Build the polyline view and its interaction handlers.
     fn render(self, _window: &mut Window, _cx: &mut gpui::App) -> impl IntoElement {
         self.into_element()
     }
@@ -100,6 +104,7 @@ mod tests {
     use super::*;
 
     #[test]
+    /// Verify that trace paths follow image pixel centers across viewport transforms.
     fn traces_follow_pixel_centers_through_zoom_pan_and_canvas_offsets() -> anyhow::Result<()> {
         for origin in [point(px(0.), px(0.)), point(px(120.), px(44.))] {
             for zoom in [0.25, 1.0, 2.5, 10.0, 50.0] {
@@ -128,6 +133,7 @@ mod tests {
     }
 
     #[test]
+    /// Verify that a polyline needs at least two points to produce a path.
     fn incomplete_polylines_do_not_paint() {
         let origin = point(px(120.), px(44.));
         assert!(build_window_path(&[], origin, px(2.)).is_none());

@@ -9,6 +9,7 @@ pub struct ToolBase {
     pub processor_spawned: bool,
 }
 impl ToolBase {
+    /// Create `ToolBase` with its initial state and configuration.
     pub const fn new(command_sender: CommandSender, id: ToolId, focus_handle: FocusHandle) -> Self {
         Self {
             command_sender,
@@ -18,6 +19,7 @@ impl ToolBase {
             processor_spawned: false,
         }
     }
+    /// Request a watched state subscription for this tool instance.
     pub fn connect(&mut self) -> bool {
         let (reply, receiver) = oneshot::channel();
         self.subscription = Some(receiver);
@@ -25,6 +27,7 @@ impl ToolBase {
             .send(PipelineCommand::SubscribeTool { id: self.id, reply })
             .is_ok()
     }
+    /// Queue an enabled-state change for this tool instance.
     pub fn set_enabled(&self, enabled: bool) -> Result<(), String> {
         self.command_sender
             .send(PipelineCommand::SetEnabled {
@@ -33,11 +36,13 @@ impl ToolBase {
             })
             .map_err(|e| e.to_string())
     }
+    /// Select this tool instance in the backend.
     pub fn select(&self) {
         let _ = self
             .command_sender
             .send(PipelineCommand::SelectTool(Some(self.id)));
     }
+    /// Queue a message addressed to this tool instance.
     pub fn send_to_backend(&self, message: PipelineObjectMessage) -> Result<(), String> {
         self.command_sender
             .send(PipelineCommand::ToolMessage {

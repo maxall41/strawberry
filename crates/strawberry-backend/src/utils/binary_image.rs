@@ -7,20 +7,24 @@ pub struct BinaryImageWrapper<'a> {
 }
 
 impl<'a> BinaryImageWrapper<'a> {
+    /// Construct the tool with its initial settings and required resources.
     pub(crate) const fn new(image: &'a RgbaImage, threshold: u8) -> Self {
         Self { image, threshold }
     }
 }
 
 impl Image for BinaryImageWrapper<'_> {
+    /// Return the binary image width in pixels.
     fn width(&self) -> u32 {
         self.image.width()
     }
 
+    /// Return the binary image height in pixels.
     fn height(&self) -> u32 {
         self.image.height()
     }
 
+    /// Return whether the given position contains a set pixel.
     fn has_pixel(&self, x: u32, y: u32) -> bool {
         if x >= self.width() || y >= self.height() {
             return false;

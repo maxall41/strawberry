@@ -24,14 +24,17 @@ pub struct GaussianBlur {
 impl ToolBackend for GaussianBlur {
     impl_tool_backend_basics!(GaussianBlur);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::GaussianBlurState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::GaussianBlur
     }
 
+    /// Apply the configured Gaussian blur to each input layer.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             *image = Arc::new(self.processor.apply_blur(image, self.state.sigma).await?);
@@ -39,6 +42,7 @@ impl ToolBackend for GaussianBlur {
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::GaussianBlurMessage(message)) = message {
             match message {

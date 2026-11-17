@@ -48,6 +48,7 @@ impl GpuWatershed {
         })
     }
 
+    /// Create the GPU pipeline used to locate watershed markers.
     async fn create_watershed_pipeline(gpu: &GpuImageProcessor) -> Result<wgpu::ComputePipeline> {
         let shader = gpu
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -69,6 +70,7 @@ impl GpuWatershed {
         .await
     }
 
+    /// Create the initialization, propagation, and output pipelines for distance transforms.
     async fn create_distance_pipelines(
         gpu: &GpuImageProcessor,
     ) -> Result<(
@@ -190,6 +192,7 @@ impl GpuWatershed {
         }
     }
 
+    /// Find distance peaks and flood their regions to segment a single image.
     async fn apply_watershed_single(
         &self,
         image: &RgbaImage,
@@ -213,6 +216,7 @@ impl GpuWatershed {
         Self::to_rgba_image(&labels, width, height)
     }
 
+    /// Render nonzero labels as opaque white and watershed boundaries as opaque black.
     fn to_rgba_image(labels: &[u32], width: u32, height: u32) -> Result<RgbaImage> {
         anyhow::ensure!(
             labels.len() == crate::pixel_count(width, height)?,
@@ -229,6 +233,7 @@ impl GpuWatershed {
         Ok(result)
     }
 
+    /// Segment overlapping image tiles and merge their core regions.
     async fn apply_watershed_tiled(
         &self,
         image: &RgbaImage,
@@ -252,6 +257,7 @@ impl GpuWatershed {
         merge_rgba_tiles(&processed_tiles, full_width, full_height)
     }
 
+    /// Threshold BGRA luminance into a foreground mask for watershed processing.
     fn to_binary_mask(image: &RgbaImage) -> Vec<bool> {
         image
             .pixels()
@@ -266,6 +272,7 @@ impl GpuWatershed {
             .collect()
     }
 
+    /// Compute foreground distances with GPU seed propagation and read back the result.
     async fn gpu_distance_transform(
         &self,
         binary: &[bool],
@@ -332,6 +339,7 @@ impl GpuWatershed {
             .await
     }
 
+    /// Allocate mask, seed, distance, and staging buffers for the distance transform.
     async fn create_distance_buffers(
         &self,
         binary_u32: &[u32],
@@ -395,6 +403,7 @@ impl GpuWatershed {
         })
     }
 
+    /// Bind distance-transform resources and execute one propagation or conversion pass.
     async fn run_distance_pass(
         &self,
         pipeline: &wgpu::ComputePipeline,
@@ -453,6 +462,7 @@ impl GpuWatershed {
         Ok(())
     }
 
+    /// Read the GPU distance buffer into a vector of floating-point distances.
     async fn read_distance_results(
         &self,
         distance_buffer: &wgpu::Buffer,
@@ -468,6 +478,7 @@ impl GpuWatershed {
             .await
     }
 
+    /// Detect watershed markers from the distance map using the GPU peak pipeline.
     async fn find_peaks_gpu(
         &self,
         distance: &[f32],
@@ -562,6 +573,7 @@ impl GpuWatershed {
         self.gpu.read_mapped_buffer(&staging_buffer).await
     }
 
+    /// Flood marker labels by distance priority while preserving boundaries between regions.
     fn watershed_transform(
         distance_map: &[f32],
         local_maxima_points: &[u32],
@@ -627,6 +639,7 @@ impl GpuWatershed {
         Ok(labels)
     }
 
+    /// Iterate over valid eight-connected neighbors of a flattened pixel index.
     fn neighbor_indices(index: usize, width: usize, height: usize) -> impl Iterator<Item = usize> {
         const OFFSETS: [(isize, isize); 8] = [
             (-1, -1),
@@ -649,6 +662,7 @@ impl GpuWatershed {
         })
     }
 
+    /// Queue unlabeled foreground neighbors with the current watershed source label.
     fn expand_to_neighbors(
         labels: &mut [u32],
         priority_queue: &mut BinaryHeap<QueueItem>,
@@ -699,6 +713,7 @@ struct QueueItem {
 }
 
 impl PartialEq for QueueItem {
+    /// Compare queue entries by distance value and insertion age.
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value && self.age == other.age
     }
@@ -707,12 +722,14 @@ impl PartialEq for QueueItem {
 impl Eq for QueueItem {}
 
 impl PartialOrd for QueueItem {
+    /// Compare entries using watershed priority and insertion age.
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for QueueItem {
+    /// Prioritize larger distance values, breaking ties in favor of older entries.
     fn cmp(&self, other: &Self) -> Ordering {
         self.value
             .partial_cmp(&other.value)

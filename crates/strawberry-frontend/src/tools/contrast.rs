@@ -26,12 +26,14 @@ pub struct ContrastView {
 }
 
 impl Focusable for ContrastView {
+    /// Return the focus handle used for keyboard interaction.
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.base.focus_handle.clone()
     }
 }
 
 impl ContrastView {
+    /// Create the contrast tool view and its initial controls.
     pub fn new(id: ToolId, command_sender: CommandSender, cx: &App) -> Self {
         Self {
             state: Arc::new(RwLock::new(ContrastState::default())),
@@ -41,16 +43,19 @@ impl ContrastView {
         }
     }
 
+    /// Start receiving backend state updates for this tool view.
     fn process_messages(&mut self, window: &Window, cx: &Context<Self>) {
         spawn_message_processor(self, window, cx);
     }
 
+    /// Send the opposite enabled state to the backend.
     fn toggle_enabled(&self, current_value: bool, _window: &Window, _cx: &mut Context<Self>) {
         if let Err(e) = self.base.set_enabled(!current_value) {
             eprintln!("Failed to send toggle enabled command: {e}");
         }
     }
 
+    /// Send the updated min max to the backend.
     fn update_min_max(&self, min: f32, max: f32) {
         if let Err(e) = self
             .base
@@ -62,6 +67,7 @@ impl ContrastView {
         }
     }
 
+    /// Apply the new min value while retaining the other settings.
     fn adjust_min_value(&self, new_min: f32) {
         let current_state = self
             .state
@@ -73,6 +79,7 @@ impl ContrastView {
         self.update_min_max(new_min, max_val);
     }
 
+    /// Apply the new max value while retaining the other settings.
     fn adjust_max_value(&self, new_max: f32) {
         let current_state = self
             .state
@@ -85,6 +92,7 @@ impl ContrastView {
     }
 
     // Status component showing enabled/disabled state
+    /// Build the status for the contrast view.
     fn render_status(state: &ContrastState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let is_enabled = state.is_enabled;
         ToggleButton::new(
@@ -102,6 +110,7 @@ impl ContrastView {
     }
 
     // Min value control component
+    /// Build the min control for the contrast view.
     fn render_min_control(
         &self,
         _cx: &mut Context<Self>,
@@ -114,6 +123,7 @@ impl ContrastView {
     }
 
     // Max value control component
+    /// Build the max control for the contrast view.
     fn render_max_control(
         &self,
         _cx: &mut Context<Self>,
@@ -126,6 +136,7 @@ impl ContrastView {
     }
 
     // Preset button component
+    /// Build the preset button for the contrast view.
     fn render_preset_button(
         label: String,
         min: f32,
@@ -147,6 +158,7 @@ impl ContrastView {
     }
 
     // Presets section component
+    /// Build the presets section for the contrast view.
     fn render_presets_section(cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .flex()
@@ -177,6 +189,7 @@ impl ContrastView {
             )
     }
 
+    /// Handle the keyboard action to toggle activity.
     fn toggle_activity_action(
         &mut self,
         _: &ContrastToggleActivity,
@@ -193,6 +206,7 @@ impl ContrastView {
     }
 
     // Controls section component
+    /// Build the controls section for the contrast view.
     fn render_controls_section(
         &self,
         cx: &mut Context<Self>,
@@ -210,18 +224,22 @@ impl ContrastView {
 impl FrontendMessageHandler for ContrastView {
     type State = ContrastState;
 
+    /// Return the shared snapshot of this tool’s backend state.
     fn state_arc(&self) -> Arc<RwLock<Self::State>> {
         self.state.clone()
     }
 
+    /// Return the shared tool connection and instance metadata.
     fn base(&self) -> &crate::tools::ToolBase {
         &self.base
     }
 
+    /// Return mutable access to the tool connection and subscription state.
     fn base_mut(&mut self) -> &mut crate::tools::ToolBase {
         &mut self.base
     }
 
+    /// Extract this tool’s settings from a backend state update.
     fn extract_state(tool_state: ToolState) -> Option<Self::State> {
         match tool_state {
             ToolState::ContrastState(s) => Some(s),
@@ -229,6 +247,7 @@ impl FrontendMessageHandler for ContrastView {
         }
     }
 
+    /// Synchronize local controls with the latest backend settings.
     fn on_state_changed(&mut self, new_state: &ContrastState, cx: &mut Context<Self>) {
         if let Some(ref ctrl) = self.min_control {
             ctrl.update(cx, |c, cx| {
@@ -248,6 +267,7 @@ impl FrontendMessageHandler for ContrastView {
 actions!([ContrastToggleActivity]);
 
 impl Render for ContrastView {
+    /// Build the contrast view and its interaction handlers.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = match self.state.read() {
             Ok(state) => state,
@@ -296,6 +316,7 @@ impl Render for ContrastView {
 }
 
 impl ToolFrontend for ContrastView {
+    /// Connect the view’s subscriptions and event handlers.
     fn initialize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.base.connect() {
             return;

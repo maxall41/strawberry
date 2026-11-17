@@ -98,6 +98,7 @@ pub enum GroupingMode {
 impl std::str::FromStr for GroupingMode {
     type Err = String;
 
+    /// Parse the requested image grouping mode and its accepted aliases.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "none" => Ok(Self::None),
@@ -119,6 +120,7 @@ pub enum OutputFormat {
 impl std::str::FromStr for OutputFormat {
     type Err = String;
 
+    /// Parse the requested output format and its accepted aliases.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "preserve" => Ok(Self::Preserve),
@@ -131,6 +133,7 @@ impl std::str::FromStr for OutputFormat {
 }
 
 impl OutputFormat {
+    /// Return the filename extension, or an empty string for preserved formats.
     #[must_use]
     pub const fn extension(&self) -> &str {
         match self {
@@ -259,6 +262,7 @@ impl CliProcessor {
         Ok(())
     }
 
+    /// Validate input paths and create required output directories.
     fn validate_args(&self) -> Result<()> {
         if let Some(input) = &self.args.input
             && !input.exists()
@@ -301,6 +305,7 @@ impl CliProcessor {
         Ok(())
     }
 
+    /// Collect matching input images and sort their paths.
     fn discover_images(&self, input_path: &Path) -> Result<Vec<PathBuf>> {
         let mut image_files = Vec::new();
 
@@ -326,6 +331,7 @@ impl CliProcessor {
         Ok(image_files)
     }
 
+    /// Collect matching files from a directory, recursing when requested.
     fn scan_directory(&self, dir_path: &Path, image_files: &mut Vec<PathBuf>) -> Result<()> {
         let entries = fs::read_dir(dir_path)
             .with_context(|| format!("Failed to read directory: {}", dir_path.display()))?;
@@ -348,12 +354,14 @@ impl CliProcessor {
         Ok(())
     }
 
+    /// Check whether the filename matches the configured image filter.
     fn is_image_file(&self, path: &Path) -> bool {
         path.file_name()
             .and_then(|n| n.to_str())
             .is_some_and(|filename| self.regex.is_match(filename))
     }
 
+    /// Group image paths individually, by parent directory, or by regex match.
     fn group_images(&self, image_files: Vec<PathBuf>) -> Result<HashMap<String, Vec<PathBuf>>> {
         let mut groups = HashMap::new();
 
@@ -405,6 +413,7 @@ impl CliProcessor {
         Ok(groups)
     }
 
+    /// Load the pipeline and process each image group through the backend.
     async fn process_groups(
         &self,
         groups: HashMap<String, Vec<PathBuf>>,
@@ -504,6 +513,7 @@ impl CliProcessor {
         Ok(())
     }
 
+    /// Load one image group, await its output frame, and save the result.
     async fn process_group(
         &self,
         group: (&str, &[PathBuf]),
@@ -651,6 +661,7 @@ impl CliProcessor {
         }
     }
 
+    /// Build a group output filename using the configured format, prefix, and suffix.
     fn generate_group_output_filename(&self, group_name: &str, reference_file: &Path) -> String {
         let extension = match &self.args.format {
             OutputFormat::Preserve => reference_file
@@ -678,6 +689,7 @@ impl CliProcessor {
         output_filename
     }
 
+    /// Build an output path preserving input subdirectories and create its parents.
     fn generate_output_filename_with_structure(
         &self,
         input_file: &Path,
@@ -770,6 +782,7 @@ pub async fn run_cli(args: Args) -> Result<()> {
     processor.run().await
 }
 
+/// Parse command-line arguments and run headless image processing.
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();

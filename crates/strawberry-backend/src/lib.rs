@@ -373,6 +373,7 @@ impl Pipeline {
         self.ensure_no_remaining_gpu_errors();
         Ok(())
     }
+    /// Report a file operation result and send its command reply.
     fn complete_operation(
         &self,
         reply: strawberry_types::CommandResult,
@@ -389,6 +390,7 @@ impl Pipeline {
         }
         let _ = reply.send(result.map_err(|error| format!("{error:#}")));
     }
+    /// Load equally sized images as BGRA layers and invalidate previous processing.
     fn load_images(&mut self, files: &[std::path::PathBuf]) -> anyhow::Result<()> {
         use anyhow::{Context as _, ensure};
         ensure!(!files.is_empty(), "No input images provided");
@@ -431,6 +433,7 @@ impl Pipeline {
         self.output_is_current = false;
         Ok(())
     }
+    /// Route canvas input to the selected enabled tool.
     fn route_interaction_input(&mut self, id: Option<ToolId>, input: ToolInput) {
         if id != self.tool_manager.selected_tool {
             return;
@@ -442,18 +445,21 @@ impl Pipeline {
             self.report_error("Canvas input failed", &error);
         }
     }
+    /// Log an error and publish it as frontend feedback.
     fn report_error(&self, context: &str, error: &anyhow::Error) {
         eprintln!("{context}: {error:#}");
         let _ = self
             .output_sender
             .send(FrontendMessage::error(format!("{context}: {error:#}")));
     }
+    /// Mark output stale and discard every tool output cache.
     fn invalidate_output(&mut self) {
         self.output_is_current = false;
         for tool in self.tool_manager.tools.values_mut() {
             tool.invalidate_cached_output();
         }
     }
+    /// Reject GPU failures and invalidate output before returning an error.
     fn ensure_no_stage_gpu_errors(&mut self, operation: &str) -> anyhow::Result<()> {
         if let Err(error) = self.gpu.ensure_device_availability(operation) {
             self.invalidate_output();
@@ -465,6 +471,7 @@ impl Pipeline {
         }
         Ok(())
     }
+    /// Drain uncaptured GPU errors and report them after invalidating output.
     fn ensure_no_remaining_gpu_errors(&mut self) {
         while let Some(error) = self.gpu.take_uncaptured_error() {
             self.invalidate_output();
@@ -472,11 +479,13 @@ impl Pipeline {
             let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
         }
     }
+    /// Publish the merged tool overlays to the frontend.
     fn publish_overlays(&self) {
         let _ = self
             .output_sender
             .send(FrontendMessage::ReturnOverlays(self.collect_overlays()));
     }
+    /// Publish tool events, watched state changes, and updated overlays.
     fn publish_events(&mut self) {
         for (id, tool) in &mut self.tool_manager.tools {
             self.overlays_dirty |= tool.take_overlay_changes();
@@ -497,6 +506,7 @@ impl Pipeline {
             self.publish_overlays();
         }
     }
+    /// Poll background work, reconcile tool changes, and run pending processing.
     async fn flush_processing(&mut self, pending: &mut PendingProcessing) -> anyhow::Result<()> {
         for tool in self.tool_manager.tools.values_mut() {
             if let Err(error) = tool.poll_background() {

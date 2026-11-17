@@ -20,6 +20,7 @@ pub enum MorphologyOperation {
 }
 
 impl MorphologyOperation {
+    /// Return the shader identifier for this morphology operation.
     const fn to_u32(self) -> u32 {
         match self {
             Self::Dilation => 0,
@@ -29,6 +30,7 @@ impl MorphologyOperation {
         }
     }
 
+    /// Check whether this operation requires successive erosion and dilation passes.
     const fn is_two_pass(self) -> bool {
         matches!(self, Self::Opening | Self::Closing)
     }
@@ -115,6 +117,7 @@ impl GpuMorphology {
         }
     }
 
+    /// Bind the image, temporary, and parameter buffers for a morphology pass.
     async fn create_bind_group(
         &self,
         pipeline: &wgpu::ComputePipeline,

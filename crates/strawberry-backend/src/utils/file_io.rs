@@ -2,6 +2,7 @@ use std::{fs::File, path::Path};
 
 use anyhow::{Context, Result};
 
+/// Write artifact bytes to the requested file path.
 pub fn write_artifact(path: &Path, write: impl FnOnce(&mut File) -> Result<()>) -> Result<()> {
     let directory = path
         .parent()

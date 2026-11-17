@@ -27,6 +27,7 @@ pub struct ValidReconcilliationTicket {
 }
 
 impl ReconcilliationTicket {
+    /// Return a validated ticket when a processing index is present.
     #[must_use]
     pub fn validate(&self) -> Option<ValidReconcilliationTicket> {
         self.index.map(|index| ValidReconcilliationTicket { index })
@@ -34,6 +35,7 @@ impl ReconcilliationTicket {
 }
 
 impl ValidReconcilliationTicket {
+    /// Return the validated processing index.
     #[must_use]
     pub const fn take(&self) -> usize {
         self.index
@@ -61,6 +63,7 @@ pub enum BackendToolType {
 }
 
 impl fmt::Display for BackendToolType {
+    /// Format the tool kind using its variant name.
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{self:?}")
     }

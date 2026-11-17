@@ -66,6 +66,7 @@ impl GpuGrayscale {
         }
     }
 
+    /// Convert a single image to grayscale with the GPU pipeline.
     async fn apply_grayscale_single(&self, image: &RgbaImage) -> Result<RgbaImage> {
         let (width, height) = image.dimensions();
         let pixel_count = crate::pixel_count(width, height)?;
@@ -115,6 +116,7 @@ impl GpuGrayscale {
         Ok(result_image)
     }
 
+    /// Convert overlapping image tiles to grayscale and merge their cores.
     async fn apply_grayscale_tiled(
         &self,
         image: &RgbaImage,

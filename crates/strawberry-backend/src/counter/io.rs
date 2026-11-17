@@ -61,6 +61,7 @@ pub struct Marker {
 }
 
 impl From<&CountData> for Marker {
+    /// Convert a count to an XML marker with the default Z coordinate.
     fn from(count_data: &CountData) -> Self {
         Self {
             marker_x: count_data.position.0,
@@ -71,6 +72,7 @@ impl From<&CountData> for Marker {
 }
 
 impl From<&Marker> for CountData {
+    /// Convert an XML marker to a count with a default marker size.
     fn from(marker: &Marker) -> Self {
         Self {
             position: (marker.marker_x, marker.marker_y),
@@ -80,6 +82,7 @@ impl From<&Marker> for CountData {
 }
 
 impl Default for ImageProperties {
+    /// Create the default values for this type.
     fn default() -> Self {
         Self {
             image_filename: "composite.tif".to_string(),

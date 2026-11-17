@@ -72,6 +72,7 @@ impl GpuSobel {
         }
     }
 
+    /// Compute Sobel edges for a single image with the GPU pipeline.
     async fn apply_sobel_single(
         &self,
         image: &RgbaImage,
@@ -132,6 +133,7 @@ impl GpuSobel {
         Ok(result_image)
     }
 
+    /// Compute Sobel edges on overlapping tiles and merge their cores.
     async fn apply_sobel_tiled(
         &self,
         image: &RgbaImage,

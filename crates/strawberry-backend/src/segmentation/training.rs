@@ -12,6 +12,7 @@ pub struct TrainingSample {
     pub(crate) annotations: Vec<(AnnotationKind, AnnotationStroke)>,
 }
 
+/// Train a segmentation model from annotated sample pixels.
 pub async fn train(
     samples: &[TrainingSample],
     class_ids: &[ClassId],
@@ -29,6 +30,7 @@ pub async fn train(
     SegmentationModel::train(features, forest, extractor, &images, &selected, inference).await
 }
 
+/// Rasterize sample annotations and group candidate pixels by class.
 fn collect_candidates(
     samples: &[TrainingSample],
     images: &[Cow<'_, RgbaImage>],
@@ -54,6 +56,7 @@ fn collect_candidates(
     Ok(candidates)
 }
 
+/// Select labeled training pixels with optional class balancing.
 fn select_training_pixels(
     candidates: &[Vec<(usize, u32, u32)>],
     balance_classes: bool,

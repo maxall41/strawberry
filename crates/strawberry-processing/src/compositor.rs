@@ -73,6 +73,7 @@ impl GpuCompositor {
         self.composite_images_direct(images).await
     }
 
+    /// Composite groups of up to seven images, then combine their results.
     async fn composite_images_batched<T: Borrow<RgbaImage> + Sync>(
         &self,
         images: &[T],
@@ -89,6 +90,7 @@ impl GpuCompositor {
         self.composite_images_direct(&batched_results).await
     }
 
+    /// Composite up to seven images in a single GPU dispatch.
     async fn composite_images_direct<T: Borrow<RgbaImage> + Sync>(
         &self,
         images: &[T],

@@ -24,14 +24,17 @@ pub struct Threshold {
 impl ToolBackend for Threshold {
     impl_tool_backend_basics!(Threshold);
 
+    /// Return a snapshot of the tool settings for subscribers.
     fn get_state(&self) -> ToolState {
         ToolState::ThresholdState(self.state.clone())
     }
 
+    /// Return the backend tool kind for this instance.
     fn iam(&self) -> BackendToolType {
         BackendToolType::Threshold
     }
 
+    /// Apply the configured thresholding method to each input layer.
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
             let result = if self.state.auto_threshold {
@@ -48,6 +51,7 @@ impl ToolBackend for Threshold {
         Ok(())
     }
 
+    /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::ThresholdMessage(threshold)) = message {
             match threshold {

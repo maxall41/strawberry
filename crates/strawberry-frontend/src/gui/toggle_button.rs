@@ -17,6 +17,7 @@ pub struct ToggleButton<V: 'static> {
 }
 
 impl<V: 'static> ToggleButton<V> {
+    /// Create `ToggleButton` with its initial state and configuration.
     pub fn new(
         label: String,
         is_enabled: bool,
@@ -33,22 +34,26 @@ impl<V: 'static> ToggleButton<V> {
         }
     }
 
+    /// Set the keyboard shortcut displayed by the toggle button.
     pub fn with_keyboard_shortcut(mut self, shortcut: &str) -> Self {
         self.keyboard_shortcut = Some(shortcut.to_string());
         self
     }
 
+    /// Set the label displayed by the toggle button.
     pub fn with_text(mut self, enabled_text: String, disabled_text: String) -> Self {
         self.enabled_text = enabled_text;
         self.disabled_text = disabled_text;
         self
     }
 
+    /// Remove the toggle button’s outer margin.
     pub const fn with_no_margin(mut self) -> Self {
         self.disable_margin = true;
         self
     }
 
+    /// Build the toggle button view and its interaction handlers.
     pub fn render(self, cx: &Context<V>) -> impl IntoElement + use<V> {
         let label = self.label;
         let is_enabled = self.is_enabled;

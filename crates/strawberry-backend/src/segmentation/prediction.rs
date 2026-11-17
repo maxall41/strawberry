@@ -2,6 +2,7 @@ use anyhow::{Context, Result, ensure};
 use image::RgbaImage;
 use strawberry_types::{BgraColor, RgbColor};
 
+/// Render the most probable class at each pixel using BGRA class colors.
 pub fn render_class_prediction(
     planes: &[image::GrayImage],
     colors: &[BgraColor],
@@ -28,6 +29,7 @@ pub fn render_class_prediction(
     }))
 }
 
+/// Render one class probability plane as a mask with optional thresholding.
 pub fn render_class_mask(
     planes: &[image::GrayImage],
     selected_plane: Option<usize>,
@@ -51,6 +53,7 @@ pub fn render_class_mask(
     }))
 }
 
+/// Validate prediction plane dimensions and return their common size.
 fn plane_dimensions(planes: &[image::GrayImage]) -> Result<(u32, u32)> {
     let dimensions = planes
         .first()

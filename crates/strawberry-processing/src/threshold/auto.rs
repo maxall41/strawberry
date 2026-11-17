@@ -70,6 +70,7 @@ pub(super) fn luminance_histogram(image: &RgbaImage) -> [u64; 256] {
         )
 }
 
+/// Compute the total histogram weight and intensity-weighted sum.
 fn moments(histogram: &[f64; 256]) -> (f64, f64) {
     histogram
         .iter()
@@ -79,6 +80,7 @@ fn moments(histogram: &[f64; 256]) -> (f64, f64) {
         })
 }
 
+/// Choose the threshold that maximizes variance between the two histogram classes.
 fn otsu(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
     // Otsu (1979), equation (14): maximize between-class variance.
     // doi:10.1109/TSMC.1979.4310076. Counts omit the constant factor 1/N².
@@ -104,6 +106,7 @@ fn otsu(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
     threshold
 }
 
+/// Choose a threshold by minimizing fuzzy entropy over the occupied histogram range.
 fn huang(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
     // Huang & Wang (1995), entropy variant, equations (4), (8), (20)–(21).
     // doi:10.1016/0031-3203(94)E0043-K. Use the base minimum-entropy method,
@@ -151,6 +154,7 @@ fn huang(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
     threshold
 }
 
+/// Choose the histogram bin farthest from the peak-to-tail reference line.
 fn triangle(histogram: &[f64; 256], first: u8, last: u8) -> u8 {
     // Zack et al. (1977), Figure 2, doi:10.1177/25.7.70454: maximize distance
     // below the mode-to-baseline line.
