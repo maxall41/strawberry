@@ -60,7 +60,7 @@ pub struct ValueControl {
 pub struct DragDummy {}
 
 impl Render for DragDummy {
-    /// Build the value control view and its interaction handlers.
+    /// Build the value control view
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
     }
