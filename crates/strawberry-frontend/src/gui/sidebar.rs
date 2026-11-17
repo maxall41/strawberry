@@ -64,7 +64,7 @@ struct DraggedTool {
 struct ToolDragPreview(DraggedTool);
 
 impl Render for ToolDragPreview {
-    /// Build the sidebar view and its interaction handlers.
+    /// Build the sidebar view
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w(self.0.width)
