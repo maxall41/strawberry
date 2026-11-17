@@ -185,8 +185,12 @@ impl ToolBackend for NerveTracer {
         self.cache.cached_state = Some(self.state.clone());
     }
 
-    fn invalidate_cache(&mut self) {
+    fn invalidate_cached_output(&mut self) {
         self.cache.invalidate();
+    }
+
+    fn invalidate_cache(&mut self) {
+        self.invalidate_cached_output();
         self.cached_input = None;
     }
 
