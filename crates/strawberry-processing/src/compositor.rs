@@ -24,33 +24,34 @@ pub struct GpuCompositor {
 }
 
 impl GpuCompositor {
-    #[must_use]
-    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Result<Self> {
         // Compute shader for additive blending
         let shader = gpu
-            .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Composite Shader"),
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
                     "shaders/composite.wgsl"
                 ))),
-            });
+            })
+            .await?;
 
-        let compute_pipeline =
-            gpu.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Composite Pipeline"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("main"),
-                    compilation_options: PipelineCompilationOptions::default(),
-                    cache: None,
-                });
+        let compute_pipeline = gpu
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Composite Pipeline"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                cache: None,
+            })
+            .await?;
 
-        Self {
+        Ok(Self {
             compute_pipeline,
             gpu,
-        }
+        })
     }
 
     /// # Errors
@@ -110,13 +111,13 @@ impl GpuCompositor {
         // Create separate buffers for each input image
         let mut image_buffers = Vec::new();
         for img in images {
-            let buffer = self.gpu.create_input_buffer(img.borrow());
+            let buffer = self.gpu.create_input_buffer(img.borrow()).await?;
             image_buffers.push(buffer);
         }
 
         // Create buffers using helper methods
-        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
+        let output_buffer = self.gpu.create_output_buffer(pixel_count).await?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count).await?;
 
         // Uniform buffer for dimensions and layer count
         let uniforms = CompositeUniforms {
@@ -126,7 +127,7 @@ impl GpuCompositor {
             _padding: 0,
         };
 
-        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
+        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms).await?;
 
         // Create bind group with separate buffers
         let mut entries = vec![
@@ -151,12 +152,15 @@ impl GpuCompositor {
         }
 
         // Fill remaining slots with dummy buffers if needed
-        let dummy_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Dummy Buffer"),
-            size: 4, // Minimum size
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
+        let dummy_buffer = self
+            .gpu
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Dummy Buffer"),
+                size: 4, // Minimum size
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            })
+            .await?;
 
         for i in image_buffers.len()..7 {
             entries.push(wgpu::BindGroupEntry {
@@ -167,35 +171,40 @@ impl GpuCompositor {
             });
         }
 
-        let bind_group_layout = self.compute_pipeline.get_bind_group_layout(0);
+        let bind_group_layout = self
+            .gpu
+            .get_bind_group_layout(&self.compute_pipeline, 0)
+            .await?;
         let bind_group = self
             .gpu
-            .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
                 layout: &bind_group_layout,
                 entries: &entries,
                 label: Some("Composite Bind Group"),
-            });
+            })
+            .await?;
 
         // Dispatch compute shader
         let mut encoder = self
             .gpu
-            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Composite Encoder"),
-            });
+            })
+            .await?;
 
-        self.gpu.dispatch_compute_with_encoder(
-            &mut encoder,
-            &self.compute_pipeline,
-            &bind_group,
-            width,
-            height,
-            "Composite Pass",
-        );
+        self.gpu
+            .dispatch_compute_with_encoder(
+                &mut encoder,
+                &self.compute_pipeline,
+                &bind_group,
+                width,
+                height,
+                "Composite Pass",
+            )
+            .await?;
 
         // Submit commands and read results
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        self.gpu.submit(encoder).await?;
         let result_image = self
             .gpu
             .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)

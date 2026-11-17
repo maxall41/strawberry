@@ -2,7 +2,6 @@
 use crate::GpuImageProcessor;
 use anyhow::{Result, ensure};
 use std::{borrow::Cow, sync::Arc};
-use wgpu::util::DeviceExt;
 use wgpu::{CommandEncoderDescriptor, PipelineCompilationOptions};
 
 /// Channel to extract from internal BGRA pixels.
@@ -55,10 +54,10 @@ pub struct GpuFloatFilters {
     membrane_kernels: Vec<f32>,
 }
 impl GpuFloatFilters {
-    #[must_use]
-    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Result<Self> {
         let shader = gpu
-            .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Floating point filters"),
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(concat!(
@@ -68,9 +67,9 @@ impl GpuFloatFilters {
                     include_str!("shaders/difference_of_gaussians.wgsl"),
                     include_str!("shaders/float_filters.wgsl")
                 ))),
-            });
+            })
+            .await?;
         let pipeline = gpu
-            .device
             .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("Floating point filters"),
                 layout: None,
@@ -78,12 +77,13 @@ impl GpuFloatFilters {
                 entry_point: Some("main"),
                 compilation_options: PipelineCompilationOptions::default(),
                 cache: None,
-            });
-        Self {
+            })
+            .await?;
+        Ok(Self {
             gpu,
             pipeline,
             membrane_kernels: membrane_kernels(),
-        }
+        })
     }
     async fn run(
         &self,
@@ -114,82 +114,78 @@ impl GpuFloatFilters {
         );
         let a = self
             .gpu
-            .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: input,
                 usage: wgpu::BufferUsages::STORAGE,
-            });
+            })
+            .await?;
         let dummy = [0.0f32];
         let b = self
             .gpu
-            .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::cast_slice(if second.is_empty() { &dummy } else { second }),
                 usage: wgpu::BufferUsages::STORAGE,
-            });
-        let out = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let staging = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: bytes,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let params = self.gpu.create_uniform_buffer(&Params {
-            width,
-            height,
-            operation: operation.code(),
-            channel,
-            sigma,
-            radius: (sigma * 3.0).ceil(),
-            pad: [0; 2],
-        });
-        let layout = self.pipeline.get_bind_group_layout(0);
-        let entries = [(0, &params), (1, &out), (2, &a), (3, &b)].map(|(binding, buffer)| {
-            wgpu::BindGroupEntry {
-                binding,
-                resource: buffer.as_entire_binding(),
-            }
-        });
+            })
+            .await?;
+        let out = self
+            .gpu
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+            .await?;
+        let staging = self
+            .gpu
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: bytes,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+            .await?;
+        let params = self
+            .gpu
+            .create_uniform_buffer(&Params {
+                width,
+                height,
+                operation: operation.code(),
+                channel,
+                sigma,
+                radius: (sigma * 3.0).ceil(),
+                pad: [0; 2],
+            })
+            .await?;
         let group = self
             .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &layout,
-                entries: &entries,
-            });
+            .create_buffer_bind_group(
+                &self.pipeline,
+                &[&params, &out, &a, &b],
+                "Floating point filter bindings",
+            )
+            .await?;
         let mut encoder = self
             .gpu
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor::default());
-        self.gpu.dispatch_compute_with_encoder(
-            &mut encoder,
-            &self.pipeline,
-            &group,
-            width,
-            height,
-            "Float filter",
-        );
-        encoder.copy_buffer_to_buffer(&out, 0, &staging, 0, bytes);
-        self.gpu.queue.submit([encoder.finish()]);
-        let (tx, rx) = flume::bounded(1);
-        staging
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                let _ = tx.send(result);
-            });
-        self.gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
-        rx.recv_async().await??;
-        let result = bytemuck::cast_slice(&staging.slice(..).get_mapped_range()?).to_vec();
-        staging.unmap();
-        Ok(result)
+            .create_command_encoder(&CommandEncoderDescriptor::default())
+            .await?;
+        self.gpu
+            .dispatch_compute_with_encoder(
+                &mut encoder,
+                &self.pipeline,
+                &group,
+                width,
+                height,
+                "Float filter",
+            )
+            .await?;
+        self.gpu
+            .copy_buffer(&mut encoder, &out, &staging, bytes)
+            .await?;
+        self.gpu.submit(encoder).await?;
+        self.gpu.read_mapped_buffer(&staging).await
     }
     /// Extract luminance or a color channel from internal BGRA pixels.
     /// # Errors

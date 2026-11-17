@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -8,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, gaussian_blur::GpuGaussianBlur};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, GaussianBlurMessage, GaussianBlurState,
-    PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
+    BackendToolType, GaussianBlurMessage, GaussianBlurState, PipelineObjectMessage, ToolBackend,
+    ToolInput, ToolState,
 };
 
 pub struct GaussianBlur {
@@ -33,15 +34,7 @@ impl ToolBackend for GaussianBlur {
 
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self.processor.apply_blur(image, self.state.sigma).await {
-                Ok(img) => Arc::new(img),
-                Err(e) => {
-                    self.base
-                        .events
-                        .emit(FrontendMessage::error(format!("Gaussian Blur error: {e}")));
-                    return Err(e);
-                }
-            };
+            *image = Arc::new(self.processor.apply_blur(image, self.state.sigma).await?);
         }
         Ok(())
     }
@@ -61,17 +54,21 @@ impl ToolBackend for GaussianBlur {
 }
 
 impl GaussianBlur {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = GaussianBlurState {
             is_enabled: false,
             sigma: 2.0,
         };
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            processor: GpuGaussianBlur::new(gpu_image_processor),
-        }
+            processor: GpuGaussianBlur::new(gpu_image_processor).await?,
+        })
     }
 }

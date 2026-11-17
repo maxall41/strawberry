@@ -3,14 +3,13 @@ use image::RgbaImage;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use std::{borrow::Cow, collections::BinaryHeap};
-use wgpu::{PipelineCompilationOptions, util::DeviceExt};
+use wgpu::PipelineCompilationOptions;
 
 use super::{
     GpuImageProcessor,
     tiling::{TileConfig, TileGrid, extract_rgba_tile, merge_rgba_tiles},
 };
 
-const WORKGROUP_SIZE: u32 = 8;
 const GRAYSCALE_THRESHOLD: f32 = 0.5;
 const IN_QUEUE_MARKER: u32 = u32::MAX;
 
@@ -33,141 +32,142 @@ pub struct GpuWatershed {
 }
 
 impl GpuWatershed {
-    #[must_use]
-    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
-        let watershed_pipeline = Self::create_watershed_pipeline(&gpu);
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Result<Self> {
+        let watershed_pipeline = Self::create_watershed_pipeline(&gpu).await?;
         let (distance_init_pipeline, distance_jump_pipeline, distance_final_pipeline) =
-            Self::create_distance_pipelines(&gpu);
+            Self::create_distance_pipelines(&gpu).await?;
 
-        Self {
+        Ok(Self {
             watershed_pipeline,
             distance_init_pipeline,
             distance_jump_pipeline,
             distance_final_pipeline,
             gpu,
-        }
+        })
     }
 
-    fn create_watershed_pipeline(gpu: &GpuImageProcessor) -> wgpu::ComputePipeline {
+    async fn create_watershed_pipeline(gpu: &GpuImageProcessor) -> Result<wgpu::ComputePipeline> {
         let shader = gpu
-            .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Watershed Shader"),
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
                     "shaders/watershed.wgsl"
                 ))),
-            });
-
-        gpu.device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("Watershed Pipeline"),
-                layout: None,
-                module: &shader,
-                entry_point: Some("main"),
-                compilation_options: PipelineCompilationOptions::default(),
-                cache: None,
             })
+            .await?;
+
+        gpu.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Watershed Pipeline"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: PipelineCompilationOptions::default(),
+            cache: None,
+        })
+        .await
     }
 
-    fn create_distance_pipelines(
+    async fn create_distance_pipelines(
         gpu: &GpuImageProcessor,
-    ) -> (
+    ) -> Result<(
         wgpu::ComputePipeline,
         wgpu::ComputePipeline,
         wgpu::ComputePipeline,
-    ) {
+    )> {
         let shader = gpu
-            .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Distance Transform Shader"),
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
                     "shaders/distance_transform.wgsl"
                 ))),
-            });
+            })
+            .await?;
 
-        let bind_group_layout =
-            gpu.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("Distance Transform Bind Group Layout"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
+        let bind_group_layout = gpu
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Distance Transform Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 3,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 4,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
-                    ],
-                });
+                        count: None,
+                    },
+                ],
+            })
+            .await?;
 
         let pipeline_layout = gpu
-            .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Distance Transform Pipeline Layout"),
                 bind_group_layouts: &[Some(&bind_group_layout)],
                 immediate_size: 0,
-            });
+            })
+            .await?;
 
-        let create_pipeline = |entry_point: &str, label: &str| {
-            gpu.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(&pipeline_layout),
-                    module: &shader,
-                    entry_point: Some(entry_point),
-                    compilation_options: PipelineCompilationOptions::default(),
-                    cache: None,
-                })
+        let create_pipeline = async |entry_point: &str, label: &str| {
+            gpu.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some(entry_point),
+                compilation_options: PipelineCompilationOptions::default(),
+                cache: None,
+            })
+            .await
         };
 
-        (
-            create_pipeline("init_seeds", "Distance Init Pipeline"),
-            create_pipeline("jump_flood", "Distance Jump Pipeline"),
-            create_pipeline("finalize_distances", "Distance Final Pipeline"),
-        )
+        Ok((
+            create_pipeline("init_seeds", "Distance Init Pipeline").await?,
+            create_pipeline("jump_flood", "Distance Jump Pipeline").await?,
+            create_pipeline("finalize_distances", "Distance Final Pipeline").await?,
+        ))
     }
 
     /// # Errors
@@ -276,7 +276,9 @@ impl GpuWatershed {
 
         let binary_u32: Vec<u32> = binary.iter().map(|&b| u32::from(b)).collect();
 
-        let buffers = self.create_distance_buffers(&binary_u32, pixel_count)?;
+        let buffers = self
+            .create_distance_buffers(&binary_u32, pixel_count)
+            .await?;
 
         self.run_distance_pass(
             &self.distance_init_pipeline,
@@ -285,7 +287,8 @@ impl GpuWatershed {
             &buffers.seeds_a,
             (width, height),
             0,
-        )?;
+        )
+        .await?;
 
         let max_dimension = width.max(height);
         let mut step_size = max_dimension.next_power_of_two() / 2;
@@ -304,7 +307,8 @@ impl GpuWatershed {
                 seeds_output,
                 (width, height),
                 step_size,
-            )?;
+            )
+            .await?;
             seeds_are_in_a = !seeds_are_in_a;
             step_size /= 2;
         }
@@ -321,53 +325,66 @@ impl GpuWatershed {
             scratch_seeds,
             (width, height),
             0,
-        )?;
+        )
+        .await?;
 
         self.read_distance_results(&buffers.distance, &buffers.staging, pixel_count)
             .await
     }
 
-    fn create_distance_buffers(
+    async fn create_distance_buffers(
         &self,
         binary_u32: &[u32],
         pixel_count: usize,
     ) -> Result<DistanceBuffers> {
         let binary_buffer = self
             .gpu
-            .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Binary Buffer"),
                 contents: bytemuck::cast_slice(binary_u32),
                 usage: wgpu::BufferUsages::STORAGE,
-            });
+            })
+            .await?;
 
-        let seeds_a = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Seeds Buffer A"),
-            size: crate::buffer_size(pixel_count, 8)?,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
+        let seeds_a = self
+            .gpu
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Seeds Buffer A"),
+                size: crate::buffer_size(pixel_count, 8)?,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            })
+            .await?;
 
-        let seeds_b = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Seeds Buffer B"),
-            size: crate::buffer_size(pixel_count, 8)?,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
+        let seeds_b = self
+            .gpu
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Seeds Buffer B"),
+                size: crate::buffer_size(pixel_count, 8)?,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            })
+            .await?;
 
-        let distance_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Distance Buffer"),
-            size: crate::buffer_size(pixel_count, 4)?,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let distance_buffer = self
+            .gpu
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Distance Buffer"),
+                size: crate::buffer_size(pixel_count, 4)?,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+            .await?;
 
-        let staging_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Distance Staging Buffer"),
-            size: crate::buffer_size(pixel_count, 4)?,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let staging_buffer = self
+            .gpu
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Distance Staging Buffer"),
+                size: crate::buffer_size(pixel_count, 4)?,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+            .await?;
 
         Ok(DistanceBuffers {
             binary: binary_buffer,
@@ -378,7 +395,7 @@ impl GpuWatershed {
         })
     }
 
-    fn run_distance_pass(
+    async fn run_distance_pass(
         &self,
         pipeline: &wgpu::ComputePipeline,
         buffers: &DistanceBuffers,
@@ -389,69 +406,50 @@ impl GpuWatershed {
     ) -> Result<()> {
         let (width, height) = dimensions;
         let uniforms = [width, height, step_size, 0];
-        let uniform_buffer =
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Distance Uniform Buffer"),
-                    contents: bytemuck::cast_slice(&uniforms),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
+        let uniform_buffer = self
+            .gpu
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Distance Uniform Buffer"),
+                contents: bytemuck::cast_slice(&uniforms),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+            .await?;
 
-        let bind_group_layout = pipeline.get_bind_group_layout(0);
         let bind_group = self
             .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: seeds_input.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: seeds_output.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: buffers.binary.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: buffers.distance.as_entire_binding(),
-                    },
+            .create_buffer_bind_group(
+                pipeline,
+                &[
+                    &uniform_buffer,
+                    seeds_input,
+                    seeds_output,
+                    &buffers.binary,
+                    &buffers.distance,
                 ],
-                label: Some("Distance Transform Bind Group"),
-            });
+                "Distance Transform Bind Group",
+            )
+            .await?;
 
         let mut encoder = self
             .gpu
-            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Distance Transform Encoder"),
-            });
+            })
+            .await?;
 
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Distance Transform Pass"),
-                timestamp_writes: None,
-            });
+        self.gpu
+            .dispatch_compute_with_encoder(
+                &mut encoder,
+                pipeline,
+                &bind_group,
+                width,
+                height,
+                "Distance Transform Pass",
+            )
+            .await?;
 
-            compute_pass.set_pipeline(pipeline);
-            compute_pass.set_bind_group(0, &bind_group, &[]);
-
-            let dispatch_x = width.div_ceil(WORKGROUP_SIZE);
-            let dispatch_y = height.div_ceil(WORKGROUP_SIZE);
-            compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
-        }
-
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
-        self.gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
+        self.gpu.submit(encoder).await?;
+        self.gpu.poll().await?;
         Ok(())
     }
 
@@ -461,40 +459,13 @@ impl GpuWatershed {
         staging_buffer: &wgpu::Buffer,
         pixel_count: usize,
     ) -> Result<Vec<f32>> {
-        let mut encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Distance Copy Encoder"),
-            });
-
-        encoder.copy_buffer_to_buffer(
-            distance_buffer,
-            0,
-            staging_buffer,
-            0,
-            crate::buffer_size(pixel_count, 4)?,
-        );
-
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
-
-        let buffer_slice = staging_buffer.slice(..);
-        let (sender, receiver) = flume::unbounded();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-
-        self.gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
-        let map_result = receiver
-            .recv_async()
+        self.gpu
+            .read_buffer(
+                distance_buffer,
+                staging_buffer,
+                crate::buffer_size(pixel_count, 4)?,
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {e}"))?;
-        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {e:?}"))?;
-
-        let data = buffer_slice.get_mapped_range()?;
-        let distances: &[f32] = bytemuck::cast_slice(&data);
-
-        Ok(distances.to_vec())
     }
 
     async fn find_peaks_gpu(
@@ -507,28 +478,34 @@ impl GpuWatershed {
     ) -> Result<Vec<u32>> {
         let pixel_count = crate::pixel_count(width, height)?;
 
-        let distance_buffer =
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Distance Buffer"),
-                    contents: bytemuck::cast_slice(distance),
-                    usage: wgpu::BufferUsages::STORAGE,
-                });
+        let distance_buffer = self
+            .gpu
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Distance Buffer"),
+                contents: bytemuck::cast_slice(distance),
+                usage: wgpu::BufferUsages::STORAGE,
+            })
+            .await?;
 
-        let output_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Markers Buffer"),
-            size: crate::buffer_size(pixel_count, 4)?,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let output_buffer = self
+            .gpu
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Markers Buffer"),
+                size: crate::buffer_size(pixel_count, 4)?,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+            .await?;
 
-        let staging_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Staging Buffer"),
-            size: crate::buffer_size(pixel_count, 4)?,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let staging_buffer = self
+            .gpu
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Staging Buffer"),
+                size: crate::buffer_size(pixel_count, 4)?,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+            .await?;
 
         let uniforms = WatershedUniforms {
             width,
@@ -537,86 +514,52 @@ impl GpuWatershed {
             min_distance,
         };
 
-        let uniform_buffer =
-            self.gpu
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Watershed Uniform Buffer"),
-                    contents: bytemuck::cast_slice(&[uniforms]),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
+        let uniform_buffer = self
+            .gpu
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Watershed Uniform Buffer"),
+                contents: bytemuck::cast_slice(&[uniforms]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+            .await?;
 
-        let bind_group_layout = self.watershed_pipeline.get_bind_group_layout(0);
         let bind_group = self
             .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: output_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: distance_buffer.as_entire_binding(),
-                    },
-                ],
-                label: Some("Watershed Bind Group"),
-            });
+            .create_buffer_bind_group(
+                &self.watershed_pipeline,
+                &[&uniform_buffer, &output_buffer, &distance_buffer],
+                "Watershed Bind Group",
+            )
+            .await?;
 
         let mut encoder = self
             .gpu
-            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Watershed Encoder"),
-            });
+            })
+            .await?;
 
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Watershed Pass"),
-                timestamp_writes: None,
-            });
+        self.gpu
+            .dispatch_compute_with_encoder(
+                &mut encoder,
+                &self.watershed_pipeline,
+                &bind_group,
+                width,
+                height,
+                "Watershed Pass",
+            )
+            .await?;
 
-            compute_pass.set_pipeline(&self.watershed_pipeline);
-            compute_pass.set_bind_group(0, &bind_group, &[]);
-
-            let dispatch_x = width.div_ceil(WORKGROUP_SIZE);
-            let dispatch_y = height.div_ceil(WORKGROUP_SIZE);
-            compute_pass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
-        }
-
-        encoder.copy_buffer_to_buffer(
-            &output_buffer,
-            0,
-            &staging_buffer,
-            0,
-            crate::buffer_size(pixel_count, 4)?,
-        );
-
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
-
-        let buffer_slice = staging_buffer.slice(..);
-        let (sender, receiver) = flume::unbounded();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-
-        self.gpu.device.poll(wgpu::PollType::wait_indefinitely())?;
-        let map_result = receiver
-            .recv_async()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to receive GPU buffer mapping result: {e}"))?;
-        map_result.map_err(|e| anyhow::anyhow!("Failed to map GPU buffer: {e:?}"))?;
-
-        let data = buffer_slice.get_mapped_range()?;
-        let markers: &[u32] = bytemuck::cast_slice(&data);
-
-        Ok(markers.to_vec())
+        self.gpu
+            .copy_buffer(
+                &mut encoder,
+                &output_buffer,
+                &staging_buffer,
+                crate::buffer_size(pixel_count, 4)?,
+            )
+            .await?;
+        self.gpu.submit(encoder).await?;
+        self.gpu.read_mapped_buffer(&staging_buffer).await
     }
 
     fn watershed_transform(

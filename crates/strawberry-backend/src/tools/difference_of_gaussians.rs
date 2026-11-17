@@ -1,10 +1,11 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use strawberry_processing::{GpuImageProcessor, difference_of_gaussians::GpuDifferenceOfGaussians};
 use strawberry_types::{
-    BackendToolType, DifferenceOfGaussiansMessage, DifferenceOfGaussiansState, FrontendMessage,
+    BackendToolType, DifferenceOfGaussiansMessage, DifferenceOfGaussiansState,
     PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
@@ -34,19 +35,11 @@ impl ToolBackend for DifferenceOfGaussians {
 
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self
-                .processor
-                .apply(image, self.state.small_sigma, self.state.large_sigma)
-                .await
-            {
-                Ok(output) => Arc::new(output),
-                Err(error) => {
-                    self.base.events.emit(FrontendMessage::error(format!(
-                        "Difference of Gaussians error: {error}"
-                    )));
-                    return Err(error);
-                }
-            };
+            *image = Arc::new(
+                self.processor
+                    .apply(image, self.state.small_sigma, self.state.large_sigma)
+                    .await?,
+            );
         }
         Ok(())
     }
@@ -75,14 +68,15 @@ impl ToolBackend for DifferenceOfGaussians {
 }
 
 impl DifferenceOfGaussians {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(events: ToolEvents, gpu: Arc<GpuImageProcessor>) -> Result<Self> {
         let state = DifferenceOfGaussiansState::default();
-        Self {
+        Ok(Self {
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
             state,
-            processor: GpuDifferenceOfGaussians::new(gpu),
-        }
+            processor: GpuDifferenceOfGaussians::new(gpu).await?,
+        })
     }
 }

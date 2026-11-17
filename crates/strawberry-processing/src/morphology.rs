@@ -50,45 +50,46 @@ pub struct GpuMorphology {
 }
 
 impl GpuMorphology {
-    #[must_use]
-    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Result<Self> {
         // Compute shader for morphological operations
         let shader = gpu
-            .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Morphology Shader"),
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
                     "shaders/morphology.wgsl"
                 ))),
-            });
+            })
+            .await?;
 
-        let compute_pipeline =
-            gpu.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Morphology Pipeline"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("main"),
-                    compilation_options: PipelineCompilationOptions::default(),
-                    cache: None,
-                });
+        let compute_pipeline = gpu
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Morphology Pipeline"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                cache: None,
+            })
+            .await?;
 
-        let second_pass_pipeline =
-            gpu.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Morphology Second Pass Pipeline"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("second_pass"),
-                    compilation_options: PipelineCompilationOptions::default(),
-                    cache: None,
-                });
+        let second_pass_pipeline = gpu
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Morphology Second Pass Pipeline"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("second_pass"),
+                compilation_options: PipelineCompilationOptions::default(),
+                cache: None,
+            })
+            .await?;
 
-        Self {
+        Ok(Self {
             compute_pipeline,
             second_pass_pipeline,
             gpu,
-        }
+        })
     }
 
     /// # Errors
@@ -114,38 +115,21 @@ impl GpuMorphology {
         }
     }
 
-    fn create_bind_group(
+    async fn create_bind_group(
         &self,
         pipeline: &wgpu::ComputePipeline,
         uniforms: &wgpu::Buffer,
         output: &wgpu::Buffer,
         input: &wgpu::Buffer,
         temp: &wgpu::Buffer,
-    ) -> wgpu::BindGroup {
+    ) -> Result<wgpu::BindGroup> {
         self.gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniforms.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: output.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: input.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: temp.as_entire_binding(),
-                    },
-                ],
-                label: Some("Morphology Bind Group"),
-            })
+            .create_buffer_bind_group(
+                pipeline,
+                &[uniforms, output, input, temp],
+                "Morphology Bind Group",
+            )
+            .await
     }
 
     /// Apply morphological operation to a single image (no tiling needed)
@@ -166,17 +150,20 @@ impl GpuMorphology {
         let pixel_count = crate::pixel_count(width, height)?;
 
         // Create buffers using helper methods
-        let input_buffer = self.gpu.create_input_buffer(image);
-        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
+        let input_buffer = self.gpu.create_input_buffer(image).await?;
+        let output_buffer = self.gpu.create_output_buffer(pixel_count).await?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count).await?;
 
         // Create temp buffer for two-pass operations
-        let temp_buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Temp Buffer"),
-            size: crate::buffer_size(pixel_count, 4)?,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
+        let temp_buffer = self
+            .gpu
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Temp Buffer"),
+                size: crate::buffer_size(pixel_count, 4)?,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            })
+            .await?;
 
         // Uniform buffer for dimensions and morphology parameters
         let uniforms = MorphologyUniforms {
@@ -186,59 +173,67 @@ impl GpuMorphology {
             element_size,
         };
 
-        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
+        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms).await?;
 
-        let first_pass_bind_group = self.create_bind_group(
-            &self.compute_pipeline,
-            &uniform_buffer,
-            if operation.is_two_pass() {
-                &temp_buffer
-            } else {
-                &output_buffer
-            },
-            &input_buffer,
-            &temp_buffer,
-        );
+        let first_pass_bind_group = self
+            .create_bind_group(
+                &self.compute_pipeline,
+                &uniform_buffer,
+                if operation.is_two_pass() {
+                    &temp_buffer
+                } else {
+                    &output_buffer
+                },
+                &input_buffer,
+                &temp_buffer,
+            )
+            .await?;
 
         // Dispatch first pass
         let mut encoder = self
             .gpu
-            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Morphology Encoder"),
-            });
+            })
+            .await?;
 
-        self.gpu.dispatch_compute_with_encoder(
-            &mut encoder,
-            &self.compute_pipeline,
-            &first_pass_bind_group,
-            width,
-            height,
-            "Morphology First Pass",
-        );
+        self.gpu
+            .dispatch_compute_with_encoder(
+                &mut encoder,
+                &self.compute_pipeline,
+                &first_pass_bind_group,
+                width,
+                height,
+                "Morphology First Pass",
+            )
+            .await?;
 
         // If this is a two-pass operation, dispatch the second pass
         if operation.is_two_pass() {
-            let second_pass_bind_group = self.create_bind_group(
-                &self.second_pass_pipeline,
-                &uniform_buffer,
-                &output_buffer,
-                &input_buffer,
-                &temp_buffer,
-            );
+            let second_pass_bind_group = self
+                .create_bind_group(
+                    &self.second_pass_pipeline,
+                    &uniform_buffer,
+                    &output_buffer,
+                    &input_buffer,
+                    &temp_buffer,
+                )
+                .await?;
 
-            self.gpu.dispatch_compute_with_encoder(
-                &mut encoder,
-                &self.second_pass_pipeline,
-                &second_pass_bind_group,
-                width,
-                height,
-                "Morphology Second Pass",
-            );
+            self.gpu
+                .dispatch_compute_with_encoder(
+                    &mut encoder,
+                    &self.second_pass_pipeline,
+                    &second_pass_bind_group,
+                    width,
+                    height,
+                    "Morphology Second Pass",
+                )
+                .await?;
         }
 
         // Submit commands and read results
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        self.gpu.submit(encoder).await?;
         let result_image = self
             .gpu
             .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)

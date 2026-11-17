@@ -24,34 +24,35 @@ pub struct GpuGaussianBlur {
 }
 
 impl GpuGaussianBlur {
-    #[must_use]
-    pub fn new(gpu: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(gpu: Arc<GpuImageProcessor>) -> Result<Self> {
         // Compute shader for gaussian blur
         let shader = gpu
-            .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Gaussian Blur Shader"),
                 source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(concat!(
                     include_str!("shaders/gaussian_blur_math.wgsl"),
                     include_str!("shaders/gaussian_blur.wgsl")
                 ))),
-            });
+            })
+            .await?;
 
-        let compute_pipeline =
-            gpu.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Gaussian Blur Pipeline"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("main"),
-                    compilation_options: PipelineCompilationOptions::default(),
-                    cache: None,
-                });
+        let compute_pipeline = gpu
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Gaussian Blur Pipeline"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: PipelineCompilationOptions::default(),
+                cache: None,
+            })
+            .await?;
 
-        Self {
+        Ok(Self {
             compute_pipeline,
             gpu,
-        }
+        })
     }
 
     /// # Errors
@@ -83,9 +84,9 @@ impl GpuGaussianBlur {
         let pixel_count = crate::pixel_count(width, height)?;
 
         // Create buffers using helper methods
-        let input_buffer = self.gpu.create_input_buffer(image);
-        let output_buffer = self.gpu.create_output_buffer(pixel_count)?;
-        let staging_buffer = self.gpu.create_staging_buffer(pixel_count)?;
+        let input_buffer = self.gpu.create_input_buffer(image).await?;
+        let output_buffer = self.gpu.create_output_buffer(pixel_count).await?;
+        let staging_buffer = self.gpu.create_staging_buffer(pixel_count).await?;
 
         // Uniform buffer for dimensions and blur parameters
         let uniforms = GaussianBlurUniforms {
@@ -95,51 +96,39 @@ impl GpuGaussianBlur {
             sigma,
         };
 
-        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms);
+        let uniform_buffer = self.gpu.create_uniform_buffer(&uniforms).await?;
 
         // Create bind group
-        let bind_group_layout = self.compute_pipeline.get_bind_group_layout(0);
         let bind_group = self
             .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: output_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: input_buffer.as_entire_binding(),
-                    },
-                ],
-                label: Some("Gaussian Blur Bind Group"),
-            });
+            .create_buffer_bind_group(
+                &self.compute_pipeline,
+                &[&uniform_buffer, &output_buffer, &input_buffer],
+                "Gaussian Blur Bind Group",
+            )
+            .await?;
 
         // Dispatch compute shader
         let mut encoder = self
             .gpu
-            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Gaussian Blur Encoder"),
-            });
+            })
+            .await?;
 
-        self.gpu.dispatch_compute_with_encoder(
-            &mut encoder,
-            &self.compute_pipeline,
-            &bind_group,
-            width,
-            height,
-            "Gaussian Blur Pass",
-        );
+        self.gpu
+            .dispatch_compute_with_encoder(
+                &mut encoder,
+                &self.compute_pipeline,
+                &bind_group,
+                width,
+                height,
+                "Gaussian Blur Pass",
+            )
+            .await?;
 
         // Submit commands and read results
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        self.gpu.submit(encoder).await?;
         let result_image = self
             .gpu
             .read_buffer_to_image(&output_buffer, &staging_buffer, width, height, pixel_count)

@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -51,15 +52,7 @@ impl ToolBackend for Compositor {
             })
             .collect();
 
-        let composited = match self.compositer.composite_images(&images).await {
-            Ok(image) => image,
-            Err(e) => {
-                self.base
-                    .events
-                    .emit(FrontendMessage::error(format!("Compositor error: {e}")));
-                return Err(e);
-            }
-        };
+        let composited = self.compositer.composite_images(&images).await?;
 
         *input = vec![Arc::new(composited)];
 
@@ -107,18 +100,22 @@ impl ToolBackend for Compositor {
 }
 
 impl Compositor {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = CompositorState {
             is_enabled: false,
             enabled_layers: vec![true; 8],
             real_layers_len: 0,
         };
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            compositer: GpuCompositor::new(gpu_image_processor),
-        }
+            compositer: GpuCompositor::new(gpu_image_processor).await?,
+        })
     }
 }

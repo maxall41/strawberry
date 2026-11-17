@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -7,9 +8,7 @@ use crate::tools::cache::ToolCache;
 use strawberry_processing::{GpuImageProcessor, grayscale::GpuGrayscale};
 
 use async_trait::async_trait;
-use strawberry_types::{
-    BackendToolType, FrontendMessage, GrayscaleState, ToolBackend, ToolInput, ToolState,
-};
+use strawberry_types::{BackendToolType, GrayscaleState, ToolBackend, ToolInput, ToolState};
 
 pub struct Grayscale {
     pub state: GrayscaleState,
@@ -32,15 +31,7 @@ impl ToolBackend for Grayscale {
 
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self.processor.apply_grayscale(image).await {
-                Ok(img) => Arc::new(img),
-                Err(e) => {
-                    self.base
-                        .events
-                        .emit(FrontendMessage::error(format!("Grayscale error: {e}")));
-                    return Err(e);
-                }
-            };
+            *image = Arc::new(self.processor.apply_grayscale(image).await?);
         }
         Ok(())
     }
@@ -51,14 +42,18 @@ impl ToolBackend for Grayscale {
 }
 
 impl Grayscale {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = GrayscaleState { is_enabled: false };
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            processor: GpuGrayscale::new(gpu_image_processor),
-        }
+            processor: GpuGrayscale::new(gpu_image_processor).await?,
+        })
     }
 }

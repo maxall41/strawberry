@@ -1,4 +1,5 @@
 use crate::tools::base::ToolEvents;
+use anyhow::Result;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -8,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, watershed::GpuWatershed};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
-    WatershedMessage, WatershedState,
+    BackendToolType, PipelineObjectMessage, ToolBackend, ToolInput, ToolState, WatershedMessage,
+    WatershedState,
 };
 
 pub struct Watershed {
@@ -33,19 +34,11 @@ impl ToolBackend for Watershed {
 
     async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
         for image in input {
-            *image = match self
-                .processor
-                .apply_watershed(image, self.state.sigma, self.state.min_distance)
-                .await
-            {
-                Ok(img) => Arc::new(img),
-                Err(e) => {
-                    self.base
-                        .events
-                        .emit(FrontendMessage::error(format!("Watershed error: {e}")));
-                    return Err(e);
-                }
-            };
+            *image = Arc::new(
+                self.processor
+                    .apply_watershed(image, self.state.sigma, self.state.min_distance)
+                    .await?,
+            );
         }
         Ok(())
     }
@@ -69,18 +62,22 @@ impl ToolBackend for Watershed {
 }
 
 impl Watershed {
-    #[must_use]
-    pub fn new(events: ToolEvents, gpu_image_processor: Arc<GpuImageProcessor>) -> Self {
+    /// # Errors
+    /// Returns an error if GPU resources cannot be initialized.
+    pub async fn new(
+        events: ToolEvents,
+        gpu_image_processor: Arc<GpuImageProcessor>,
+    ) -> Result<Self> {
         let state = WatershedState {
             is_enabled: false,
             sigma: 1.0,
             min_distance: 10,
         };
-        Self {
+        Ok(Self {
             state: state.clone(),
             base: ToolBase::new(events),
             cache: ToolCache::new(&state),
-            processor: GpuWatershed::new(gpu_image_processor),
-        }
+            processor: GpuWatershed::new(gpu_image_processor).await?,
+        })
     }
 }
