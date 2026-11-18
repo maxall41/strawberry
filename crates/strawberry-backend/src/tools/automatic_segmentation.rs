@@ -23,9 +23,9 @@ use strawberry_processing::{
 use strawberry_types::{
     AnnotationKind, AnnotationStroke, AutomaticSegmentationMessage, AutomaticSegmentationState,
     BackendToolType, BgraColor, CLASS_PALETTE, ClassId, DatasetImportMode, DatasetOperation,
-    FrontendMessage, MAX_CLASSES, PipelineObjectMessage, RgbaColor, SampleId, SegmentationClass,
-    SegmentationClasses, SegmentationOutputMode, StrokeId, ToolAssets, ToolBackend, ToolInput,
-    ToolState,
+    FrontendMessage, ImageCollection, MAX_CLASSES, PipelineObjectMessage, RgbaColor, SampleId,
+    SegmentationClass, SegmentationClasses, SegmentationOutputMode, StrokeId, ToolAssets,
+    ToolBackend, ToolInput, ToolState,
     overlay::{CircleStyle, OverlayElement, ToolOverlay},
 };
 
@@ -303,8 +303,12 @@ pub struct AutomaticSegmentation {
     extractor: Arc<FeatureExtractor>,
     model: Option<Arc<SegmentationModel>>,
     model_class_ids: Vec<ClassId>,
-    inference_cache: Option<InferenceCache>,
+    /// Predictions for the current input of each stack.
+    inference_cache: Vec<InferenceCache>,
     samples: Vec<Sample>,
+    /// The selected layer of each stack, in stack order.
+    stack_inputs: Vec<Option<Arc<RgbaImage>>>,
+    /// The selected stack's input, which annotations and the training preview apply to.
     input: Option<Arc<RgbaImage>>,
     current: Option<SampleId>,
     stroke: Option<PendingStroke>,
@@ -328,8 +332,9 @@ impl AutomaticSegmentation {
             extractor: Arc::new(FeatureExtractor::new(gpu).await?),
             model: None,
             model_class_ids: Vec::new(),
-            inference_cache: None,
+            inference_cache: Vec::new(),
             samples: vec![],
+            stack_inputs: Vec::new(),
             input: None,
             current: None,
             stroke: None,
@@ -498,7 +503,7 @@ impl AutomaticSegmentation {
                     self.state.brush = AnnotationKind::Paint(fallback);
                     if let Some(ids) = prepared.model_class_ids {
                         self.model_class_ids = ids;
-                        self.inference_cache = None;
+                        self.inference_cache.clear();
                         self.state.model_revision = self.state.model_revision.wrapping_add(1);
                     } else {
                         self.invalidate_model();
@@ -559,7 +564,7 @@ impl AutomaticSegmentation {
         self.stroke = None;
         self.annotation_masks.clear();
         self.state.selected_stroke = None;
-        self.inference_cache = None;
+        self.inference_cache.clear();
         self.reset_dataset_status();
         Ok(())
     }
@@ -601,14 +606,7 @@ impl AutomaticSegmentation {
         if !self.state.is_enabled || !self.state.training || !self.state.show_overlay {
             return;
         }
-        let Some(cached) = self.inference_cache.as_ref().filter(|cached| {
-            self.input
-                .as_ref()
-                .zip(self.model.as_ref())
-                .is_some_and(|(image, model)| {
-                    cached.matches(self.state.selected_layer, image, model)
-                })
-        }) else {
+        let Some(cached) = self.selected_inference() else {
             return;
         };
         let colors = match self
@@ -642,9 +640,86 @@ impl AutomaticSegmentation {
                 return;
             }
         };
-        if let Some(cached) = &mut self.inference_cache {
+        let input = cached.input.clone();
+        if let Some(cached) = self
+            .inference_cache
+            .iter_mut()
+            .find(|cached| Arc::ptr_eq(&cached.input, &input))
+        {
             cached.overlay = Some(PredictionOverlay { colors, image });
         }
+    }
+    /// Return the cached prediction for the selected stack's input under the current model.
+    fn selected_inference(&self) -> Option<&InferenceCache> {
+        let input = self.input.as_ref()?;
+        let model = self.model.as_ref()?;
+        self.inference_cache
+            .iter()
+            .find(|cached| cached.matches(self.state.selected_layer, input, model))
+    }
+    /// Predict class planes for an image, reusing a cached prediction for the same image and model.
+    async fn predict(
+        &mut self,
+        image: Arc<RgbaImage>,
+        model: Arc<SegmentationModel>,
+    ) -> Result<Arc<Vec<image::GrayImage>>> {
+        let layer = self.state.selected_layer;
+        if let Some(cached) = self
+            .inference_cache
+            .iter()
+            .find(|cached| cached.matches(layer, &image, &model))
+        {
+            return Ok(cached.output.clone());
+        }
+        let extractor = self.extractor.clone();
+        let worker_image = image.clone();
+        let worker_model = model.clone();
+        let inference = self.state.inference.clone();
+        let output = Arc::new(
+            tokio::task::spawn_blocking(move || {
+                futures::executor::block_on(worker_model.predict(
+                    &extractor,
+                    &worker_image,
+                    &inference,
+                ))
+            })
+            .await??,
+        );
+        self.inference_cache.push(InferenceCache {
+            layer,
+            input: image,
+            model,
+            output: output.clone(),
+            overlay: None,
+        });
+        Ok(output)
+    }
+    /// Annotate and preview the selected stack's input, restoring its sample if it was annotated.
+    fn adopt_selected_input(&mut self) {
+        let image = self
+            .stack_inputs
+            .get(self.state.selected_stack)
+            .cloned()
+            .flatten();
+        let unchanged = match (&self.input, &image) {
+            (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+            (None, None) => true,
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
+        self.annotation_masks.clear();
+        self.current = image.as_ref().and_then(|image| {
+            self.samples
+                .iter()
+                .position(|sample| Arc::ptr_eq(&sample.image, image))
+        });
+        self.input = image;
+        self.stroke = None;
+        self.state.selected_stroke = None;
+        self.rebuild_mask();
+        self.changed();
     }
     /// Rebuild the visible annotation mask for the current sample.
     fn rebuild_mask(&mut self) {
@@ -683,7 +758,7 @@ impl AutomaticSegmentation {
         self.training_generation = self.training_generation.wrapping_add(1);
         self.model = None;
         self.model_class_ids.clear();
-        self.inference_cache = None;
+        self.inference_cache.clear();
         self.state.model_ready = false;
         self.state.model_path = None;
         self.state.oob_error = None;
@@ -891,6 +966,7 @@ impl AutomaticSegmentation {
                 }
                 self.state.selected_stroke = None;
                 self.state.selected_layer = value;
+                self.stack_inputs.clear();
                 self.input = None;
                 self.current = None;
                 self.stroke = None;
@@ -1214,7 +1290,7 @@ impl ToolBackend for AutomaticSegmentation {
             self.current = None;
             self.input = None;
             self.annotation_masks.clear();
-            self.inference_cache = None;
+            self.inference_cache.clear();
             self.training_job = None;
             self.stroke = None;
             self.training_generation = self.training_generation.wrapping_add(1);
@@ -1231,75 +1307,53 @@ impl ToolBackend for AutomaticSegmentation {
     fn get_state(&self) -> ToolState {
         ToolState::AutomaticSegmentationState(self.state.clone())
     }
-    /// Cache training input or render model predictions according to the current mode.
-    async fn process(&mut self, images: &mut Vec<Arc<RgbaImage>>) -> Result<()> {
-        self.state.total_layers = images.len();
-        if self.state.selected_layer >= images.len() {
+    /// Cache each stack's input, preview the selected stack while training, or segment every stack.
+    async fn process(&mut self, images: &mut ImageCollection) -> Result<()> {
+        self.state.total_layers = images.layer_count();
+        if self.state.selected_layer >= self.state.total_layers {
             self.state.selected_layer = 0;
         }
-        let Some(image) = images.get(self.state.selected_layer).cloned() else {
-            return Ok(());
-        };
-        if self
-            .input
-            .as_ref()
-            .is_none_or(|old| !Arc::ptr_eq(old, &image))
-        {
-            self.annotation_masks.clear();
-            self.input = Some(image.clone());
-            self.current = self
-                .samples
-                .iter()
-                .position(|sample| Arc::ptr_eq(&sample.image, &image));
-            self.stroke = None;
-            self.state.selected_stroke = None;
-            self.rebuild_mask();
-            self.changed();
-        }
+        self.stack_inputs = images.collect_layer(self.state.selected_layer);
+        self.adopt_selected_input();
         if self.state.training && !self.state.show_overlay {
             return Ok(());
         }
         let Some(model) = self.model.clone() else {
             return Ok(());
         };
-        let output = if let Some(cached) = self
-            .inference_cache
-            .as_ref()
-            .filter(|cached| cached.matches(self.state.selected_layer, &image, &model))
-        {
-            cached.output.clone()
-        } else {
-            let extractor = self.extractor.clone();
-            let worker_image = image.clone();
-            let worker_model = model.clone();
-            let inference = self.state.inference.clone();
-            let output = Arc::new(
-                tokio::task::spawn_blocking(move || {
-                    futures::executor::block_on(worker_model.predict(
-                        &extractor,
-                        &worker_image,
-                        &inference,
-                    ))
-                })
-                .await??,
-            );
-            self.inference_cache = Some(InferenceCache {
-                layer: self.state.selected_layer,
-                input: image,
-                model,
-                output: output.clone(),
-                overlay: None,
-            });
-            output
-        };
         if self.state.training {
-            self.refresh_prediction_overlay();
-            self.overlays_dirty = true;
-        } else if let Some(layer) = images.get_mut(self.state.selected_layer) {
-            *layer = Arc::new(self.render_prediction(&output)?);
+            if let Some(image) = self.input.clone() {
+                self.predict(image, model).await?;
+                self.refresh_prediction_overlay();
+                self.overlays_dirty = true;
+            }
+        } else {
+            let layer = self.state.selected_layer;
+            for stack in &mut images.stacks {
+                let Some(image) = stack.layers.get(layer).cloned() else {
+                    continue;
+                };
+                let output = self.predict(image, model.clone()).await?;
+                let rendered = Arc::new(self.render_prediction(&output)?);
+                if let Some(slot) = stack.layers.get_mut(layer) {
+                    *slot = rendered;
+                }
+            }
         }
+        let inputs = &self.stack_inputs;
+        self.inference_cache.retain(|cached| {
+            inputs
+                .iter()
+                .flatten()
+                .any(|input| Arc::ptr_eq(input, &cached.input))
+        });
 
         Ok(())
+    }
+    /// Annotate and preview the given stack.
+    fn select_stack(&mut self, stack: usize) {
+        self.state.selected_stack = stack;
+        self.adopt_selected_input();
     }
     /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, input: ToolInput) -> Result<()> {
@@ -1308,7 +1362,7 @@ impl ToolBackend for AutomaticSegmentation {
     /// Discard rejected output and prediction overlays while preserving annotation input.
     fn invalidate_cached_output(&mut self) {
         self.cache.invalidate();
-        self.overlays_dirty |= self.inference_cache.take().is_some();
+        self.overlays_dirty |= !std::mem::take(&mut self.inference_cache).is_empty();
     }
     /// Return and clear the pending overlay change flag.
     fn take_overlay_changes(&mut self) -> bool {
@@ -1339,14 +1393,7 @@ impl ToolBackend for AutomaticSegmentation {
         }
         let mut elements = Vec::new();
         if self.state.show_overlay
-            && let Some(cached) = self.inference_cache.as_ref().filter(|cached| {
-                self.input
-                    .as_ref()
-                    .zip(self.model.as_ref())
-                    .is_some_and(|(image, model)| {
-                        cached.matches(self.state.selected_layer, image, model)
-                    })
-            })
+            && let Some(cached) = self.selected_inference()
             && let Some(overlay) = &cached.overlay
         {
             elements.push(OverlayElement::ImageMask {

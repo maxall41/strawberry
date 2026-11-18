@@ -40,6 +40,8 @@ impl std::ops::DerefMut for ToolInstance {
 pub struct ToolManager {
     pub tools: IndexMap<ToolId, ToolInstance>,
     pub selected_tool: Option<ToolId>,
+    /// Stack shown in the viewer and edited by interactive tools.
+    pub selected_stack: usize,
     /// Latest ordered tools, enablement, and selection for pipeline subscribers.
     pipeline_state_sender: watch::Sender<PipelineState>,
     gpu: Arc<GpuImageProcessor>,
@@ -53,6 +55,7 @@ impl ToolManager {
         Self {
             tools: IndexMap::new(),
             selected_tool: None,
+            selected_stack: 0,
             pipeline_state_sender: watch::channel(PipelineState::default()).0,
             gpu,
             next_tool_id: 1,
@@ -77,7 +80,7 @@ impl ToolManager {
     async fn create(&self, kind: &BackendToolType) -> anyhow::Result<ToolInstance> {
         let events = ToolEvents::default();
         let gpu = self.gpu.clone();
-        let backend: Box<dyn ToolBackend> = match kind {
+        let mut backend: Box<dyn ToolBackend> = match kind {
             BackendToolType::AutomaticSegmentation => {
                 Box::new(AutomaticSegmentation::new(events, gpu).await?)
             }
@@ -99,6 +102,7 @@ impl ToolManager {
             BackendToolType::Threshold => Box::new(Threshold::new(events, gpu).await?),
             BackendToolType::Watershed => Box::new(Watershed::new(events, gpu).await?),
         };
+        backend.select_stack(self.selected_stack);
         let tool_state_sender = watch::channel(backend.get_state()).0;
         Ok(ToolInstance {
             backend,
@@ -128,6 +132,17 @@ impl ToolManager {
                 tool.cancel_interaction();
             }
             self.selected_tool = id;
+        }
+    }
+    /// Select the stack every tool edits, cancelling gestures begun on another stack.
+    pub fn select_stack(&mut self, stack: usize) {
+        if stack == self.selected_stack {
+            return;
+        }
+        self.selected_stack = stack;
+        for tool in self.tools.values_mut() {
+            tool.cancel_interaction();
+            tool.select_stack(stack);
         }
     }
     /// Remove a tool instance and clear its selection when needed.
@@ -243,6 +258,8 @@ impl ToolManager {
             let kind = entry.kind()?;
             let mut tool = self.create(&kind).await?;
             tool.load_persisted_state(entry.state, &entry.assets, cli)?;
+            // Loading replaces runtime-only state, including the stack selection.
+            tool.select_stack(self.selected_stack);
             tool.get_state().validate()?;
             tool.cancel_interaction();
             tool.tool_state_sender.send_replace(tool.get_state());

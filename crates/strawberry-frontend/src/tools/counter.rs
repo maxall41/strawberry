@@ -14,12 +14,13 @@ use gpui::{
     prelude::*,
 };
 use rfd::FileDialog;
+use strawberry_backend::counter::io::read_marker_file;
 
-use crate::gui::{ToggleButton, icon::Icon};
+use crate::gui::{ToggleButton, icon::Icon, prompts::ask_stack_placement};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     CountData, CountMessage, CounterMode, CounterState, CounterTool, PipelineObjectMessage,
-    ToolState, consts::CIRCLE_COLORS,
+    StackPlacement, ToolState, consts::CIRCLE_COLORS,
 };
 
 use strawberry_types::ToolFrontend;
@@ -132,11 +133,23 @@ impl CounterView {
                     *dir = Some(parent.to_path_buf());
                 }
 
+                // Unreadable files load as usual so the backend reports why they failed.
+                let z_indices =
+                    read_marker_file(&file).map_or(1, |marker_file| marker_file.count_z_indices());
+                let placement = if z_indices > 1 {
+                    let Some(placement) = ask_stack_placement(cx, "counts", z_indices).await else {
+                        return;
+                    };
+                    placement
+                } else {
+                    StackPlacement::SelectedStack
+                };
+
                 if let Err(e) = this.update(cx, |this, _cx| {
                     if let Err(e) = this
                         .base
                         .send_to_backend(PipelineObjectMessage::CountMessage(
-                            CountMessage::LoadCounts(file),
+                            CountMessage::LoadCounts(file, placement),
                         ))
                     {
                         eprintln!("Failed to send load counts command: {e}");
@@ -161,7 +174,8 @@ impl CounterView {
             eprintln!("No count type IDs available");
             return;
         };
-        let Some(new_id) = (first_id..=u16::MAX).find(|id| !state.manual_counts.contains_key(id))
+        let Some(new_id) =
+            (first_id..=u16::MAX).find(|id| !state.count_type_names.contains_key(id))
         else {
             eprintln!("No count type IDs available");
             return;
@@ -204,7 +218,7 @@ impl CounterView {
             && state.active_count_type == Some(count_type_id)
         {
             let mut remaining_types: Vec<u16> = state
-                .manual_counts
+                .count_type_names
                 .keys()
                 .filter(|&&id| id != count_type_id)
                 .copied()
@@ -441,7 +455,7 @@ impl CounterView {
 
     /// Return count category IDs in display order.
     fn sorted_count_type_ids(state: &CounterState) -> Vec<u16> {
-        let mut ids: Vec<_> = state.manual_counts.keys().copied().collect();
+        let mut ids: Vec<_> = state.count_type_names.keys().copied().collect();
         ids.sort_unstable();
         ids
     }
@@ -756,13 +770,11 @@ impl CounterView {
                     cx.notify();
                 }),
             );
-        if state.manual_counts.is_empty() {
+        if state.count_type_names.is_empty() {
             list = list.child(tool_panel::empty("No count types"));
         }
         for (position, id) in count_type_ids.into_iter().enumerate() {
-            let Some(counts) = state.manual_counts.get(&id) else {
-                continue;
-            };
+            let counts = state.manual_counts(id);
             let name = state
                 .count_type_names
                 .get(&id)
@@ -897,7 +909,7 @@ impl CounterView {
                 div()
                     .text_2xl()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(state.auto_counts.len().to_string()),
+                    .child(state.auto_counts().len().to_string()),
             )
             .child(
                 div()
@@ -919,8 +931,7 @@ impl CounterView {
     fn render_review_ui(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let counts = state
             .active_count_type
-            .and_then(|id| state.manual_counts.get(&id))
-            .map_or(&[][..], Vec::as_slice);
+            .map_or(&[][..], |id| state.manual_counts(id));
         let mut review = tool_panel::section("Review");
         if counts.is_empty() {
             return review.child(tool_panel::empty("No counts to review"));
@@ -1073,7 +1084,7 @@ impl FrontendMessageHandler for CounterView {
     fn on_state_changed(&mut self, new_state: &CounterState, _cx: &mut Context<Self>) {
         if let Ok(mut next_id) = self.next_count_type_id.write() {
             *next_id = new_state
-                .manual_counts
+                .count_type_names
                 .keys()
                 .max()
                 .map_or(0, |&k| u32::from(k).saturating_add(1));

@@ -62,6 +62,24 @@ pub struct PipelineState {
     pub selected_tool: Option<ToolId>,
 }
 
+/// Where annotations read from a file are placed among the loaded stacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackPlacement {
+    /// Place every annotation on the selected stack.
+    SelectedStack,
+    /// Place each annotation on the stack matching its Z index.
+    SplitByZ,
+}
+
+/// Which stacks an image export writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportScope {
+    /// Write the selected stack's output as a single image.
+    SelectedStack,
+    /// Write every stack's output as a TIFF inside a ZIP archive.
+    AllStacks,
+}
+
 #[derive(Debug, Clone)]
 pub enum ToolInput {
     Message(crate::PipelineObjectMessage),

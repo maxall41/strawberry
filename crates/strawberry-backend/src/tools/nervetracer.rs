@@ -10,8 +10,8 @@ use strawberry_processing::nervetracer::create_path;
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, NerveTracerMessage, NerveTracerState, PipelineObjectMessage,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, FrontendMessage, ImageCollection, NerveTracerMessage, NerveTracerState,
+    PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
     overlay::{OverlayElement, ToolOverlay},
 };
 
@@ -25,7 +25,8 @@ pub struct NerveTracer {
     pub state: NerveTracerState,
     pub events: ToolEvents,
     pub cache: crate::tools::cache::ToolCache<NerveTracerState>,
-    pub cached_input: Option<Arc<image::RgbaImage>>,
+    /// The selected layer of each stack, traced when the user clicks on that stack.
+    stack_inputs: Vec<Option<Arc<image::RgbaImage>>>,
 }
 
 #[async_trait]
@@ -37,6 +38,10 @@ impl ToolBackend for NerveTracer {
     /// Cancel the active canvas interaction.
     fn cancel_interaction(&mut self) {
         self.state.first_point = None;
+    }
+    /// Trace on, and show the paths of, the given stack.
+    fn select_stack(&mut self, stack: usize) {
+        self.state.traces.select(stack);
     }
     /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool {
@@ -56,22 +61,13 @@ impl ToolBackend for NerveTracer {
         ToolState::NerveTracerState(self.state.clone())
     }
 
-    /// Cache the selected input layer for tracing and refresh the available layer count.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        self.state.total_images = input.len();
-
-        // Clamp selected_image_index if it's out of bounds
-        if self.state.selected_image_index >= input.len() && !input.is_empty() {
-            self.state.selected_image_index = input.len().saturating_sub(1);
+    /// Cache each stack's selected layer for tracing and refresh the available layer count.
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        self.state.total_layers = images.layer_count();
+        if self.state.selected_layer >= self.state.total_layers && self.state.total_layers > 0 {
+            self.state.selected_layer = self.state.total_layers.saturating_sub(1);
         }
-
-        // Cache the selected image
-        if input.is_empty() {
-            self.cached_input = None;
-        } else {
-            self.cached_input = input.get(self.state.selected_image_index).cloned();
-        }
-
+        self.stack_inputs = images.collect_layer(self.state.selected_layer);
         Ok(())
     }
 
@@ -82,7 +78,11 @@ impl ToolBackend for NerveTracer {
                 if !self.state.is_enabled {
                     return Ok(());
                 }
-                let Some(image) = &self.cached_input else {
+                let Some(image) = self
+                    .stack_inputs
+                    .get(self.state.traces.selected_index())
+                    .and_then(Option::as_ref)
+                else {
                     return Ok(());
                 };
 
@@ -96,7 +96,11 @@ impl ToolBackend for NerveTracer {
                         let new_path = create_path(first, (x, y), image);
                         self.state.first_point = None;
                         if let Some(new_path) = new_path {
-                            self.state.current_path_segments.push(new_path);
+                            self.state
+                                .traces
+                                .selected_mut()
+                                .current_path_segments
+                                .push(new_path);
                         }
                     }
                 }
@@ -105,30 +109,31 @@ impl ToolBackend for NerveTracer {
             ToolInput::Message(PipelineObjectMessage::NerveTracerMessage(message)) => match message
             {
                 NerveTracerMessage::CommitCurrentPathSegments() => {
-                    self.state
-                        .paths
-                        .push(self.state.current_path_segments.clone());
-                    self.state.current_path_segments.clear();
+                    let traces = self.state.traces.selected_mut();
+                    let segments = std::mem::take(&mut traces.current_path_segments);
+                    traces.paths.push(segments);
                 }
                 NerveTracerMessage::DeletePath(id) => {
-                    if id < self.state.paths.len() {
-                        self.state.paths.remove(id);
+                    let paths = &mut self.state.traces.selected_mut().paths;
+                    if id < paths.len() {
+                        paths.remove(id);
                     }
                 }
                 NerveTracerMessage::DeletePathSegmentInCommitedPath(path_id, segment_id) => {
-                    if let Some(path) = self.state.paths.get_mut(path_id)
+                    if let Some(path) = self.state.traces.selected_mut().paths.get_mut(path_id)
                         && segment_id < path.len()
                     {
                         path.remove(segment_id);
                     }
                 }
                 NerveTracerMessage::DeleteUncomittedPathSegment(id) => {
-                    if id < self.state.current_path_segments.len() {
-                        self.state.current_path_segments.remove(id);
+                    let segments = &mut self.state.traces.selected_mut().current_path_segments;
+                    if id < segments.len() {
+                        segments.remove(id);
                     }
                 }
-                NerveTracerMessage::LoadTraces(path) => {
-                    match import_nervetracer_from_xml_file_into(&path, &mut self.state) {
+                NerveTracerMessage::LoadTraces(path, placement) => {
+                    match import_nervetracer_from_xml_file_into(&path, &mut self.state, placement) {
                         Ok(()) => {
                             self.events.emit(FrontendMessage::success(
                                 "Traces loaded successfully!".to_string(),
@@ -158,8 +163,8 @@ impl ToolBackend for NerveTracer {
                         }
                     }
                 }
-                NerveTracerMessage::SetSelectedImageIndex(index) => {
-                    self.state.selected_image_index = index;
+                NerveTracerMessage::SelectLayer(index) => {
+                    self.state.selected_layer = index;
                 }
             },
             _ => {}
@@ -188,12 +193,12 @@ impl ToolBackend for NerveTracer {
     }
 
     /// Return cached output when its processing settings still match.
-    fn valid_cached_output(&self) -> Option<Vec<Arc<image::RgbaImage>>> {
+    fn valid_cached_output(&self) -> Option<ImageCollection> {
         self.cache.valid_output(&self.state)
     }
 
     /// Cache processed images together with their settings.
-    fn set_cached_output(&mut self, output: Vec<Arc<image::RgbaImage>>) {
+    fn set_cached_output(&mut self, output: ImageCollection) {
         self.cache.cached_output = Some(output);
         self.cache.cached_state = Some(self.state.clone());
     }
@@ -206,7 +211,7 @@ impl ToolBackend for NerveTracer {
     /// Discard cached processing data.
     fn invalidate_cache(&mut self) {
         self.invalidate_cached_output();
-        self.cached_input = None;
+        self.stack_inputs.clear();
     }
 
     /// Build the canvas overlays for this tool.
@@ -239,7 +244,7 @@ impl ToolBackend for NerveTracer {
         }
 
         // Draw uncommitted segments
-        for segment in &self.state.current_path_segments {
+        for segment in self.state.current_path_segments() {
             let points: Vec<(f32, f32)> = segment
                 .iter()
                 .copied()
@@ -256,7 +261,7 @@ impl ToolBackend for NerveTracer {
         }
 
         // Draw committed paths
-        for path in &self.state.paths {
+        for path in self.state.paths() {
             for segment in path {
                 let points: Vec<(f32, f32)> = segment
                     .iter()
@@ -290,19 +295,12 @@ impl NerveTracer {
     /// Construct the tool with its initial settings and required resources.
     #[must_use]
     pub fn new(events: ToolEvents) -> Self {
-        let state = NerveTracerState {
-            is_enabled: false,
-            paths: vec![],
-            current_path_segments: vec![],
-            first_point: None,
-            selected_image_index: 0,
-            total_images: 0,
-        };
+        let state = NerveTracerState::default();
         Self {
-            state: state.clone(),
-            events,
             cache: crate::tools::cache::ToolCache::new(&state),
-            cached_input: None,
+            state,
+            events,
+            stack_inputs: Vec::new(),
         }
     }
 }
@@ -310,6 +308,7 @@ impl NerveTracer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use strawberry_types::StackTraces;
 
     /// Verify trace overlays use pixel centers without modifying stored paths.
     #[test]
@@ -318,8 +317,10 @@ mod tests {
         let mut tracer = NerveTracer::new(ToolEvents::default());
         tracer.state.is_enabled = true;
         tracer.state.first_point = Some((0, 0));
-        tracer.state.current_path_segments = vec![vec![(10, 20), (30, 20)]];
-        tracer.state.paths = vec![vec![vec![(5, 6), (7, 8)]]];
+        *tracer.state.traces.selected_mut() = StackTraces {
+            paths: vec![vec![vec![(5, 6), (7, 8)]]],
+            current_path_segments: vec![vec![(10, 20), (30, 20)]],
+        };
         let state = tracer.state.clone();
         let overlay = tracer
             .get_overlays(strawberry_types::ToolId(1))

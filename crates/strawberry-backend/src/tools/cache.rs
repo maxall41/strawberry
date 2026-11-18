@@ -1,7 +1,8 @@
 use strawberry_types::{
-    CompositorState, ContrastState, CounterState, DecomposerState, DifferenceOfGaussiansState,
-    GaussianBlurState, GrayscaleState, LocalMaximaState, MorphologyState, NerveTracerState,
-    ObjectSizeFilterState, RollingBallState, SobelState, ThresholdState, WatershedState,
+    AutomaticSegmentationState, CompositorState, ContrastState, CounterState, DecomposerState,
+    DifferenceOfGaussiansState, GaussianBlurState, GrayscaleState, ImageCollection,
+    LocalMaximaState, MorphologyState, NerveTracerState, ObjectSizeFilterState, RollingBallState,
+    SobelState, ThresholdState, WatershedState,
 };
 
 pub trait SyncState: Clone + PartialEq {
@@ -67,8 +68,7 @@ impl SyncState for NerveTracerState {
     }
     /// Return whether settings affecting image processing differ.
     fn processing_differs(&self, other: &Self) -> bool {
-        self.is_enabled != other.is_enabled
-            || self.selected_image_index != other.selected_image_index
+        self.is_enabled != other.is_enabled || self.selected_layer != other.selected_layer
     }
 }
 
@@ -103,7 +103,7 @@ impl<TState: SyncState> ToolSync<TState> {
 }
 
 pub struct ToolCache<TState> {
-    pub cached_output: Option<Vec<std::sync::Arc<image::RgbaImage>>>,
+    pub cached_output: Option<ImageCollection>,
     pub cached_state: Option<TState>,
     pub sync: ToolSync<TState>,
 }
@@ -130,7 +130,7 @@ impl<TState: SyncState> ToolCache<TState> {
 
     /// Return cached images when the processing settings still match.
     #[must_use]
-    pub fn valid_output(&self, state: &TState) -> Option<Vec<std::sync::Arc<image::RgbaImage>>> {
+    pub fn valid_output(&self, state: &TState) -> Option<ImageCollection> {
         self.cached_state
             .as_ref()
             .filter(|cached| !cached.processing_differs(state))
@@ -144,7 +144,7 @@ impl<TState: SyncState> ToolCache<TState> {
     }
 }
 
-impl SyncState for strawberry_types::AutomaticSegmentationState {
+impl SyncState for AutomaticSegmentationState {
     /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool {
         self.is_enabled
@@ -154,6 +154,10 @@ impl SyncState for strawberry_types::AutomaticSegmentationState {
         self.is_enabled != other.is_enabled
             || self.training != other.training
             || (self.training && self.show_overlay != other.show_overlay)
+            // Only the training preview depends on the selected stack; inference covers every stack.
+            || (self.training
+                && self.show_overlay
+                && self.selected_stack != other.selected_stack)
             || (!self.training
                 && (self.use_threshold != other.use_threshold
                     || (self.use_threshold

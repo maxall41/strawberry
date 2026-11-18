@@ -2,11 +2,11 @@ use crate::tools::base::ToolEvents;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use image::{Rgba, RgbaImage};
+use image::Rgba;
 use lutz::{Pixel, lutz};
 use strawberry_types::{
-    BackendToolType, ObjectSizeFilterMessage, ObjectSizeFilterMode, ObjectSizeFilterState,
-    PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
+    BackendToolType, ImageCollection, ObjectSizeFilterMessage, ObjectSizeFilterMode,
+    ObjectSizeFilterState, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
 use crate::{
@@ -36,8 +36,8 @@ impl ToolBackend for ObjectSizeFilter {
     }
 
     /// Filter connected image objects using the configured size range.
-    async fn process(&mut self, input: &mut Vec<Arc<RgbaImage>>) -> anyhow::Result<()> {
-        for image in input {
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        for image in images.layers_mut() {
             let mut output = None;
             for pixels in lutz::<_, Vec<Pixel>>(BinaryImageWrapper::new(image, 128)) {
                 let area = u64::try_from(pixels.len())?;

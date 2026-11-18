@@ -12,8 +12,8 @@ use strawberry_processing::{
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, MorphologyMessage, MorphologyState, PipelineObjectMessage, ToolBackend,
-    ToolInput, ToolState,
+    BackendToolType, ImageCollection, MorphologyMessage, MorphologyState, PipelineObjectMessage,
+    ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Morphology {
@@ -38,8 +38,8 @@ impl ToolBackend for Morphology {
     }
 
     /// Apply the selected morphological operation to each input layer.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        for image in input {
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        for image in images.layers_mut() {
             *image = Arc::new(
                 self.processor
                     .apply_morphology(image, self.state.operation, self.state.element_size)

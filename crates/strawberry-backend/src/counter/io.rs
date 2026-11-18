@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::error::Error;
 use std::path::Path;
 
 use quick_xml::de::from_str;
@@ -6,7 +7,7 @@ use quick_xml::se::to_string;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
-use strawberry_types::{CountData, CounterMode, CounterState};
+use strawberry_types::{CountData, CounterMode, CounterState, StackPlacement};
 
 // XML serialization structures
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,13 +61,13 @@ pub struct Marker {
     pub marker_z: u16,
 }
 
-impl From<&CountData> for Marker {
-    /// Convert a count to an XML marker with the default Z coordinate.
-    fn from(count_data: &CountData) -> Self {
+impl Marker {
+    /// Place a count on a one-based image slice.
+    const fn on_slice(count_data: &CountData, marker_z: u16) -> Self {
         Self {
             marker_x: count_data.position.0,
             marker_y: count_data.position.1,
-            marker_z: 1, // Default Z value
+            marker_z,
         }
     }
 }
@@ -95,68 +96,66 @@ impl Default for ImageProperties {
 }
 
 impl CellCounterMarkerFile {
-    /// Create a new `CellCounterMarkerFile` from counter state
-    #[must_use]
-    pub fn from_counter_state(state: &CounterState, image_filename: Option<String>) -> Self {
+    /// Create a marker file from every stack's counts, using one-based slice numbers as Z.
+    ///
+    /// # Errors
+    /// Returns an error if a stack index exceeds the marker Z range.
+    pub fn from_counter_state(
+        state: &CounterState,
+        image_filename: Option<String>,
+    ) -> Result<Self, Box<dyn Error>> {
         let mut image_properties = ImageProperties::default();
         if let Some(filename) = image_filename {
             image_properties.image_filename = filename;
         }
 
-        let mut marker_types = Vec::new();
-
-        if state.mode == CounterMode::Manual {
-            // Convert manual counts to marker types
-            for (&type_id, counts) in &state.manual_counts {
-                if !counts.is_empty() {
-                    let markers: Vec<Marker> =
-                        counts.iter().map(std::convert::Into::into).collect();
-                    let name = state
-                        .count_type_names
-                        .get(&type_id)
-                        .cloned()
-                        .unwrap_or_else(|| format!("Type {type_id}"));
-
-                    marker_types.push(MarkerType {
-                        type_id,
-                        name,
-                        markers,
-                    });
-                }
+        // Ordered so marker types are written by ID.
+        let mut markers_by_type: BTreeMap<u16, Vec<Marker>> = BTreeMap::new();
+        if state.mode == CounterMode::Auto {
+            markers_by_type.insert(0, Vec::new());
+        }
+        for (stack, counts) in state.counts.iter() {
+            let marker_z = u16::try_from(stack.saturating_add(1))?;
+            let typed_counts: Vec<(u16, &Vec<CountData>)> = match state.mode {
+                CounterMode::Manual => counts.manual.iter().map(|(&id, c)| (id, c)).collect(),
+                CounterMode::Auto => vec![(0, &counts.auto)],
+            };
+            for (type_id, counts) in typed_counts {
+                markers_by_type
+                    .entry(type_id)
+                    .or_default()
+                    .extend(counts.iter().map(|count| Marker::on_slice(count, marker_z)));
             }
-        } else if state.mode == CounterMode::Auto {
-            let markers: Vec<Marker> = state
-                .auto_counts
-                .iter()
-                .map(std::convert::Into::into)
-                .collect();
-            marker_types.push(MarkerType {
-                type_id: 0u16,
-                name: format!("Type {}", 0),
+        }
+
+        let marker_types = markers_by_type
+            .into_iter()
+            .filter(|(_, markers)| state.mode == CounterMode::Auto || !markers.is_empty())
+            .map(|(type_id, markers)| MarkerType {
+                type_id,
+                name: state
+                    .count_type_names
+                    .get(&type_id)
+                    .filter(|_| state.mode == CounterMode::Manual)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Type {type_id}")),
                 markers,
-            });
-        }
+            })
+            .collect();
 
-        // Sort marker types by type_id for consistent output
-        marker_types.sort_by_key(|mt| mt.type_id);
-
-        let current_type = state.active_count_type.unwrap_or(0);
-
-        let marker_data = MarkerData {
-            current_type,
-            marker_types,
-        };
-
-        Self {
+        Ok(Self {
             image_properties,
-            marker_data,
-        }
+            marker_data: MarkerData {
+                current_type: state.active_count_type.unwrap_or(0),
+                marker_types,
+            },
+        })
     }
 
     /// Convert to XML string with proper XML declaration
     /// # Errors
     /// Returns an error if XML conversion or file I/O fails.
-    pub fn to_xml_string(&self) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn to_xml_string(&self) -> Result<String, Box<dyn Error>> {
         let xml_body = to_string(self)?;
         let xml = format!("<?xml version='1.0' encoding='utf-8'?>\n{xml_body}");
         Ok(xml)
@@ -165,7 +164,7 @@ impl CellCounterMarkerFile {
     /// Parse XML string and create `CellCounterMarkerFile`
     /// # Errors
     /// Returns an error if XML conversion or file I/O fails.
-    pub fn from_xml_string(xml: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_xml_string(xml: &str) -> Result<Self, Box<dyn Error>> {
         // Remove XML declaration if present
         let xml_content = if xml.starts_with("<?xml") {
             xml.split_once('>').map_or(xml, |(_, body)| body.trim())
@@ -177,82 +176,83 @@ impl CellCounterMarkerFile {
         Ok(cell_counter_file)
     }
 
-    /// Convert to `CounterState`
+    /// Count the distinct Z indices used by markers.
     #[must_use]
-    pub fn to_counter_state(&self) -> CounterState {
-        let mut manual_counts = HashMap::new();
-        let mut count_type_visibility = HashMap::new();
-        let mut count_type_names = HashMap::new();
+    pub fn count_z_indices(&self) -> usize {
+        self.marker_data
+            .marker_types
+            .iter()
+            .flat_map(|marker_type| marker_type.markers.iter().map(|marker| marker.marker_z))
+            .collect::<HashSet<_>>()
+            .len()
+    }
+
+    /// Replace the manual counts of each stack the markers are placed on and register their types.
+    pub fn apply_to_counter_state(&self, state: &mut CounterState, placement: StackPlacement) {
+        let selected = state.counts.selected_index();
+        let mut imported: HashMap<usize, HashMap<u16, Vec<CountData>>> = HashMap::new();
+        if placement == StackPlacement::SelectedStack {
+            imported.insert(selected, HashMap::new());
+        }
 
         for marker_type in &self.marker_data.marker_types {
-            let counts: Vec<CountData> = marker_type
-                .markers
-                .iter()
-                .map(std::convert::Into::into)
-                .collect();
-            if !counts.is_empty() {
-                manual_counts.insert(marker_type.type_id, counts);
-                count_type_visibility.insert(marker_type.type_id, true);
-                count_type_names.insert(marker_type.type_id, marker_type.name.clone());
+            if marker_type.markers.is_empty() {
+                continue;
             }
+            for marker in &marker_type.markers {
+                let stack = match placement {
+                    StackPlacement::SelectedStack => selected,
+                    // Marker Z values are one-based slice numbers.
+                    StackPlacement::SplitByZ => usize::from(marker.marker_z.saturating_sub(1)),
+                };
+                imported
+                    .entry(stack)
+                    .or_default()
+                    .entry(marker_type.type_id)
+                    .or_default()
+                    .push(marker.into());
+            }
+            state
+                .count_type_names
+                .insert(marker_type.type_id, marker_type.name.clone());
+            state
+                .count_type_visibility
+                .insert(marker_type.type_id, true);
         }
 
-        CounterState {
-            is_enabled: true,
-            manual_counts,
-            auto_counts: vec![],
-            mode: CounterMode::Manual,
-            active_tool: None,
-            active_count_type: Some(self.marker_data.current_type),
-            review_current_index: 0,
-            count_type_visibility,
-            count_type_names,
+        for (stack, manual) in imported {
+            state.counts.stack_mut(stack).manual = manual;
         }
+        let current_type = self.marker_data.current_type;
+        if state.count_type_names.contains_key(&current_type) {
+            state.active_count_type = Some(current_type);
+        }
+        state.is_enabled = true;
+        state.mode = CounterMode::Manual;
+        state.review_current_index = 0;
     }
 }
 
-/// Export counter data to `CellCounter` XML format
-/// # Errors
-/// Returns an error if XML conversion or file I/O fails.
-pub fn export_counter_to_xml(
-    state: &CounterState,
-    filename: Option<String>,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let cell_counter_file = CellCounterMarkerFile::from_counter_state(state, filename);
-    cell_counter_file.to_xml_string()
-}
-
-/// Export counter data to `CellCounter` XML format and save to file
+/// Export the counts of every stack to a `CellCounter` XML file.
 /// # Errors
 /// Returns an error if XML conversion or file I/O fails.
 pub fn export_counter_to_xml_file(
     state: &CounterState,
     file_path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn Error>> {
     let filename = file_path
         .file_name()
         .and_then(|name| name.to_str())
         .map(std::string::ToString::to_string);
 
-    let xml = export_counter_to_xml(state, filename)?;
+    let xml = CellCounterMarkerFile::from_counter_state(state, filename)?.to_xml_string()?;
     fs::write(file_path, xml)?;
     Ok(())
 }
 
-/// Import counter data from `CellCounter` XML format
+/// Read and parse a `CellCounter` XML file.
 /// # Errors
-/// Returns an error if XML conversion or file I/O fails.
-pub fn import_counter_from_xml(xml: &str) -> Result<CounterState, Box<dyn std::error::Error>> {
-    let cell_counter_file = CellCounterMarkerFile::from_xml_string(xml)?;
-    Ok(cell_counter_file.to_counter_state())
-}
-
-/// Import counter data from `CellCounter` XML file
-/// # Errors
-/// Returns an error if XML conversion or file I/O fails.
-pub fn import_counter_from_xml_file(
-    file_path: &Path,
-) -> Result<CounterState, Box<dyn std::error::Error>> {
-    let xml = fs::read_to_string(file_path)?;
-    import_counter_from_xml(&xml)
+/// Returns an error if file reading or XML parsing fails.
+pub fn read_marker_file(file_path: &Path) -> Result<CellCounterMarkerFile, Box<dyn Error>> {
+    CellCounterMarkerFile::from_xml_string(&fs::read_to_string(file_path)?)
 }

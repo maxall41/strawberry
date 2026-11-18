@@ -11,7 +11,9 @@ use tokio::sync::{broadcast, watch};
 use tokio::time::Duration;
 
 use strawberry_backend::Pipeline;
-use strawberry_types::{FeedbackLevel, FrontendMessage, OutputFrame, PipelineCommand};
+use strawberry_types::{
+    ExportScope, FeedbackLevel, FrontendMessage, ImageArrangement, OutputFrame, PipelineCommand,
+};
 
 /// Budget for one group, measured from the moment its load is dispatched.
 const GROUP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -530,6 +532,7 @@ impl CliProcessor {
         view_sender
             .send(PipelineCommand::Load {
                 files: group_files.to_vec(),
+                arrangement: ImageArrangement::Layers,
                 reply,
             })
             .map_err(|e| anyhow!("Failed to send load command for group {group_name}: {e}"))?;
@@ -575,6 +578,7 @@ impl CliProcessor {
         view_sender
             .send(PipelineCommand::SaveOutput {
                 path: output_file.clone(),
+                scope: ExportScope::SelectedStack,
                 reply,
             })
             .map_err(|e| anyhow!("{e}"))?;

@@ -11,10 +11,13 @@ use gpui::{
     App, Context, FocusHandle, Focusable, KeyBinding, MouseDownEvent, Window, div, prelude::*,
 };
 use rfd::FileDialog;
+use strawberry_backend::nervetracer::io::read_tracings_file;
 
-use crate::gui::ToggleButton;
+use crate::gui::{ToggleButton, prompts::ask_stack_placement};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
-use strawberry_types::{NerveTracerMessage, NerveTracerState, PipelineObjectMessage, ToolState};
+use strawberry_types::{
+    NerveTracerMessage, NerveTracerState, PipelineObjectMessage, StackPlacement, ToolState,
+};
 
 use strawberry_types::ToolFrontend;
 
@@ -108,11 +111,23 @@ impl NerveTracerView {
                     *dir = Some(parent.to_path_buf());
                 }
 
+                // Unreadable files load as usual so the backend reports why they failed.
+                let z_indices =
+                    read_tracings_file(&file).map_or(1, |tracings| tracings.count_z_indices());
+                let placement = if z_indices > 1 {
+                    let Some(placement) = ask_stack_placement(cx, "traces", z_indices).await else {
+                        return;
+                    };
+                    placement
+                } else {
+                    StackPlacement::SelectedStack
+                };
+
                 if let Err(e) = this.update(cx, |this, _cx| {
                     if let Err(e) =
                         this.base
                             .send_to_backend(PipelineObjectMessage::NerveTracerMessage(
-                                NerveTracerMessage::LoadTraces(file),
+                                NerveTracerMessage::LoadTraces(file, placement),
                             ))
                     {
                         eprintln!("Failed to send load traces command: {e}");
@@ -180,15 +195,15 @@ impl NerveTracerView {
         }
     }
 
-    /// Select the image layer used for tracing.
-    fn set_selected_image(&self, image_index: usize) {
+    /// Select the layer used for tracing.
+    fn select_layer(&self, layer: usize) {
         if let Err(e) = self
             .base
             .send_to_backend(PipelineObjectMessage::NerveTracerMessage(
-                NerveTracerMessage::SetSelectedImageIndex(image_index),
+                NerveTracerMessage::SelectLayer(layer),
             ))
         {
-            eprintln!("Failed to send set selected image command: {e}");
+            eprintln!("Failed to send select layer command: {e}");
         }
     }
 
@@ -257,18 +272,18 @@ impl NerveTracerView {
         .render(cx)
     }
 
-    /// Build the image selector for the nervetracer view.
-    fn render_image_selector(
+    /// Build the layer selector for the nervetracer view.
+    fn render_layer_selector(
         state: &NerveTracerState,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         tool_panel::section("Input layer").child(div().flex().gap_1().flex_wrap().children(
-            (0..state.total_images).map(|i| {
-                Button::new(("trace-image", i))
+            (0..state.total_layers).map(|i| {
+                Button::new(("trace-layer", i))
                     .compact()
-                    .selected(i == state.selected_image_index)
+                    .selected(i == state.selected_layer)
                     .label(format!("{}", i.saturating_add(1)))
-                    .on_click(cx.listener(move |this, _, _, _| this.set_selected_image(i)))
+                    .on_click(cx.listener(move |this, _, _, _| this.select_layer(i)))
             }),
         ))
     }
@@ -284,10 +299,10 @@ impl NerveTracerView {
             &self.segments_scroll,
             &self.base.focus_handle,
         );
-        if state.current_path_segments.is_empty() {
+        if state.current_path_segments().is_empty() {
             list = list.child(tool_panel::empty("No segments"));
         }
-        for (i, _) in state.current_path_segments.iter().enumerate() {
+        for (i, _) in state.current_path_segments().iter().enumerate() {
             list = list.child(
                 tool_panel::row()
                     .child(
@@ -313,7 +328,7 @@ impl NerveTracerView {
                 .large()
                 .w_full()
                 .label("Commit path")
-                .disabled(state.current_path_segments.is_empty())
+                .disabled(state.current_path_segments().is_empty())
                 .tooltip_text("Commit segments to a path (⌘C)")
                 .on_click(cx.listener(|this, _, _, _| this.commit_segments())),
         )
@@ -327,10 +342,10 @@ impl NerveTracerView {
     ) -> impl IntoElement + use<> {
         let mut list =
             tool_panel::list_for_tool("paths-list", &self.paths_scroll, &self.base.focus_handle);
-        if state.paths.is_empty() {
+        if state.paths().is_empty() {
             list = list.child(tool_panel::empty("No paths"));
         }
-        for (path_id, path) in state.paths.iter().enumerate() {
+        for (path_id, path) in state.paths().iter().enumerate() {
             list = list.child(
                 div()
                     .flex()
@@ -490,8 +505,8 @@ impl Render for NerveTracerView {
             .on_action(cx.listener(Self::save_traces_action))
             .on_action(cx.listener(Self::load_traces_action))
             .child(Self::render_status(&state, cx))
-            .when(state.total_images > 1, |el| {
-                el.child(Self::render_image_selector(&state, cx))
+            .when(state.total_layers > 1, |el| {
+                el.child(Self::render_layer_selector(&state, cx))
             })
             .child(self.render_segments_section(&state, cx))
             .child(self.render_paths_section(&state, cx))

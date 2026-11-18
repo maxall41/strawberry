@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use strawberry_processing::{GpuImageProcessor, difference_of_gaussians::GpuDifferenceOfGaussians};
 use strawberry_types::{
-    BackendToolType, DifferenceOfGaussiansMessage, DifferenceOfGaussiansState,
+    BackendToolType, DifferenceOfGaussiansMessage, DifferenceOfGaussiansState, ImageCollection,
     PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
@@ -36,8 +36,8 @@ impl ToolBackend for DifferenceOfGaussians {
     }
 
     /// Apply the configured difference of Gaussian blurs to each input layer.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        for image in input {
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        for image in images.layers_mut() {
             *image = Arc::new(
                 self.processor
                     .apply(image, self.state.small_sigma, self.state.large_sigma)
