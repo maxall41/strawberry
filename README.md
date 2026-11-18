@@ -6,4 +6,4 @@ A modern scientific image editor.
 
 Polyform Noncommercial License 1.0.0
 
-To acquire a commercial license, please contact me at `max at maxc dot codes`.
+To acquire a commercial license, please contact me [here](https://maxc.codes/contact)
