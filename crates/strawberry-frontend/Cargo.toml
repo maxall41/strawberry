@@ -25,4 +25,4 @@ workspace = true
 [package.metadata.bundle]
 name = "Strawberry"
 identifier = "com.strawberry.strawberryapp"
-# icon = ["./assets/icon.png"]
+icon = ["./assets/icon.svg"]
