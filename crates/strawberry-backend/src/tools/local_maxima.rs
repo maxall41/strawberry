@@ -10,8 +10,8 @@ use strawberry_processing::{GpuImageProcessor, local_maxima::GpuLocalMaxima};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, LocalMaximaMessage, LocalMaximaState, PipelineObjectMessage, ToolBackend,
-    ToolInput, ToolState,
+    BackendToolType, ImageCollection, LocalMaximaMessage, LocalMaximaState, PipelineObjectMessage,
+    ToolBackend, ToolInput, ToolState,
 };
 
 pub struct LocalMaxima {
@@ -36,8 +36,8 @@ impl ToolBackend for LocalMaxima {
     }
 
     /// Detect local maxima in each input layer using the configured neighborhood.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        for image in input {
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        for image in images.layers_mut() {
             *image = Arc::new(
                 self.processor
                     .apply_local_maxima(

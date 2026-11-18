@@ -9,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, gaussian_blur::GpuGaussianBlur};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, GaussianBlurMessage, GaussianBlurState, PipelineObjectMessage, ToolBackend,
-    ToolInput, ToolState,
+    BackendToolType, GaussianBlurMessage, GaussianBlurState, ImageCollection,
+    PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct GaussianBlur {
@@ -35,8 +35,8 @@ impl ToolBackend for GaussianBlur {
     }
 
     /// Apply the configured Gaussian blur to each input layer.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        for image in input {
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        for image in images.layers_mut() {
             *image = Arc::new(self.processor.apply_blur(image, self.state.sigma).await?);
         }
         Ok(())

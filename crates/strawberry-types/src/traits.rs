@@ -1,10 +1,8 @@
 use async_trait::async_trait;
-use image::RgbaImage;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::{
-    BackendToolType, PersistedState, PipelineObjectMessage, ToolInput, ToolState,
+    BackendToolType, ImageCollection, PersistedState, PipelineObjectMessage, ToolInput, ToolState,
     overlay::ToolOverlay,
 };
 
@@ -14,8 +12,8 @@ pub type ToolAssets = HashMap<String, Vec<u8>>;
 /// Trait for image processing tools (backend)
 #[async_trait]
 pub trait ToolBackend: Send + Sync {
-    /// Process input images and return modified images
-    async fn process(&mut self, output_images: &mut Vec<Arc<RgbaImage>>) -> anyhow::Result<()>;
+    /// Process every stack of the collection in place.
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()>;
 
     /// Check if this tool is currently enabled
     fn is_enabled(&self) -> bool;
@@ -43,6 +41,8 @@ pub trait ToolBackend: Send + Sync {
     }
     /// Cancel any active canvas interaction owned by this tool.
     fn cancel_interaction(&mut self) {}
+    /// Direct canvas edits and per-stack annotations to the given stack.
+    fn select_stack(&mut self, _stack: usize) {}
     /// Report and consume pending overlay changes; return false by default.
     fn take_overlay_changes(&mut self) -> bool {
         false
@@ -122,12 +122,12 @@ pub trait ToolBackend: Send + Sync {
     }
 
     /// Return the cached output only if it is still valid for the tool's current state.
-    fn valid_cached_output(&self) -> Option<Vec<Arc<RgbaImage>>> {
+    fn valid_cached_output(&self) -> Option<ImageCollection> {
         None
     }
 
     /// Cache the output
-    fn set_cached_output(&mut self, _output: Vec<Arc<RgbaImage>>) {}
+    fn set_cached_output(&mut self, _output: ImageCollection) {}
 
     /// Invalidate reusable output while retaining input needed for canvas interactions.
     fn invalidate_cached_output(&mut self) {

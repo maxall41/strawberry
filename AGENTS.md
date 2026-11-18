@@ -58,7 +58,17 @@ Use Sobel as a reference for a simple GPU filter. Paths below are relative to `c
 5. **Implement the frontend view.** Add `strawberry-frontend/src/tools/<tool>.rs` and export it in `src/tools/mod.rs`. Follow an existing view's `ToolFrontend`, `FrontendMessageHandler`, `Render`, and `Focusable` implementations. Accept the instance `ToolId` and `CommandSender`, use frontend `ToolBase::connect` and `spawn_message_processor` for watched state, and send edits through `ToolBase`. Build controls from the shared GUI widgets and theme.
 6. **Register the UI entry points.** In `strawberry-frontend/src/commands.rs`, add the action to the tool `actions!` list and a `register_tool` call in `install`, supplying the label, `BackendToolType`, and view constructor. This registers the sidebar factory, Add Tool choice, and command-palette action together.
 
-Verify processing, archive round trips, multiple instances of the new tool, and enabled/disabled behavior. For a new UI, render it with the GPUI test fixtures and inspect a screenshot for consistency with existing controls. Follow the Unit Tests and Clippy rules below.
+Verify processing, archive round trips, multiple instances of the new tool, and enabled/disabled behavior. For a new UI, render it with the GPUI test fixtures and inspect a screenshot for consistency with existing controls (see UI screenshots below). Follow the Unit Tests and Clippy rules below.
+
+## UI screenshots
+
+GPUI's `VisualTestAppContext` renders views offscreen with the real Metal renderer and captures them as images. AppKit must run on the main thread, and libtest runs every test on a spawned thread (the process aborts with "Rust cannot catch foreign exceptions"), so render from a temporary binary instead of a `#[test]`:
+
+1. In `crates/strawberry-frontend/Cargo.toml`, temporarily add `"test-support"` to the features of both `gpui` and `gpui_platform` (the `gpui_platform` feature enables Metal capture; without it capture fails with "render_to_image not implemented for this platform"). Declare the app explicitly as `[[bin]] name = "strawberry-frontend"`, `path = "src/main.rs"`, and add a second `[[bin]]` with `test = false` pointing at a temporary file such as `src/screenshot_tmp.rs`.
+2. In that file, include the frontend modules with `#[path = "commands.rs"] mod commands;`, `#[path = "gui/mod.rs"] mod gui;` and `#[path = "tools/mod.rs"] mod tools;`, so `crate::gui` and `crate::tools` paths resolve. Allow dead code and lints for the file.
+3. In `main`, create `VisualTestAppContext::with_asset_source(gpui_platform::current_platform(false), Arc::new(assets))`, with an `AssetSource` that reads the requested path from disk (icon paths are absolute). Build a small root view containing the new UI next to an existing control for comparison. Open it with `cx.open_offscreen_window(size, |_, cx| cx.new(...))`, call `cx.run_until_parked()`, and save `cx.capture_screenshot(window.into())` as a PNG in the scratchpad. Captures are at 2x scale.
+4. Drive interactions with `simulate_click`, `simulate_mouse_down`, `simulate_mouse_move`, `simulate_mouse_up` and `simulate_keystrokes` (positions are logical window pixels). Read view state back with `window.update(&mut cx, ...)` and capture again to check the result.
+5. Run it with `cargo run -p strawberry-frontend --bin <name>` and view the PNG. Afterwards, delete the file and revert `Cargo.toml`; running `cargo check --workspace` then restores `Cargo.lock`.
 
 ## Reviewing
 

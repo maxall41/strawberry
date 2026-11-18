@@ -85,16 +85,44 @@ pub struct GrayscaleState {
 type PathSegment = Vec<(u64, u64)>;
 type Path = Vec<PathSegment>;
 
+/// Paths traced on one image stack.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StackTraces {
+    pub paths: Vec<Path>,
+    pub current_path_segments: Vec<PathSegment>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NerveTracerState {
     pub is_enabled: bool,
-    pub paths: Vec<Path>,
-    pub current_path_segments: Vec<PathSegment>,
-    pub first_point: Option<(u64, u64)>,
-    pub selected_image_index: usize,
-    /// Don't include runtime image count metadata in persisted state
+    /// Traces are saved only to dedicated trace files, never to pipeline archives.
     #[serde(skip)]
-    pub total_images: usize,
+    pub traces: PerStack<StackTraces>,
+    #[serde(skip)]
+    pub first_point: Option<(u64, u64)>,
+    #[serde(alias = "selected_image_index")]
+    pub selected_layer: usize,
+    /// Don't include runtime layer count metadata in persisted state
+    #[serde(skip)]
+    pub total_layers: usize,
+}
+
+impl NerveTracerState {
+    /// Return the committed paths traced on the selected stack.
+    #[must_use]
+    pub fn paths(&self) -> &[Path] {
+        self.traces
+            .selected()
+            .map_or(&[], |traces| traces.paths.as_slice())
+    }
+
+    /// Return the uncommitted segments traced on the selected stack.
+    #[must_use]
+    pub fn current_path_segments(&self) -> &[PathSegment] {
+        self.traces
+            .selected()
+            .map_or(&[], |traces| traces.current_path_segments.as_slice())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,20 +231,104 @@ where
     Ok(result)
 }
 
+/// Values kept separately for each image stack; edits go through the selected stack.
+// Ordered so annotation exports list stacks in sequence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerStack<T> {
+    stacks: BTreeMap<usize, T>,
+    selected: usize,
+}
+
+impl<T> Default for PerStack<T> {
+    /// Create an empty collection with the first stack selected.
+    fn default() -> Self {
+        Self {
+            stacks: BTreeMap::new(),
+            selected: 0,
+        }
+    }
+}
+
+impl<T: Default> PerStack<T> {
+    /// Return the index of the selected stack.
+    #[must_use]
+    pub const fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    /// Select the stack that subsequent edits apply to.
+    pub const fn select(&mut self, stack: usize) {
+        self.selected = stack;
+    }
+
+    /// Return the selected stack's value, if one has been recorded.
+    #[must_use]
+    pub fn selected(&self) -> Option<&T> {
+        self.stacks.get(&self.selected)
+    }
+
+    /// Return the selected stack's value, creating an empty one if needed.
+    pub fn selected_mut(&mut self) -> &mut T {
+        self.stack_mut(self.selected)
+    }
+
+    /// Return a stack's value, creating an empty one if needed.
+    pub fn stack_mut(&mut self, stack: usize) -> &mut T {
+        self.stacks.entry(stack).or_default()
+    }
+
+    /// Iterate over recorded stacks and their values in stack order.
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &T)> {
+        self.stacks.iter().map(|(&stack, value)| (stack, value))
+    }
+
+    /// Iterate mutably over every recorded stack's value.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.stacks.values_mut()
+    }
+}
+
+/// Counts placed on, or detected in, one image stack.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StackCounts {
+    pub manual: HashMap<u16, Vec<CountData>>,
+    pub auto: Vec<CountData>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CounterState {
     pub is_enabled: bool,
-    #[serde(deserialize_with = "deserialize_count_type_map")]
-    pub manual_counts: HashMap<u16, Vec<CountData>>,
-    pub auto_counts: Vec<CountData>,
+    /// Counts are saved only to dedicated count files, never to pipeline archives.
+    #[serde(skip)]
+    pub counts: PerStack<StackCounts>,
     pub mode: CounterMode,
     pub active_tool: Option<CounterTool>,
     pub active_count_type: Option<u16>,
     #[serde(deserialize_with = "deserialize_count_type_map")]
     pub count_type_visibility: HashMap<u16, bool>,
     pub review_current_index: usize,
+    /// Every defined count type; shared by all stacks.
     #[serde(deserialize_with = "deserialize_count_type_map")]
     pub count_type_names: HashMap<u16, String>,
+}
+
+impl CounterState {
+    /// Return the selected stack's manual counts of one type.
+    #[must_use]
+    pub fn manual_counts(&self, count_type: u16) -> &[CountData] {
+        self.counts
+            .selected()
+            .and_then(|counts| counts.manual.get(&count_type))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Return the counts detected in the selected stack.
+    #[must_use]
+    pub fn auto_counts(&self) -> &[CountData] {
+        self.counts
+            .selected()
+            .map_or(&[], |counts| counts.auto.as_slice())
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -588,6 +700,9 @@ pub struct AutomaticSegmentationState {
     pub selected_layer: usize,
     #[serde(skip)]
     pub total_layers: usize,
+    /// Stack whose layer is annotated and previewed while training.
+    #[serde(skip)]
+    pub selected_stack: usize,
     pub features: FeatureConfig,
     pub forest: ForestConfig,
     pub inference: InferenceConfig,
@@ -758,6 +873,7 @@ impl Default for AutomaticSegmentationState {
             brush_radius: BrushRadius::default(),
             selected_layer: 0,
             total_layers: 0,
+            selected_stack: 0,
             features: FeatureConfig::default(),
             forest: ForestConfig::default(),
             inference: InferenceConfig::default(),

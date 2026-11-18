@@ -1,5 +1,7 @@
 use num_traits::ToPrimitive;
 
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
 use std::path::Path;
 
 use quick_xml::de::from_str;
@@ -7,7 +9,7 @@ use quick_xml::se::to_string;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
-use strawberry_types::NerveTracerState;
+use strawberry_types::{NerveTracerState, StackPlacement, StackTraces};
 
 // XML serialization structures matching the nerve tracer format
 #[derive(Debug, Serialize, Deserialize)]
@@ -109,7 +111,7 @@ impl Default for ImageSize {
 }
 
 impl Tracings {
-    /// Create a new Tracings structure from `NerveTracerState`.
+    /// Create tracings from the committed paths of every stack, using the stack index as Z.
     ///
     /// # Errors
     /// Returns an error if a trace coordinate cannot be represented exactly for XML calibration.
@@ -117,56 +119,53 @@ impl Tracings {
         state: &NerveTracerState,
         samplespacing: Option<SampleSpacing>,
         imagesize: Option<ImageSize>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn Error>> {
         let samplespacing = samplespacing.unwrap_or_default();
-        let imagesize = imagesize.unwrap_or_default();
+        let mut imagesize = imagesize.unwrap_or_default();
 
         let mut paths = Vec::new();
         let mut path_id = 1usize;
 
-        // Convert committed paths
-        for path in &state.paths {
-            let mut all_points = Vec::new();
+        for (stack, traces) in state.traces.iter() {
+            let z = u64::try_from(stack)?;
+            let zd = calibrate(z, samplespacing.z, "Z")?;
+            imagesize.depth = imagesize.depth.max(u32::try_from(stack)?.saturating_add(1));
 
-            // Flatten all segments in this path into a single list of points
-            for segment in path {
-                for &(x, y) in segment {
-                    // Keep integer coordinates exact before applying floating-point calibration.
-                    let xd = x.to_f64().filter(|value| value.to_u64() == Some(x)).ok_or(
-                        "Trace X coordinate cannot be represented exactly for calibration",
-                    )? * samplespacing.x;
-                    let yd = y.to_f64().filter(|value| value.to_u64() == Some(y)).ok_or(
-                        "Trace Y coordinate cannot be represented exactly for calibration",
-                    )? * samplespacing.y;
-                    all_points.push(PointElement {
-                        x,
-                        y,
-                        z: 0,
-                        xd,
-                        yd,
-                        zd: 0.0,
+            for path in &traces.paths {
+                // Flatten all segments in this path into a single list of points
+                let all_points = path
+                    .iter()
+                    .flatten()
+                    .map(|&(x, y)| {
+                        Ok(PointElement {
+                            x,
+                            y,
+                            z,
+                            xd: calibrate(x, samplespacing.x, "X")?,
+                            yd: calibrate(y, samplespacing.y, "Y")?,
+                            zd,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+
+                if !all_points.is_empty() {
+                    let reallength = calculate_path_length(&all_points);
+
+                    paths.push(PathElement {
+                        id: path_id,
+                        swctype: 0,
+                        color: "None".to_string(),
+                        channel: 1,
+                        frame: 1,
+                        spines: 0,
+                        primary: true,
+                        usefitted: false,
+                        name: format!("Path ({path_id})"),
+                        reallength,
+                        points: all_points,
                     });
+                    path_id = path_id.saturating_add(1);
                 }
-            }
-
-            if !all_points.is_empty() {
-                // Calculate real length
-                let reallength = calculate_path_length(&all_points);
-
-                paths.push(PathElement {
-                    id: path_id,
-                    swctype: 0,
-                    color: "None".to_string(),
-                    channel: 1,
-                    frame: 1,
-                    spines: 0,
-                    primary: true,
-                    usefitted: false,
-                    name: format!("Path ({path_id})"),
-                    reallength,
-                    points: all_points,
-                });
-                path_id = path_id.saturating_add(1);
             }
         }
 
@@ -180,7 +179,7 @@ impl Tracings {
     /// Convert to XML string with proper XML declaration
     /// # Errors
     /// Returns an error if XML conversion or file I/O fails.
-    pub fn to_xml_string(&self) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn to_xml_string(&self) -> Result<String, Box<dyn Error>> {
         let xml_body = to_string(self)?;
         let xml = format!("<?xml version='1.0' encoding='utf-8'?>\n{xml_body}");
         Ok(xml)
@@ -189,7 +188,7 @@ impl Tracings {
     /// Parse XML string and create Tracings
     /// # Errors
     /// Returns an error if XML conversion or file I/O fails.
-    pub fn from_xml_string(xml: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_xml_string(xml: &str) -> Result<Self, Box<dyn Error>> {
         // Remove XML declaration if present
         let xml_content = if xml.starts_with("<?xml") {
             xml.split_once('>').map_or(xml, |(_, body)| body.trim())
@@ -201,37 +200,67 @@ impl Tracings {
         Ok(tracings)
     }
 
-    /// Convert to `NerveTracerState`
+    /// Count the distinct Z indices used by trace points.
     #[must_use]
-    pub fn to_nerve_tracer_state(&self) -> NerveTracerState {
-        let mut state = NerveTracerState::default();
-        self.apply_to_nerve_tracer_state(&mut state);
-        state
+    pub fn count_z_indices(&self) -> usize {
+        self.paths
+            .iter()
+            .flat_map(|path| path.points.iter().map(|point| point.z))
+            .collect::<HashSet<_>>()
+            .len()
     }
 
-    /// Apply imported trace data without replacing runtime image metadata.
-    pub fn apply_to_nerve_tracer_state(&self, state: &mut NerveTracerState) {
-        let mut paths = Vec::new();
-
-        for path_element in &self.paths {
-            // For now, treat each path as a single segment
-            // (We don't have segment boundaries in the XML format)
-            if !path_element.points.is_empty() {
-                let segment: Vec<(u64, u64)> = path_element
-                    .points
-                    .iter()
-                    .map(|point| (point.x, point.y))
-                    .collect();
-                paths.push(vec![segment]);
-            }
+    /// Replace the traces of each stack the imported paths are placed on.
+    ///
+    /// # Errors
+    /// Returns an error if a Z index cannot address a stack.
+    pub fn apply_to_nerve_tracer_state(
+        &self,
+        state: &mut NerveTracerState,
+        placement: StackPlacement,
+    ) -> Result<(), Box<dyn Error>> {
+        let selected = state.traces.selected_index();
+        let mut imported: HashMap<usize, StackTraces> = HashMap::new();
+        if placement == StackPlacement::SelectedStack {
+            imported.insert(selected, StackTraces::default());
         }
 
+        for path_element in &self.paths {
+            let Some(first) = path_element.points.first() else {
+                continue;
+            };
+            // A path belongs to the stack of its first point.
+            let stack = match placement {
+                StackPlacement::SelectedStack => selected,
+                StackPlacement::SplitByZ => usize::try_from(first.z)?,
+            };
+            // The XML format has no segment boundaries, so each path is one segment.
+            let segment = path_element
+                .points
+                .iter()
+                .map(|point| (point.x, point.y))
+                .collect();
+            imported.entry(stack).or_default().paths.push(vec![segment]);
+        }
+
+        for (stack, traces) in imported {
+            *state.traces.stack_mut(stack) = traces;
+        }
         state.is_enabled = true;
-        state.paths = paths;
-        state.current_path_segments.clear();
         state.first_point = None;
-        state.selected_image_index = 0;
+        Ok(())
     }
+}
+
+/// Convert an integer pixel coordinate to a calibrated distance without losing precision.
+fn calibrate(value: u64, spacing: f64, axis: &str) -> Result<f64, Box<dyn Error>> {
+    let exact = value
+        .to_f64()
+        .filter(|converted| converted.to_u64() == Some(value))
+        .ok_or_else(|| {
+            format!("Trace {axis} coordinate cannot be represented exactly for calibration")
+        })?;
+    Ok(exact * spacing)
 }
 
 /// Calculate the real length of a path by summing distances between consecutive points
@@ -247,19 +276,7 @@ fn calculate_path_length(points: &[PointElement]) -> f64 {
         .sum()
 }
 
-/// Export nerve tracer data to XML format
-/// # Errors
-/// Returns an error if XML conversion or file I/O fails.
-pub fn export_nervetracer_to_xml(
-    state: &NerveTracerState,
-    samplespacing: Option<SampleSpacing>,
-    imagesize: Option<ImageSize>,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let tracings = Tracings::from_nerve_tracer_state(state, samplespacing, imagesize)?;
-    tracings.to_xml_string()
-}
-
-/// Export nerve tracer data to XML file
+/// Export the traces of every stack to an XML file.
 /// # Errors
 /// Returns an error if XML conversion or file I/O fails.
 pub fn export_nervetracer_to_xml_file(
@@ -267,41 +284,31 @@ pub fn export_nervetracer_to_xml_file(
     file_path: &Path,
     samplespacing: Option<SampleSpacing>,
     imagesize: Option<ImageSize>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let xml = export_nervetracer_to_xml(state, samplespacing, imagesize)?;
+) -> Result<(), Box<dyn Error>> {
+    let xml =
+        Tracings::from_nerve_tracer_state(state, samplespacing, imagesize)?.to_xml_string()?;
     fs::write(file_path, xml)?;
     Ok(())
 }
 
-/// Import nerve tracer data from XML format
+/// Read and parse a traces XML file.
 /// # Errors
-/// Returns an error if XML conversion or file I/O fails.
-pub fn import_nervetracer_from_xml(
-    xml: &str,
-) -> Result<NerveTracerState, Box<dyn std::error::Error>> {
-    let tracings = Tracings::from_xml_string(xml)?;
-    Ok(tracings.to_nerve_tracer_state())
-}
-
-/// Import nerve tracer data from XML file
-/// # Errors
-/// Returns an error if XML conversion or file I/O fails.
-pub fn import_nervetracer_from_xml_file(
-    file_path: &Path,
-) -> Result<NerveTracerState, Box<dyn std::error::Error>> {
-    let xml = fs::read_to_string(file_path)?;
-    import_nervetracer_from_xml(&xml)
+/// Returns an error if file reading or XML parsing fails.
+pub fn read_tracings_file(file_path: &Path) -> Result<Tracings, Box<dyn Error>> {
+    Tracings::from_xml_string(&fs::read_to_string(file_path)?)
 }
 
 /// Import XML trace data into existing state, retaining runtime image metadata.
 /// # Errors
-/// Returns an error if file reading or XML parsing fails; leaves state unchanged.
+/// Returns an error if file reading, XML parsing, or stack placement fails; leaves state unchanged.
 pub fn import_nervetracer_from_xml_file_into(
     file_path: &Path,
     state: &mut NerveTracerState,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let xml = fs::read_to_string(file_path)?;
-    let tracings = Tracings::from_xml_string(&xml)?;
-    tracings.apply_to_nerve_tracer_state(state);
+    placement: StackPlacement,
+) -> Result<(), Box<dyn Error>> {
+    let tracings = read_tracings_file(file_path)?;
+    let mut imported = state.clone();
+    tracings.apply_to_nerve_tracer_state(&mut imported, placement)?;
+    *state = imported;
     Ok(())
 }

@@ -366,13 +366,15 @@ impl Render for ValueControl {
             .flex()
             .flex_col()
             .gap_2()
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme::TEXT_MUTED)
-                    .child(self.config.label.clone()),
-            )
+            .when(!self.config.label.is_empty(), |control| {
+                control.child(
+                    div()
+                        .text_sm()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme::TEXT_MUTED)
+                        .child(self.config.label.clone()),
+                )
+            })
             .child(
                 div()
                     .flex()

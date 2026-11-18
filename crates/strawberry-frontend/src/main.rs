@@ -11,18 +11,20 @@ use commands::{
     ZoomIn, ZoomOut,
 };
 use gpui::{
-    Animation, AnimationExt, App, AppContext, AssetSource, Bounds, Context, Entity, ExternalPaths,
-    FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent, Menu, MenuItem,
-    ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, img, prelude::*, px, size,
+    Animation, AnimationExt, App, AppContext, AssetSource, AsyncWindowContext, Bounds, Context,
+    Entity, ExternalPaths, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent,
+    KeyUpEvent, Menu, MenuItem, ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions,
+    Window, WindowBounds, WindowOptions, div, img, prelude::*, px, size,
 };
 use gui::busy::{BusyOverlay, set_pipeline_busy};
 use gui::feedback::FeedbackModal;
 use gui::generic_picker::PickerPaste;
 use gui::icon::Icon;
 use gui::palette::{CommandPalette, PaletteDismissed};
+use gui::prompts::{ask_export_scope, ask_image_arrangement};
 use gui::sidebar::{ToolSelected, ToolSidebar};
+use gui::stack_bar::{StackBar, StackSelected};
 use gui::workspace::{
     SIDEBAR_GRIP_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TOOLBAR_HEIGHT, WorkspaceLayout,
 };
@@ -36,7 +38,8 @@ use std::time::Duration;
 use std::{fs, panic};
 use strawberry_backend::Pipeline;
 use strawberry_types::{
-    FeedbackLevel, FrontendMessage, PipelineCommand,
+    CommandSender, ExportScope, FeedbackLevel, FrontendMessage, ImageArrangement, OutputFrame,
+    PipelineCommand,
     overlay::{CircleStyle, OverlayCollection, OverlayElement},
 };
 use tokio::sync::broadcast;
@@ -118,7 +121,34 @@ struct PrimaryViewer {
     palette: Option<Entity<CommandPalette>>,
     commands: Rc<[PalleteCommand]>,
     sidebar: Entity<ToolSidebar>,
+    stack_bar: Entity<StackBar>,
+    stack_count: usize,
+    /// Load that produced the displayed frame; a new load resets the stack selection.
+    load_generation: Option<u64>,
     layout: WorkspaceLayout,
+}
+
+/// Ask how to arrange several images, then queue them for loading.
+#[expect(
+    clippy::future_not_send,
+    reason = "Native dialogs run on GPUI's main-thread window context"
+)]
+async fn load_images(sender: CommandSender, files: Vec<PathBuf>, cx: &mut AsyncWindowContext) {
+    let arrangement = if files.len() > 1 {
+        let Some(arrangement) = ask_image_arrangement(cx, files.len()).await else {
+            return;
+        };
+        arrangement
+    } else {
+        ImageArrangement::Layers
+    };
+    if let Err(e) = sender.send(PipelineCommand::Load {
+        files,
+        arrangement,
+        reply: tokio::sync::oneshot::channel().0,
+    }) {
+        eprintln!("Failed to send loaded images to pipeline: {e}");
+    }
 }
 
 impl PrimaryViewer {
@@ -271,10 +301,7 @@ impl PrimaryViewer {
                 }
 
                 if output_frames.has_changed().unwrap_or(false) {
-                    latest_output = output_frames
-                        .borrow_and_update()
-                        .as_ref()
-                        .map(|frame| frame.image.clone());
+                    latest_output.clone_from(&output_frames.borrow_and_update());
                 }
 
                 if latest_output.is_none()
@@ -299,8 +326,8 @@ impl PrimaryViewer {
                             None => this.pipeline_finished(cx),
                         }
                     }
-                    if let Some(image) = latest_output {
-                        this.show_output(image, window, cx);
+                    if let Some(frame) = latest_output {
+                        this.show_output(frame, window, cx);
                     }
                     if let Some(overlays) = latest_overlays {
                         let masks: HashMap<_, _> = overlays
@@ -354,10 +381,22 @@ impl PrimaryViewer {
         .detach();
     }
 
-    /// Display a processed image and refresh its canvas overlays.
-    fn show_output(&mut self, image: Arc<RgbaImage>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Display a processed stack and refresh the stack bar and canvas overlays.
+    fn show_output(&mut self, frame: OutputFrame, window: &mut Window, cx: &mut Context<Self>) {
+        // Within one load the stack bar leads and frames follow it, so a frame still in
+        // flight cannot pull the slider back to an earlier stack.
+        if self.load_generation != Some(frame.load_generation)
+            || self.stack_count != frame.stack_count
+        {
+            self.load_generation = Some(frame.load_generation);
+            self.stack_count = frame.stack_count;
+            self.layout.status_bar_visible = frame.stack_count > 1;
+            self.stack_bar.update(cx, |bar, cx| {
+                bar.set_stacks(frame.stack, frame.stack_count, cx);
+            });
+        }
         let img_data = Arc::new(RenderImage::new(vec![Frame::new(Arc::unwrap_or_clone(
-            image,
+            frame.image,
         ))]));
         let new_width = u32::try_from(img_data.size(0).width.0).unwrap_or_default();
         let new_height = u32::try_from(img_data.size(0).height.0).unwrap_or_default();
@@ -480,7 +519,7 @@ impl PrimaryViewer {
         let sender_p = self.command_sender.clone();
         let image_dir = self.image_directory.clone();
 
-        cx.spawn_in(window, async move |_, _| {
+        cx.spawn_in(window, async move |_, cx| {
             let files = FileDialog::new()
                 .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
                 .set_directory("~/")
@@ -494,38 +533,50 @@ impl PrimaryViewer {
                     *dir = Some(parent.to_path_buf());
                 }
 
-                if let Err(e) = sender_p.send(PipelineCommand::Load {
-                    files,
-                    reply: tokio::sync::oneshot::channel().0,
-                }) {
-                    eprintln!("Failed to send loaded images to pipeline: {e}");
-                }
+                load_images(sender_p, files, cx).await;
             }
         })
         .detach();
     }
 
-    /// Prompt for an output path and request the processed image be saved.
+    /// Ask which stacks to export when several are loaded, then prompt for an output path
+    /// and request the processed output be saved.
     fn handle_save_image(&mut self, _: &SaveImage, window: &mut Window, cx: &mut Context<Self>) {
         let sender_p = self.command_sender.clone();
+        let stack_count = self.stack_count;
 
         cx.spawn_in(window, async move |this, cx| {
-            let output_file = FileDialog::new()
-                .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
-                .set_directory("~/")
-                .save_file();
+            let scope = if stack_count > 1 {
+                let Some(scope) = ask_export_scope(cx).await else {
+                    return;
+                };
+                scope
+            } else {
+                ExportScope::SelectedStack
+            };
+            let dialog = FileDialog::new().set_directory("~/");
+            let output_file = match scope {
+                ExportScope::SelectedStack => dialog
+                    .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
+                    .save_file(),
+                ExportScope::AllStacks => dialog.add_filter("ZIP archive", &["zip"]).save_file(),
+            };
 
             if let Some(path) = output_file {
                 let (reply, result) = tokio::sync::oneshot::channel();
                 if sender_p
-                    .send(PipelineCommand::SaveOutput { path, reply })
+                    .send(PipelineCommand::SaveOutput { path, scope, reply })
                     .is_ok()
                 {
                     let result = result.await;
                     let _ = this.update(cx, |this, cx| {
                         let (text, level) = match result {
                             Ok(Ok(())) => (
-                                "Image saved successfully".to_string(),
+                                match scope {
+                                    ExportScope::SelectedStack => "Image saved successfully",
+                                    ExportScope::AllStacks => "Stacks saved successfully",
+                                }
+                                .to_string(),
                                 FeedbackLevel::Success,
                             ),
                             Ok(Err(error)) => (error, FeedbackLevel::Error),
@@ -1002,7 +1053,7 @@ impl Render for PrimaryViewer {
             .track_focus(&self.focus_handle(cx))
             .flex_1()
             .min_w_0()
-            .h_full()
+            .min_h_0()
             .bg(gui::theme::CANVAS)
             .overflow_hidden()
             .on_mouse_down(
@@ -1018,14 +1069,14 @@ impl Render for PrimaryViewer {
             .on_drop(cx.listener(
                 |this: &mut Self,
                  paths: &ExternalPaths,
-                 _window: &mut Window,
-                 _cx: &mut Context<Self>| {
-                    if let Err(e) = this.command_sender.send(PipelineCommand::Load {
-                        files: paths.paths().to_vec(),
-                        reply: tokio::sync::oneshot::channel().0,
-                    }) {
-                        eprintln!("Failed to send loaded images to pipeline: {e}");
-                    }
+                 window: &mut Window,
+                 cx: &mut Context<Self>| {
+                    let sender = this.command_sender.clone();
+                    let files = paths.paths().to_vec();
+                    cx.spawn_in(window, async move |_, cx| {
+                        load_images(sender, files, cx).await;
+                    })
+                    .detach();
                 },
             ))
             .when(self.image_loaded, |el| {
@@ -1164,7 +1215,10 @@ impl Render for PrimaryViewer {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .child(canvas),
+                            .child(canvas)
+                            .when(self.layout.status_bar_visible, |column| {
+                                column.child(self.stack_bar.clone())
+                            }),
                     )
                     .when(self.layout.sidebar_visible, |el| {
                         el.child(
@@ -1343,6 +1397,7 @@ async fn main() -> Result<()> {
             let primary_viewer_image_dir = image_directory.clone();
             let main_window = cx.open_window(window_options, |window, cx| {
                 let sidebar = cx.new(|cx| ToolSidebar::new(view_sender.clone(), window, cx));
+                let stack_bar = cx.new(StackBar::new);
                 let commands =
                     commands::install(cx, &sidebar, view_sender.clone(), image_directory.clone());
                 let raw_primary_viewer = PrimaryViewer {
@@ -1372,6 +1427,9 @@ async fn main() -> Result<()> {
                     palette: None,
                     commands,
                     sidebar: sidebar.clone(),
+                    stack_bar: stack_bar.clone(),
+                    stack_count: 0,
+                    load_generation: None,
                     layout: WorkspaceLayout::default(),
                 };
 
@@ -1382,6 +1440,18 @@ async fn main() -> Result<()> {
                             viewer.layout.sidebar_visible = true;
                             viewer.pressed_keys.clear();
                             cx.notify();
+                        },
+                    )
+                    .detach();
+                    cx.subscribe(
+                        &stack_bar,
+                        |viewer: &mut PrimaryViewer, _, event: &StackSelected, _| {
+                            if let Err(e) = viewer
+                                .command_sender
+                                .send(PipelineCommand::SelectStack(event.0))
+                            {
+                                eprintln!("Failed to select stack: {e}");
+                            }
                         },
                     )
                     .detach();

@@ -1,6 +1,7 @@
 use gpui::{Pixels, Point, Size, point, px, size};
 
 pub const TOOLBAR_HEIGHT: f32 = 44.0;
+pub const STATUS_BAR_HEIGHT: f32 = 44.0;
 pub const SIDEBAR_MIN_WIDTH: f32 = 300.0;
 pub const SIDEBAR_MAX_WIDTH: f32 = 560.0;
 pub const SIDEBAR_GRIP_WIDTH: f32 = 5.0;
@@ -9,6 +10,8 @@ pub struct WorkspaceLayout {
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
     pub resizing_sidebar: bool,
+    /// Shown below the canvas while several stacks are loaded.
+    pub status_bar_visible: bool,
 }
 
 impl Default for WorkspaceLayout {
@@ -18,6 +21,7 @@ impl Default for WorkspaceLayout {
             sidebar_visible: true,
             sidebar_width: 360.0,
             resizing_sidebar: false,
+            status_bar_visible: false,
         }
     }
 }
@@ -30,9 +34,14 @@ impl WorkspaceLayout {
         } else {
             0.0
         };
+        let status_bar = if self.status_bar_visible {
+            STATUS_BAR_HEIGHT
+        } else {
+            0.0
+        };
         size(
             px((f32::from(viewport.width) - sidebar).max(1.0)),
-            px((f32::from(viewport.height) - TOOLBAR_HEIGHT).max(1.0)),
+            px((f32::from(viewport.height) - TOOLBAR_HEIGHT - status_bar).max(1.0)),
         )
     }
 

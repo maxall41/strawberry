@@ -9,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, compositor::GpuCompositor};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, CompositorMessage, CompositorState, FrontendMessage, PipelineObjectMessage,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, CompositorMessage, CompositorState, FrontendMessage, ImageCollection,
+    PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Compositor {
@@ -34,30 +34,24 @@ impl ToolBackend for Compositor {
         BackendToolType::Compositor
     }
 
-    /// Composite enabled input layers into a single BGRA image.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        self.state.real_layers_len = input.len();
+    /// Composite the enabled layers of each stack into a single BGRA image.
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        self.state.real_layers_len = images.layer_count();
 
-        if input.len() == 1 {
-            return Ok(());
+        for stack in &mut images.stacks {
+            if stack.layers.len() == 1 {
+                continue;
+            }
+            let enabled: Vec<_> = stack
+                .layers
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| self.state.enabled_layers.get(*i).copied().unwrap_or(false))
+                .map(|(_, layer)| layer.clone())
+                .collect();
+            let composited = self.compositer.composite_images(&enabled).await?;
+            stack.layers = vec![Arc::new(composited)];
         }
-
-        let images: Vec<Arc<image::RgbaImage>> = input
-            .clone()
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, image)| {
-                if self.state.enabled_layers.get(i).copied().unwrap_or(false) {
-                    Some(image)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let composited = self.compositer.composite_images(&images).await?;
-
-        *input = vec![Arc::new(composited)];
 
         Ok(())
     }

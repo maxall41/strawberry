@@ -6,13 +6,17 @@ use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, Inference
 use strawberry_processing::threshold::AutoThresholdMethod;
 
 use super::{
-    AnnotationKind, BackendToolType, BrushRadius, ClassId, DatasetImportMode, ObjectSizeFilterMode,
-    RgbColor, SegmentationOutputMode, StrokeId, ToolState,
+    AnnotationKind, BackendToolType, BrushRadius, ClassId, DatasetImportMode, ExportScope,
+    ImageArrangement, ObjectSizeFilterMode, RgbColor, SegmentationOutputMode, StackPlacement,
+    StrokeId, ToolState,
 };
 
+/// The composited output of the selected stack.
 #[derive(Debug, Clone)]
 pub struct OutputFrame {
     pub load_generation: u64,
+    pub stack: usize,
+    pub stack_count: usize,
     pub image: Arc<RgbaImage>,
 }
 
@@ -122,8 +126,8 @@ pub enum NerveTracerMessage {
     DeletePathSegmentInCommitedPath(usize, usize),
     DeletePath(usize),
     SaveTraces(PathBuf),
-    LoadTraces(PathBuf),
-    SetSelectedImageIndex(usize),
+    LoadTraces(PathBuf, StackPlacement),
+    SelectLayer(usize),
 }
 
 // Note: counter module types need to be forward-declared since they're in the backend crate
@@ -137,7 +141,7 @@ pub enum CountMessage {
     SetActiveCountType(u16),
     SetActiveTool(Option<CounterTool>),
     SaveCounts(PathBuf),
-    LoadCounts(PathBuf),
+    LoadCounts(PathBuf, StackPlacement),
     CopyToManual,
     ReviewNavigatePrevious,
     ReviewNavigateNext,
@@ -252,10 +256,14 @@ pub enum PipelineCommand {
     },
     Load {
         files: Vec<PathBuf>,
+        arrangement: ImageArrangement,
         reply: CommandResult,
     },
+    /// Show a stack and direct per-stack tool edits to it.
+    SelectStack(usize),
     SaveOutput {
         path: PathBuf,
+        scope: ExportScope,
         reply: CommandResult,
     },
     HandleClick(u64, u64),
