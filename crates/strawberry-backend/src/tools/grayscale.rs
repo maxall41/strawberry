@@ -33,9 +33,9 @@ impl ToolBackend for Grayscale {
         BackendToolType::Grayscale
     }
 
-    /// Convert each input layer to grayscale.
+    /// Convert every input plane to grayscale.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.layers_mut() {
+        for image in images.planes_mut() {
             *image = Arc::new(self.processor.apply_grayscale(image).await?);
         }
         Ok(())

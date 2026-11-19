@@ -34,7 +34,7 @@ impl ToolBackend for Sobel {
         BackendToolType::Sobel
     }
 
-    /// Apply Sobel edge detection to each input layer.
+    /// Apply Sobel edge detection to every input plane.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
         let threshold = if self.state.use_threshold {
             Some(self.state.threshold_value)
@@ -42,7 +42,7 @@ impl ToolBackend for Sobel {
             None
         };
 
-        for image in images.layers_mut() {
+        for image in images.planes_mut() {
             *image = Arc::new(self.processor.apply_sobel(image, threshold).await?);
         }
         Ok(())

@@ -34,9 +34,9 @@ impl ToolBackend for Threshold {
         BackendToolType::Threshold
     }
 
-    /// Apply the configured thresholding method to each input layer.
+    /// Apply the configured thresholding method to every input plane.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.layers_mut() {
+        for image in images.planes_mut() {
             let result = if self.state.auto_threshold {
                 self.processor
                     .apply_auto_threshold(image, self.state.auto_method)

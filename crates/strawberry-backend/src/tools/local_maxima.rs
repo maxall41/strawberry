@@ -35,9 +35,9 @@ impl ToolBackend for LocalMaxima {
         BackendToolType::LocalMaxima
     }
 
-    /// Detect local maxima in each input layer using the configured neighborhood.
+    /// Detect local maxima in every input plane using the configured neighborhood.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.layers_mut() {
+        for image in images.planes_mut() {
             *image = Arc::new(
                 self.processor
                     .apply_local_maxima(

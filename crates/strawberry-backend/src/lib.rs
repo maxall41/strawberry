@@ -11,20 +11,20 @@ use image::{ImageReader, RgbaImage};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use anyhow::{Context as _, anyhow, ensure};
-use strawberry_processing::{
-    GpuImageProcessor, colorspace::GpuColorspaceConverter, compositor::GpuCompositor,
-};
+use strawberry_processing::{GpuImageProcessor, colorspace::GpuColorspaceConverter};
 
 // Import all types from strawberry-types
 use strawberry_types::{
-    CommandSender, ExportScope, FrontendMessage, ImageArrangement, ImageCollection, OutputFrame,
-    PendingProcessing, PipelineCommand, PipelineProgress, ToolId, ToolInput, overlay,
+    CommandSender, Coordinates, Dimension, ExportScope, FrontendMessage, ImageArrangement,
+    ImageCollection, OutputFrame, PendingProcessing, PipelineCommand, PipelineProgress, ToolId,
+    ToolInput, overlay,
 };
 
 use tools::{ToolManager, manager::ToolInstance};
-use utils::file_io::write_stack_archive;
+use utils::file_io::write_image_archive;
 
 pub mod counter;
+pub mod hyperstack;
 pub mod nervetracer;
 mod segmentation;
 pub mod tools;
@@ -42,20 +42,20 @@ pub struct Pipeline {
     output_frame_sender: watch::Sender<Option<OutputFrame>>,
     /// Bumped per Load command; published with each frame so consumers can match results to the load that produced them
     load_generation: u64,
-    /// Input stacks to process
+    /// Input images to process
     input_images: ImageCollection,
     /// Captured owner of the current canvas gesture
     gesture_owner: Option<ToolId>,
     overlays_dirty: bool,
-    /// Composited output of each stack from the last successful run
-    stack_outputs: Vec<Arc<RgbaImage>>,
+    /// Output of the last successful run
+    output: ImageCollection,
+    /// Plane shown in the viewer; interactive tools edit its position
+    view: Coordinates,
     /// The canvas may retain an older successful frame after a failed run.
     output_is_current: bool,
     gpu: Arc<GpuImageProcessor>,
     /// Colorspace conversions
     colorspace_converter: GpuColorspaceConverter,
-    /// Composite all remaining layers independently, if the user compositor is disabled and multiple images remain.
-    fallback_compositor: GpuCompositor,
 }
 
 impl Pipeline {
@@ -84,10 +84,10 @@ impl Pipeline {
             input_images: ImageCollection::default(),
             gesture_owner: None,
             overlays_dirty: true,
-            stack_outputs: vec![],
+            output: ImageCollection::default(),
+            view: Coordinates::default(),
             output_is_current: false,
             gpu: gpu_image_processor.clone(),
-            fallback_compositor: GpuCompositor::new(gpu_image_processor.clone()).await?,
             colorspace_converter: GpuColorspaceConverter::new(gpu_image_processor).await?,
         };
 
@@ -190,22 +190,9 @@ impl Pipeline {
             }
         }
 
-        let mut stack_outputs = Vec::with_capacity(images.stack_count());
-        for stack in images.stacks {
-            let output = if let [layer] = stack.layers.as_slice() {
-                layer.clone()
-            } else {
-                Arc::new(
-                    self.fallback_compositor
-                        .composite_images(&stack.layers)
-                        .await?,
-                )
-            };
-            stack_outputs.push(output);
-        }
-
         self.ensure_no_stage_gpu_errors("Publish pipeline output")?;
-        self.stack_outputs = stack_outputs;
+        self.output = images;
+        self.clamp_view();
         self.output_is_current = true;
         self.publish_output_frame()?;
 
@@ -215,24 +202,60 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Publish the selected stack's composited output to the viewer.
+    /// Keep the view inside the output after tools change its shape, moving tool edits with it.
+    fn clamp_view(&mut self) {
+        let shape = self.output.shape();
+        for dimension in Dimension::ALL {
+            let last = shape.extent(dimension).saturating_sub(1);
+            self.view.set(dimension, self.view.get(dimension).min(last));
+        }
+        self.tool_manager.select_position(self.view.position());
+    }
+
+    /// Return the viewed output plane.
+    fn displayed_image(&self) -> anyhow::Result<Arc<RgbaImage>> {
+        self.output.plane(self.view).cloned().ok_or_else(|| {
+            anyhow!(
+                "No output image available for {}",
+                self.view.describe(self.output.shape())
+            )
+        })
+    }
+
+    /// Publish the displayed image to the viewer.
     fn publish_output_frame(&self) -> anyhow::Result<()> {
-        let stack = self.tool_manager.selected_stack;
-        let image = self
-            .stack_outputs
-            .get(stack)
-            .ok_or_else(|| anyhow!("No output image available for stack {stack}"))?;
         self.output_frame_sender.send_replace(Some(OutputFrame {
             load_generation: self.load_generation,
-            stack,
-            stack_count: self.stack_outputs.len(),
-            image: image.clone(),
+            coordinates: self.view,
+            shape: self.output.shape(),
+            image: self.displayed_image()?,
         }));
         Ok(())
     }
 
-    /// Convert stack outputs out of the internal BGRA representation and write them to
-    /// `file`: the selected stack as one image, or every stack as a ZIP of TIFFs.
+    /// Return every output plane, named by its coordinates for export.
+    fn named_views(&self) -> Vec<(String, Arc<RgbaImage>)> {
+        let shape = self.output.shape();
+        shape
+            .coordinates()
+            .filter_map(|coordinates| {
+                let name = coordinates
+                    .spanned(shape)
+                    .map(|(dimension, number)| {
+                        let width = shape.extent(dimension).to_string().len();
+                        format!("{}{number:0width$}", dimension.label().to_lowercase())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("_");
+                self.output
+                    .plane(coordinates)
+                    .map(|image| (name, image.clone()))
+            })
+            .collect()
+    }
+
+    /// Convert output out of the internal BGRA representation and write it to `file`: the
+    /// displayed image alone, or every view as a ZIP of TIFFs.
     async fn save_output(&mut self, file: &Path, scope: ExportScope) -> anyhow::Result<()> {
         ensure!(
             self.output_is_current,
@@ -240,27 +263,23 @@ impl Pipeline {
         );
         self.ensure_no_stage_gpu_errors("Save pipeline output")?;
         let outputs = match scope {
-            ExportScope::SelectedStack => vec![
-                self.stack_outputs
-                    .get(self.tool_manager.selected_stack)
-                    .cloned()
-                    .ok_or_else(|| anyhow!("no image in the output buffer"))?,
-            ],
-            ExportScope::AllStacks => self.stack_outputs.clone(),
+            ExportScope::CurrentView => vec![(String::new(), self.displayed_image()?)],
+            ExportScope::AllViews => self.named_views(),
         };
         let mut converted = Vec::with_capacity(outputs.len());
-        for output in &outputs {
-            converted.push(
+        for (name, output) in outputs {
+            converted.push((
+                name,
                 self.colorspace_converter
-                    .convert_bgra_to_rgba(output)
+                    .convert_bgra_to_rgba(&output)
                     .await?,
-            );
+            ));
         }
         self.ensure_no_stage_gpu_errors("Write pipeline output")?;
         match (scope, converted.as_slice()) {
-            (ExportScope::SelectedStack, [image]) => image.save(file)?,
-            (ExportScope::AllStacks, images) => write_stack_archive(file, images)?,
-            (ExportScope::SelectedStack, _) => anyhow::bail!("Expected one selected stack output"),
+            (ExportScope::CurrentView, [(_, image)]) => image.save(file)?,
+            (ExportScope::AllViews, images) => write_image_archive(file, images)?,
+            (ExportScope::CurrentView, _) => anyhow::bail!("Expected one displayed image"),
         }
         Ok(())
     }
@@ -286,7 +305,7 @@ impl Pipeline {
                     arrangement,
                     reply,
                 } => {
-                    let result = self.load_images(&files, arrangement);
+                    let result = self.load_images(&files, &arrangement);
                     if result.is_ok() {
                         pending_processing_from.request_processing(0);
                     } else {
@@ -379,9 +398,9 @@ impl Pipeline {
                     }
                     let _ = reply.send(result.map_err(|e| format!("{e:#}")));
                 }
-                PipelineCommand::SelectStack(stack) => {
-                    if let Err(error) = self.select_stack(stack) {
-                        self.report_error("Stack selection failed", &error);
+                PipelineCommand::SelectView(coordinates) => {
+                    if let Err(error) = self.select_view(coordinates) {
+                        self.report_error("Image selection failed", &error);
                     }
                 }
                 PipelineCommand::RequestOverlays => self.publish_overlays(),
@@ -431,11 +450,11 @@ impl Pipeline {
         }
         let _ = reply.send(result.map_err(|error| format!("{error:#}")));
     }
-    /// Load images as BGRA stacks in the requested arrangement and invalidate previous processing.
+    /// Load images as BGRA planes in the requested arrangement and invalidate previous processing.
     fn load_images(
         &mut self,
         files: &[PathBuf],
-        arrangement: ImageArrangement,
+        arrangement: &ImageArrangement,
     ) -> anyhow::Result<()> {
         ensure!(!files.is_empty(), "No input images provided");
         let _ = self
@@ -467,24 +486,27 @@ impl Pipeline {
             tool.invalidate_cache();
         }
         self.gesture_owner = None;
-        self.tool_manager.select_stack(0);
+        self.view = Coordinates::default();
+        self.tool_manager.select_position(self.view.position());
+        self.output = ImageCollection::default();
         self.input_images = images;
         self.load_generation = generation;
         self.output_is_current = false;
         Ok(())
     }
-    /// Show another loaded stack and direct per-stack tool edits to it.
-    fn select_stack(&mut self, stack: usize) -> anyhow::Result<()> {
+    /// Show another plane and direct per-position tool edits to its position.
+    fn select_view(&mut self, coordinates: Coordinates) -> anyhow::Result<()> {
+        let shape = self.output.shape();
         ensure!(
-            stack < self.input_images.stack_count(),
-            "Stack {} is not loaded",
-            stack.saturating_add(1)
+            shape.contains(coordinates),
+            "Image {} is not loaded",
+            coordinates.describe(shape)
         );
-        if stack == self.tool_manager.selected_stack {
-            return Ok(());
+        if coordinates.position() != self.view.position() {
+            self.gesture_owner = None;
+            self.tool_manager.select_position(coordinates.position());
         }
-        self.gesture_owner = None;
-        self.tool_manager.select_stack(stack);
+        self.view = coordinates;
         // A stale run's outputs may belong to a different load.
         if self.output_is_current {
             self.publish_output_frame()?;

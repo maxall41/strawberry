@@ -13,11 +13,9 @@ use gpui::{
 use rfd::FileDialog;
 use strawberry_backend::nervetracer::io::read_tracings_file;
 
-use crate::gui::{ToggleButton, prompts::ask_stack_placement};
+use crate::gui::{ToggleButton, prompts::ask_annotation_placement};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
-use strawberry_types::{
-    NerveTracerMessage, NerveTracerState, PipelineObjectMessage, StackPlacement, ToolState,
-};
+use strawberry_types::{NerveTracerMessage, NerveTracerState, PipelineObjectMessage, ToolState};
 
 use strawberry_types::ToolFrontend;
 
@@ -112,15 +110,11 @@ impl NerveTracerView {
                 }
 
                 // Unreadable files load as usual so the backend reports why they failed.
-                let z_indices =
-                    read_tracings_file(&file).map_or(1, |tracings| tracings.count_z_indices());
-                let placement = if z_indices > 1 {
-                    let Some(placement) = ask_stack_placement(cx, "traces", z_indices).await else {
-                        return;
-                    };
-                    placement
-                } else {
-                    StackPlacement::SelectedStack
+                let positions =
+                    read_tracings_file(&file).map_or(1, |tracings| tracings.count_positions());
+                let Some(placement) = ask_annotation_placement(cx, "traces", positions).await
+                else {
+                    return;
                 };
 
                 if let Err(e) = this.update(cx, |this, _cx| {

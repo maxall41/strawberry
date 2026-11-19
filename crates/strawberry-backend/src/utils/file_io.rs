@@ -27,12 +27,11 @@ pub fn write_artifact(path: &Path, write: impl FnOnce(&mut File) -> Result<()>) 
     Ok(())
 }
 
-/// Write each image as a numbered TIFF, named after the archive, inside a ZIP archive.
-pub fn write_stack_archive(path: &Path, images: &[RgbaImage]) -> Result<()> {
+/// Write each image as a TIFF named after the archive plus its suffix, inside a ZIP archive.
+pub fn write_image_archive(path: &Path, images: &[(String, RgbaImage)]) -> Result<()> {
     let stem = path
         .file_stem()
-        .map_or_else(|| "stack".into(), |stem| stem.to_string_lossy());
-    let width = images.len().to_string().len();
+        .map_or_else(|| "images".into(), |stem| stem.to_string_lossy());
     write_artifact(path, |file| {
         // Deflate keeps the archive readable by common unzip tools, unlike Zstd.
         let options = SimpleFileOptions::default()
@@ -40,11 +39,11 @@ pub fn write_stack_archive(path: &Path, images: &[RgbaImage]) -> Result<()> {
             .large_file(true);
         let mut archive = ZipWriter::new(file);
         let mut tiff = Vec::new();
-        for (number, image) in (1..).zip(images) {
+        for (suffix, image) in images {
             tiff.clear();
             // The TIFF encoder needs to seek, which a ZIP entry cannot do.
             image.write_to(&mut Cursor::new(&mut tiff), ImageFormat::Tiff)?;
-            archive.start_file(format!("{stem}_{number:0width$}.tif"), options)?;
+            archive.start_file(format!("{stem}_{suffix}.tif"), options)?;
             archive.write_all(&tiff)?;
         }
         archive.finish()?;

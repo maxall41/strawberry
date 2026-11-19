@@ -9,7 +9,9 @@ use quick_xml::se::to_string;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
-use strawberry_types::{NerveTracerState, StackPlacement, StackTraces};
+use strawberry_types::{
+    AnnotationPlacement, Dimension, NerveTracerState, Position, PositionTraces, Shape,
+};
 
 // XML serialization structures matching the nerve tracer format
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,12 +113,14 @@ impl Default for ImageSize {
 }
 
 impl Tracings {
-    /// Create tracings from the committed paths of every stack, using the stack index as Z.
+    /// Create tracings from the committed paths of every position of `shape`, numbering the
+    /// Z, Y, X position as the point Z and the time point as the path frame.
     ///
     /// # Errors
-    /// Returns an error if a trace coordinate cannot be represented exactly for XML calibration.
+    /// Returns an error if a position or trace coordinate cannot be represented in the file.
     pub fn from_nerve_tracer_state(
         state: &NerveTracerState,
+        shape: Shape,
         samplespacing: Option<SampleSpacing>,
         imagesize: Option<ImageSize>,
     ) -> Result<Self, Box<dyn Error>> {
@@ -126,10 +130,14 @@ impl Tracings {
         let mut paths = Vec::new();
         let mut path_id = 1usize;
 
-        for (stack, traces) in state.traces.iter() {
-            let z = u64::try_from(stack)?;
+        for (position, traces) in state.traces.iter() {
+            let slice = shape
+                .flatten(Position { t: 0, ..position })
+                .ok_or("Trace position exceeds the slice range")?;
+            let z = u64::try_from(slice)?;
             let zd = calibrate(z, samplespacing.z, "Z")?;
-            imagesize.depth = imagesize.depth.max(u32::try_from(stack)?.saturating_add(1));
+            imagesize.depth = imagesize.depth.max(u32::try_from(slice)?.saturating_add(1));
+            let frame = u32::try_from(position.t)?.saturating_add(1);
 
             for path in &traces.paths {
                 // Flatten all segments in this path into a single list of points
@@ -156,7 +164,7 @@ impl Tracings {
                         swctype: 0,
                         color: "None".to_string(),
                         channel: 1,
-                        frame: 1,
+                        frame,
                         spines: 0,
                         primary: true,
                         usefitted: false,
@@ -200,39 +208,46 @@ impl Tracings {
         Ok(tracings)
     }
 
-    /// Count the distinct Z indices used by trace points.
+    /// Count the distinct slice and frame pairs trace points lie on.
     #[must_use]
-    pub fn count_z_indices(&self) -> usize {
+    pub fn count_positions(&self) -> usize {
         self.paths
             .iter()
-            .flat_map(|path| path.points.iter().map(|point| point.z))
+            .flat_map(|path| path.points.iter().map(|point| (point.z, path.frame)))
             .collect::<HashSet<_>>()
             .len()
     }
 
-    /// Replace the traces of each stack the imported paths are placed on.
+    /// Replace the traces of each position the imported paths are placed on, reading point Z
+    /// and path frames against `shape`.
     ///
     /// # Errors
-    /// Returns an error if a Z index cannot address a stack.
+    /// Returns an error if a Z index cannot address a position.
     pub fn apply_to_nerve_tracer_state(
         &self,
         state: &mut NerveTracerState,
-        placement: StackPlacement,
+        placement: AnnotationPlacement,
+        shape: Shape,
     ) -> Result<(), Box<dyn Error>> {
-        let selected = state.traces.selected_index();
-        let mut imported: HashMap<usize, StackTraces> = HashMap::new();
-        if placement == StackPlacement::SelectedStack {
-            imported.insert(selected, StackTraces::default());
+        let selected = state.traces.selected_position();
+        let mut imported: HashMap<Position, PositionTraces> = HashMap::new();
+        if placement == AnnotationPlacement::CurrentPosition {
+            imported.insert(selected, PositionTraces::default());
         }
+        // The frame carries time, so slice numbers only span Z, Y, and X.
+        let frame_shape = shape.with_extent(Dimension::T, 1);
 
         for path_element in &self.paths {
             let Some(first) = path_element.points.first() else {
                 continue;
             };
-            // A path belongs to the stack of its first point.
-            let stack = match placement {
-                StackPlacement::SelectedStack => selected,
-                StackPlacement::SplitByZ => usize::try_from(first.z)?,
+            // A path belongs to the position of its first point.
+            let position = match placement {
+                AnnotationPlacement::CurrentPosition => selected,
+                AnnotationPlacement::SplitByPosition => Position {
+                    t: usize::try_from(path_element.frame.saturating_sub(1))?,
+                    ..frame_shape.unflatten(usize::try_from(first.z)?)
+                },
             };
             // The XML format has no segment boundaries, so each path is one segment.
             let segment = path_element
@@ -240,11 +255,15 @@ impl Tracings {
                 .iter()
                 .map(|point| (point.x, point.y))
                 .collect();
-            imported.entry(stack).or_default().paths.push(vec![segment]);
+            imported
+                .entry(position)
+                .or_default()
+                .paths
+                .push(vec![segment]);
         }
 
-        for (stack, traces) in imported {
-            *state.traces.stack_mut(stack) = traces;
+        for (position, traces) in imported {
+            *state.traces.position_mut(position) = traces;
         }
         state.is_enabled = true;
         state.first_point = None;
@@ -276,17 +295,18 @@ fn calculate_path_length(points: &[PointElement]) -> f64 {
         .sum()
 }
 
-/// Export the traces of every stack to an XML file.
+/// Export the traces of every position of `shape` to an XML file.
 /// # Errors
 /// Returns an error if XML conversion or file I/O fails.
 pub fn export_nervetracer_to_xml_file(
     state: &NerveTracerState,
+    shape: Shape,
     file_path: &Path,
     samplespacing: Option<SampleSpacing>,
     imagesize: Option<ImageSize>,
 ) -> Result<(), Box<dyn Error>> {
-    let xml =
-        Tracings::from_nerve_tracer_state(state, samplespacing, imagesize)?.to_xml_string()?;
+    let xml = Tracings::from_nerve_tracer_state(state, shape, samplespacing, imagesize)?
+        .to_xml_string()?;
     fs::write(file_path, xml)?;
     Ok(())
 }
@@ -300,15 +320,17 @@ pub fn read_tracings_file(file_path: &Path) -> Result<Tracings, Box<dyn Error>> 
 
 /// Import XML trace data into existing state, retaining runtime image metadata.
 /// # Errors
-/// Returns an error if file reading, XML parsing, or stack placement fails; leaves state unchanged.
+/// Returns an error if file reading, XML parsing, or position placement fails; leaves state
+/// unchanged.
 pub fn import_nervetracer_from_xml_file_into(
     file_path: &Path,
     state: &mut NerveTracerState,
-    placement: StackPlacement,
+    placement: AnnotationPlacement,
+    shape: Shape,
 ) -> Result<(), Box<dyn Error>> {
     let tracings = read_tracings_file(file_path)?;
     let mut imported = state.clone();
-    tracings.apply_to_nerve_tracer_state(&mut imported, placement)?;
+    tracings.apply_to_nerve_tracer_state(&mut imported, placement, shape)?;
     *state = imported;
     Ok(())
 }

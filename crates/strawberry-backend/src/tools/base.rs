@@ -80,9 +80,9 @@ macro_rules! impl_tool_cache {
             self.cache.cached_state = Some(self.state.clone());
         }
 
-        /// Discard cached processing data.
+        /// Discard cached output and the remembered input.
         fn invalidate_cache(&mut self) {
-            self.cache.invalidate();
+            self.cache.invalidate_all();
         }
     };
 }

@@ -37,7 +37,7 @@ impl ToolBackend for ObjectSizeFilter {
 
     /// Filter connected image objects using the configured size range.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.layers_mut() {
+        for image in images.planes_mut() {
             let mut output = None;
             for pixels in lutz::<_, Vec<Pixel>>(BinaryImageWrapper::new(image, 128)) {
                 let area = u64::try_from(pixels.len())?;

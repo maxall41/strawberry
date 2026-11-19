@@ -17,7 +17,8 @@ use strawberry_types::consts::CIRCLE_COLORS;
 use strawberry_types::overlay::{CircleStyle, OverlayElement, ToolOverlay};
 use strawberry_types::{
     BackendToolType, CountData, CountMessage, CounterMode, CounterState, CounterTool,
-    FrontendMessage, ImageCollection, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
+    FrontendMessage, ImageCollection, PerPosition, PipelineObjectMessage, Position, Shape,
+    ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Counter {
@@ -27,6 +28,8 @@ pub struct Counter {
     pub lasso_points: Vec<(u64, u64)>,
     pub is_lasso_dragging: bool,
     overlays_dirty: bool,
+    /// Shape of the last processed images, which numbers positions in count files.
+    shape: Shape,
 }
 
 /// Find the centroid of every connected foreground blob in a binary image.
@@ -66,9 +69,9 @@ impl ToolBackend for Counter {
         self.lasso_points.clear();
         self.is_lasso_dragging = false;
     }
-    /// Place, review, and show counts on the given stack.
-    fn select_stack(&mut self, stack: usize) {
-        self.state.counts.select(stack);
+    /// Place, review, and show counts on the given position.
+    fn select_position(&mut self, position: Position) {
+        self.state.counts.select(position);
         self.state.review_current_index = 0;
     }
     /// Return and clear the pending overlay change flag.
@@ -89,15 +92,16 @@ impl ToolBackend for Counter {
         ToolState::CounterState(self.state.clone())
     }
 
-    /// Detect connected components in every stack when automatic mode is active.
+    /// Detect connected components at every position when automatic mode is active.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        self.shape = images.shape();
         if self.state.mode == CounterMode::Auto {
-            for (index, stack) in images.stacks.iter().enumerate() {
+            for position in images.positions() {
                 let mut detected = Vec::new();
-                for layer in &stack.layers {
-                    detected.extend(detect_blob_centroids(layer)?);
+                for channel in images.channels_at(position) {
+                    detected.extend(detect_blob_centroids(channel)?);
                 }
-                self.state.counts.stack_mut(index).auto = detected;
+                self.state.counts.position_mut(position).auto = detected;
             }
         }
 
@@ -215,7 +219,7 @@ impl ToolBackend for Counter {
                         self.state.mode = new_mode;
                     }
                     CountMessage::SaveCounts(file) => {
-                        if let Err(e) = export_counter_to_xml_file(&self.state, &file) {
+                        if let Err(e) = export_counter_to_xml_file(&self.state, self.shape, &file) {
                             self.events.emit(FrontendMessage::error(
                                 "Error saving counts: XML export failed".to_string(),
                             ));
@@ -227,7 +231,11 @@ impl ToolBackend for Counter {
                     }
                     CountMessage::LoadCounts(file, placement) => match read_marker_file(&file) {
                         Ok(marker_file) => {
-                            marker_file.apply_to_counter_state(&mut self.state, placement);
+                            marker_file.apply_to_counter_state(
+                                &mut self.state,
+                                placement,
+                                self.shape,
+                            );
                             self.events.emit(FrontendMessage::success(
                                 "Counts loaded successfully!".to_string(),
                             ));
@@ -245,7 +253,7 @@ impl ToolBackend for Counter {
                         let new_key = (0..=u16::MAX)
                             .find(|k| !self.state.count_type_names.contains_key(k))
                             .ok_or_else(|| anyhow::anyhow!("No count type IDs available"))?;
-                        // Automatic counting covers every stack, so every stack's counts are copied.
+                        // Automatic counting covers every position, so every position's counts are copied.
                         for counts in self.state.counts.values_mut() {
                             counts.manual.insert(new_key, counts.auto.clone());
                         }
@@ -328,7 +336,7 @@ impl ToolBackend for Counter {
 
     crate::impl_tool_cache!();
 
-    /// Build the canvas overlays for the selected stack's counts.
+    /// Build the canvas overlays for the selected position's counts.
     fn get_overlays(&self, id: strawberry_types::ToolId) -> Option<crate::overlay::ToolOverlay> {
         // Only the overlay is rounded to f32; stored count positions remain exact integers.
         if !self.state.is_enabled {
@@ -418,7 +426,7 @@ impl Counter {
     pub fn new(events: ToolEvents) -> Self {
         let state = CounterState {
             is_enabled: false,
-            counts: strawberry_types::PerStack::default(),
+            counts: PerPosition::default(),
             mode: CounterMode::Manual,
             active_tool: None,
             active_count_type: None,
@@ -433,17 +441,18 @@ impl Counter {
             lasso_points: Vec::new(),
             is_lasso_dragging: false,
             overlays_dirty: false,
+            shape: Shape::default(),
         }
     }
 
-    /// Return the selected stack's counts of the active type.
+    /// Return the selected position's counts of the active type.
     fn active_counts(&self) -> &[CountData] {
         self.state
             .active_count_type
             .map_or(&[], |id| self.state.manual_counts(id))
     }
 
-    /// Delete the active type's counts on the selected stack that lie inside a lasso polygon.
+    /// Delete the active type's counts on the selected position that lie inside a lasso polygon.
     fn delete_counts_inside(&mut self, polygon: &[(u64, u64)]) {
         if let Some(id) = self.state.active_count_type
             && let Some(counts) = self.state.counts.selected_mut().manual.get_mut(&id)
