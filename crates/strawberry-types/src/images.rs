@@ -357,6 +357,14 @@ pub enum ImageArrangement {
 }
 
 impl ImageArrangement {
+    /// Return the shape `count` images form in this arrangement.
+    ///
+    /// # Errors
+    /// Returns an error if the coordinates do not cover `count` images or form a complete grid.
+    pub fn get_shape(&self, count: usize) -> Result<Shape> {
+        Shape::from_coordinates(&self.coordinates(count)?)
+    }
+
     /// Return the coordinates of each of `count` images.
     fn coordinates(&self, count: usize) -> Result<Vec<Coordinates>> {
         let along = |dimension| {
