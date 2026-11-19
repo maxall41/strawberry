@@ -53,6 +53,7 @@ pub struct Pipeline {
     view: Coordinates,
     /// The canvas may retain an older successful frame after a failed run.
     output_is_current: bool,
+    /// Reference to GPU image processor
     gpu: Arc<GpuImageProcessor>,
     /// Colorspace conversions
     colorspace_converter: GpuColorspaceConverter,
