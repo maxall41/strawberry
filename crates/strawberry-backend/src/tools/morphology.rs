@@ -37,9 +37,9 @@ impl ToolBackend for Morphology {
         BackendToolType::Morphology
     }
 
-    /// Apply the selected morphological operation to each input layer.
+    /// Apply the selected morphological operation to every input plane.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.layers_mut() {
+        for image in images.planes_mut() {
             *image = Arc::new(
                 self.processor
                     .apply_morphology(image, self.state.operation, self.state.element_size)

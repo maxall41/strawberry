@@ -23,8 +23,8 @@ use strawberry_processing::{
 use strawberry_types::{
     AnnotationKind, AnnotationStroke, AutomaticSegmentationMessage, AutomaticSegmentationState,
     BackendToolType, BgraColor, CLASS_PALETTE, ClassId, DatasetImportMode, DatasetOperation,
-    FrontendMessage, ImageCollection, MAX_CLASSES, PipelineObjectMessage, RgbaColor, SampleId,
-    SegmentationClass, SegmentationClasses, SegmentationOutputMode, StrokeId, ToolAssets,
+    FrontendMessage, ImageCollection, MAX_CLASSES, PipelineObjectMessage, Position, RgbaColor,
+    SampleId, SegmentationClass, SegmentationClasses, SegmentationOutputMode, StrokeId, ToolAssets,
     ToolBackend, ToolInput, ToolState,
     overlay::{CircleStyle, OverlayElement, ToolOverlay},
 };
@@ -303,12 +303,10 @@ pub struct AutomaticSegmentation {
     extractor: Arc<FeatureExtractor>,
     model: Option<Arc<SegmentationModel>>,
     model_class_ids: Vec<ClassId>,
-    /// Predictions for the current input of each stack.
+    /// Predictions for the current input at each position.
     inference_cache: Vec<InferenceCache>,
     samples: Vec<Sample>,
-    /// The selected layer of each stack, in stack order.
-    stack_inputs: Vec<Option<Arc<RgbaImage>>>,
-    /// The selected stack's input, which annotations and the training preview apply to.
+    /// The selected position's input, which annotations and the training preview apply to.
     input: Option<Arc<RgbaImage>>,
     current: Option<SampleId>,
     stroke: Option<PendingStroke>,
@@ -334,7 +332,6 @@ impl AutomaticSegmentation {
             model_class_ids: Vec::new(),
             inference_cache: Vec::new(),
             samples: vec![],
-            stack_inputs: Vec::new(),
             input: None,
             current: None,
             stroke: None,
@@ -649,7 +646,7 @@ impl AutomaticSegmentation {
             cached.overlay = Some(PredictionOverlay { colors, image });
         }
     }
-    /// Return the cached prediction for the selected stack's input under the current model.
+    /// Return the cached prediction for the selected position's input under the current model.
     fn selected_inference(&self) -> Option<&InferenceCache> {
         let input = self.input.as_ref()?;
         let model = self.model.as_ref()?;
@@ -694,13 +691,17 @@ impl AutomaticSegmentation {
         });
         Ok(output)
     }
-    /// Annotate and preview the selected stack's input, restoring its sample if it was annotated.
+    /// Annotate and preview the selected position's input, restoring its sample if it was annotated.
     fn adopt_selected_input(&mut self) {
+        let coordinates = self
+            .state
+            .selected_position
+            .with_channel(self.state.selected_layer);
         let image = self
-            .stack_inputs
-            .get(self.state.selected_stack)
-            .cloned()
-            .flatten();
+            .cache
+            .get_input()
+            .and_then(|input| input.plane(coordinates))
+            .cloned();
         let unchanged = match (&self.input, &image) {
             (Some(old), Some(new)) => Arc::ptr_eq(old, new),
             (None, None) => true,
@@ -964,13 +965,8 @@ impl AutomaticSegmentation {
                 if self.state.selected_layer == value {
                     return Ok(());
                 }
-                self.state.selected_stroke = None;
                 self.state.selected_layer = value;
-                self.stack_inputs.clear();
-                self.input = None;
-                self.current = None;
-                self.stroke = None;
-                self.annotation_masks.clear();
+                self.adopt_selected_input();
             }
             AutomaticSegmentationMessage::SetFeatures(value) => {
                 value.validate()?;
@@ -1307,13 +1303,14 @@ impl ToolBackend for AutomaticSegmentation {
     fn get_state(&self) -> ToolState {
         ToolState::AutomaticSegmentationState(self.state.clone())
     }
-    /// Cache each stack's input, preview the selected stack while training, or segment every stack.
+    /// Remember the images for annotation, then preview the selected position while training
+    /// or segment every position.
     async fn process(&mut self, images: &mut ImageCollection) -> Result<()> {
-        self.state.total_layers = images.layer_count();
+        self.state.total_layers = images.shape().c;
         if self.state.selected_layer >= self.state.total_layers {
             self.state.selected_layer = 0;
         }
-        self.stack_inputs = images.collect_layer(self.state.selected_layer);
+        self.cache.remember_input(images);
         self.adopt_selected_input();
         if self.state.training && !self.state.show_overlay {
             return Ok(());
@@ -1328,31 +1325,25 @@ impl ToolBackend for AutomaticSegmentation {
                 self.overlays_dirty = true;
             }
         } else {
-            let layer = self.state.selected_layer;
-            for stack in &mut images.stacks {
-                let Some(image) = stack.layers.get(layer).cloned() else {
-                    continue;
-                };
-                let output = self.predict(image, model.clone()).await?;
-                let rendered = Arc::new(self.render_prediction(&output)?);
-                if let Some(slot) = stack.layers.get_mut(layer) {
-                    *slot = rendered;
-                }
+            for slot in images.channel_mut(self.state.selected_layer) {
+                let output = self.predict(slot.clone(), model.clone()).await?;
+                *slot = Arc::new(self.render_prediction(&output)?);
             }
         }
-        let inputs = &self.stack_inputs;
-        self.inference_cache.retain(|cached| {
-            inputs
-                .iter()
-                .flatten()
-                .any(|input| Arc::ptr_eq(input, &cached.input))
-        });
+        if let Some(input) = self.cache.get_input() {
+            let layer = self.state.selected_layer;
+            self.inference_cache.retain(|cached| {
+                input
+                    .channel(layer)
+                    .any(|plane| Arc::ptr_eq(plane, &cached.input))
+            });
+        }
 
         Ok(())
     }
-    /// Annotate and preview the given stack.
-    fn select_stack(&mut self, stack: usize) {
-        self.state.selected_stack = stack;
+    /// Annotate and preview the given position.
+    fn select_position(&mut self, position: Position) {
+        self.state.selected_position = position;
         self.adopt_selected_input();
     }
     /// Apply tool commands and canvas input to this instance.

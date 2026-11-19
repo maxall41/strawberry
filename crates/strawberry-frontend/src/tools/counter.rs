@@ -16,11 +16,11 @@ use gpui::{
 use rfd::FileDialog;
 use strawberry_backend::counter::io::read_marker_file;
 
-use crate::gui::{ToggleButton, icon::Icon, prompts::ask_stack_placement};
+use crate::gui::{ToggleButton, icon::Icon, prompts::ask_annotation_placement};
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{
     CountData, CountMessage, CounterMode, CounterState, CounterTool, PipelineObjectMessage,
-    StackPlacement, ToolState, consts::CIRCLE_COLORS,
+    ToolState, consts::CIRCLE_COLORS,
 };
 
 use strawberry_types::ToolFrontend;
@@ -134,15 +134,11 @@ impl CounterView {
                 }
 
                 // Unreadable files load as usual so the backend reports why they failed.
-                let z_indices =
-                    read_marker_file(&file).map_or(1, |marker_file| marker_file.count_z_indices());
-                let placement = if z_indices > 1 {
-                    let Some(placement) = ask_stack_placement(cx, "counts", z_indices).await else {
-                        return;
-                    };
-                    placement
-                } else {
-                    StackPlacement::SelectedStack
+                let positions =
+                    read_marker_file(&file).map_or(1, |marker_file| marker_file.count_positions());
+                let Some(placement) = ask_annotation_placement(cx, "counts", positions).await
+                else {
+                    return;
                 };
 
                 if let Err(e) = this.update(cx, |this, _cx| {

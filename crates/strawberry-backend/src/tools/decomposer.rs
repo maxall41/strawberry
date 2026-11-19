@@ -11,8 +11,8 @@ use strawberry_processing::{
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, DecomposerMessage, DecomposerState, FrontendMessage, ImageCollection,
-    PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
+    BackendToolType, DecomposerMessage, DecomposerState, Dimension, FrontendMessage,
+    ImageCollection, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Decomposer {
@@ -37,13 +37,14 @@ impl ToolBackend for Decomposer {
         BackendToolType::Decomposer
     }
 
-    /// Decompose each single-layer stack and composite its enabled channel layers.
+    /// Decompose the single layer at each position and composite its enabled channel layers.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for stack in &mut images.stacks {
-            let [image] = stack.layers.as_slice() else {
+        let mut lanes = images.lanes(Dimension::C);
+        for lane in &mut lanes {
+            let [image] = lane.as_slice() else {
                 let error_msg = format!(
-                    "Decomposer can only process one image per stack, received {}",
-                    stack.layers.len()
+                    "Decomposer can only process images with one layer, received {}",
+                    lane.len()
                 );
                 self.base
                     .events
@@ -61,10 +62,9 @@ impl ToolBackend for Decomposer {
                 .collect();
 
             let composited = self.compositer.composite_images(&enabled).await?;
-            stack.layers = vec![Arc::new(composited)];
+            *lane = vec![Arc::new(composited)];
         }
-
-        Ok(())
+        images.replace_lanes(Dimension::C, lanes)
     }
 
     /// Apply tool commands and canvas input to this instance.

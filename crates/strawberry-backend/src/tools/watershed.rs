@@ -34,9 +34,9 @@ impl ToolBackend for Watershed {
         BackendToolType::Watershed
     }
 
-    /// Apply the configured watershed segmentation to each input layer.
+    /// Apply the configured watershed segmentation to every input plane.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.layers_mut() {
+        for image in images.planes_mut() {
             *image = Arc::new(
                 self.processor
                     .apply_watershed(image, self.state.sigma, self.state.min_distance)

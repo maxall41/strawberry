@@ -4,7 +4,18 @@
 )]
 
 use gpui::{AsyncWindowContext, PromptLevel};
-use strawberry_types::{ExportScope, ImageArrangement, StackPlacement};
+use strawberry_types::{AnnotationPlacement, ExportScope};
+
+/// How the user chose to load several images.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportChoice {
+    /// Place the images as the channels of one image.
+    Layers,
+    /// Place the images along Z.
+    Stack,
+    /// Place the images by parsing their file names.
+    Hyperstack,
+}
 
 /// Show a native choice dialog with a Cancel button; `None` means the user cancelled.
 async fn choose<T: Copy>(
@@ -25,50 +36,60 @@ async fn choose<T: Copy>(
     options.get(answer).map(|(_, value)| *value)
 }
 
-/// Ask whether several images load as layers of one image or as a stack.
+/// Ask whether several images load as layers of one image, a stack, or a hyperstack.
 pub async fn ask_image_arrangement(
     cx: &mut AsyncWindowContext,
     image_count: usize,
-) -> Option<ImageArrangement> {
+) -> Option<ImportChoice> {
     choose(
         cx,
-        &format!("Load {image_count} images as layers or as a stack?"),
-        Some("Layers are composited into one image. A stack keeps each image separate."),
+        &format!("Load {image_count} images as layers, a stack, or a hyperstack?"),
+        Some(
+            "Layers become the channels of one image. Stacks have only one dimension. Hyperstacks have multiple dimensions.",
+        ),
         &[
-            ("Layers", ImageArrangement::Layers),
-            ("Stack", ImageArrangement::Stacks),
+            ("Layers", ImportChoice::Layers),
+            ("Stack", ImportChoice::Stack),
+            ("Hyperstack", ImportChoice::Hyperstack),
         ],
     )
     .await
 }
 
-/// Ask whether annotations spanning several Z indices load onto the selected stack or split by Z.
-pub async fn ask_stack_placement(
+/// Ask whether annotations spanning several images load onto the current image or split
+/// across images; annotations on a single image always load onto the current one.
+pub async fn ask_annotation_placement(
     cx: &mut AsyncWindowContext,
     annotations: &str,
-    z_indices: usize,
-) -> Option<StackPlacement> {
+    images: usize,
+) -> Option<AnnotationPlacement> {
+    if images <= 1 {
+        return Some(AnnotationPlacement::CurrentPosition);
+    }
     choose(
         cx,
-        &format!("These {annotations} span {z_indices} Z indices."),
+        &format!("These {annotations} span {images} images."),
         None,
         &[
-            ("Load onto Selected Stack", StackPlacement::SelectedStack),
-            ("Split by Z Index", StackPlacement::SplitByZ),
+            (
+                "Load onto Current Image",
+                AnnotationPlacement::CurrentPosition,
+            ),
+            ("Split Across Images", AnnotationPlacement::SplitByPosition),
         ],
     )
     .await
 }
 
-/// Ask whether to export the selected stack or every stack.
+/// Ask whether to export the displayed image or every image.
 pub async fn ask_export_scope(cx: &mut AsyncWindowContext) -> Option<ExportScope> {
     choose(
         cx,
-        "Export the selected stack or all stacks?",
-        Some("All stacks are saved as TIFF images in a ZIP archive."),
+        "Export the current image or all images?",
+        Some("All images are saved as TIFF images in a ZIP archive."),
         &[
-            ("Selected Stack", ExportScope::SelectedStack),
-            ("All Stacks", ExportScope::AllStacks),
+            ("Current Image", ExportScope::CurrentView),
+            ("All Images", ExportScope::AllViews),
         ],
     )
     .await

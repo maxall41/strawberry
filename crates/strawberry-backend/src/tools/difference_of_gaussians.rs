@@ -35,9 +35,9 @@ impl ToolBackend for DifferenceOfGaussians {
         BackendToolType::DifferenceOfGaussians
     }
 
-    /// Apply the configured difference of Gaussian blurs to each input layer.
+    /// Apply the configured difference of Gaussian blurs to every input plane.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.layers_mut() {
+        for image in images.planes_mut() {
             *image = Arc::new(
                 self.processor
                     .apply(image, self.state.small_sigma, self.state.large_sigma)

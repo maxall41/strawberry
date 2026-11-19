@@ -15,16 +15,21 @@ use gpui::{
     Entity, ExternalPaths, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent,
     KeyUpEvent, Menu, MenuItem, ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions,
-    Window, WindowBounds, WindowOptions, div, img, prelude::*, px, size,
+    WeakEntity, Window, WindowBounds, WindowOptions, div, img, prelude::*, px, size,
 };
 use gui::busy::{BusyOverlay, set_pipeline_busy};
+use gui::code_editor::{
+    EditorCopy, EditorCut, EditorPaste, EditorRedo, EditorSelectAll, EditorUndo,
+    KEY_CONTEXT as CODE_EDITOR_CONTEXT,
+};
 use gui::feedback::FeedbackModal;
 use gui::generic_picker::PickerPaste;
+use gui::hyperstack_bar::{HyperstackBar, ViewSelected};
+use gui::hyperstack_importer::{HyperstackImporter, ImporterClosed};
 use gui::icon::Icon;
 use gui::palette::{CommandPalette, PaletteDismissed};
-use gui::prompts::{ask_export_scope, ask_image_arrangement};
+use gui::prompts::{ImportChoice, ask_export_scope, ask_image_arrangement};
 use gui::sidebar::{ToolSelected, ToolSidebar};
-use gui::stack_bar::{StackBar, StackSelected};
 use gui::workspace::{
     SIDEBAR_GRIP_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TOOLBAR_HEIGHT, WorkspaceLayout,
 };
@@ -36,10 +41,10 @@ use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::{fs, panic};
-use strawberry_backend::Pipeline;
+use strawberry_backend::{Pipeline, hyperstack::collect_file_names};
 use strawberry_types::{
-    CommandSender, ExportScope, FeedbackLevel, FrontendMessage, ImageArrangement, OutputFrame,
-    PipelineCommand,
+    ExportScope, FeedbackLevel, FrontendMessage, ImageArrangement, OutputFrame, PipelineCommand,
+    Shape,
     overlay::{CircleStyle, OverlayCollection, OverlayElement},
 };
 use tokio::sync::broadcast;
@@ -121,33 +126,40 @@ struct PrimaryViewer {
     palette: Option<Entity<CommandPalette>>,
     commands: Rc<[PalleteCommand]>,
     sidebar: Entity<ToolSidebar>,
-    stack_bar: Entity<StackBar>,
-    stack_count: usize,
-    /// Load that produced the displayed frame; a new load resets the stack selection.
+    importer: Option<Entity<HyperstackImporter>>,
+    hyperstack_bar: Entity<HyperstackBar>,
+    /// Shape of the displayed output, which sets the hyperstack bar's rows.
+    shape: Shape,
+    /// Load that produced the displayed frame; a new load resets the view.
     load_generation: Option<u64>,
     layout: WorkspaceLayout,
 }
 
-/// Ask how to arrange several images, then queue them for loading.
+/// Ask how to arrange several images, then queue them for loading or open the hyperstack
+/// importer.
 #[expect(
     clippy::future_not_send,
     reason = "Native dialogs run on GPUI's main-thread window context"
 )]
-async fn load_images(sender: CommandSender, files: Vec<PathBuf>, cx: &mut AsyncWindowContext) {
-    let arrangement = if files.len() > 1 {
-        let Some(arrangement) = ask_image_arrangement(cx, files.len()).await else {
+async fn load_images(
+    viewer: WeakEntity<PrimaryViewer>,
+    files: Vec<PathBuf>,
+    cx: &mut AsyncWindowContext,
+) {
+    let choice = if files.len() > 1 {
+        let Some(choice) = ask_image_arrangement(cx, files.len()).await else {
             return;
         };
-        arrangement
+        choice
     } else {
-        ImageArrangement::Layers
+        ImportChoice::Layers
     };
-    if let Err(e) = sender.send(PipelineCommand::Load {
-        files,
-        arrangement,
-        reply: tokio::sync::oneshot::channel().0,
+    if let Err(e) = viewer.update_in(cx, |viewer, window, cx| match choice {
+        ImportChoice::Layers => viewer.send_load(files, ImageArrangement::Layers),
+        ImportChoice::Stack => viewer.send_load(files, ImageArrangement::Stack),
+        ImportChoice::Hyperstack => viewer.open_hyperstack_importer(files, window, cx),
     }) {
-        eprintln!("Failed to send loaded images to pipeline: {e}");
+        eprintln!("Failed to load images: {e}");
     }
 }
 
@@ -381,19 +393,17 @@ impl PrimaryViewer {
         .detach();
     }
 
-    /// Display a processed stack and refresh the stack bar and canvas overlays.
+    /// Display a processed image and refresh the hyperstack bar and canvas overlays.
     fn show_output(&mut self, frame: OutputFrame, window: &mut Window, cx: &mut Context<Self>) {
-        // Within one load the stack bar leads and frames follow it, so a frame still in
-        // flight cannot pull the slider back to an earlier stack.
-        if self.load_generation != Some(frame.load_generation)
-            || self.stack_count != frame.stack_count
-        {
+        // Within one load the hyperstack bar leads and frames follow it, so a frame still in
+        // flight cannot pull a slider back to an earlier image.
+        if self.load_generation != Some(frame.load_generation) || self.shape != frame.shape {
             self.load_generation = Some(frame.load_generation);
-            self.stack_count = frame.stack_count;
-            self.layout.status_bar_visible = frame.stack_count > 1;
-            self.stack_bar.update(cx, |bar, cx| {
-                bar.set_stacks(frame.stack, frame.stack_count, cx);
+            self.shape = frame.shape;
+            self.hyperstack_bar.update(cx, |bar, cx| {
+                bar.set_view(frame.coordinates, frame.shape, cx);
             });
+            self.layout.status_bar_rows = self.hyperstack_bar.read(cx).row_count();
         }
         let img_data = Arc::new(RenderImage::new(vec![Frame::new(Arc::unwrap_or_clone(
             frame.image,
@@ -516,10 +526,9 @@ impl PrimaryViewer {
 
     /// Prompt for input images and queue them for loading.
     fn handle_open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
-        let sender_p = self.command_sender.clone();
         let image_dir = self.image_directory.clone();
 
-        cx.spawn_in(window, async move |_, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let files = FileDialog::new()
                 .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
                 .set_directory("~/")
@@ -533,33 +542,33 @@ impl PrimaryViewer {
                     *dir = Some(parent.to_path_buf());
                 }
 
-                load_images(sender_p, files, cx).await;
+                load_images(this, files, cx).await;
             }
         })
         .detach();
     }
 
-    /// Ask which stacks to export when several are loaded, then prompt for an output path
+    /// Ask which images to export when several are loaded, then prompt for an output path
     /// and request the processed output be saved.
     fn handle_save_image(&mut self, _: &SaveImage, window: &mut Window, cx: &mut Context<Self>) {
         let sender_p = self.command_sender.clone();
-        let stack_count = self.stack_count;
+        let several_images = self.shape.holds_several_images();
 
         cx.spawn_in(window, async move |this, cx| {
-            let scope = if stack_count > 1 {
+            let scope = if several_images {
                 let Some(scope) = ask_export_scope(cx).await else {
                     return;
                 };
                 scope
             } else {
-                ExportScope::SelectedStack
+                ExportScope::CurrentView
             };
             let dialog = FileDialog::new().set_directory("~/");
             let output_file = match scope {
-                ExportScope::SelectedStack => dialog
+                ExportScope::CurrentView => dialog
                     .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
                     .save_file(),
-                ExportScope::AllStacks => dialog.add_filter("ZIP archive", &["zip"]).save_file(),
+                ExportScope::AllViews => dialog.add_filter("ZIP archive", &["zip"]).save_file(),
             };
 
             if let Some(path) = output_file {
@@ -573,8 +582,8 @@ impl PrimaryViewer {
                         let (text, level) = match result {
                             Ok(Ok(())) => (
                                 match scope {
-                                    ExportScope::SelectedStack => "Image saved successfully",
-                                    ExportScope::AllStacks => "Stacks saved successfully",
+                                    ExportScope::CurrentView => "Image saved successfully",
+                                    ExportScope::AllViews => "Images saved successfully",
                                 }
                                 .to_string(),
                                 FeedbackLevel::Success,
@@ -757,6 +766,51 @@ impl PrimaryViewer {
         if event.modifiers.modified() {
             self.pressed_keys.clear();
         }
+    }
+
+    /// Queue images for loading in the given arrangement.
+    fn send_load(&self, files: Vec<PathBuf>, arrangement: ImageArrangement) {
+        if let Err(e) = self.command_sender.send(PipelineCommand::Load {
+            files,
+            arrangement,
+            reply: tokio::sync::oneshot::channel().0,
+        }) {
+            eprintln!("Failed to send loaded images to pipeline: {e}");
+        }
+    }
+
+    /// Open the hyperstack importer.
+    fn open_hyperstack_importer(
+        &mut self,
+        files: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let file_names = match collect_file_names(&files) {
+            Ok(file_names) => file_names,
+            Err(error) => {
+                self.add_toast(error.to_string(), FeedbackLevel::Error, cx);
+                return;
+            }
+        };
+        self.pressed_keys.clear();
+        let importer = cx.new(|cx| HyperstackImporter::new(files, file_names, cx));
+        cx.subscribe_in(
+            &importer,
+            window,
+            |viewer, _importer, event: &ImporterClosed, window, cx| {
+                if let ImporterClosed::Imported { files, arrangement } = event {
+                    viewer.send_load(files.clone(), arrangement.clone());
+                }
+                viewer.importer = None;
+                viewer.focus_handle.focus(window, cx);
+                cx.notify();
+            },
+        )
+        .detach();
+        window.focus(&importer.focus_handle(cx), cx);
+        self.importer = Some(importer);
+        cx.notify();
     }
 
     /// Open or close the command palette.
@@ -1067,14 +1121,13 @@ impl Render for PrimaryViewer {
             .on_key_up(cx.listener(Self::on_key_up))
             .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
             .on_drop(cx.listener(
-                |this: &mut Self,
+                |_this: &mut Self,
                  paths: &ExternalPaths,
                  window: &mut Window,
                  cx: &mut Context<Self>| {
-                    let sender = this.command_sender.clone();
                     let files = paths.paths().to_vec();
-                    cx.spawn_in(window, async move |_, cx| {
-                        load_images(sender, files, cx).await;
+                    cx.spawn_in(window, async move |this, cx| {
+                        load_images(this, files, cx).await;
                     })
                     .detach();
                 },
@@ -1216,8 +1269,8 @@ impl Render for PrimaryViewer {
                             .min_w_0()
                             .h_full()
                             .child(canvas)
-                            .when(self.layout.status_bar_visible, |column| {
-                                column.child(self.stack_bar.clone())
+                            .when(self.layout.status_bar_rows > 0, |column| {
+                                column.child(self.hyperstack_bar.clone())
                             }),
                     )
                     .when(self.layout.sidebar_visible, |el| {
@@ -1252,7 +1305,8 @@ impl Render for PrimaryViewer {
                         )
                     }),
             )
-            // Paint the command palette over the complete workspace.
+            // Paint the importer and command palette over the complete workspace.
+            .when_some(self.importer.clone(), gpui::ParentElement::child)
             .when_some(self.palette.clone(), gpui::ParentElement::child)
     }
 }
@@ -1345,6 +1399,12 @@ async fn main() -> Result<()> {
                 KeyBinding::new("f", ZoomFit, Some("PrimaryViewer")),
                 KeyBinding::new("secondary-p", ToggleCommandPalette, None),
                 KeyBinding::new("secondary-v", PickerPaste, Some("SearchPicker")),
+                KeyBinding::new("secondary-a", EditorSelectAll, Some(CODE_EDITOR_CONTEXT)),
+                KeyBinding::new("secondary-c", EditorCopy, Some(CODE_EDITOR_CONTEXT)),
+                KeyBinding::new("secondary-x", EditorCut, Some(CODE_EDITOR_CONTEXT)),
+                KeyBinding::new("secondary-v", EditorPaste, Some(CODE_EDITOR_CONTEXT)),
+                KeyBinding::new("secondary-z", EditorUndo, Some(CODE_EDITOR_CONTEXT)),
+                KeyBinding::new("secondary-shift-z", EditorRedo, Some(CODE_EDITOR_CONTEXT)),
                 KeyBinding::new("+", ZoomIn, Some("PrimaryViewer && !CommandPalette")),
                 KeyBinding::new("-", ZoomOut, Some("PrimaryViewer && !CommandPalette")),
             ]);
@@ -1397,7 +1457,7 @@ async fn main() -> Result<()> {
             let primary_viewer_image_dir = image_directory.clone();
             let main_window = cx.open_window(window_options, |window, cx| {
                 let sidebar = cx.new(|cx| ToolSidebar::new(view_sender.clone(), window, cx));
-                let stack_bar = cx.new(StackBar::new);
+                let hyperstack_bar = cx.new(HyperstackBar::new);
                 let commands =
                     commands::install(cx, &sidebar, view_sender.clone(), image_directory.clone());
                 let raw_primary_viewer = PrimaryViewer {
@@ -1427,8 +1487,9 @@ async fn main() -> Result<()> {
                     palette: None,
                     commands,
                     sidebar: sidebar.clone(),
-                    stack_bar: stack_bar.clone(),
-                    stack_count: 0,
+                    importer: None,
+                    hyperstack_bar: hyperstack_bar.clone(),
+                    shape: Shape::default(),
                     load_generation: None,
                     layout: WorkspaceLayout::default(),
                 };
@@ -1444,13 +1505,13 @@ async fn main() -> Result<()> {
                     )
                     .detach();
                     cx.subscribe(
-                        &stack_bar,
-                        |viewer: &mut PrimaryViewer, _, event: &StackSelected, _| {
+                        &hyperstack_bar,
+                        |viewer: &mut PrimaryViewer, _, event: &ViewSelected, _| {
                             if let Err(e) = viewer
                                 .command_sender
-                                .send(PipelineCommand::SelectStack(event.0))
+                                .send(PipelineCommand::SelectView(event.0))
                             {
-                                eprintln!("Failed to select stack: {e}");
+                                eprintln!("Failed to select image: {e}");
                             }
                         },
                     )

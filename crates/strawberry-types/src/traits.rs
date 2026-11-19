@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::{
-    BackendToolType, ImageCollection, PersistedState, PipelineObjectMessage, ToolInput, ToolState,
-    overlay::ToolOverlay,
+    BackendToolType, ImageCollection, PersistedState, PipelineObjectMessage, Position, ToolInput,
+    ToolState, overlay::ToolOverlay,
 };
 
 /// Named files stored alongside a tool's configuration in a pipeline archive.
@@ -12,7 +12,7 @@ pub type ToolAssets = HashMap<String, Vec<u8>>;
 /// Trait for image processing tools (backend)
 #[async_trait]
 pub trait ToolBackend: Send + Sync {
-    /// Process every stack of the collection in place.
+    /// Process the images of the collection in place.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()>;
 
     /// Check if this tool is currently enabled
@@ -41,8 +41,8 @@ pub trait ToolBackend: Send + Sync {
     }
     /// Cancel any active canvas interaction owned by this tool.
     fn cancel_interaction(&mut self) {}
-    /// Direct canvas edits and per-stack annotations to the given stack.
-    fn select_stack(&mut self, _stack: usize) {}
+    /// Direct canvas edits and per-position annotations to the given position.
+    fn select_position(&mut self, _position: Position) {}
     /// Report and consume pending overlay changes; return false by default.
     fn take_overlay_changes(&mut self) -> bool {
         false

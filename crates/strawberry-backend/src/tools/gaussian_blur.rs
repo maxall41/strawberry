@@ -34,9 +34,9 @@ impl ToolBackend for GaussianBlur {
         BackendToolType::GaussianBlur
     }
 
-    /// Apply the configured Gaussian blur to each input layer.
+    /// Apply the configured Gaussian blur to every input plane.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.layers_mut() {
+        for image in images.planes_mut() {
             *image = Arc::new(self.processor.apply_blur(image, self.state.sigma).await?);
         }
         Ok(())

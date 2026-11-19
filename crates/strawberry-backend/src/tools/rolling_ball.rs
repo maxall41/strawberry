@@ -34,9 +34,9 @@ impl ToolBackend for RollingBall {
         BackendToolType::RollingBall
     }
 
-    /// Subtract the configured rolling-ball background from each input layer.
+    /// Subtract the configured rolling-ball background from every input plane.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.layers_mut() {
+        for image in images.planes_mut() {
             *image = Arc::new(
                 self.processor
                     .apply_rolling_ball(image, self.state.ball_radius)

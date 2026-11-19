@@ -6,17 +6,18 @@ use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, Inference
 use strawberry_processing::threshold::AutoThresholdMethod;
 
 use super::{
-    AnnotationKind, BackendToolType, BrushRadius, ClassId, DatasetImportMode, ExportScope,
-    ImageArrangement, ObjectSizeFilterMode, RgbColor, SegmentationOutputMode, StackPlacement,
-    StrokeId, ToolState,
+    AnnotationKind, AnnotationPlacement, BackendToolType, BrushRadius, ClassId, Coordinates,
+    DatasetImportMode, ExportScope, ImageArrangement, ObjectSizeFilterMode, RgbColor,
+    SegmentationOutputMode, Shape, StrokeId, ToolState,
 };
 
-/// The composited output of the selected stack.
+/// The displayed output plane.
 #[derive(Debug, Clone)]
 pub struct OutputFrame {
     pub load_generation: u64,
-    pub stack: usize,
-    pub stack_count: usize,
+    pub coordinates: Coordinates,
+    /// Shape of the pipeline output.
+    pub shape: Shape,
     pub image: Arc<RgbaImage>,
 }
 
@@ -126,7 +127,7 @@ pub enum NerveTracerMessage {
     DeletePathSegmentInCommitedPath(usize, usize),
     DeletePath(usize),
     SaveTraces(PathBuf),
-    LoadTraces(PathBuf, StackPlacement),
+    LoadTraces(PathBuf, AnnotationPlacement),
     SelectLayer(usize),
 }
 
@@ -141,7 +142,7 @@ pub enum CountMessage {
     SetActiveCountType(u16),
     SetActiveTool(Option<CounterTool>),
     SaveCounts(PathBuf),
-    LoadCounts(PathBuf, StackPlacement),
+    LoadCounts(PathBuf, AnnotationPlacement),
     CopyToManual,
     ReviewNavigatePrevious,
     ReviewNavigateNext,
@@ -259,8 +260,8 @@ pub enum PipelineCommand {
         arrangement: ImageArrangement,
         reply: CommandResult,
     },
-    /// Show a stack and direct per-stack tool edits to it.
-    SelectStack(usize),
+    /// Show one plane and direct per-position tool edits to its position.
+    SelectView(Coordinates),
     SaveOutput {
         path: PathBuf,
         scope: ExportScope,

@@ -105,6 +105,7 @@ impl<TState: SyncState> ToolSync<TState> {
 pub struct ToolCache<TState> {
     pub cached_output: Option<ImageCollection>,
     pub cached_state: Option<TState>,
+    cached_input: Option<ImageCollection>,
     pub sync: ToolSync<TState>,
 }
 
@@ -115,8 +116,20 @@ impl<TState: SyncState> ToolCache<TState> {
         Self {
             cached_output: None,
             cached_state: None,
+            cached_input: None,
             sync: ToolSync::new(state),
         }
+    }
+
+    /// Keep the images a run received so canvas interaction can read them until the next run.
+    pub fn remember_input(&mut self, images: &ImageCollection) {
+        self.cached_input = Some(images.clone());
+    }
+
+    /// Return the images the last run received, if this tool remembers its input.
+    #[must_use]
+    pub const fn get_input(&self) -> Option<&ImageCollection> {
+        self.cached_input.as_ref()
     }
 
     /// Invalidate stale cached output and report whether processing is needed.
@@ -137,10 +150,16 @@ impl<TState: SyncState> ToolCache<TState> {
             .and_then(|_| self.cached_output.clone())
     }
 
-    /// Clear cached output and its associated settings.
+    /// Clear cached output and its associated settings, keeping the remembered input.
     pub fn invalidate(&mut self) {
         self.cached_output = None;
         self.cached_state = None;
+    }
+
+    /// Clear cached output, its settings, and the remembered input.
+    pub fn invalidate_all(&mut self) {
+        self.invalidate();
+        self.cached_input = None;
     }
 }
 
@@ -154,10 +173,11 @@ impl SyncState for AutomaticSegmentationState {
         self.is_enabled != other.is_enabled
             || self.training != other.training
             || (self.training && self.show_overlay != other.show_overlay)
-            // Only the training preview depends on the selected stack; inference covers every stack.
+            // Only the training preview depends on the selected position; inference covers every
+            // position.
             || (self.training
                 && self.show_overlay
-                && self.selected_stack != other.selected_stack)
+                && self.selected_position != other.selected_position)
             || (!self.training
                 && (self.use_threshold != other.use_threshold
                     || (self.use_threshold
