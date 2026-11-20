@@ -48,6 +48,25 @@ struct TrainingJob {
     generation: u64,
 }
 
+/// A background prediction of one input image for the overlay preview.
+struct PreviewJob {
+    receiver: flume::Receiver<Result<Vec<image::GrayImage>>>,
+    image: Arc<RgbaImage>,
+    model: Arc<SegmentationModel>,
+}
+
+/// Take a background worker's result once it has finished, reporting a worker that stopped
+/// without sending one.
+fn try_receive_result<T>(receiver: &flume::Receiver<Result<T>>, worker: &str) -> Option<Result<T>> {
+    match receiver.try_recv() {
+        Ok(result) => Some(result),
+        Err(flume::TryRecvError::Empty) => None,
+        Err(flume::TryRecvError::Disconnected) => {
+            Some(Err(anyhow::anyhow!("{worker} worker stopped unexpectedly")))
+        }
+    }
+}
+
 enum DatasetResult {
     Saved,
     Imported(Box<PreparedDataset>),
@@ -286,6 +305,7 @@ pub struct AutomaticSegmentation {
     // Deleting a class or loading a model invalidates pending training results.
     training_generation: u64,
     training_job: Option<TrainingJob>,
+    preview_job: Option<PreviewJob>,
     next_stroke_id: StrokeId,
     extractor: Arc<FeatureExtractor>,
     model: Option<Arc<SegmentationModel>>,
@@ -323,6 +343,7 @@ impl AutomaticSegmentation {
             annotation_masks: AnnotationMask::default(),
             overlays_dirty: false,
             training_job: None,
+            preview_job: None,
         })
     }
     /// Return whether a dataset import is in progress.
@@ -434,15 +455,12 @@ impl AutomaticSegmentation {
 
     /// Apply completed dataset work if its source revision is still current.
     fn finish_dataset_job(&mut self) {
-        let Some(job) = self.dataset_job.as_ref() else {
+        let Some(result) = self
+            .dataset_job
+            .as_ref()
+            .and_then(|job| try_receive_result(&job.receiver, "Dataset"))
+        else {
             return;
-        };
-        let result = match job.receiver.try_recv() {
-            Ok(result) => result,
-            Err(flume::TryRecvError::Empty) => return,
-            Err(flume::TryRecvError::Disconnected) => {
-                Err(anyhow::anyhow!("Dataset worker stopped unexpectedly"))
-            }
         };
         let Some(job) = self.dataset_job.take() else {
             return;
@@ -583,12 +601,14 @@ impl AutomaticSegmentation {
             .collect::<Result<_>>()?;
         render_class_prediction(planes, &colors)
     }
-    /// Refresh cached prediction colors when overlay visibility changes.
+    /// Refresh cached prediction colors when overlay visibility changes, predicting the
+    /// selected input in the background when it has no cached prediction.
     fn refresh_prediction_overlay(&mut self) {
         if !self.state.is_enabled || !self.state.training || !self.state.show_overlay {
             return;
         }
         let Some(cached) = self.selected_inference() else {
+            self.request_preview();
             return;
         };
         let colors = match self
@@ -642,6 +662,39 @@ impl AutomaticSegmentation {
             .get(&ByAddress(Arc::clone(input)))
             .filter(|cached| Arc::ptr_eq(&cached.model, model))
     }
+    /// Start predicting class planes for an image on a blocking worker, which sends its result
+    /// to the returned receiver.
+    fn spawn_prediction(
+        &self,
+        image: Arc<RgbaImage>,
+        model: Arc<SegmentationModel>,
+    ) -> flume::Receiver<Result<Vec<image::GrayImage>>> {
+        let extractor = self.extractor.clone();
+        let inference = self.state.inference.clone();
+        let (tx, rx) = flume::bounded(1);
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(futures::executor::block_on(
+                model.predict(&extractor, &image, &inference),
+            ));
+        });
+        rx
+    }
+    /// Remember an image's prediction under `model`.
+    fn cache_inference(
+        &mut self,
+        image: Arc<RgbaImage>,
+        model: Arc<SegmentationModel>,
+        output: Arc<Vec<image::GrayImage>>,
+    ) {
+        self.inference_cache.insert(
+            ByAddress(image),
+            InferenceCache {
+                model,
+                output,
+                overlay: None,
+            },
+        );
+    }
     /// Predict class planes for an image, reusing a cached prediction for the same image and model.
     async fn predict(
         &mut self,
@@ -651,29 +704,68 @@ impl AutomaticSegmentation {
         if let Some(cached) = self.get_cached_inference(&image, &model) {
             return Ok(cached.output.clone());
         }
-        let extractor = self.extractor.clone();
-        let worker_image = image.clone();
-        let worker_model = model.clone();
-        let inference = self.state.inference.clone();
-        let output = Arc::new(
-            tokio::task::spawn_blocking(move || {
-                futures::executor::block_on(worker_model.predict(
-                    &extractor,
-                    &worker_image,
-                    &inference,
-                ))
-            })
-            .await??,
-        );
-        self.inference_cache.insert(
-            ByAddress(image),
-            InferenceCache {
-                model,
-                output: output.clone(),
-                overlay: None,
-            },
-        );
+        let output = self
+            .spawn_prediction(image.clone(), model.clone())
+            .recv_async()
+            .await
+            .map_err(|_| anyhow::anyhow!("Prediction worker stopped unexpectedly"))??;
+        let output = Arc::new(output);
+        self.cache_inference(image, model, output.clone());
         Ok(output)
+    }
+    /// Predict the selected input in the background for the overlay preview, unless a model is
+    /// missing or the prediction is cached or already running.
+    fn request_preview(&mut self) {
+        let (Some(image), Some(model)) = (self.input.clone(), self.model.clone()) else {
+            return;
+        };
+        let running = self
+            .preview_job
+            .as_ref()
+            .is_some_and(|job| Arc::ptr_eq(&job.image, &image) && Arc::ptr_eq(&job.model, &model));
+        if running || self.get_cached_inference(&image, &model).is_some() {
+            return;
+        }
+        self.preview_job = Some(PreviewJob {
+            receiver: self.spawn_prediction(image.clone(), model.clone()),
+            image,
+            model,
+        });
+    }
+    /// Discard cached predictions and any running preview prediction.
+    fn clear_predictions(&mut self) {
+        self.preview_job = None;
+        self.overlays_dirty |= !std::mem::take(&mut self.inference_cache).is_empty();
+    }
+    /// Show a finished preview prediction if its input and model are still selected.
+    fn finish_preview(&mut self) {
+        let Some(result) = self
+            .preview_job
+            .as_ref()
+            .and_then(|job| try_receive_result(&job.receiver, "Prediction"))
+        else {
+            return;
+        };
+        let Some(job) = self.preview_job.take() else {
+            return;
+        };
+        let selected = self
+            .input
+            .as_ref()
+            .is_some_and(|input| Arc::ptr_eq(input, &job.image))
+            && self
+                .model
+                .as_ref()
+                .is_some_and(|model| Arc::ptr_eq(model, &job.model));
+        match result {
+            Ok(output) if selected => {
+                self.cache_inference(job.image, job.model, Arc::new(output));
+                self.refresh_prediction_overlay();
+                self.overlays_dirty = true;
+            }
+            Ok(_) => {}
+            Err(error) => self.error(&error),
+        }
     }
     /// Annotate and preview the selected position's input, restoring its sample if it was annotated.
     fn adopt_selected_input(&mut self) {
@@ -1078,13 +1170,7 @@ impl AutomaticSegmentation {
         let result = self
             .training_job
             .as_ref()
-            .and_then(|job| match job.receiver.try_recv() {
-                Ok(result) => Some(result),
-                Err(flume::TryRecvError::Empty) => None,
-                Err(flume::TryRecvError::Disconnected) => {
-                    Some(Err(anyhow::anyhow!("Training worker stopped unexpectedly")))
-                }
-            });
+            .and_then(|job| try_receive_result(&job.receiver, "Training"));
         if let Some(result) = result {
             let Some(job) = self.training_job.take() else {
                 return;
@@ -1306,23 +1392,18 @@ impl ToolBackend for AutomaticSegmentation {
                 .any(|plane| Arc::ptr_eq(plane, &input.0))
         });
         self.adopt_selected_input();
-        if self.state.training && !self.state.show_overlay {
+        if self.state.training {
+            // Training leaves the images unchanged; the preview is predicted in the background.
+            self.refresh_prediction_overlay();
+            self.overlays_dirty = true;
             return Ok(());
         }
         let Some(model) = self.model.clone() else {
             return Ok(());
         };
-        if self.state.training {
-            if let Some(image) = self.input.clone() {
-                self.predict(image, model).await?;
-                self.refresh_prediction_overlay();
-                self.overlays_dirty = true;
-            }
-        } else {
-            for slot in images.channel_mut(self.state.selected_layer) {
-                let output = self.predict(slot.clone(), model.clone()).await?;
-                *slot = Arc::new(self.render_prediction(&output)?);
-            }
+        for slot in images.channel_mut(self.state.selected_layer) {
+            let output = self.predict(slot.clone(), model.clone()).await?;
+            *slot = Arc::new(self.render_prediction(&output)?);
         }
         Ok(())
     }
@@ -1338,7 +1419,12 @@ impl ToolBackend for AutomaticSegmentation {
     /// Discard rejected output and prediction overlays while preserving annotation input.
     fn invalidate_cached_output(&mut self) {
         self.cache.invalidate();
-        self.overlays_dirty |= !std::mem::take(&mut self.inference_cache).is_empty();
+        self.clear_predictions();
+    }
+    /// Drop predictions of the previous images, which processing alone would prune only while
+    /// the tool is enabled.
+    fn release_previous_input(&mut self) {
+        self.clear_predictions();
     }
     /// Return and clear the pending overlay change flag.
     fn take_overlay_changes(&mut self) -> bool {
@@ -1360,6 +1446,7 @@ impl ToolBackend for AutomaticSegmentation {
         }
         self.finish_training();
         self.finish_dataset_job();
+        self.finish_preview();
         Ok(())
     }
     /// Build the canvas overlays for this tool.

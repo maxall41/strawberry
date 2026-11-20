@@ -1,4 +1,4 @@
-use crate::{BgraColor, Position, RgbColor};
+use crate::{BgraColor, Position, RgbColor, Shape};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
@@ -102,9 +102,9 @@ pub struct NerveTracerState {
     pub first_point: Option<(u64, u64)>,
     #[serde(alias = "selected_image_index")]
     pub selected_layer: usize,
-    /// Don't include runtime layer count metadata in persisted state
+    /// Shape of the last processed images, which numbers trace positions in files.
     #[serde(skip)]
-    pub total_layers: usize,
+    pub shape: Shape,
 }
 
 impl NerveTracerState {
@@ -232,10 +232,9 @@ where
 }
 
 /// Values kept separately for each X, Y, Z, T position.
-// Ordered to ensure that annotation exports list positions in sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerPosition<T> {
-    positions: BTreeMap<Position, T>,
+    positions: Arc<BTreeMap<Position, T>>,
     selected: Position,
 }
 
@@ -243,13 +242,13 @@ impl<T> Default for PerPosition<T> {
     /// Create an empty collection with the first position selected.
     fn default() -> Self {
         Self {
-            positions: BTreeMap::new(),
+            positions: Arc::default(),
             selected: Position::default(),
         }
     }
 }
 
-impl<T: Default> PerPosition<T> {
+impl<T: Clone + Default> PerPosition<T> {
     /// Return the selected position.
     #[must_use]
     pub const fn selected_position(&self) -> Position {
@@ -274,7 +273,9 @@ impl<T: Default> PerPosition<T> {
 
     /// Return a position's value, creating an empty one if needed.
     pub fn position_mut(&mut self, position: Position) -> &mut T {
-        self.positions.entry(position).or_default()
+        Arc::make_mut(&mut self.positions)
+            .entry(position)
+            .or_default()
     }
 
     /// Iterate over recorded positions and their values in frame-major order.
@@ -286,7 +287,7 @@ impl<T: Default> PerPosition<T> {
 
     /// Iterate mutably over every recorded position's value.
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.positions.values_mut()
+        Arc::make_mut(&mut self.positions).values_mut()
     }
 }
 
@@ -302,6 +303,9 @@ pub struct CounterState {
     pub is_enabled: bool,
     #[serde(skip)]
     pub counts: PerPosition<PositionCounts>,
+    /// Shape of the last processed images, which numbers count positions in files.
+    #[serde(skip)]
+    pub shape: Shape,
     pub mode: CounterMode,
     pub active_tool: Option<CounterTool>,
     pub active_count_type: Option<u16>,

@@ -88,6 +88,7 @@ impl NerveTracerView {
     /// Prompt for a traces file and request its import.
     fn load_traces(&self, window: &Window, cx: &Context<Self>) {
         let last_directory = self.last_directory.clone();
+        let state = self.state.clone();
 
         cx.spawn_in(window, async move |this, cx| {
             let default_dir = last_directory
@@ -109,10 +110,19 @@ impl NerveTracerView {
                     *dir = Some(parent.to_path_buf());
                 }
 
+                let Ok((selected, shape)) = state
+                    .read()
+                    .map(|state| (state.traces.selected_position(), state.shape))
+                else {
+                    return;
+                };
                 // Unreadable files load as usual so the backend reports why they failed.
-                let positions = read_tracings_file(&file)
-                    .map_or(1, |tracings| tracings.count_unique_path_slices());
-                let Some(placement) = ask_annotation_placement(cx, "traces", positions).await
+                let saved = read_tracings_file(&file)
+                    .ok()
+                    .and_then(|tracings| tracings.get_saved_positions(shape).ok())
+                    .unwrap_or_default();
+                let Some(placement) =
+                    ask_annotation_placement(cx, "traces", &saved, selected, shape).await
                 else {
                     return;
                 };
@@ -272,7 +282,7 @@ impl NerveTracerView {
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         tool_panel::section("Input layer").child(div().flex().gap_1().flex_wrap().children(
-            (0..state.total_layers).map(|i| {
+            (0..state.shape.c).map(|i| {
                 Button::new(("trace-layer", i))
                     .compact()
                     .selected(i == state.selected_layer)
@@ -499,7 +509,7 @@ impl Render for NerveTracerView {
             .on_action(cx.listener(Self::save_traces_action))
             .on_action(cx.listener(Self::load_traces_action))
             .child(Self::render_status(&state, cx))
-            .when(state.total_layers > 1, |el| {
+            .when(state.shape.c > 1, |el| {
                 el.child(Self::render_layer_selector(&state, cx))
             })
             .child(self.render_segments_section(&state, cx))

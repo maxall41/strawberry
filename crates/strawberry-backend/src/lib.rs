@@ -11,7 +11,9 @@ use image::{ImageReader, RgbaImage};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use anyhow::{Context as _, anyhow, ensure};
-use strawberry_processing::{GpuImageProcessor, colorspace::GpuColorspaceConverter};
+use strawberry_processing::{
+    GpuImageProcessor, colorspace::GpuColorspaceConverter, compositor::GpuCompositor,
+};
 
 // Import all types from strawberry-types
 use strawberry_types::{
@@ -21,7 +23,7 @@ use strawberry_types::{
 };
 
 use tools::{ToolManager, manager::ToolInstance};
-use utils::file_io::write_image_archive;
+use utils::file_io::ImageArchiveWriter;
 
 pub mod counter;
 pub mod hyperstack;
@@ -57,6 +59,8 @@ pub struct Pipeline {
     gpu: Arc<GpuImageProcessor>,
     /// Colorspace conversions
     colorspace_converter: GpuColorspaceConverter,
+    /// Composites the channels at the displayed position for `ExportScope::CompositeView`.
+    fallback_compositor: GpuCompositor,
 }
 
 impl Pipeline {
@@ -89,6 +93,7 @@ impl Pipeline {
             view: Coordinates::default(),
             output_is_current: false,
             gpu: gpu_image_processor.clone(),
+            fallback_compositor: GpuCompositor::new(gpu_image_processor.clone()).await?,
             colorspace_converter: GpuColorspaceConverter::new(gpu_image_processor).await?,
         };
 
@@ -230,8 +235,49 @@ impl Pipeline {
             coordinates: self.view,
             shape: self.last_output.shape(),
             image: self.get_displayed_image()?,
+            is_current: self.output_is_current,
         }));
         Ok(())
+    }
+
+    /// Flag the displayed frame as out of date after a failed run, if it is, keeping its image on screen.
+    fn flag_stale_output_frame(&self) {
+        if self.output_is_current {
+            return;
+        }
+        self.output_frame_sender
+            .send_if_modified(|frame| match frame {
+                Some(frame) if frame.is_current => {
+                    frame.is_current = false;
+                    true
+                }
+                _ => false,
+            });
+    }
+
+    /// Composite the channels at the displayed position into one image.
+    async fn composite_displayed_position(&self) -> anyhow::Result<Arc<RgbaImage>> {
+        let channels: Vec<_> = self
+            .last_output
+            .channels_at(self.view.position())
+            .cloned()
+            .collect();
+        match channels.as_slice() {
+            [image] => Ok(image.clone()),
+            _ => Ok(Arc::new(
+                self.fallback_compositor.composite_images(&channels).await?,
+            )),
+        }
+    }
+
+    /// Convert an output plane from BGRA to RGBA, rejecting GPU failures during conversion.
+    async fn convert_output_plane(&mut self, image: &RgbaImage) -> anyhow::Result<RgbaImage> {
+        let converted = self
+            .colorspace_converter
+            .convert_bgra_to_rgba(image)
+            .await?;
+        self.ensure_no_stage_gpu_errors("Write pipeline output")?;
+        Ok(converted)
     }
 
     /// Return every output plane, named by its coordinates for export.
@@ -262,25 +308,19 @@ impl Pipeline {
             "No current pipeline output to save; process the image successfully first"
         );
         self.ensure_no_stage_gpu_errors("Save pipeline output")?;
-        let outputs = match scope {
-            ExportScope::CurrentView => vec![(String::new(), self.get_displayed_image()?)],
-            ExportScope::AllViews => self.get_named_views(),
+        let image = match scope {
+            ExportScope::CurrentView => self.get_displayed_image()?,
+            ExportScope::CompositeView => self.composite_displayed_position().await?,
+            ExportScope::AllViews => {
+                // Converting and appending one plane at a time holds one RGBA plane, not the stack.
+                let mut archive = ImageArchiveWriter::create(file)?;
+                for (name, plane) in self.get_named_views() {
+                    archive.append(&name, &self.convert_output_plane(&plane).await?)?;
+                }
+                return archive.finish();
+            }
         };
-        let mut converted = Vec::with_capacity(outputs.len());
-        for (name, output) in outputs {
-            converted.push((
-                name,
-                self.colorspace_converter
-                    .convert_bgra_to_rgba(&output)
-                    .await?,
-            ));
-        }
-        self.ensure_no_stage_gpu_errors("Write pipeline output")?;
-        match (scope, converted.as_slice()) {
-            (ExportScope::CurrentView, [(_, image)]) => image.save(file)?,
-            (ExportScope::AllViews, images) => write_image_archive(file, images)?,
-            (ExportScope::CurrentView, _) => anyhow::bail!("Expected one displayed image"),
-        }
+        self.convert_output_plane(&image).await?.save(file)?;
         Ok(())
     }
 
@@ -431,6 +471,7 @@ impl Pipeline {
             self.report_error("Pipeline processing failed", &error);
         }
         self.ensure_no_remaining_gpu_errors();
+        self.flag_stale_output_frame();
         Ok(())
     }
     /// Report a file operation result and send its command reply.
@@ -484,6 +525,7 @@ impl Pipeline {
         for tool in self.tool_manager.tools.values_mut() {
             tool.cancel_interaction();
             tool.invalidate_cache();
+            tool.release_previous_input();
         }
         self.gesture_owner = None;
         self.view = Coordinates::default();
@@ -494,7 +536,8 @@ impl Pipeline {
         self.output_is_current = false;
         Ok(())
     }
-    /// Show another plane and direct per-position tool edits to its position.
+    /// Show another plane and direct per-position tool edits to its position. After a failed
+    /// run the plane comes from the last successful output, so edits stay on the plane shown.
     fn select_view(&mut self, coordinates: Coordinates) -> anyhow::Result<()> {
         let shape = self.last_output.shape();
         ensure!(
@@ -507,11 +550,7 @@ impl Pipeline {
             self.tool_manager.select_position(coordinates.position());
         }
         self.view = coordinates;
-        // A stale run's outputs may belong to a different load.
-        if self.output_is_current {
-            self.publish_output_frame()?;
-        }
-        Ok(())
+        self.publish_output_frame()
     }
     /// Route canvas input to the selected enabled tool.
     fn route_interaction_input(&mut self, id: Option<ToolId>, input: ToolInput) {

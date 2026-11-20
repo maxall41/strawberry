@@ -76,6 +76,8 @@ pub enum AnnotationPlacement {
 pub enum ExportScope {
     /// Write the displayed image.
     CurrentView,
+    /// Write the channels at the displayed position composited into one image.
+    CompositeView,
     /// Write every image the viewer can show as TIFF ZIP archive.
     AllViews,
 }

@@ -31,7 +31,6 @@ pub struct Counter {
     pub lasso_points: Vec<(u64, u64)>,
     pub is_lasso_dragging: bool,
     overlays_dirty: bool,
-    shape: Shape,
 }
 
 /// Find the centroid of every connected foreground blob in a binary image.
@@ -94,16 +93,27 @@ impl ToolBackend for Counter {
         ToolState::CounterState(self.state.clone())
     }
 
-    /// Detect connected components at every position when automatic mode is active.
+    /// Detect connected components at every position when automatic mode is active, replacing
+    /// earlier detections and keeping manual counts.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        self.shape = images.shape();
+        self.state.shape = images.shape();
         if self.state.mode == CounterMode::Auto {
-            for position in images.positions() {
-                let mut detected = Vec::new();
-                for channel in images.channels_at(position) {
-                    detected.extend(detect_blob_centroids(channel)?);
-                }
-                self.state.counts.position_mut(position).auto = detected;
+            let detected = images
+                .positions()
+                .map(|position| {
+                    let mut counts = Vec::new();
+                    for channel in images.channels_at(position) {
+                        counts.extend(detect_blob_centroids(channel)?);
+                    }
+                    Ok((position, counts))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            // Positions a smaller stack no longer has must not keep their old detections.
+            for counts in self.state.counts.values_mut() {
+                counts.auto.clear();
+            }
+            for (position, counts) in detected {
+                self.state.counts.position_mut(position).auto = counts;
             }
         }
 
@@ -221,7 +231,7 @@ impl ToolBackend for Counter {
                         self.state.mode = new_mode;
                     }
                     CountMessage::SaveCounts(file) => {
-                        if let Err(e) = export_counter_to_xml_file(&self.state, self.shape, &file) {
+                        if let Err(e) = export_counter_to_xml_file(&self.state, &file) {
                             self.events.emit(FrontendMessage::error(
                                 "Error saving counts: XML export failed".to_string(),
                             ));
@@ -233,11 +243,7 @@ impl ToolBackend for Counter {
                     }
                     CountMessage::LoadCounts(file, placement) => match read_marker_file(&file) {
                         Ok(marker_file) => {
-                            marker_file.apply_to_counter_state(
-                                &mut self.state,
-                                placement,
-                                self.shape,
-                            );
+                            marker_file.apply_to_counter_state(&mut self.state, placement);
                             self.events.emit(FrontendMessage::success(
                                 "Counts loaded successfully!".to_string(),
                             ));
@@ -429,6 +435,7 @@ impl Counter {
         let state = CounterState {
             is_enabled: false,
             counts: PerPosition::default(),
+            shape: Shape::default(),
             mode: CounterMode::Manual,
             active_tool: None,
             active_count_type: None,
@@ -443,7 +450,6 @@ impl Counter {
             lasso_points: Vec::new(),
             is_lasso_dragging: false,
             overlays_dirty: false,
-            shape: Shape::default(),
         }
     }
 

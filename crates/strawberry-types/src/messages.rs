@@ -18,6 +18,8 @@ pub struct OutputFrame {
     pub coordinates: Coordinates,
     pub shape: Shape,
     pub image: Arc<RgbaImage>,
+    /// False when a failed run left an older result on screen.
+    pub is_current: bool,
 }
 
 #[derive(Debug, Clone)]

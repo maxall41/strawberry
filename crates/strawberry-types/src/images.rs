@@ -139,11 +139,43 @@ impl Shape {
     /// Return whether coordinates address a plane of this shape.
     #[must_use]
     pub const fn contains(self, coordinates: Coordinates) -> bool {
-        coordinates.t < self.t
-            && coordinates.z < self.z
-            && coordinates.c < self.c
-            && coordinates.y < self.y
-            && coordinates.x < self.x
+        coordinates.c < self.c && self.contains_position(coordinates.position())
+    }
+
+    /// Return whether a position lies inside this shape, whatever its channel count.
+    #[must_use]
+    pub const fn contains_position(self, position: Position) -> bool {
+        position.t < self.t && position.z < self.z && position.y < self.y && position.x < self.x
+    }
+
+    /// Check that every position holding annotations lies inside this shape.
+    ///
+    /// # Errors
+    /// Returns an error counting the positions outside it, naming their `annotations`.
+    pub fn ensure_contains_positions(
+        self,
+        positions: impl IntoIterator<Item = Position>,
+        annotations: &str,
+    ) -> Result<()> {
+        let outside = positions
+            .into_iter()
+            .filter(|&position| !self.contains_position(position))
+            .count();
+        ensure!(
+            outside == 0,
+            "{annotations} on {outside} image(s) lie outside the loaded images"
+        );
+        Ok(())
+    }
+
+    /// Return the number of planes, or `None` if it exceeds the address space.
+    #[must_use]
+    pub fn get_plane_count(self) -> Option<usize> {
+        Dimension::ALL
+            .into_iter()
+            .try_fold(1usize, |count, dimension| {
+                count.checked_mul(self.extent(dimension))
+            })
     }
 
     /// Iterate over the coordinates of every plane in storage order.
@@ -170,6 +202,10 @@ impl Shape {
                 shape.with_extent(dimension, shape.extent(dimension).max(extent))
             })
         });
+        // Enumerating the grid multiplies its extents, which malformed placements can overflow.
+        let plane_count = shape
+            .get_plane_count()
+            .ok_or_else(|| anyhow!("The image placements span too many images ({shape})"))?;
         let mut placed = HashSet::with_capacity(coordinates.len());
         for plane in coordinates {
             ensure!(
@@ -178,22 +214,28 @@ impl Shape {
                 plane.describe(shape)
             );
         }
-        if let Some(missing) = shape.coordinates().find(|plane| !placed.contains(plane)) {
+        if plane_count != placed.len()
+            && let Some(missing) = shape.coordinates().find(|plane| !placed.contains(plane))
+        {
             bail!("No image for {}", missing.describe(shape));
         }
         Ok(shape)
     }
 
-    /// Produce a unique ID from a Position for a given frame.
+    /// Return the index of a position among this shape's positions in storage order, used as
+    /// its slice ID in annotation files, or `None` if the shape does not contain the position.
     #[must_use]
     pub fn flatten(self, position: Position) -> Option<usize> {
+        if !self.contains_position(position) {
+            return None;
+        }
         position
             .t
-            .checked_mul(self.z.max(1))?
+            .checked_mul(self.z)?
             .checked_add(position.z)?
-            .checked_mul(self.y.max(1))?
+            .checked_mul(self.y)?
             .checked_add(position.y)?
-            .checked_mul(self.x.max(1))?
+            .checked_mul(self.x)?
             .checked_add(position.x)
     }
 

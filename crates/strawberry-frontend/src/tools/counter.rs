@@ -6,6 +6,7 @@ use strawberry_types::{CommandSender, ToolId};
 use crate::gui::{theme, tool_panel};
 // Implements UI for counter tool
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -106,6 +107,7 @@ impl CounterView {
     fn load_counts(&self, window: &Window, cx: &Context<Self>) {
         let last_directory = self.last_directory.clone();
         let image_directory = self.image_directory.clone();
+        let state = self.state.clone();
 
         cx.spawn_in(window, async move |this, cx| {
             let default_dir = last_directory
@@ -133,10 +135,17 @@ impl CounterView {
                     *dir = Some(parent.to_path_buf());
                 }
 
+                let Ok((selected, shape)) = state
+                    .read()
+                    .map(|state| (state.counts.selected_position(), state.shape))
+                else {
+                    return;
+                };
                 // Load unreadable files per norm, such that the backend can report why they failed.
-                let positions = read_marker_file(&file)
-                    .map_or(1, |marker_file| marker_file.count_unique_marker_slices());
-                let Some(placement) = ask_annotation_placement(cx, "counts", positions).await
+                let saved = read_marker_file(&file)
+                    .map_or_else(|_| HashSet::new(), |file| file.get_saved_positions(shape));
+                let Some(placement) =
+                    ask_annotation_placement(cx, "counts", &saved, selected, shape).await
                 else {
                     return;
                 };

@@ -3,11 +3,14 @@ use std::{cmp::Reverse, collections::HashMap, fmt::Write, iter::once};
 use indexmap::IndexMap;
 use strawberry_types::Dimension;
 
-use super::{HyperstackLayout, layout::sort_and_dedup_naturally};
+use super::{
+    HyperstackLayout,
+    layout::{is_digits, sort_and_dedup_labels},
+};
 
 const HEADER: &str = r#"// parse_file_names should return a [file name, dimensions] tuple list, where dimensions
 // is a comma-separated "key=value" string, such as x=0,y=2,z=1,c=5,t=1.
-// If value is not a number, natural ordering is applied. There is no need to specify
+// Whole numbers are ordered by value, other values naturally. There is no need to specify
 // all dimensions (x,y,z,c,t) in the dimensions string; any dimensions not included
 // will be taken to not exist. Any files not returned by parse_file_names will not be loaded.
 // The captures(input_text,regex_pattern) function matches input text against the given pattern and
@@ -126,16 +129,16 @@ pub struct TemplateField {
     /// This field's text in the example file name.
     pub sample: String,
     /// The field's distinct values across the files the template was built from, in the
-    /// natural order hyperstack positions are numbered in.
+    /// order hyperstack positions are numbered in.
     pub values: Vec<String>,
     /// The dimension this field places files along; `None` means the field is ignored.
     pub dimension: Option<Dimension>,
     /// The regex pattern that matches this field.
     pattern: String,
-    /// Whether commas are removed from the captured text, since commas would split the
-    /// dimensions string. Only the fallback field needs this: aligned fields never span a
-    /// separator in the names they were aligned from.
-    strips_commas: bool,
+    /// Whether commas in the captured text are escaped, since commas would split the dimensions
+    /// string. Only the fallback field needs this: aligned fields never span a separator in the
+    /// names they were aligned from.
+    escapes_commas: bool,
 }
 
 /// Synthesize a parser that places as many of the file names as possible in a complete grid.
@@ -223,11 +226,11 @@ impl ParserTemplate {
     }
 
     /// Build the template for names that share no structure: one field spanning each whole
-    /// name, which places the files along Z in natural name order.
+    /// name, which places the files along Z in name order.
     fn build_fallback(file_names: &[String]) -> Self {
         let names: Vec<&str> = file_names.iter().map(String::as_str).collect();
         let field = TemplateField {
-            strips_commas: true,
+            escapes_commas: true,
             ..TemplateField::from_values(&names, WHOLE_NAME_PATTERN.to_owned(), Some(Dimension::Z))
         };
         Self {
@@ -255,7 +258,7 @@ impl ParserTemplate {
     pub fn render_script(&self) -> String {
         let mut pattern = String::from("^");
         let mut captures: HashMap<Dimension, Vec<usize>> = HashMap::new();
-        let mut comma_removals = String::new();
+        let mut comma_escapes = String::new();
         let mut group = 0usize;
         for part in &self.parts {
             match part {
@@ -267,9 +270,13 @@ impl ParserTemplate {
                     };
                     group = group.saturating_add(1);
                     captures.entry(dimension).or_default().push(group);
-                    if field.strips_commas {
+                    if field.escapes_commas {
+                        // Escaping "%" first keeps every escaped name distinct.
                         // Writing to a String cannot fail.
-                        let _ = writeln!(comma_removals, r#"        f[{group}].replace(",", "");"#);
+                        let _ = writeln!(
+                            comma_escapes,
+                            "        f[{group}].replace(`%`, `%%`);\n        f[{group}].replace(`,`, `%;`);"
+                        );
                     }
                     pattern.push('(');
                     pattern.push_str(&field.pattern);
@@ -308,7 +315,7 @@ impl ParserTemplate {
         if f.is_empty() {{
             continue;
         }}
-{comma_removals}        planes.push([name, `{}`]);
+{comma_escapes}        planes.push([name, `{}`]);
     }}
     planes
 }}
@@ -322,13 +329,13 @@ impl TemplateField {
     /// Build a field from its value in each file, the first file being the example.
     fn from_values(values: &[&str], pattern: String, dimension: Option<Dimension>) -> Self {
         let mut distinct = values.to_vec();
-        sort_and_dedup_naturally(&mut distinct);
+        sort_and_dedup_labels(&mut distinct);
         Self {
             sample: values.first().copied().unwrap_or_default().to_owned(),
             values: distinct.into_iter().map(str::to_owned).collect(),
             dimension,
             pattern,
-            strips_commas: false,
+            escapes_commas: false,
         }
     }
 }
@@ -355,11 +362,6 @@ fn group_names(file_names: &[String], granularity: Granularity) -> Vec<NameGroup
     let mut groups: Vec<NameGroup> = groups.into_values().collect();
     groups.sort_by_key(|group| Reverse(group.len()));
     groups
-}
-
-/// Return whether text consists only of ASCII digits.
-fn is_digits(text: &str) -> bool {
-    text.chars().all(|character| character.is_ascii_digit())
 }
 
 /// Split text into maximal runs of characters that agree on `kind`.

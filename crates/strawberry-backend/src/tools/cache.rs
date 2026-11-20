@@ -173,9 +173,6 @@ impl SyncState for AutomaticSegmentationState {
         self.is_enabled != other.is_enabled
             || self.training != other.training
             || (self.training && self.show_overlay != other.show_overlay)
-            || (self.training
-                && self.show_overlay
-                && self.selected_position != other.selected_position)
             || (!self.training
                 && (self.use_threshold != other.use_threshold
                     || (self.use_threshold

@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{HashMap, HashSet},
     path::PathBuf,
 };
@@ -47,7 +48,7 @@ impl HyperstackLayout {
     }
 
     /// Place files by the dimension values a parser script assigned them; each dimension's
-    /// values are ordered naturally and numbered from zero.
+    /// values are ordered by `sort_and_dedup_labels` and numbered from zero.
     ///
     /// # Errors
     /// Returns an error if an assignment names an unknown or repeated file, its dimensions
@@ -87,7 +88,7 @@ impl HyperstackLayout {
                     .flatten()
                     .map(|labels| labels.get(&dimension).copied().unwrap_or_default())
                     .collect();
-                sort_and_dedup_naturally(&mut labels);
+                sort_and_dedup_labels(&mut labels);
                 let numbers = labels.into_iter().zip(0..).collect();
                 (dimension, numbers)
             })
@@ -153,11 +154,34 @@ impl HyperstackLayout {
     }
 }
 
-/// Sort labels in natural order and remove repeats; positions along a dimension are numbered
-/// in this order.
-pub(super) fn sort_and_dedup_naturally(labels: &mut Vec<&str>) {
-    labels.sort_by(|a, b| natord::compare(a, b));
+/// Sort labels and remove repeats; positions along a dimension are numbered in this order.
+/// Whole numbers sort by value and other labels naturally. Exact spelling breaks ties, so labels
+/// natural ordering finds equal, such as "Green 1" and "Green  1", each keep one position.
+pub(super) fn sort_and_dedup_labels(labels: &mut Vec<&str>) {
+    let numeric = labels
+        .iter()
+        .all(|label| !label.is_empty() && is_digits(label));
+    labels.sort_by(|a, b| {
+        let order = if numeric {
+            compare_numerically(a, b)
+        } else {
+            natord::compare(a, b)
+        };
+        order.then_with(|| a.cmp(b))
+    });
     labels.dedup();
+}
+
+/// Compare whole numbers written in ASCII digits by value, ignoring leading zeros, so "2"
+/// precedes "010" at any length.
+fn compare_numerically(a: &str, b: &str) -> Ordering {
+    let (a, b) = (a.trim_start_matches('0'), b.trim_start_matches('0'));
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+}
+
+/// Return whether text consists only of ASCII digits.
+pub(super) fn is_digits(text: &str) -> bool {
+    text.chars().all(|character| character.is_ascii_digit())
 }
 
 /// Parse a dimensions string such as "c=DAPI,z=003" into each dimension's value.

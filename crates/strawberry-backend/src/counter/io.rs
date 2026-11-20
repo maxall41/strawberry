@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 
 use strawberry_types::{
-    AnnotationPlacement, CountData, CounterMode, CounterState, Position, Shape,
+    AnnotationPlacement, CountData, CounterMode, CounterState, Position, PositionCounts, Shape,
 };
 
 // XML serialization structures
@@ -72,6 +72,20 @@ impl Marker {
             marker_z,
         }
     }
+
+    /// Return the position this marker was saved on, reading its one-based slice number
+    /// against `shape`.
+    fn get_saved_position(&self, shape: Shape) -> Position {
+        shape.unflatten(usize::from(self.marker_z.saturating_sub(1)))
+    }
+}
+
+/// Return a position's counts that a marker file of `mode` records, by count type.
+fn get_exported_counts(counts: &PositionCounts, mode: CounterMode) -> Vec<(u16, &Vec<CountData>)> {
+    match mode {
+        CounterMode::Manual => counts.manual.iter().map(|(&id, c)| (id, c)).collect(),
+        CounterMode::Auto => vec![(0, &counts.auto)],
+    }
 }
 
 impl From<&Marker> for CountData {
@@ -98,16 +112,29 @@ impl Default for ImageProperties {
 }
 
 impl CellCounterMarkerFile {
-    /// Create a marker file from every position's counts, numbering positions of `shape` as
-    /// one-based slices in Z.
+    /// Create a marker file from every position's counts, numbering positions of the counter's
+    /// shape as one-based slices in Z.
     ///
     /// # Errors
-    /// Returns an error if a slice number exceeds the marker Z range.
+    /// Returns an error if counts lie outside the shape or a slice number exceeds the marker Z
+    /// range.
     pub fn from_counter_state(
         state: &CounterState,
-        shape: Shape,
         image_filename: Option<String>,
     ) -> Result<Self, Box<dyn Error>> {
+        let shape = state.shape;
+        shape.ensure_contains_positions(
+            state
+                .counts
+                .iter()
+                .filter(|(_, counts)| {
+                    get_exported_counts(counts, state.mode)
+                        .iter()
+                        .any(|(_, counts)| !counts.is_empty())
+                })
+                .map(|(position, _)| position),
+            "Counts",
+        )?;
         let mut image_properties = ImageProperties::default();
         if let Some(filename) = image_filename {
             image_properties.image_filename = filename;
@@ -119,15 +146,15 @@ impl CellCounterMarkerFile {
             markers_by_type.insert(0, Vec::new());
         }
         for (position, counts) in state.counts.iter() {
+            let typed_counts = get_exported_counts(counts, state.mode);
+            if typed_counts.iter().all(|(_, counts)| counts.is_empty()) {
+                continue;
+            }
             let marker_z = shape
                 .flatten(position)
                 .and_then(|slice| slice.checked_add(1))
                 .ok_or("Count position exceeds the slice range")?;
             let marker_z = u16::try_from(marker_z)?;
-            let typed_counts: Vec<(u16, &Vec<CountData>)> = match state.mode {
-                CounterMode::Manual => counts.manual.iter().map(|(&id, c)| (id, c)).collect(),
-                CounterMode::Auto => vec![(0, &counts.auto)],
-            };
             for (type_id, counts) in typed_counts {
                 markers_by_type.entry(type_id).or_default().extend(
                     counts
@@ -185,25 +212,20 @@ impl CellCounterMarkerFile {
         Ok(cell_counter_file)
     }
 
-    /// Count the distinct slices markers are placed on.
+    /// Return the positions markers were saved on, reading their slice numbers against `shape`.
     #[must_use]
-    pub fn count_unique_marker_slices(&self) -> usize {
+    pub fn get_saved_positions(&self, shape: Shape) -> HashSet<Position> {
         self.marker_data
             .marker_types
             .iter()
-            .flat_map(|marker_type| marker_type.markers.iter().map(|marker| marker.marker_z))
-            .collect::<HashSet<_>>()
-            .len()
+            .flat_map(|marker_type| &marker_type.markers)
+            .map(|marker| marker.get_saved_position(shape))
+            .collect()
     }
 
     /// Replace the manual counts of each position the markers are placed on, reading slice
-    /// numbers against `shape`, and register their types.
-    pub fn apply_to_counter_state(
-        &self,
-        state: &mut CounterState,
-        placement: AnnotationPlacement,
-        shape: Shape,
-    ) {
+    /// numbers against the counter's shape, and register their types.
+    pub fn apply_to_counter_state(&self, state: &mut CounterState, placement: AnnotationPlacement) {
         let selected = state.counts.selected_position();
         let mut imported: HashMap<Position, HashMap<u16, Vec<CountData>>> = HashMap::new();
         if placement == AnnotationPlacement::CurrentPosition {
@@ -217,10 +239,7 @@ impl CellCounterMarkerFile {
             for marker in &marker_type.markers {
                 let position = match placement {
                     AnnotationPlacement::CurrentPosition => selected,
-                    // Marker Z values are one-based slice numbers.
-                    AnnotationPlacement::SplitByPosition => {
-                        shape.unflatten(usize::from(marker.marker_z.saturating_sub(1)))
-                    }
+                    AnnotationPlacement::SplitByPosition => marker.get_saved_position(state.shape),
                 };
                 imported
                     .entry(position)
@@ -250,12 +269,12 @@ impl CellCounterMarkerFile {
     }
 }
 
-/// Export the counts of every position of `shape` to a `CellCounter` XML file.
+/// Export the counts of every position to a `CellCounter` XML file.
 /// # Errors
-/// Returns an error if XML conversion or file I/O fails.
+/// Returns an error if counts lie outside the counter's shape, or XML conversion or file I/O
+/// fails.
 pub fn export_counter_to_xml_file(
     state: &CounterState,
-    shape: Shape,
     file_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let filename = file_path
@@ -263,7 +282,7 @@ pub fn export_counter_to_xml_file(
         .and_then(|name| name.to_str())
         .map(std::string::ToString::to_string);
 
-    let xml = CellCounterMarkerFile::from_counter_state(state, shape, filename)?.to_xml_string()?;
+    let xml = CellCounterMarkerFile::from_counter_state(state, filename)?.to_xml_string()?;
     fs::write(file_path, xml)?;
     Ok(())
 }
