@@ -1,8 +1,9 @@
 use std::{ops::Range, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt, App, Context, FontWeight, HighlightStyle, KeyDownEvent, Pixels,
-    ScrollStrategy, StyledText, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
+    Animation, AnimationExt, App, Context, Div, ElementId, FontWeight, HighlightStyle,
+    KeyDownEvent, Pixels, ScrollStrategy, Stateful, StyledText, UniformListScrollHandle, Window,
+    div, prelude::*, px, transparent_black, uniform_list,
 };
 
 use super::{
@@ -272,7 +273,7 @@ impl GenericPicker {
     }
 
     /// Build the row for the generic picker view.
-    pub fn render_row(&self, row: usize) -> Option<(usize, gpui::Stateful<gpui::Div>)> {
+    pub fn render_row(&self, row: usize) -> Option<(usize, Stateful<Div>)> {
         let candidate = self.matches.get(row)?;
         let label = *self.labels.get(candidate.index)?;
         let selected = row == self.selected;
@@ -288,29 +289,10 @@ impl GenericPicker {
             )
         }));
 
-        let element = div()
-            .id(("search-picker-row", row))
+        let element = build_picker_row(("search-picker-row", row), selected)
             .h(px(ROW_HEIGHT))
-            .w_full()
-            .flex()
-            .items_center()
             .justify_between()
-            .gap_2()
-            .px_3()
             .text_sm()
-            .cursor_pointer()
-            .border_l_2()
-            .border_color(if selected {
-                theme::ACCENT
-            } else {
-                gpui::transparent_black().into()
-            })
-            .bg(if selected {
-                theme::CONTROL_ACTIVE
-            } else {
-                theme::SURFACE
-            })
-            .when(!selected, |el| el.hover(|style| style.bg(theme::CONTROL)))
             .child(label);
         Some((candidate.index, element))
     }
@@ -349,6 +331,32 @@ impl GenericPicker {
         .h(height)
         .into_any_element()
     }
+}
+
+/// Build a floating list row with the shared hover style and keyboard-highlight marker.
+pub fn build_picker_row(id: impl Into<ElementId>, highlighted: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w_full()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .cursor_pointer()
+        .border_l_2()
+        .border_color(if highlighted {
+            theme::ACCENT
+        } else {
+            transparent_black().into()
+        })
+        .bg(if highlighted {
+            theme::CONTROL_ACTIVE
+        } else {
+            theme::SURFACE
+        })
+        .when(!highlighted, |el| {
+            el.hover(|style| style.bg(theme::CONTROL))
+        })
 }
 
 /// Build the shared floating picker container.

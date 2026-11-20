@@ -1,9 +1,9 @@
-use std::{cmp::Reverse, collections::HashMap, iter::once};
+use std::{cmp::Reverse, collections::HashMap, fmt::Write, iter::once};
 
 use indexmap::IndexMap;
 use strawberry_types::Dimension;
 
-use super::HyperstackLayout;
+use super::{HyperstackLayout, layout::sort_and_dedup_naturally};
 
 const HEADER: &str = r#"// parse_file_names should return a [file name, dimensions] tuple list, where dimensions
 // is a comma-separated "key=value" string, such as x=0,y=2,z=1,c=5,t=1.
@@ -14,18 +14,8 @@ const HEADER: &str = r#"// parse_file_names should return a [file name, dimensio
 // returns the regex groups.
 "#;
 
-/// Places files along Z in natural name order when names share no structure.
-const FALLBACK_BODY: &str = r#"fn parse_file_names(file_names) {
-    let planes = [];
-    for name in file_names {
-        let label = name;
-        label.replace(",", "");
-        // We failed to find a program; this applies natural ordering.
-        planes.push([name, `z=${label}`]);
-    }
-    planes
-}
-"#;
+/// Matches a whole file name; `(?s)` lets `.` match line breaks, which file names may contain.
+const WHOLE_NAME_PATTERN: &str = "(?s).+";
 
 /// Words that name a dimension when they come just before a varying part of a file name.
 const KEYS: [(Dimension, &[&str]); 5] = [
@@ -114,13 +104,48 @@ struct EnrichedField<'a> {
     is_text: bool,
 }
 
-/// Write a parser script that places as many of the file names as possible in a complete grid.
+/// A parser synthesized from file names, whose fields can be reassigned to other dimensions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParserTemplate {
+    /// Literal text and fields that, in order, spell out the example file name.
+    parts: Vec<TemplatePart>,
+}
+
+/// One aligned piece of the example file name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TemplatePart {
+    /// Text shared by every file name.
+    Literal(String),
+    /// Text that varies between file names.
+    Field(TemplateField),
+}
+
+/// A part of the file names that varies between files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateField {
+    /// This field's text in the example file name.
+    pub sample: String,
+    /// The field's distinct values across the files the template was built from, in the
+    /// natural order hyperstack positions are numbered in.
+    pub values: Vec<String>,
+    /// The dimension this field places files along; `None` means the field is ignored.
+    pub dimension: Option<Dimension>,
+    /// The regex pattern that matches this field.
+    pattern: String,
+    /// Whether commas are removed from the captured text, since commas would split the
+    /// dimensions string. Only the fallback field needs this: aligned fields never span a
+    /// separator in the names they were aligned from.
+    strips_commas: bool,
+}
+
+/// Synthesize a parser that places as many of the file names as possible in a complete grid.
 ///
-/// Names that share a shape are grouped and aligned, and each varying part is labeled with a
-/// dimension. Files the script does not match are left out.
+/// Names that share a shape are grouped and aligned, and each varying part becomes a field
+/// labeled with a dimension. Files the parser does not match are left out. When names share no
+/// structure, a single field spanning each whole name places the files along Z.
 #[must_use]
-pub fn synthesize_parser_script(file_names: &[String]) -> String {
-    let mut best_script = None;
+pub fn synthesize_parser_template(file_names: &[String]) -> ParserTemplate {
+    let mut best_template = None;
     let mut best_placed = 0;
     for granularity in [Granularity::Words, Granularity::LettersAndDigits] {
         let groups = group_names(file_names, granularity);
@@ -142,19 +167,170 @@ pub fn synthesize_parser_script(file_names: &[String]) -> String {
                 break;
             }
             for &refine in refinements {
-                let script = render_script(&align_names(&group, refine));
-                let placed = count_placed_files(&script, file_names);
+                let template = ParserTemplate::from_columns(align_names(&group, refine));
+                let placed = count_placed_files(&template.render_script(), file_names);
                 if placed == file_names.len() {
-                    return script;
+                    return template;
                 }
-                if best_script.is_none() || placed > best_placed {
+                if best_template.is_none() || placed > best_placed {
                     best_placed = placed;
-                    best_script = Some(script);
+                    best_template = Some(template);
                 }
             }
         }
     }
-    best_script.unwrap_or_else(|| format!("{HEADER}{FALLBACK_BODY}"))
+    best_template.unwrap_or_else(|| ParserTemplate::build_fallback(file_names))
+}
+
+impl ParserTemplate {
+    /// Build a template from aligned columns, labeling each field with the dimension inferred
+    /// for it; fields made redundant by other fields are left unlabeled.
+    fn from_columns(columns: Vec<Column>) -> Self {
+        let fields: Vec<EnrichedField> = columns
+            .iter()
+            .enumerate()
+            .filter_map(|(column, kind)| match kind {
+                Column::Literal(_) => None,
+                Column::Field { values, .. } => Some(EnrichedField {
+                    column,
+                    values,
+                    key: infer_dimension(&columns, column),
+                    is_text: !values.iter().all(|value| is_digits(value)),
+                }),
+            })
+            .collect();
+        let field_labels = label_fields(&fields);
+
+        let mut parts = Vec::new();
+        for (column, kind) in columns.into_iter().enumerate() {
+            match kind {
+                Column::Literal(text) => {
+                    if let Some(TemplatePart::Literal(previous)) = parts.last_mut() {
+                        previous.push_str(text);
+                    } else {
+                        parts.push(TemplatePart::Literal(text.to_owned()));
+                    }
+                }
+                Column::Field { pattern, values } => {
+                    let dimension = field_labels.get(&column).copied();
+                    parts.push(TemplatePart::Field(TemplateField::from_values(
+                        &values, pattern, dimension,
+                    )));
+                }
+            }
+        }
+        Self { parts }
+    }
+
+    /// Build the template for names that share no structure: one field spanning each whole
+    /// name, which places the files along Z in natural name order.
+    fn build_fallback(file_names: &[String]) -> Self {
+        let names: Vec<&str> = file_names.iter().map(String::as_str).collect();
+        let field = TemplateField {
+            strips_commas: true,
+            ..TemplateField::from_values(&names, WHOLE_NAME_PATTERN.to_owned(), Some(Dimension::Z))
+        };
+        Self {
+            parts: vec![TemplatePart::Field(field)],
+        }
+    }
+
+    /// Return the literal text and fields that, in order, spell out the example file name.
+    #[must_use]
+    pub fn get_parts(&self) -> &[TemplatePart] {
+        &self.parts
+    }
+
+    /// Place files along `dimension` by the field at index `part` of `get_parts`, or ignore the
+    /// field when `dimension` is `None`. Does nothing if that part is not a field.
+    pub fn set_field_dimension(&mut self, part: usize, dimension: Option<Dimension>) {
+        if let Some(TemplatePart::Field(field)) = self.parts.get_mut(part) {
+            field.dimension = dimension;
+        }
+    }
+
+    /// Write the parser script that matches the template and captures each labeled field;
+    /// fields sharing a dimension are joined with "_".
+    #[must_use]
+    pub fn render_script(&self) -> String {
+        let mut pattern = String::from("^");
+        let mut captures: HashMap<Dimension, Vec<usize>> = HashMap::new();
+        let mut comma_removals = String::new();
+        let mut group = 0usize;
+        for part in &self.parts {
+            match part {
+                TemplatePart::Literal(text) => pattern.push_str(&regex::escape(text)),
+                TemplatePart::Field(field) => {
+                    let Some(dimension) = field.dimension else {
+                        pattern.push_str(&field.pattern);
+                        continue;
+                    };
+                    group = group.saturating_add(1);
+                    captures.entry(dimension).or_default().push(group);
+                    if field.strips_commas {
+                        // Writing to a String cannot fail.
+                        let _ = writeln!(comma_removals, r#"        f[{group}].replace(",", "");"#);
+                    }
+                    pattern.push('(');
+                    pattern.push_str(&field.pattern);
+                    pattern.push(')');
+                }
+            }
+        }
+        pattern.push('$');
+
+        let dimension_kv_pairs: Vec<String> = Dimension::ALL
+            .into_iter()
+            .filter_map(|dimension| {
+                let groups = captures.get(&dimension)?;
+                let value: Vec<String> = groups
+                    .iter()
+                    .map(|group| format!("${{f[{group}]}}"))
+                    .collect();
+                Some(format!(
+                    "{}={}",
+                    dimension.label().to_lowercase(),
+                    value.join("_")
+                ))
+            })
+            .collect();
+        // Back-tick strings keep backslashes verbatim, which keeps the regex readable.
+        let pattern = if pattern.contains('`') {
+            format!("\"{}\"", pattern.replace('\\', r"\\").replace('"', "\\\""))
+        } else {
+            format!("`{pattern}`")
+        };
+        format!(
+            "{HEADER}fn parse_file_names(file_names) {{
+    let planes = [];
+    for name in file_names {{
+        let f = captures(name, {pattern});
+        if f.is_empty() {{
+            continue;
+        }}
+{comma_removals}        planes.push([name, `{}`]);
+    }}
+    planes
+}}
+",
+            dimension_kv_pairs.join(",")
+        )
+    }
+}
+
+impl TemplateField {
+    /// Build a field from its value in each file, the first file being the example.
+    fn from_values(values: &[&str], pattern: String, dimension: Option<Dimension>) -> Self {
+        let mut distinct = values.to_vec();
+        sort_and_dedup_naturally(&mut distinct);
+        Self {
+            sample: values.first().copied().unwrap_or_default().to_owned(),
+            values: distinct.into_iter().map(str::to_owned).collect(),
+            dimension,
+            pattern,
+            strips_commas: false,
+        }
+    }
 }
 
 /// Count the files a script places, or zero if it fails or its placements do not form a
@@ -237,14 +413,16 @@ fn refine_segment<'a>(runs: &[&'a str]) -> Option<Vec<Column<'a>>> {
         .map(|value| split_runs(value, |character| character.is_ascii_digit()))
         .collect();
     let first_run = segmented.first()?;
+    if segmented.iter().any(|runs| runs.len() != first_run.len()) {
+        return None;
+    }
     let mut columns = Vec::new();
     for (index, &run) in first_run.iter().enumerate() {
         let runs: Vec<&str> = segmented
             .iter()
             .filter_map(|runs| runs.get(index).copied())
             .collect();
-        if runs.len() != runs.len() || runs.iter().any(|&other| is_digits(other) != is_digits(run))
-        {
+        if runs.iter().any(|&other| is_digits(other) != is_digits(run)) {
             return None;
         }
         if runs.iter().all(|&other| other == run) {
@@ -267,10 +445,7 @@ fn refine_segment<'a>(runs: &[&'a str]) -> Option<Vec<Column<'a>>> {
             return None;
         }
     }
-    segmented
-        .iter()
-        .all(|runs| runs.len() == first_run.len())
-        .then_some(columns)
+    Some(columns)
 }
 
 /// Match a whole varying segment up to the separator that follows it.
@@ -360,77 +535,4 @@ fn label_fields(fields: &[EnrichedField]) -> HashMap<usize, Dimension> {
         .into_iter()
         .map(|(field, dimension)| (field.column, dimension))
         .collect()
-}
-
-/// Write the parser script for aligned columns.
-fn render_script(columns: &[Column]) -> String {
-    let fields: Vec<EnrichedField> = columns
-        .iter()
-        .enumerate()
-        .filter_map(|(column, kind)| match kind {
-            Column::Literal(_) => None,
-            Column::Field { values, .. } => Some(EnrichedField {
-                column,
-                values,
-                key: infer_dimension(columns, column),
-                is_text: !values.iter().all(|value| is_digits(value)),
-            }),
-        })
-        .collect();
-    let field_labels = label_fields(&fields);
-
-    let mut pattern = String::from("^");
-    let mut captures: HashMap<Dimension, Vec<usize>> = HashMap::new();
-    let mut group = 0usize;
-    for (column, kind) in columns.iter().enumerate() {
-        match (kind, field_labels.get(&column)) {
-            (Column::Literal(text), _) => pattern.push_str(&regex::escape(text)),
-            (Column::Field { pattern: field, .. }, Some(&dimension)) => {
-                group = group.saturating_add(1);
-                captures.entry(dimension).or_default().push(group);
-                pattern.push('(');
-                pattern.push_str(field);
-                pattern.push(')');
-            }
-            (Column::Field { pattern: field, .. }, None) => pattern.push_str(field),
-        }
-    }
-    pattern.push('$');
-
-    let dimension_kv_pairs: Vec<String> = Dimension::ALL
-        .into_iter()
-        .filter_map(|dimension| {
-            let groups = captures.get(&dimension)?;
-            let value: Vec<String> = groups
-                .iter()
-                .map(|group| format!("${{f[{group}]}}"))
-                .collect();
-            Some(format!(
-                "{}={}",
-                dimension.label().to_lowercase(),
-                value.join("_")
-            ))
-        })
-        .collect();
-    // Back-tick strings keep backslashes verbatim, which keeps the regex readable.
-    let pattern = if pattern.contains('`') {
-        format!("\"{}\"", pattern.replace('\\', r"\\").replace('"', "\\\""))
-    } else {
-        format!("`{pattern}`")
-    };
-    format!(
-        "{HEADER}fn parse_file_names(file_names) {{
-    let planes = [];
-    for name in file_names {{
-        let f = captures(name, {pattern});
-        if f.is_empty() {{
-            continue;
-        }}
-        planes.push([name, `{}`]);
-    }}
-    planes
-}}
-",
-        dimension_kv_pairs.join(",")
-    )
 }

@@ -87,8 +87,7 @@ impl HyperstackLayout {
                     .flatten()
                     .map(|labels| labels.get(&dimension).copied().unwrap_or_default())
                     .collect();
-                labels.sort_by(|a, b| natord::compare(a, b));
-                labels.dedup();
+                sort_and_dedup_naturally(&mut labels);
                 let numbers = labels.into_iter().zip(0..).collect();
                 (dimension, numbers)
             })
@@ -152,6 +151,13 @@ impl HyperstackLayout {
             .unzip();
         (files, ImageArrangement::Hyperstack(coordinates))
     }
+}
+
+/// Sort labels in natural order and remove repeats; positions along a dimension are numbered
+/// in this order.
+pub(super) fn sort_and_dedup_naturally(labels: &mut Vec<&str>) {
+    labels.sort_by(|a, b| natord::compare(a, b));
+    labels.dedup();
 }
 
 /// Parse a dimensions string such as "c=DAPI,z=003" into each dimension's value.
