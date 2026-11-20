@@ -5,10 +5,11 @@ use strawberry_types::Dimension;
 use super::HyperstackLayout;
 
 const HEADER: &str = r#"// parse_file_names should return a [file name, dimensions] tuple list, where dimensions
-// is a comma-seperated "key=value" string, such as x=0,y=2,z=1,c=5,t=1.
-// There is no need to specify all dimensions (x,y,z,c,t) in the dimensions string; any dimensions not included
+// is a comma-separated "key=value" string, such as x=0,y=2,z=1,c=5,t=1.
+// If value is not a number, natural ordering is applied. There is no need to specify
+// all dimensions (x,y,z,c,t) in the dimensions string; any dimensions not included
 // will be taken to not exist. Any files not returned by parse_file_names will not be loaded.
-// the captures(input_text,regex_pattern) function matches input text against the given pattern and
+// The captures(input_text,regex_pattern) function matches input text against the given pattern and
 // returns the regex groups.
 "#;
 
@@ -18,7 +19,7 @@ const FALLBACK_BODY: &str = r#"fn parse_file_names(file_names) {
     for name in file_names {
         let label = name;
         label.replace(",", "");
-        // We failed to find a program; this applies natrual ordering.
+        // We failed to find a program; this applies natural ordering.
         planes.push([name, `z=${label}`]);
     }
     planes
@@ -46,11 +47,13 @@ enum Column<'a> {
     },
 }
 
-/// A varying column and what its values say about the dimension it numbers.
-struct Field<'a> {
+/// Field derived from a varying column, enriched with inferred key metadata
+struct EnrichedField<'a> {
+    /// Index to column
     column: usize,
+    /// Samples contained in this field.
     values: &'a [&'a str],
-    /// The dimension named by the text before the field, if any.
+    /// The dimension inferred from the file names for this field, if any.
     key: Option<Dimension>,
     /// Whether the values are words, such as channel names, rather than numbers.
     is_text: bool,
@@ -99,55 +102,54 @@ fn split_runs(text: &str, kind: impl Fn(char) -> bool) -> Vec<&str> {
     runs
 }
 
-/// Align names into columns at their separators, refining varying segments into letter and
-/// digit runs when `refine` holds; `None` if the names do not share their separators.
-fn align_names<'a>(names: &[&'a str], refine: bool) -> Option<Vec<Column<'a>>> {
-    let segmented: Vec<Vec<&str>> = names
+/// Align file names into columns at their separators, refining varying segments into letter and
+/// digit runs when `refine` is true. Returns `None` if the names do not share their separators.
+fn align_names<'a>(file_names: &[&'a str], refine: bool) -> Option<Vec<Column<'a>>> {
+    let segmented: Vec<Vec<&str>> = file_names
         .iter()
         .map(|name| split_runs(name, char::is_alphanumeric))
         .collect();
-    let first = segmented.first()?;
-    if segmented.iter().any(|runs| runs.len() != first.len()) {
+    let first_file = segmented.first()?;
+    if segmented.iter().any(|runs| runs.len() != first_file.len()) {
         return None;
     }
     let mut columns = Vec::new();
-    for (index, &run) in first.iter().enumerate() {
-        let values: Vec<&str> = segmented
+    for (index, &first_file_run) in first_file.iter().enumerate() {
+        let runs: Vec<&str> = segmented
             .iter()
             .filter_map(|runs| runs.get(index).copied())
             .collect();
-        if values.iter().all(|&value| value == run) {
-            columns.push(Column::Literal(run));
+        if runs.iter().all(|&value| value == first_file_run) {
+            columns.push(Column::Literal(first_file_run));
             continue;
         }
-        if !run.chars().all(char::is_alphanumeric) {
+        if !first_file_run.chars().all(char::is_alphanumeric) {
             return None;
         }
-        let next_separator = first
+        let next_separator = first_file
             .get(index.saturating_add(1))
             .and_then(|separator| separator.chars().next());
-        let refined = refine.then(|| refine_segment(&values)).flatten();
-        columns.extend(refined.unwrap_or_else(|| vec![opaque_field(values, next_separator)]));
+        let refined = refine.then(|| refine_segment(&runs)).flatten();
+        columns.extend(refined.unwrap_or_else(|| vec![match_opaque_field(runs, next_separator)]));
     }
     Some(columns)
 }
 
-/// Split a varying segment into literal and varying letter or digit runs, if its runs line up.
-fn refine_segment<'a>(values: &[&'a str]) -> Option<Vec<Column<'a>>> {
-    let split: Vec<Vec<&str>> = values
+/// Segment a varying segment into literal and varying letter or digit runs, if its runs line up.
+fn refine_segment<'a>(runs: &[&'a str]) -> Option<Vec<Column<'a>>> {
+    let segmented: Vec<Vec<&str>> = runs
         .iter()
         .map(|value| split_runs(value, |character| character.is_ascii_digit()))
         .collect();
-    let first = split.first()?;
+    let first_run = segmented.first()?;
     let is_digits = |run: &str| run.chars().all(|character| character.is_ascii_digit());
     let mut columns = Vec::new();
-    for (index, &run) in first.iter().enumerate() {
-        let runs: Vec<&str> = split
+    for (index, &run) in first_run.iter().enumerate() {
+        let runs: Vec<&str> = segmented
             .iter()
             .filter_map(|runs| runs.get(index).copied())
             .collect();
-        if runs.len() != values.len()
-            || runs.iter().any(|&other| is_digits(other) != is_digits(run))
+        if runs.len() != runs.len() || runs.iter().any(|&other| is_digits(other) != is_digits(run))
         {
             return None;
         }
@@ -171,14 +173,14 @@ fn refine_segment<'a>(values: &[&'a str]) -> Option<Vec<Column<'a>>> {
             return None;
         }
     }
-    split
+    segmented
         .iter()
-        .all(|runs| runs.len() == first.len())
+        .all(|runs| runs.len() == first_run.len())
         .then_some(columns)
 }
 
 /// Match a whole varying segment up to the separator that follows it.
-fn opaque_field(values: Vec<&str>, next_separator: Option<char>) -> Column<'_> {
+fn match_opaque_field(values: Vec<&str>, next_separator: Option<char>) -> Column<'_> {
     let pattern = next_separator.map_or_else(
         || ".+".to_owned(),
         |separator| format!("[^{}]+", regex::escape(&separator.to_string())),
@@ -186,8 +188,8 @@ fn opaque_field(values: Vec<&str>, next_separator: Option<char>) -> Column<'_> {
     Column::Field { pattern, values }
 }
 
-/// Return the dimension named by the letters just before a column, ignoring separators.
-fn key_before(columns: &[Column], column: usize) -> Option<Dimension> {
+/// Attempt to infer the dimension key for a given column, ignoring separators.
+fn infer_dimension(columns: &[Column], column: usize) -> Option<Dimension> {
     let mut text = String::new();
     for previous in columns.get(..column)?.iter().rev() {
         match previous {
@@ -198,8 +200,6 @@ fn key_before(columns: &[Column], column: usize) -> Option<Dimension> {
     let trimmed = text.trim_end_matches(|character: char| !character.is_alphanumeric());
     let prefix = trimmed.trim_end_matches(|character: char| character.is_ascii_alphabetic());
     let word = trimmed.get(prefix.len()..)?;
-    // camelCase names join the key to the word before it ("stackTime"), so also try each
-    // suffix starting at a lowercase-to-uppercase change; longest first keeps "timePoint" whole.
     let camel_starts = word
         .as_bytes()
         .windows(2)
@@ -216,7 +216,7 @@ fn key_before(columns: &[Column], column: usize) -> Option<Dimension> {
     })
 }
 
-/// Return whether two fields' values determine each other, so one of them adds nothing.
+/// Return whether two fields' values determine each other.
 fn determine_each_other(a: &[&str], b: &[&str]) -> bool {
     let mut forward = HashMap::new();
     let mut backward = HashMap::new();
@@ -226,11 +226,10 @@ fn determine_each_other(a: &[&str], b: &[&str]) -> bool {
     })
 }
 
-/// Choose the dimension of each field worth capturing, keyed fields first, so every file keeps
-/// distinct coordinates; fields that repeat another field's information are left uncaptured.
-fn label_fields(fields: &[Field]) -> HashMap<usize, Dimension> {
-    let mut labels: Vec<(&Field, Dimension)> = Vec::new();
-    let is_redundant = |field: &Field, labels: &[(&Field, Dimension)]| {
+/// Removes redundant fields, labels unlabeled fields, and produces column index to Dimension HashMap.
+fn label_fields(fields: &[EnrichedField]) -> HashMap<usize, Dimension> {
+    let mut labels: Vec<(&EnrichedField, Dimension)> = Vec::new();
+    let is_redundant = |field: &EnrichedField, labels: &[(&EnrichedField, Dimension)]| {
         labels
             .iter()
             .any(|(other, _)| determine_each_other(field.values, other.values))
@@ -243,12 +242,15 @@ fn label_fields(fields: &[Field]) -> HashMap<usize, Dimension> {
             }
         }
     }
-    let unkeyed = fields.iter().filter(|field| field.key.is_none());
-    let (text, numbers): (Vec<&Field>, Vec<&Field>) = unkeyed.partition(|field| field.is_text);
-    for field in text.into_iter().chain(numbers) {
+    // Sort unkeys to ensure text fields get priority for their preferences, and vice versa for numeric fields.
+    let mut unkeyed: Vec<&EnrichedField> =
+        fields.iter().filter(|field| field.key.is_none()).collect();
+    unkeyed.sort_by_key(|field| !field.is_text);
+    for field in unkeyed {
         if is_redundant(field, &labels) {
             continue;
         }
+        // The following are in preference order
         let preferred = if field.is_text {
             [Dimension::C, Dimension::Z, Dimension::T]
         } else {
@@ -268,26 +270,26 @@ fn label_fields(fields: &[Field]) -> HashMap<usize, Dimension> {
 
 /// Write the parser script for aligned columns.
 fn render_script(columns: &[Column]) -> String {
-    let fields: Vec<Field> = columns
+    let fields: Vec<EnrichedField> = columns
         .iter()
         .enumerate()
         .filter_map(|(column, kind)| match kind {
             Column::Literal(_) => None,
-            Column::Field { pattern, values } => Some(Field {
+            Column::Field { pattern, values } => Some(EnrichedField {
                 column,
                 values,
-                key: key_before(columns, column),
+                key: infer_dimension(columns, column),
                 is_text: pattern != r"\d+",
             }),
         })
         .collect();
-    let labels = label_fields(&fields);
+    let field_labels = label_fields(&fields);
 
     let mut pattern = String::from("^");
     let mut captures: HashMap<Dimension, Vec<usize>> = HashMap::new();
     let mut group = 0usize;
     for (column, kind) in columns.iter().enumerate() {
-        match (kind, labels.get(&column)) {
+        match (kind, field_labels.get(&column)) {
             (Column::Literal(text), _) => pattern.push_str(&regex::escape(text)),
             (Column::Field { pattern: field, .. }, Some(&dimension)) => {
                 group = group.saturating_add(1);
@@ -301,7 +303,7 @@ fn render_script(columns: &[Column]) -> String {
     }
     pattern.push('$');
 
-    let dimensions: Vec<String> = Dimension::ALL
+    let dimension_kv_pairs: Vec<String> = Dimension::ALL
         .into_iter()
         .filter_map(|dimension| {
             let groups = captures.get(&dimension)?;
@@ -335,6 +337,6 @@ fn render_script(columns: &[Column]) -> String {
     planes
 }}
 ",
-        dimensions.join(",")
+        dimension_kv_pairs.join(",")
     )
 }

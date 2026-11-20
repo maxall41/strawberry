@@ -172,7 +172,7 @@ impl Shape {
         Ok(shape)
     }
 
-    /// Number a position frame-major with X varying fastest, as annotation files number slices.
+    /// Produce a unique ID from a Position for a given frame.
     #[must_use]
     pub fn flatten(self, position: Position) -> Option<usize> {
         position
@@ -185,7 +185,7 @@ impl Shape {
             .checked_add(position.x)
     }
 
-    /// Return the position that `flatten` numbered `index`.
+    /// Map the unique frame ID produced by flatten back to a full Position
     ///
     /// Without several time points, numbers past the last slice continue along Z.
     #[must_use]
@@ -391,12 +391,9 @@ impl ImageArrangement {
     }
 }
 
-/// Every image moving through the pipeline, arranged as a hyperstack.
-///
-/// Most tools process every plane alike; tools that work along a dimension take its lanes or groups.
 #[derive(Debug, Clone, Default)]
 pub struct ImageCollection {
-    /// Planes in T, Z, C, Y, X order, so the channels at a position are adjacent.
+    /// Planes in T, Z, C, Y, X order.
     planes: Array5<Arc<RgbaImage>>,
 }
 
@@ -467,7 +464,7 @@ impl ImageCollection {
         ))
     }
 
-    /// Iterate over the channels at one position, in channel order.
+    /// Iterate over the channels at one position in channel order.
     pub fn channels_at(&self, position: Position) -> impl Iterator<Item = &Arc<RgbaImage>> {
         (0..self.shape().c).filter_map(move |c| self.plane(position.with_channel(c)))
     }
@@ -511,7 +508,7 @@ impl ImageCollection {
     }
 
     /// Split into one sub-collection spanning `dimensions` for every combination of the other
-    /// coordinates, in storage order; a stitcher would group by X and Y.
+    /// coordinates in storage order.
     #[must_use]
     pub fn groups(&self, dimensions: &[Dimension]) -> Vec<Self> {
         Self::group_origins(self.shape(), dimensions)

@@ -231,8 +231,8 @@ where
     Ok(result)
 }
 
-/// Values kept separately for each X, Y, Z, T position; edits go through the selected position.
-// Ordered so annotation exports list positions in sequence.
+/// Values kept separately for each X, Y, Z, T position.
+// Ordered to ensure that annotation exports list positions in sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerPosition<T> {
     positions: BTreeMap<Position, T>,
@@ -300,7 +300,6 @@ pub struct PositionCounts {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CounterState {
     pub is_enabled: bool,
-    /// Counts are saved only to dedicated count files, never to pipeline archives.
     #[serde(skip)]
     pub counts: PerPosition<PositionCounts>,
     pub mode: CounterMode,
@@ -309,7 +308,6 @@ pub struct CounterState {
     #[serde(deserialize_with = "deserialize_count_type_map")]
     pub count_type_visibility: HashMap<u16, bool>,
     pub review_current_index: usize,
-    /// Every defined count type; shared by all positions.
     #[serde(deserialize_with = "deserialize_count_type_map")]
     pub count_type_names: HashMap<u16, String>,
 }
@@ -702,7 +700,6 @@ pub struct AutomaticSegmentationState {
     pub selected_layer: usize,
     #[serde(skip)]
     pub total_layers: usize,
-    /// Position whose layer is annotated and previewed while training.
     #[serde(skip)]
     pub selected_position: Position,
     pub features: FeatureConfig,
@@ -730,7 +727,6 @@ pub struct AutomaticSegmentationState {
     pub model_ready: bool,
     #[serde(skip)]
     pub oob_error: Option<f64>,
-    /// Invalidates pipeline output only when the trained or loaded model changes.
     #[serde(skip)]
     pub model_revision: u64,
 }

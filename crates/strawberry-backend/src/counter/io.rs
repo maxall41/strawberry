@@ -64,8 +64,8 @@ pub struct Marker {
 }
 
 impl Marker {
-    /// Place a count on a one-based image slice.
-    const fn on_slice(count_data: &CountData, marker_z: u16) -> Self {
+    /// Convert a count data object to a marker
+    const fn from_count(count_data: &CountData, marker_z: u16) -> Self {
         Self {
             marker_x: count_data.position.0,
             marker_y: count_data.position.1,
@@ -129,10 +129,11 @@ impl CellCounterMarkerFile {
                 CounterMode::Auto => vec![(0, &counts.auto)],
             };
             for (type_id, counts) in typed_counts {
-                markers_by_type
-                    .entry(type_id)
-                    .or_default()
-                    .extend(counts.iter().map(|count| Marker::on_slice(count, marker_z)));
+                markers_by_type.entry(type_id).or_default().extend(
+                    counts
+                        .iter()
+                        .map(|count| Marker::from_count(count, marker_z)),
+                );
             }
         }
 
@@ -186,7 +187,7 @@ impl CellCounterMarkerFile {
 
     /// Count the distinct slices markers are placed on.
     #[must_use]
-    pub fn count_positions(&self) -> usize {
+    pub fn count_unique_marker_slices(&self) -> usize {
         self.marker_data
             .marker_types
             .iter()

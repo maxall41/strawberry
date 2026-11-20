@@ -133,9 +133,9 @@ impl CounterView {
                     *dir = Some(parent.to_path_buf());
                 }
 
-                // Unreadable files load as usual so the backend reports why they failed.
-                let positions =
-                    read_marker_file(&file).map_or(1, |marker_file| marker_file.count_positions());
+                // Load unreadable files per norm, such that the backend can report why they failed.
+                let positions = read_marker_file(&file)
+                    .map_or(1, |marker_file| marker_file.count_unique_marker_slices());
                 let Some(placement) = ask_annotation_placement(cx, "counts", positions).await
                 else {
                     return;

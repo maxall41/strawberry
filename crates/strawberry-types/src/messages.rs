@@ -16,7 +16,6 @@ use super::{
 pub struct OutputFrame {
     pub load_generation: u64,
     pub coordinates: Coordinates,
-    /// Shape of the pipeline output.
     pub shape: Shape,
     pub image: Arc<RgbaImage>,
 }
@@ -260,7 +259,6 @@ pub enum PipelineCommand {
         arrangement: ImageArrangement,
         reply: CommandResult,
     },
-    /// Show one plane and direct per-position tool edits to its position.
     SelectView(Coordinates),
     SaveOutput {
         path: PathBuf,

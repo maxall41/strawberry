@@ -48,7 +48,7 @@ pub struct Pipeline {
     gesture_owner: Option<ToolId>,
     overlays_dirty: bool,
     /// Output of the last successful run
-    output: ImageCollection,
+    last_output: ImageCollection,
     /// Plane shown in the viewer; interactive tools edit its position
     view: Coordinates,
     /// The canvas may retain an older successful frame after a failed run.
@@ -85,7 +85,7 @@ impl Pipeline {
             input_images: ImageCollection::default(),
             gesture_owner: None,
             overlays_dirty: true,
-            output: ImageCollection::default(),
+            last_output: ImageCollection::default(),
             view: Coordinates::default(),
             output_is_current: false,
             gpu: gpu_image_processor.clone(),
@@ -192,7 +192,7 @@ impl Pipeline {
         }
 
         self.ensure_no_stage_gpu_errors("Publish pipeline output")?;
-        self.output = images;
+        self.last_output = images;
         self.clamp_view();
         self.output_is_current = true;
         self.publish_output_frame()?;
@@ -203,9 +203,9 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Keep the view inside the output after tools change its shape, moving tool edits with it.
+    /// Keep the view inside the output bounds after tools change its shape, moving tool edits with it.
     fn clamp_view(&mut self) {
-        let shape = self.output.shape();
+        let shape = self.last_output.shape();
         for dimension in Dimension::ALL {
             let last = shape.extent(dimension).saturating_sub(1);
             self.view.set(dimension, self.view.get(dimension).min(last));
@@ -214,11 +214,11 @@ impl Pipeline {
     }
 
     /// Return the viewed output plane.
-    fn displayed_image(&self) -> anyhow::Result<Arc<RgbaImage>> {
-        self.output.plane(self.view).cloned().ok_or_else(|| {
+    fn get_displayed_image(&self) -> anyhow::Result<Arc<RgbaImage>> {
+        self.last_output.plane(self.view).cloned().ok_or_else(|| {
             anyhow!(
                 "No output image available for {}",
-                self.view.describe(self.output.shape())
+                self.view.describe(self.last_output.shape())
             )
         })
     }
@@ -228,15 +228,15 @@ impl Pipeline {
         self.output_frame_sender.send_replace(Some(OutputFrame {
             load_generation: self.load_generation,
             coordinates: self.view,
-            shape: self.output.shape(),
-            image: self.displayed_image()?,
+            shape: self.last_output.shape(),
+            image: self.get_displayed_image()?,
         }));
         Ok(())
     }
 
     /// Return every output plane, named by its coordinates for export.
-    fn named_views(&self) -> Vec<(String, Arc<RgbaImage>)> {
-        let shape = self.output.shape();
+    fn get_named_views(&self) -> Vec<(String, Arc<RgbaImage>)> {
+        let shape = self.last_output.shape();
         shape
             .coordinates()
             .filter_map(|coordinates| {
@@ -248,15 +248,14 @@ impl Pipeline {
                     })
                     .collect::<Vec<_>>()
                     .join("_");
-                self.output
+                self.last_output
                     .plane(coordinates)
                     .map(|image| (name, image.clone()))
             })
             .collect()
     }
 
-    /// Convert output out of the internal BGRA representation and write it to `file`: the
-    /// displayed image alone, or every view as a ZIP of TIFFs.
+    /// Convert from internal BRGA representation to external file format and write, per ExportScope reqs.
     async fn save_output(&mut self, file: &Path, scope: ExportScope) -> anyhow::Result<()> {
         ensure!(
             self.output_is_current,
@@ -264,8 +263,8 @@ impl Pipeline {
         );
         self.ensure_no_stage_gpu_errors("Save pipeline output")?;
         let outputs = match scope {
-            ExportScope::CurrentView => vec![(String::new(), self.displayed_image()?)],
-            ExportScope::AllViews => self.named_views(),
+            ExportScope::CurrentView => vec![(String::new(), self.get_displayed_image()?)],
+            ExportScope::AllViews => self.get_named_views(),
         };
         let mut converted = Vec::with_capacity(outputs.len());
         for (name, output) in outputs {
@@ -489,7 +488,7 @@ impl Pipeline {
         self.gesture_owner = None;
         self.view = Coordinates::default();
         self.tool_manager.select_position(self.view.position());
-        self.output = ImageCollection::default();
+        self.last_output = ImageCollection::default();
         self.input_images = images;
         self.load_generation = generation;
         self.output_is_current = false;
@@ -497,7 +496,7 @@ impl Pipeline {
     }
     /// Show another plane and direct per-position tool edits to its position.
     fn select_view(&mut self, coordinates: Coordinates) -> anyhow::Result<()> {
-        let shape = self.output.shape();
+        let shape = self.last_output.shape();
         ensure!(
             shape.contains(coordinates),
             "Image {} is not loaded",

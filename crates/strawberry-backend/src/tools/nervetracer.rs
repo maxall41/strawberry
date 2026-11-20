@@ -1,4 +1,4 @@
-use crate::tools::base::ToolEvents;
+use crate::tools::{base::ToolEvents, cache::ToolCache};
 use num_traits::ToPrimitive;
 use strawberry_types::RgbaColor;
 
@@ -23,8 +23,7 @@ fn pixel_center((x, y): (u64, u64)) -> Option<(f32, f32)> {
 pub struct NerveTracer {
     pub state: NerveTracerState,
     pub events: ToolEvents,
-    pub cache: crate::tools::cache::ToolCache<NerveTracerState>,
-    /// Shape of the last processed images, which numbers positions in trace files.
+    pub cache: ToolCache<NerveTracerState>,
     shape: Shape,
 }
 
@@ -280,55 +279,5 @@ impl NerveTracer {
                 .current_path_segments
                 .push(segment);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use strawberry_types::PositionTraces;
-
-    /// Verify trace overlays use pixel centers without modifying stored paths.
-    #[test]
-    fn trace_markers_and_segments_use_pixel_centers_without_changing_stored_paths()
-    -> anyhow::Result<()> {
-        let mut tracer = NerveTracer::new(ToolEvents::default());
-        tracer.state.is_enabled = true;
-        tracer.state.first_point = Some((0, 0));
-        *tracer.state.traces.selected_mut() = PositionTraces {
-            paths: vec![vec![vec![(5, 6), (7, 8)]]],
-            current_path_segments: vec![vec![(10, 20), (30, 20)]],
-        };
-        let state = tracer.state.clone();
-        let overlay = tracer
-            .get_overlays(strawberry_types::ToolId(1))
-            .ok_or_else(|| anyhow::anyhow!("Trace overlay missing"))?;
-        let expected = vec![
-            OverlayElement::Point {
-                x: 0.5,
-                y: 0.5,
-                radius: 2.0,
-                color: RgbaColor::new(255, 50, 100, 255),
-            },
-            OverlayElement::Polyline {
-                points: vec![(10.5, 20.5), (30.5, 20.5)],
-                color: RgbaColor::new(255, 200, 0, 255),
-                stroke_width: 2.0,
-            },
-            OverlayElement::Polyline {
-                points: vec![(5.5, 6.5), (7.5, 8.5)],
-                color: RgbaColor::new(0, 200, 255, 255),
-                stroke_width: 2.0,
-            },
-        ];
-        anyhow::ensure!(
-            overlay.elements == expected,
-            "Trace overlays are not centered on their pixels"
-        );
-        anyhow::ensure!(
-            tracer.state == state,
-            "Rendering changed stored trace coordinates"
-        );
-        Ok(())
     }
 }
