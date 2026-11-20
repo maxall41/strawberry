@@ -4,7 +4,7 @@
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use colored::Colorize;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Display;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -214,6 +214,33 @@ struct ImageGroup {
     channels: usize,
 }
 
+impl ImageGroup {
+    /// Count the files the hyperstack script left out of loading.
+    const fn count_excluded_files(&self) -> usize {
+        self.files.len().saturating_sub(self.loaded_files.len())
+    }
+}
+
+/// Count the files that load across groups, and those the hyperstack script left out.
+fn count_group_files(groups: &HashMap<String, ImageGroup>) -> (usize, usize) {
+    groups.values().fold((0, 0), |(loaded, excluded), group| {
+        (
+            loaded.saturating_add(group.loaded_files.len()),
+            excluded.saturating_add(group.count_excluded_files()),
+        )
+    })
+}
+
+/// Describe how many images are processed, noting any the hyperstack script left out.
+fn describe_image_totals(groups: &HashMap<String, ImageGroup>) -> String {
+    let (loaded, excluded) = count_group_files(groups);
+    if excluded == 0 {
+        format!("{loaded} total image(s)")
+    } else {
+        format!("{loaded} total image(s) ({excluded} left out by the hyperstack script)")
+    }
+}
+
 pub struct CliProcessor {
     args: Args,
     regex: regex::Regex,
@@ -311,20 +338,28 @@ impl CliProcessor {
         if self.args.verbose {
             print_success(format!("Found {} group(s) to process:", groups.len()));
             for (group_name, group) in &groups {
-                println!("  {}: {} image(s)", group_name.cyan(), group.files.len());
-                if self.args.verbose {
-                    for file in &group.files {
-                        println!("    {}", file.display().to_string().dimmed());
-                    }
+                println!(
+                    "  {}: {} image(s)",
+                    group_name.cyan(),
+                    group.loaded_files.len()
+                );
+                let loaded: HashSet<&PathBuf> = group.loaded_files.iter().collect();
+                for file in &group.files {
+                    let line = if loaded.contains(file) {
+                        file.display().to_string().dimmed()
+                    } else {
+                        format!("{} (left out by the hyperstack script)", file.display()).yellow()
+                    };
+                    println!("    {line}");
                 }
             }
         }
 
         if self.args.dry_run {
-            let total_images: usize = groups.values().map(|group| group.files.len()).sum();
             print_success(format!(
-                "Dry run completed. {} group(s) with {total_images} total image(s) would be processed.",
-                groups.len()
+                "Dry run completed. {} group(s) with {} would be processed.",
+                groups.len(),
+                describe_image_totals(&groups)
             ));
             return Ok(());
         }
@@ -533,7 +568,7 @@ impl CliProcessor {
         }
 
         let total_groups = groups.len();
-        let total_images: usize = groups.values().map(|group| group.files.len()).sum();
+        let (total_images, _) = count_group_files(&groups);
         let input_is_dir = self.args.input.as_ref().is_some_and(|i| i.is_dir());
         let output_is_dir =
             output_path.is_dir() || input_is_dir || total_groups > 1 || total_images > 1;
@@ -556,7 +591,7 @@ impl CliProcessor {
                     group_index.saturating_add(1),
                     total_groups,
                     group_name.cyan(),
-                    group.files.len()
+                    group.loaded_files.len()
                 );
             }
 
@@ -581,7 +616,8 @@ impl CliProcessor {
 
         if self.args.verbose {
             print_success(format!(
-                "Successfully processed {total_groups} group(s) with {total_images} total image(s)."
+                "Successfully processed {total_groups} group(s) with {}.",
+                describe_image_totals(&groups)
             ));
         }
 
@@ -619,9 +655,12 @@ impl CliProcessor {
         let shape = self
             .await_generation(view_recv, frame_rx, expected_generation, group_name)
             .await?;
-        // Like the GUI's "All Images" export, an output holding several images is saved whole as a
-        // ZIP rather than as its first image alone.
-        let scope = if shape.holds_several_images() {
+        // Without a hyperstack script, files load as layers that are composited into the single
+        // image the output path names. A hyperstack output holding several images is saved whole
+        // as a ZIP, like the GUI's "All Images" export, rather than as its first image alone.
+        let scope = if self.hyperstack_script.is_none() {
+            ExportScope::CompositeView
+        } else if shape.holds_several_images() {
             ExportScope::AllViews
         } else {
             ExportScope::CurrentView
@@ -711,7 +750,7 @@ impl CliProcessor {
             output_path.join(self.generate_group_output_filename(group_name, first_file))
         };
         let archive = match scope {
-            ExportScope::CurrentView => return Ok(output_file),
+            ExportScope::CurrentView | ExportScope::CompositeView => return Ok(output_file),
             ExportScope::AllViews => output_file.with_extension("zip"),
         };
         if !output_is_dir && archive != output_file {
@@ -757,7 +796,9 @@ impl CliProcessor {
                     let shape = frame_rx
                         .borrow_and_update()
                         .as_ref()
-                        .filter(|frame| frame.load_generation == expected_generation)
+                        .filter(|frame| {
+                            frame.load_generation == expected_generation && frame.is_current
+                        })
                         .map(|frame| frame.shape);
                     if let Some(shape) = shape {
                         return Ok(shape);

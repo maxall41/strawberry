@@ -10,7 +10,7 @@ use strawberry_processing::nervetracer::create_path;
 use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, FrontendMessage, ImageCollection, NerveTracerMessage, NerveTracerState,
-    PipelineObjectMessage, Position, Shape, ToolBackend, ToolInput, ToolState,
+    PipelineObjectMessage, Position, ToolBackend, ToolInput, ToolState,
     overlay::{OverlayElement, ToolOverlay},
 };
 
@@ -24,7 +24,6 @@ pub struct NerveTracer {
     pub state: NerveTracerState,
     pub events: ToolEvents,
     pub cache: ToolCache<NerveTracerState>,
-    shape: Shape,
 }
 
 #[async_trait]
@@ -61,10 +60,10 @@ impl ToolBackend for NerveTracer {
 
     /// Remember the images for tracing and refresh the available layer count.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        self.shape = images.shape();
-        self.state.total_layers = self.shape.c;
-        if self.state.selected_layer >= self.state.total_layers && self.state.total_layers > 0 {
-            self.state.selected_layer = self.state.total_layers.saturating_sub(1);
+        self.state.shape = images.shape();
+        let layers = self.state.shape.c;
+        if self.state.selected_layer >= layers && layers > 0 {
+            self.state.selected_layer = layers.saturating_sub(1);
         }
         self.cache.remember_input(images);
         Ok(())
@@ -102,12 +101,7 @@ impl ToolBackend for NerveTracer {
                     }
                 }
                 NerveTracerMessage::LoadTraces(path, placement) => {
-                    match import_nervetracer_from_xml_file_into(
-                        &path,
-                        &mut self.state,
-                        placement,
-                        self.shape,
-                    ) {
+                    match import_nervetracer_from_xml_file_into(&path, &mut self.state, placement) {
                         Ok(()) => {
                             self.events.emit(FrontendMessage::success(
                                 "Traces loaded successfully!".to_string(),
@@ -122,8 +116,7 @@ impl ToolBackend for NerveTracer {
                     }
                 }
                 NerveTracerMessage::SaveTraces(path) => {
-                    match export_nervetracer_to_xml_file(&self.state, self.shape, &path, None, None)
-                    {
+                    match export_nervetracer_to_xml_file(&self.state, &path, None, None) {
                         Ok(()) => {
                             self.events.emit(FrontendMessage::success(format!(
                                 "Traces saved to {}",
@@ -246,7 +239,6 @@ impl NerveTracer {
             cache: crate::tools::cache::ToolCache::new(&state),
             state,
             events,
-            shape: Shape::default(),
         }
     }
 

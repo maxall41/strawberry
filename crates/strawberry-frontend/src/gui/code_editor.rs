@@ -51,6 +51,18 @@ fn is_word_character(character: char) -> bool {
     character.is_alphanumeric() || character == '_'
 }
 
+/// Return the scroll position that brings `span` into a viewport of `size` scrolled to
+/// `scrolled`, moving as little as possible.
+fn get_revealing_scroll(scrolled: f32, size: f32, span: Range<f32>) -> f32 {
+    if span.start < scrolled {
+        span.start
+    } else if span.end > scrolled + size && size > 0.0 {
+        span.end - size
+    } else {
+        scrolled
+    }
+}
+
 /// Return the color text of a syntax kind is drawn in.
 const fn get_syntax_color(syntax: Syntax) -> Rgba {
     match syntax {
@@ -81,6 +93,8 @@ pub struct CodeEditor {
     /// Window position of the first line's text, captured while painting.
     text_origin: Rc<Cell<Point<Pixels>>>,
     scroll: ScrollHandle,
+    /// Whether the next render scrolls the caret into view, once it has shaped the edited text.
+    reveal_pending: bool,
 }
 
 impl CodeEditor {
@@ -98,6 +112,7 @@ impl CodeEditor {
             lines: Vec::new(),
             text_origin: Rc::default(),
             scroll: ScrollHandle::new(),
+            reveal_pending: false,
         }
     }
 
@@ -303,25 +318,31 @@ impl CodeEditor {
         self.find_offset_of_line(line).saturating_add(column)
     }
 
-    /// Scroll so the cursor's line is visible.
-    fn reveal_cursor(&self) {
+    /// Scroll the caret into view on the next render.
+    const fn reveal_cursor(&mut self) {
+        self.reveal_pending = true;
+    }
+
+    /// Scroll so the caret is visible, measuring its horizontal position on the lines shaped
+    /// for this render.
+    fn scroll_to_cursor(&self) {
         let line = self
             .find_line_index(self.buffer.cursor())
             .to_f32()
             .unwrap_or_default();
         let top = line.mul_add(LINE_HEIGHT, TEXT_PADDING);
-        let bottom = top + LINE_HEIGHT + TEXT_PADDING;
-        let viewport = f32::from(self.scroll.bounds().size.height);
+        // Revealing the start of a line scrolls fully left, bringing the line numbers back.
+        let left = f32::from(self.find_cursor_x());
+        let right = 2.0f32.mul_add(TEXT_PADDING, left + GUTTER_WIDTH);
+        let viewport = self.scroll.bounds().size;
         let offset = self.scroll.offset();
-        let scrolled = -f32::from(offset.y);
-        let y = if top - TEXT_PADDING < scrolled {
-            top - TEXT_PADDING
-        } else if bottom > scrolled + viewport && viewport > 0.0 {
-            bottom - viewport
-        } else {
-            return;
-        };
-        self.scroll.set_offset(point(offset.x, px(-y)));
+        let x = get_revealing_scroll(-f32::from(offset.x), f32::from(viewport.width), left..right);
+        let y = get_revealing_scroll(
+            -f32::from(offset.y),
+            f32::from(viewport.height),
+            top - TEXT_PADDING..top + LINE_HEIGHT + TEXT_PADDING,
+        );
+        self.scroll.set_offset(point(px(-x), px(-y)));
     }
 
     /// Apply editing and navigation keys; shortcuts with modifiers are left to key bindings.
@@ -681,6 +702,9 @@ impl Render for CodeEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
         self.lines = self.shape_lines(window);
+        if std::mem::take(&mut self.reveal_pending) {
+            self.scroll_to_cursor();
+        }
         let line_count = self.lines.len().to_f32().unwrap_or_default();
         let text_width = self
             .lines

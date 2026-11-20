@@ -38,7 +38,7 @@ use rfd::FileDialog;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 use std::{fs, panic};
 use strawberry_backend::{Pipeline, hyperstack::collect_file_names};
@@ -111,6 +111,8 @@ struct PrimaryViewer {
     command_sender: strawberry_types::CommandSender,
     output_frame_receiver: tokio::sync::watch::Receiver<Option<strawberry_types::OutputFrame>>,
     display_image: ImageSource,
+    displayed_frame: Weak<RgbaImage>,
+    output_is_current: bool,
     img_coords: Arc<RwLock<Option<Bounds<Pixels>>>>,
     overlays: OverlayCollection,
     annotation_images: HashMap<usize, (Arc<RgbaImage>, Arc<RenderImage>)>,
@@ -124,6 +126,7 @@ struct PrimaryViewer {
     activity_epoch: u64,
     busy_overlay: Entity<BusyOverlay>,
     palette: Option<Entity<CommandPalette>>,
+    focus_before_palette: Option<FocusHandle>,
     commands: Rc<[PalleteCommand]>,
     sidebar: Entity<ToolSidebar>,
     importer: Option<Entity<HyperstackImporter>>,
@@ -405,6 +408,12 @@ impl PrimaryViewer {
             });
             self.layout.status_bar_rows = self.hyperstack_bar.read(cx).row_count();
         }
+        self.output_is_current = frame.is_current;
+        if std::ptr::eq(self.displayed_frame.as_ptr(), Arc::as_ptr(&frame.image)) {
+            cx.notify();
+            return;
+        }
+        self.displayed_frame = Arc::downgrade(&frame.image);
         let img_data = Arc::new(RenderImage::new(vec![Frame::new(Arc::unwrap_or_clone(
             frame.image,
         ))]));
@@ -552,11 +561,11 @@ impl PrimaryViewer {
     /// and request the processed output be saved.
     fn handle_save_image(&mut self, _: &SaveImage, window: &mut Window, cx: &mut Context<Self>) {
         let sender_p = self.command_sender.clone();
-        let several_images = self.shape.holds_several_images();
+        let shape = self.shape;
 
         cx.spawn_in(window, async move |this, cx| {
-            let scope = if several_images {
-                let Some(scope) = ask_export_scope(cx).await else {
+            let scope = if shape.holds_several_images() {
+                let Some(scope) = ask_export_scope(cx, shape).await else {
                     return;
                 };
                 scope
@@ -565,7 +574,7 @@ impl PrimaryViewer {
             };
             let dialog = FileDialog::new().set_directory("~/");
             let output_file = match scope {
-                ExportScope::CurrentView => dialog
+                ExportScope::CurrentView | ExportScope::CompositeView => dialog
                     .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
                     .save_file(),
                 ExportScope::AllViews => dialog.add_filter("ZIP archive", &["zip"]).save_file(),
@@ -582,7 +591,9 @@ impl PrimaryViewer {
                         let (text, level) = match result {
                             Ok(Ok(())) => (
                                 match scope {
-                                    ExportScope::CurrentView => "Image saved successfully",
+                                    ExportScope::CurrentView | ExportScope::CompositeView => {
+                                        "Image saved successfully"
+                                    }
                                     ExportScope::AllViews => "Images saved successfully",
                                 }
                                 .to_string(),
@@ -815,9 +826,8 @@ impl PrimaryViewer {
 
     /// Open or close the command palette.
     fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.palette.take().is_some() {
-            self.focus_handle.focus(window, cx);
-            cx.notify();
+        if self.palette.is_some() {
+            self.close_palette(window, cx);
             return;
         }
         self.pressed_keys.clear();
@@ -827,16 +837,23 @@ impl PrimaryViewer {
         cx.subscribe_in(
             &palette,
             window,
-            |viewer, _palette, _: &PaletteDismissed, window, cx| {
-                viewer.palette = None;
-                viewer.focus_handle.focus(window, cx);
-                cx.notify();
-            },
+            |viewer, _palette, _: &PaletteDismissed, window, cx| viewer.close_palette(window, cx),
         )
         .detach();
 
+        self.focus_before_palette = window.focused(cx);
         window.focus(&palette.read(cx).focus_handle(cx), cx);
         self.palette = Some(palette);
+        cx.notify();
+    }
+
+    /// Close the command palette and return focus to where it was, such as the importer.
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette = None;
+        match self.focus_before_palette.take() {
+            Some(previous) => window.focus(&previous, cx),
+            None => self.focus_handle.focus(window, cx),
+        }
         cx.notify();
     }
 
@@ -1175,6 +1192,28 @@ impl Render for PrimaryViewer {
                     .right(px(20.0))
                     .child(toast.clone())
             }))
+            .when(self.image_loaded && !self.output_is_current, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top(px(9.))
+                        .left(px(10.))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(gpui::Rgba {
+                            a: 0.85,
+                            ..gui::theme::CANVAS
+                        })
+                        .text_xs()
+                        .text_color(gui::theme::WARNING)
+                        .child(Icon::warning().color(gui::theme::WARNING))
+                        .child("Out of date"),
+                )
+            })
             .child(self.busy_overlay.clone())
             .when_some(activity_status, |el, status| {
                 el.child(
@@ -1472,6 +1511,8 @@ async fn main() -> Result<()> {
                     command_sender: view_sender.clone(),
                     output_frame_receiver: output_frames.clone(),
                     display_image: ImageSource::Render(img_data),
+                    displayed_frame: Weak::new(),
+                    output_is_current: false,
                     img_coords: Arc::new(RwLock::new(None)),
                     overlays: OverlayCollection::new(),
                     annotation_images: HashMap::new(),
@@ -1485,6 +1526,7 @@ async fn main() -> Result<()> {
                     activity_epoch: 0,
                     busy_overlay: cx.new(|cx| BusyOverlay::new(false, cx)),
                     palette: None,
+                    focus_before_palette: None,
                     commands,
                     sidebar: sidebar.clone(),
                     importer: None,

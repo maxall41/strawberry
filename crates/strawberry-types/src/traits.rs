@@ -137,6 +137,10 @@ pub trait ToolBackend: Send + Sync {
     /// Invalidate all processing caches, including cached input.
     fn invalidate_cache(&mut self) {}
 
+    /// Release state derived from the previous images once new images are loaded, whether or
+    /// not the tool is enabled.
+    fn release_previous_input(&mut self) {}
+
     /// Get overlay elements to render on the primary viewer.
     /// Returns None if the tool doesn't produce overlays.
     fn get_overlays(&self, _id: crate::ToolId) -> Option<ToolOverlay> {
