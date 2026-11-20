@@ -210,7 +210,7 @@ impl Tracings {
 
     /// Count the distinct slice and frame pairs trace points lie on.
     #[must_use]
-    pub fn count_positions(&self) -> usize {
+    pub fn count_unique_path_slices(&self) -> usize {
         self.paths
             .iter()
             .flat_map(|path| path.points.iter().map(|point| (point.z, path.frame)))

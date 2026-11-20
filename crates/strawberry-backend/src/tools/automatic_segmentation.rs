@@ -303,10 +303,8 @@ pub struct AutomaticSegmentation {
     extractor: Arc<FeatureExtractor>,
     model: Option<Arc<SegmentationModel>>,
     model_class_ids: Vec<ClassId>,
-    /// Predictions for the current input at each position.
     inference_cache: Vec<InferenceCache>,
     samples: Vec<Sample>,
-    /// The selected position's input, which annotations and the training preview apply to.
     input: Option<Arc<RgbaImage>>,
     current: Option<SampleId>,
     stroke: Option<PendingStroke>,

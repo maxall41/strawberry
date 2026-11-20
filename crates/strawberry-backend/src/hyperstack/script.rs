@@ -8,13 +8,10 @@ use anyhow::{Result, anyhow};
 use regex::Regex;
 use rhai::{Array, Dynamic, Engine, EvalAltResult, Scope};
 
-/// The function every parser script defines.
 const PARSER_FUNCTION: &str = "parse_file_names";
-/// Stops runaway scripts within a few seconds while leaving room for many thousands of files.
 const MAX_OPERATIONS: u64 = 50_000_000;
 const MAX_STRING_SIZE: usize = 1 << 20;
 const MAX_ARRAY_SIZE: usize = 1 << 22;
-/// Rhai's release defaults; its debug defaults reject the nesting of generated scripts.
 const MAX_EXPRESSION_DEPTH: usize = 64;
 const MAX_FUNCTION_EXPRESSION_DEPTH: usize = 32;
 
@@ -48,12 +45,12 @@ fn build_parser_engine() -> Engine {
         .set_max_string_size(MAX_STRING_SIZE)
         .set_max_array_size(MAX_ARRAY_SIZE)
         .set_max_expr_depths(MAX_EXPRESSION_DEPTH, MAX_FUNCTION_EXPRESSION_DEPTH);
-    // Scripts call this once per file name, so compile each pattern only once.
-    let patterns: Rc<RefCell<HashMap<String, Regex>>> = Rc::default();
+    // Scripts call regex for every file-name; hence, we cache constructed regexs to avoid work duplication.
+    let cached_regex_patterns: Rc<RefCell<HashMap<String, Regex>>> = Rc::default();
     engine.register_fn(
         "captures",
         move |text: &str, pattern: &str| -> Result<Array, Box<EvalAltResult>> {
-            let mut patterns = patterns.borrow_mut();
+            let mut patterns = cached_regex_patterns.borrow_mut();
             let regex = match patterns.entry(pattern.to_owned()) {
                 Entry::Occupied(entry) => entry.into_mut(),
                 Entry::Vacant(entry) => entry.insert(

@@ -75,7 +75,7 @@ impl HyperstackLayout {
         }
         ensure!(
             values.iter().any(Option::is_some),
-            "The script keeps none of the files"
+            "The script must return at least one file"
         );
 
         let numbering: HashMap<Dimension, HashMap<&str, usize>> = Dimension::ALL
@@ -117,7 +117,7 @@ impl HyperstackLayout {
             })
             .collect();
 
-        // Name the files that collide before the grid check reports the collision anonymously.
+        // Enrich grid collision errors with file names before the grid check reports the collision anonymously
         let mut placed_files: HashMap<Coordinates, &str> = HashMap::new();
         for (name, coordinates) in file_names.iter().zip(&coordinates) {
             if let Some(coordinates) = coordinates
@@ -131,11 +131,11 @@ impl HyperstackLayout {
         }
         let placed: Vec<Coordinates> = coordinates.iter().flatten().copied().collect();
         Shape::from_coordinates(&placed)?;
+        //
         Ok(Self { coordinates, shape })
     }
 
-    /// Keep the files the layout places, aligned with the file names it was built from, and
-    /// return them with their arrangement.
+    /// Removes files not placed in coordinates and return them with their generated arrangement.
     #[must_use]
     pub fn arrange<T>(&self, files: Vec<T>) -> (Vec<T>, ImageArrangement) {
         let (files, coordinates) = files

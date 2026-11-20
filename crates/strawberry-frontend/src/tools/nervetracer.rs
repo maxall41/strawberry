@@ -110,8 +110,8 @@ impl NerveTracerView {
                 }
 
                 // Unreadable files load as usual so the backend reports why they failed.
-                let positions =
-                    read_tracings_file(&file).map_or(1, |tracings| tracings.count_positions());
+                let positions = read_tracings_file(&file)
+                    .map_or(1, |tracings| tracings.count_unique_path_slices());
                 let Some(placement) = ask_annotation_placement(cx, "traces", positions).await
                 else {
                     return;

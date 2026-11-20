@@ -173,8 +173,6 @@ impl SyncState for AutomaticSegmentationState {
         self.is_enabled != other.is_enabled
             || self.training != other.training
             || (self.training && self.show_overlay != other.show_overlay)
-            // Only the training preview depends on the selected position; inference covers every
-            // position.
             || (self.training
                 && self.show_overlay
                 && self.selected_position != other.selected_position)

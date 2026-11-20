@@ -28,7 +28,6 @@ pub struct Counter {
     pub lasso_points: Vec<(u64, u64)>,
     pub is_lasso_dragging: bool,
     overlays_dirty: bool,
-    /// Shape of the last processed images, which numbers positions in count files.
     shape: Shape,
 }
 
