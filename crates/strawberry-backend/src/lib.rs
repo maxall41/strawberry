@@ -255,7 +255,7 @@ impl Pipeline {
             .collect()
     }
 
-    /// Convert from internal BRGA representation to external file format and write, per ExportScope reqs.
+    /// Convert from internal BGRA representation to external file format and write, per `ExportScope` reqs.
     async fn save_output(&mut self, file: &Path, scope: ExportScope) -> anyhow::Result<()> {
         ensure!(
             self.output_is_current,

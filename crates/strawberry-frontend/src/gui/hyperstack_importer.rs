@@ -226,22 +226,44 @@ impl HyperstackImporter {
             )
     }
 
-    /// Build the status line: the hyperstack's shape, or why the script failed.
+    /// Build the status line: the hyperstack's shape and how many files it leaves out, or why
+    /// the script failed.
     fn render_status(&self) -> impl IntoElement + use<> {
-        let (text, color) = match &self.result {
-            Some(Ok(layout)) => (layout.shape.to_string(), theme::TEXT_MUTED),
-            Some(Err(error)) => (error.clone(), theme::DANGER),
-            None => (String::new(), theme::TEXT_MUTED),
+        let (text, color, left_out) = match &self.result {
+            Some(Ok(layout)) => (
+                layout.shape.to_string(),
+                theme::TEXT_MUTED,
+                layout
+                    .coordinates
+                    .len()
+                    .saturating_sub(layout.count_placed_files()),
+            ),
+            Some(Err(error)) => (error.clone(), theme::DANGER, 0),
+            None => (String::new(), theme::TEXT_MUTED, 0),
         };
         div()
+            .flex()
             .flex_1()
             .min_w_0()
+            .gap_2()
             .text_xs()
-            .text_color(color)
-            .overflow_hidden()
-            .text_ellipsis()
             .whitespace_nowrap()
-            .child(text)
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(color)
+                    .child(text),
+            )
+            .when(left_out > 0, |status| {
+                status.child(
+                    div()
+                        .flex_none()
+                        .text_color(theme::WARNING)
+                        .child(describe_left_out_files(left_out)),
+                )
+            })
     }
 }
 
@@ -317,5 +339,14 @@ impl Render for HyperstackImporter {
             .justify_center()
             .p_6()
             .child(card)
+    }
+}
+
+/// Describe how many files the script leaves out, such as "3 files left out".
+fn describe_left_out_files(count: usize) -> String {
+    if count == 1 {
+        "1 file left out".to_owned()
+    } else {
+        format!("{count} files left out")
     }
 }

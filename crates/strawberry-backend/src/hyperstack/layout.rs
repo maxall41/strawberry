@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use strawberry_types::{Coordinates, Dimension, ImageArrangement, Shape};
 
-use super::run_parser_script;
+use super::script::{FileAssignment, run_parser_script};
 
 /// Return a list containing every file name for the given input files. File names must be unique. File names should be ASCII.
 ///
@@ -52,25 +52,26 @@ impl HyperstackLayout {
     /// # Errors
     /// Returns an error if an assignment names an unknown or repeated file, its dimensions
     /// string is malformed, or the placed files do not form a complete grid.
-    pub fn from_assignments(
-        file_names: &[String],
-        assignments: &[(String, String)],
-    ) -> Result<Self> {
+    fn from_assignments(file_names: &[String], assignments: &[FileAssignment]) -> Result<Self> {
         let file_indices: HashMap<&str, usize> = file_names
             .iter()
             .enumerate()
             .map(|(index, name)| (name.as_str(), index))
             .collect();
         let mut values: Vec<Option<HashMap<Dimension, &str>>> = vec![None; file_names.len()];
-        for (name, dimensions) in assignments {
+        for FileAssignment {
+            file_name,
+            dimensions,
+        } in assignments
+        {
             let slot = file_indices
-                .get(name.as_str())
+                .get(file_name.as_str())
                 .and_then(|&index| values.get_mut(index))
-                .ok_or_else(|| anyhow!("\"{name}\" is not one of the files"))?;
-            ensure!(slot.is_none(), "\"{name}\" is returned more than once");
+                .ok_or_else(|| anyhow!("\"{file_name}\" is not one of the files"))?;
+            ensure!(slot.is_none(), "\"{file_name}\" is returned more than once");
             *slot = Some(
                 parse_dimensions(dimensions)
-                    .with_context(|| format!("Invalid dimensions for \"{name}\""))?,
+                    .with_context(|| format!("Invalid dimensions for \"{file_name}\""))?,
             );
         }
         ensure!(
@@ -133,6 +134,12 @@ impl HyperstackLayout {
         Shape::from_coordinates(&placed)?;
         //
         Ok(Self { coordinates, shape })
+    }
+
+    /// Count the files the script placed, leaving out those it did not return.
+    #[must_use]
+    pub fn count_placed_files(&self) -> usize {
+        self.coordinates.iter().flatten().count()
     }
 
     /// Removes files not placed in coordinates and return them with their generated arrangement.
