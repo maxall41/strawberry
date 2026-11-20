@@ -175,7 +175,9 @@ impl<'a> Lexer<'a> {
     /// as open it.
     fn skip_raw_string(&mut self) {
         let rest = self.rest();
-        let hashes = rest.len().saturating_sub(rest.trim_start_matches('#').len());
+        let hashes = rest
+            .len()
+            .saturating_sub(rest.trim_start_matches('#').len());
         self.advance(hashes.saturating_add(1));
         let terminator = format!("\"{}", "#".repeat(hashes));
         let body = self.rest();
