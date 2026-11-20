@@ -1,5 +1,6 @@
-use std::{collections::HashMap, iter::once};
+use std::{cmp::Reverse, collections::HashMap, iter::once};
 
+use indexmap::IndexMap;
 use strawberry_types::Dimension;
 
 use super::HyperstackLayout;
@@ -35,6 +36,60 @@ const KEYS: [(Dimension, &[&str]); 5] = [
     (Dimension::T, &["t", "tp", "time", "timepoint", "frame"]),
 ];
 
+/// How finely file names are split into runs before they are grouped and aligned.
+#[derive(Debug, Clone, Copy)]
+enum Granularity {
+    /// Split only at separators.
+    Words,
+    /// Also split between letters and digits, so names that mix them differently, such as
+    /// "img001" and "Thumbs", fall into separate groups.
+    LettersAndDigits,
+}
+
+/// The characters a run of a file name holds, other than separators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum RunKind {
+    /// Letters and digits together, when names are split only at separators.
+    Word,
+    Letters,
+    Digits,
+}
+
+/// What a run must share with the runs at the same place in other names for the names to align.
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum RunShape<'a> {
+    /// Separators must match exactly.
+    Separator(&'a str),
+    /// Other runs need only hold the same kind of characters.
+    Kind(RunKind),
+}
+
+/// File names sharing a shape, each split into its runs.
+type NameGroup<'a> = Vec<Vec<&'a str>>;
+
+impl Granularity {
+    /// Return the kind of run a character belongs to, or `None` for a separator character.
+    fn classify(self, character: char) -> Option<RunKind> {
+        if !character.is_alphanumeric() {
+            None
+        } else if matches!(self, Self::Words) {
+            Some(RunKind::Word)
+        } else if character.is_ascii_digit() {
+            Some(RunKind::Digits)
+        } else {
+            Some(RunKind::Letters)
+        }
+    }
+
+    /// Return the shape of a run, which must match across names for them to align.
+    fn get_run_shape(self, run: &str) -> RunShape<'_> {
+        run.chars()
+            .next()
+            .and_then(|character| self.classify(character))
+            .map_or(RunShape::Separator(run), RunShape::Kind)
+    }
+}
+
 /// Text aligned across every file name.
 #[derive(Debug)]
 enum Column<'a> {
@@ -59,32 +114,80 @@ struct EnrichedField<'a> {
     is_text: bool,
 }
 
-/// Write a parser script for the file names: align the names, label each varying part with
-/// a dimension, and keep the first program whose output places every file in a complete grid.
+/// Write a parser script that places as many of the file names as possible in a complete grid.
+///
+/// Names that share a shape are grouped and aligned, and each varying part is labeled with a
+/// dimension. Files the script does not match are left out.
 #[must_use]
 pub fn synthesize_parser_script(file_names: &[String]) -> String {
-    let names: Vec<&str> = file_names.iter().map(String::as_str).collect();
-    let candidates: Vec<String> = [true, false]
-        .into_iter()
-        .filter_map(|refine| align_names(&names, refine))
-        .map(|columns| render_script(&columns))
-        .collect();
-    candidates
-        .iter()
-        .find(|script| places_every_file(script, file_names))
-        .or_else(|| candidates.first())
-        .cloned()
-        .unwrap_or_else(|| format!("{HEADER}{FALLBACK_BODY}"))
+    let mut best_script = None;
+    let mut best_placed = 0;
+    for granularity in [Granularity::Words, Granularity::LettersAndDigits] {
+        let groups = group_names(file_names, granularity);
+        let refinements: &[bool] = match granularity {
+            Granularity::Words => &[true, false],
+            // Splitting letters from digits only sets stray files apart; skip it when it would
+            // divide real files, such as "DAPI" and "Cy5" channels, into competing groups.
+            Granularity::LettersAndDigits if groups.get(1).is_some_and(|group| group.len() > 1) => {
+                continue;
+            }
+            // Letter and digit runs need no refining, and matching one whole would mistake the
+            // first character of the run after it for a separator.
+            Granularity::LettersAndDigits => &[true],
+        };
+        for group in groups {
+            // Groups come largest first, and a script rarely places names outside the group it
+            // was written for, so lone names and groups no larger than the best score cannot win.
+            if group.len() < 2 || group.len() <= best_placed {
+                break;
+            }
+            for &refine in refinements {
+                let script = render_script(&align_names(&group, refine));
+                let placed = count_placed_files(&script, file_names);
+                if placed == file_names.len() {
+                    return script;
+                }
+                if best_script.is_none() || placed > best_placed {
+                    best_placed = placed;
+                    best_script = Some(script);
+                }
+            }
+        }
+    }
+    best_script.unwrap_or_else(|| format!("{HEADER}{FALLBACK_BODY}"))
 }
 
-/// Return whether a script runs and places every file in a complete grid.
-fn places_every_file(script: &str, file_names: &[String]) -> bool {
+/// Count the files a script places, or zero if it fails or its placements do not form a
+/// complete grid.
+fn count_placed_files(script: &str, file_names: &[String]) -> usize {
     HyperstackLayout::from_script(script, file_names)
-        .is_ok_and(|layout| layout.coordinates.iter().all(Option::is_some))
+        .map_or(0, |layout| layout.count_placed_files())
+}
+
+/// Split file names into runs and group them by shape. Groups come largest first, and groups
+/// of equal size in the order their first names appear.
+fn group_names(file_names: &[String], granularity: Granularity) -> Vec<NameGroup<'_>> {
+    let mut groups: IndexMap<Vec<RunShape>, NameGroup> = IndexMap::new();
+    for name in file_names {
+        let runs = split_runs(name, |character| granularity.classify(character));
+        let shape = runs
+            .iter()
+            .map(|run| granularity.get_run_shape(run))
+            .collect();
+        groups.entry(shape).or_default().push(runs);
+    }
+    let mut groups: Vec<NameGroup> = groups.into_values().collect();
+    groups.sort_by_key(|group| Reverse(group.len()));
+    groups
+}
+
+/// Return whether text consists only of ASCII digits.
+fn is_digits(text: &str) -> bool {
+    text.chars().all(|character| character.is_ascii_digit())
 }
 
 /// Split text into maximal runs of characters that agree on `kind`.
-fn split_runs(text: &str, kind: impl Fn(char) -> bool) -> Vec<&str> {
+fn split_runs<K: Copy + PartialEq>(text: &str, kind: impl Fn(char) -> K) -> Vec<&str> {
     let mut runs = Vec::new();
     let mut start = 0;
     let mut previous = None;
@@ -102,20 +205,15 @@ fn split_runs(text: &str, kind: impl Fn(char) -> bool) -> Vec<&str> {
     runs
 }
 
-/// Align file names into columns at their separators, refining varying segments into letter and
-/// digit runs when `refine` is true. Returns `None` if the names do not share their separators.
-fn align_names<'a>(file_names: &[&'a str], refine: bool) -> Option<Vec<Column<'a>>> {
-    let segmented: Vec<Vec<&str>> = file_names
-        .iter()
-        .map(|name| split_runs(name, char::is_alphanumeric))
-        .collect();
-    let first_file = segmented.first()?;
-    if segmented.iter().any(|runs| runs.len() != first_file.len()) {
-        return None;
-    }
+/// Align a group's names into columns, refining varying segments into letter and digit runs
+/// when `refine` is true. The group's shared shape keeps separators in literal columns.
+fn align_names<'a>(group: &[Vec<&'a str>], refine: bool) -> Vec<Column<'a>> {
     let mut columns = Vec::new();
+    let Some(first_file) = group.first() else {
+        return columns;
+    };
     for (index, &first_file_run) in first_file.iter().enumerate() {
-        let runs: Vec<&str> = segmented
+        let runs: Vec<&str> = group
             .iter()
             .filter_map(|runs| runs.get(index).copied())
             .collect();
@@ -123,16 +221,13 @@ fn align_names<'a>(file_names: &[&'a str], refine: bool) -> Option<Vec<Column<'a
             columns.push(Column::Literal(first_file_run));
             continue;
         }
-        if !first_file_run.chars().all(char::is_alphanumeric) {
-            return None;
-        }
         let next_separator = first_file
             .get(index.saturating_add(1))
             .and_then(|separator| separator.chars().next());
         let refined = refine.then(|| refine_segment(&runs)).flatten();
         columns.extend(refined.unwrap_or_else(|| vec![match_opaque_field(runs, next_separator)]));
     }
-    Some(columns)
+    columns
 }
 
 /// Segment a varying segment into literal and varying letter or digit runs, if its runs line up.
@@ -142,7 +237,6 @@ fn refine_segment<'a>(runs: &[&'a str]) -> Option<Vec<Column<'a>>> {
         .map(|value| split_runs(value, |character| character.is_ascii_digit()))
         .collect();
     let first_run = segmented.first()?;
-    let is_digits = |run: &str| run.chars().all(|character| character.is_ascii_digit());
     let mut columns = Vec::new();
     for (index, &run) in first_run.iter().enumerate() {
         let runs: Vec<&str> = segmented
@@ -226,7 +320,7 @@ fn determine_each_other(a: &[&str], b: &[&str]) -> bool {
     })
 }
 
-/// Removes redundant fields, labels unlabeled fields, and produces column index to Dimension HashMap.
+/// Removes redundant fields, labels unlabeled fields, and produces column index to `Dimension` `HashMap`.
 fn label_fields(fields: &[EnrichedField]) -> HashMap<usize, Dimension> {
     let mut labels: Vec<(&EnrichedField, Dimension)> = Vec::new();
     let is_redundant = |field: &EnrichedField, labels: &[(&EnrichedField, Dimension)]| {
@@ -275,11 +369,11 @@ fn render_script(columns: &[Column]) -> String {
         .enumerate()
         .filter_map(|(column, kind)| match kind {
             Column::Literal(_) => None,
-            Column::Field { pattern, values } => Some(EnrichedField {
+            Column::Field { values, .. } => Some(EnrichedField {
                 column,
                 values,
                 key: infer_dimension(columns, column),
-                is_text: pattern != r"\d+",
+                is_text: !values.iter().all(|value| is_digits(value)),
             }),
         })
         .collect();

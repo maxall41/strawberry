@@ -47,6 +47,9 @@ pub const SUCCESS: Rgba = hex(0x3d_9a_5f);
 pub const SUCCESS_HOVER: Rgba = hex(0x47_ab_6c);
 pub const SUCCESS_ACTIVE: Rgba = hex(0x35_87_53);
 
+/// Cautionary text, such as files an import leaves out.
+pub const WARNING: Rgba = hex(0xd6_a2_3e);
+
 pub const DANGER: Rgba = hex(0xc2_50_49);
 pub const DANGER_HOVER: Rgba = hex(0xd0_5e_57);
 pub const DANGER_ACTIVE: Rgba = hex(0xa8_44_3e);

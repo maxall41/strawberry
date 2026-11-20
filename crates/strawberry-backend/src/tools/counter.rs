@@ -21,6 +21,9 @@ use strawberry_types::{
     ToolBackend, ToolInput, ToolState,
 };
 
+/// Distance in pixels from a click within which the delete tool removes counts.
+const DELETE_RADIUS: u64 = 6;
+
 pub struct Counter {
     pub state: CounterState,
     pub events: ToolEvents,
@@ -137,11 +140,11 @@ impl ToolBackend for Counter {
                             counts.retain(|count| {
                                 let dx = count.position.0.abs_diff(x);
                                 let dy = count.position.1.abs_diff(y);
-                                // A six-pixel radius; avoid signed conversion and overflow.
-                                dx > 6
-                                    || dy > 6
+                                // Compare squared distances to avoid signed conversion and overflow.
+                                dx > DELETE_RADIUS
+                                    || dy > DELETE_RADIUS
                                     || dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
-                                        > 36
+                                        > DELETE_RADIUS.saturating_mul(DELETE_RADIUS)
                             });
                         }
                         _ => {}
