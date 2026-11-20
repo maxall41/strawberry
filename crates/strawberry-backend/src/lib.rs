@@ -49,6 +49,8 @@ pub struct Pipeline {
     /// Captured owner of the current canvas gesture
     gesture_owner: Option<ToolId>,
     overlays_dirty: bool,
+    /// Whether the frontend was told a tool is computing an overlay in the background.
+    overlay_activity_shown: bool,
     /// Output of the last successful run
     last_output: ImageCollection,
     /// Plane shown in the viewer; interactive tools edit its position
@@ -89,6 +91,7 @@ impl Pipeline {
             input_images: ImageCollection::default(),
             gesture_owner: None,
             overlays_dirty: true,
+            overlay_activity_shown: false,
             last_output: ImageCollection::default(),
             view: Coordinates::default(),
             output_is_current: false,
@@ -349,7 +352,7 @@ impl Pipeline {
                     if result.is_ok() {
                         pending_processing_from.request_processing(0);
                     } else {
-                        let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
+                        self.finish_pipeline_activity();
                     }
                     self.complete_operation(reply, result, None);
                 }
@@ -595,7 +598,36 @@ impl Pipeline {
         while let Some(error) = self.gpu.take_uncaptured_error() {
             self.invalidate_output();
             self.report_error("GPU failure", &error.into());
-            let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
+            self.finish_pipeline_activity();
+        }
+    }
+    /// Tell the frontend that pipeline activity has ended, including background overlay work.
+    fn finish_pipeline_activity(&mut self) {
+        self.overlay_activity_shown = false;
+        let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
+    }
+    /// Show a tool's background overlay work as pipeline activity, as when it ran inside a
+    /// pipeline stage, and end the activity once no enabled tool has overlay work pending.
+    fn publish_overlay_activity(&mut self) {
+        let pending = self
+            .tool_manager
+            .tools
+            .values()
+            .find(|tool| tool.is_enabled() && tool.has_pending_overlay())
+            .map(|tool| format!("{:?}", tool.iam()));
+        match pending {
+            Some(name) if !self.overlay_activity_shown => {
+                self.overlay_activity_shown = true;
+                let _ =
+                    self.output_sender
+                        .send(FrontendMessage::PipelineProgress(PipelineProgress {
+                            stage: 0,
+                            total: 1,
+                            name,
+                        }));
+            }
+            None if self.overlay_activity_shown => self.finish_pipeline_activity(),
+            _ => {}
         }
     }
     /// Publish the merged tool overlays to the frontend.
@@ -645,12 +677,13 @@ impl Pipeline {
             && !self.input_images.is_empty()
         {
             let result = self.process_from(index).await;
-            let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
+            self.finish_pipeline_activity();
             result
         } else {
             Ok(())
         };
         self.publish_events();
+        self.publish_overlay_activity();
         result
     }
 }

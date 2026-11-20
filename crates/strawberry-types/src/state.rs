@@ -289,6 +289,11 @@ impl<T: Clone + Default> PerPosition<T> {
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
         Arc::make_mut(&mut self.positions).values_mut()
     }
+
+    /// Remove every position's value, keeping the selected position.
+    pub fn clear(&mut self) {
+        self.positions = Arc::default();
+    }
 }
 
 /// Counts placed on, or detected in, one position.

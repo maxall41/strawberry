@@ -43,6 +43,11 @@ pub trait ToolBackend: Send + Sync {
     fn cancel_interaction(&mut self) {}
     /// Direct canvas edits and per-position annotations to the given position.
     fn select_position(&mut self, _position: Position) {}
+    /// Return whether the tool is computing an overlay in the background, which the viewer shows
+    /// as pipeline activity.
+    fn has_pending_overlay(&self) -> bool {
+        false
+    }
     /// Report and consume pending overlay changes; return false by default.
     fn take_overlay_changes(&mut self) -> bool {
         false
@@ -137,8 +142,8 @@ pub trait ToolBackend: Send + Sync {
     /// Invalidate all processing caches, including cached input.
     fn invalidate_cache(&mut self) {}
 
-    /// Release state derived from the previous images once new images are loaded, whether or
-    /// not the tool is enabled.
+    /// Release state tied to the previous images, such as predictions or annotations, once new
+    /// images are loaded, whether or not the tool is enabled.
     fn release_previous_input(&mut self) {}
 
     /// Get overlay elements to render on the primary viewer.

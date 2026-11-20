@@ -70,6 +70,12 @@ impl ToolBackend for Counter {
         self.lasso_points.clear();
         self.is_lasso_dragging = false;
     }
+    /// Drop the previous images' counts, which may lie on slices the new images lack; count
+    /// types are settings and stay.
+    fn release_previous_input(&mut self) {
+        self.state.counts.clear();
+        self.state.review_current_index = 0;
+    }
     /// Place, review, and show counts on the given position.
     fn select_position(&mut self, position: Position) {
         self.state.counts.select(position);
@@ -241,18 +247,20 @@ impl ToolBackend for Counter {
                             "Counts saved successfully!".to_string(),
                         ));
                     }
-                    CountMessage::LoadCounts(file, placement) => match read_marker_file(&file) {
-                        Ok(marker_file) => {
-                            marker_file.apply_to_counter_state(&mut self.state, placement);
+                    CountMessage::LoadCounts(file, placement) => match read_marker_file(&file)
+                        .and_then(|marker_file| {
+                            marker_file.apply_to_counter_state(&mut self.state, placement)
+                        }) {
+                        Ok(()) => {
                             self.events.emit(FrontendMessage::success(
                                 "Counts loaded successfully!".to_string(),
                             ));
                         }
                         Err(e) => {
-                            self.events.emit(FrontendMessage::error(
-                                "Error loading counts: XML import failed".to_string(),
-                            ));
-                            return Err(anyhow::anyhow!("Error loading counts from file: {e}"));
+                            eprintln!("Failed to load counts from {}: {e}", file.display());
+                            self.events.emit(FrontendMessage::error(format!(
+                                "Failed to load counts: {e}"
+                            )));
                         }
                     },
                     CountMessage::CopyToManual => {

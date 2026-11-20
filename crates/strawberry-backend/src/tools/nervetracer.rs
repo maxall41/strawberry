@@ -36,6 +36,10 @@ impl ToolBackend for NerveTracer {
     fn cancel_interaction(&mut self) {
         self.state.first_point = None;
     }
+    /// Drop the previous images' traces, which may lie on slices the new images lack.
+    fn release_previous_input(&mut self) {
+        self.state.traces.clear();
+    }
     /// Trace on, and show the paths of, the given position.
     fn select_position(&mut self, position: Position) {
         self.state.traces.select(position);

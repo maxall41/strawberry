@@ -260,12 +260,18 @@ impl Tracings {
     /// and path frames against the tracer's shape.
     ///
     /// # Errors
-    /// Returns an error if a Z index or frame cannot address a position.
+    /// Returns an error if a Z index or frame cannot address a position, or if paths split
+    /// across positions would land outside the tracer's shape.
     pub fn apply_to_nerve_tracer_state(
         &self,
         state: &mut NerveTracerState,
         placement: AnnotationPlacement,
     ) -> Result<(), Box<dyn Error>> {
+        if placement == AnnotationPlacement::SplitByPosition {
+            state
+                .shape
+                .ensure_contains_positions(self.get_saved_positions(state.shape)?, "Traces")?;
+        }
         let selected = state.traces.selected_position();
         let mut imported: HashMap<Position, PositionTraces> = HashMap::new();
         if placement == AnnotationPlacement::CurrentPosition {
