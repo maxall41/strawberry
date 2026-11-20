@@ -712,6 +712,7 @@ impl Render for CodeEditor {
             .map(|line| f32::from(line.width))
             .fold(0.0, f32::max);
         let text_height = line_count.mul_add(LINE_HEIGHT, 2.0 * TEXT_PADDING);
+        let content_width = 2.0f32.mul_add(TEXT_PADDING, GUTTER_WIDTH + text_width);
         let gutter = div()
             .flex_none()
             .w(px(GUTTER_WIDTH))
@@ -728,7 +729,6 @@ impl Render for CodeEditor {
         let text_area = div()
             .relative()
             .flex_1()
-            .min_w(px(2.0f32.mul_add(TEXT_PADDING, text_width)))
             .h(px(text_height))
             .children(self.render_selection())
             .child(self.render_text())
@@ -774,7 +774,16 @@ impl Render for CodeEditor {
                     .size_full()
                     .overflow_scroll()
                     .track_scroll(&self.scroll)
-                    .child(div().flex().min_w_full().child(gutter).child(text_area)),
+                    // GPUI measures scrollable width from this row's own width, so it must span
+                    // the longest line rather than stretch to the viewport.
+                    .child(
+                        div()
+                            .flex()
+                            .w(px(content_width))
+                            .min_w_full()
+                            .child(gutter)
+                            .child(text_area),
+                    ),
             )
     }
 }

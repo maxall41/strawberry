@@ -225,7 +225,20 @@ impl CellCounterMarkerFile {
 
     /// Replace the manual counts of each position the markers are placed on, reading slice
     /// numbers against the counter's shape, and register their types.
-    pub fn apply_to_counter_state(&self, state: &mut CounterState, placement: AnnotationPlacement) {
+    ///
+    /// # Errors
+    /// Returns an error, leaving the state unchanged, if markers split across positions would
+    /// land outside the counter's shape.
+    pub fn apply_to_counter_state(
+        &self,
+        state: &mut CounterState,
+        placement: AnnotationPlacement,
+    ) -> Result<(), Box<dyn Error>> {
+        if placement == AnnotationPlacement::SplitByPosition {
+            state
+                .shape
+                .ensure_contains_positions(self.get_saved_positions(state.shape), "Counts")?;
+        }
         let selected = state.counts.selected_position();
         let mut imported: HashMap<Position, HashMap<u16, Vec<CountData>>> = HashMap::new();
         if placement == AnnotationPlacement::CurrentPosition {
@@ -266,6 +279,7 @@ impl CellCounterMarkerFile {
         state.is_enabled = true;
         state.mode = CounterMode::Manual;
         state.review_current_index = 0;
+        Ok(())
     }
 }
 

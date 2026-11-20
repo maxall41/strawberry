@@ -737,8 +737,12 @@ impl AutomaticSegmentation {
         self.preview_job = None;
         self.overlays_dirty |= !std::mem::take(&mut self.inference_cache).is_empty();
     }
-    /// Show a finished preview prediction if its input and model are still selected.
+    /// Show a finished preview prediction if its input and model are still selected, abandoning
+    /// it once the overlay is no longer shown.
     fn finish_preview(&mut self) {
+        if !self.state.is_enabled || !self.state.training || !self.state.show_overlay {
+            self.preview_job = None;
+        }
         let Some(result) = self
             .preview_job
             .as_ref()
@@ -1425,6 +1429,10 @@ impl ToolBackend for AutomaticSegmentation {
     /// the tool is enabled.
     fn release_previous_input(&mut self) {
         self.clear_predictions();
+    }
+    /// Return whether the overlay preview is being predicted in the background.
+    fn has_pending_overlay(&self) -> bool {
+        self.preview_job.is_some()
     }
     /// Return and clear the pending overlay change flag.
     fn take_overlay_changes(&mut self) -> bool {
