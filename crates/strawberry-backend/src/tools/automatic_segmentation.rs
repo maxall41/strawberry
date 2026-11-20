@@ -8,6 +8,7 @@ use crate::tools::base::ToolEvents;
 use crate::utils::file_io::write_artifact;
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
+use by_address::ByAddress;
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -262,9 +263,8 @@ fn annotation_color(kind: AnnotationKind, classes: &SegmentationClasses) -> Bgra
 }
 
 /// Retain the expensive prediction independently of the pipeline's enabled/bypass cache.
-/// Keep the source and model alive so pointer identity cannot match a recycled allocation.
+/// Hold the model so pointer identity cannot match a recycled allocation.
 struct InferenceCache {
-    input: Arc<RgbaImage>,
     model: Arc<SegmentationModel>,
     output: Arc<Vec<image::GrayImage>>,
     overlay: Option<PredictionOverlay>,
@@ -273,11 +273,6 @@ struct InferenceCache {
 struct PredictionOverlay {
     colors: Vec<BgraColor>,
     image: Arc<RgbaImage>,
-}
-
-/// Return the address that identifies an image in the inference cache.
-fn get_image_address(image: &Arc<RgbaImage>) -> usize {
-    Arc::as_ptr(image).addr()
 }
 
 pub struct AutomaticSegmentation {
@@ -295,8 +290,7 @@ pub struct AutomaticSegmentation {
     extractor: Arc<FeatureExtractor>,
     model: Option<Arc<SegmentationModel>>,
     model_class_ids: Vec<ClassId>,
-    /// Predictions keyed by the address of their input image.
-    inference_cache: HashMap<usize, InferenceCache>,
+    inference_cache: HashMap<ByAddress<Arc<RgbaImage>>, InferenceCache>,
     samples: Vec<Sample>,
     input: Option<Arc<RgbaImage>>,
     current: Option<SampleId>,
@@ -628,8 +622,9 @@ impl AutomaticSegmentation {
                 return;
             }
         };
-        let address = get_image_address(&cached.input);
-        if let Some(cached) = self.inference_cache.get_mut(&address) {
+        if let Some(input) = self.input.clone()
+            && let Some(cached) = self.inference_cache.get_mut(&ByAddress(input))
+        {
             cached.overlay = Some(PredictionOverlay { colors, image });
         }
     }
@@ -644,7 +639,7 @@ impl AutomaticSegmentation {
         model: &Arc<SegmentationModel>,
     ) -> Option<&InferenceCache> {
         self.inference_cache
-            .get(&get_image_address(input))
+            .get(&ByAddress(Arc::clone(input)))
             .filter(|cached| Arc::ptr_eq(&cached.model, model))
     }
     /// Predict class planes for an image, reusing a cached prediction for the same image and model.
@@ -671,9 +666,8 @@ impl AutomaticSegmentation {
             .await??,
         );
         self.inference_cache.insert(
-            get_image_address(&image),
+            ByAddress(image),
             InferenceCache {
-                input: image,
                 model,
                 output: output.clone(),
                 overlay: None,
@@ -1303,6 +1297,14 @@ impl ToolBackend for AutomaticSegmentation {
             self.state.selected_layer = 0;
         }
         self.cache.remember_input(images);
+        // Prune before any early return so predictions for replaced inputs never keep their
+        // images alive.
+        let layer = self.state.selected_layer;
+        self.inference_cache.retain(|input, _| {
+            images
+                .channel(layer)
+                .any(|plane| Arc::ptr_eq(plane, &input.0))
+        });
         self.adopt_selected_input();
         if self.state.training && !self.state.show_overlay {
             return Ok(());
@@ -1322,15 +1324,6 @@ impl ToolBackend for AutomaticSegmentation {
                 *slot = Arc::new(self.render_prediction(&output)?);
             }
         }
-        if let Some(input) = self.cache.get_input() {
-            let layer = self.state.selected_layer;
-            self.inference_cache.retain(|_, cached| {
-                input
-                    .channel(layer)
-                    .any(|plane| Arc::ptr_eq(plane, &cached.input))
-            });
-        }
-
         Ok(())
     }
     /// Annotate and preview the given position.

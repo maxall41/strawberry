@@ -54,6 +54,13 @@ pub const DANGER: Rgba = hex(0xc2_50_49);
 pub const DANGER_HOVER: Rgba = hex(0xd0_5e_57);
 pub const DANGER_ACTIVE: Rgba = hex(0xa8_44_3e);
 
+/// Script editor syntax colors.
+pub const SYNTAX_COMMENT: Rgba = hex(0x7f_84_8e);
+pub const SYNTAX_KEYWORD: Rgba = hex(0xc6_78_dd);
+pub const SYNTAX_FUNCTION: Rgba = hex(0x61_af_ef);
+pub const SYNTAX_STRING: Rgba = hex(0x98_c3_79);
+pub const SYNTAX_CONSTANT: Rgba = hex(0xd1_9a_66);
+
 /// Blend a color toward white. Used for hover/feedback states.
 pub fn lighten(color: Rgba, amount: f32) -> Rgba {
     Rgba {
