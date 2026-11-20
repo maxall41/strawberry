@@ -2,13 +2,17 @@ use std::{cell::Cell, ops::Range, rc::Rc, time::Duration};
 
 use gpui::{
     Animation, AnimationExt, App, Bounds, ClipboardItem, Context, Div, EventEmitter, FocusHandle,
-    Focusable, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, Rgba,
-    ScrollHandle, ShapedLine, TextAlign, TextRun, Window, canvas, div, font, point, prelude::*,
-    pulsating_between, px,
+    Focusable, Font, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point,
+    Rgba, ScrollHandle, ShapedLine, TextAlign, TextRun, Window, canvas, div, font, point,
+    prelude::*, pulsating_between, px,
 };
 use num_traits::ToPrimitive;
 
 use super::{text_buffer::TextBuffer, theme};
+
+mod rhai_syntax;
+
+use rhai_syntax::{Highlight, Syntax, highlight_rhai};
 
 super::actions::actions!([
     EditorSelectAll,
@@ -46,10 +50,24 @@ fn is_word_character(character: char) -> bool {
     character.is_alphanumeric() || character == '_'
 }
 
-/// A multi-line monospace editor for scripts.
+/// Return the color text of a syntax kind is drawn in.
+const fn get_syntax_color(syntax: Syntax) -> Rgba {
+    match syntax {
+        Syntax::Comment => theme::SYNTAX_COMMENT,
+        Syntax::Keyword => theme::SYNTAX_KEYWORD,
+        Syntax::Function => theme::SYNTAX_FUNCTION,
+        Syntax::String => theme::SYNTAX_STRING,
+        Syntax::Constant => theme::SYNTAX_CONSTANT,
+    }
+}
+
+/// A multi-line monospace editor for Rhai scripts, with syntax highlighting.
 pub struct CodeEditor {
     focus_handle: FocusHandle,
     buffer: TextBuffer,
+    /// Highlights of the buffer's text, recomputed on each change rather than on every frame
+    /// the caret animation renders.
+    highlights: Vec<Highlight>,
     /// Where the selection started; the selection spans from here to the cursor.
     anchor: Option<usize>,
     /// Horizontal position kept while moving between lines of different lengths.
@@ -69,6 +87,7 @@ impl CodeEditor {
     pub fn new(text: String, cx: &Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
+            highlights: highlight_rhai(&text),
             buffer: TextBuffer::new(text),
             anchor: None,
             goal_x: None,
@@ -104,6 +123,7 @@ impl CodeEditor {
     fn edit(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
         self.record_undo();
         self.buffer.replace_range(range, text);
+        self.highlights = highlight_rhai(self.buffer.text());
         self.anchor = None;
         self.goal_x = None;
         self.reveal_cursor();
@@ -148,6 +168,7 @@ impl CodeEditor {
 
     /// Replace the text and cursor with a snapshot, clearing the selection.
     fn restore_snapshot(&mut self, snapshot: Snapshot) {
+        self.highlights = highlight_rhai(&snapshot.text);
         self.buffer = TextBuffer::new(snapshot.text);
         self.buffer.move_cursor(snapshot.cursor);
         self.anchor = None;
@@ -491,28 +512,66 @@ impl CodeEditor {
         }
     }
 
-    /// Shape every line of the text in the editor font.
+    /// Shape every line of the text in the editor font, colored by its syntax.
     fn shape_lines(&self, window: &Window) -> Vec<ShapedLine> {
         let run_font = font(FONT_FAMILY);
+        let mut line_start = 0usize;
         self.buffer
             .text()
             .split('\n')
             .map(|line| {
+                let line_range = line_start..line_start.saturating_add(line.len());
+                line_start = line_range.end.saturating_add(1);
                 window.text_system().shape_line(
                     line.to_owned().into(),
                     px(FONT_SIZE),
-                    &[TextRun {
-                        len: line.len(),
-                        font: run_font.clone(),
-                        color: theme::TEXT.into(),
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    }],
+                    &self.build_line_runs(line_range, &run_font),
                     None,
                 )
             })
             .collect()
+    }
+
+    /// Build the colored text runs covering the line at a byte range of the text.
+    fn build_line_runs(&self, line: Range<usize>, run_font: &Font) -> Vec<TextRun> {
+        let build_run = |len: usize, color: Rgba| TextRun {
+            len,
+            font: run_font.clone(),
+            color: color.into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let first = self
+            .highlights
+            .partition_point(|highlight| highlight.range.end <= line.start);
+        let mut runs = Vec::new();
+        let mut position = line.start;
+        for highlight in self
+            .highlights
+            .get(first..)
+            .unwrap_or_default()
+            .iter()
+            .take_while(|highlight| highlight.range.start < line.end)
+        {
+            let start = highlight.range.start.max(line.start);
+            let end = highlight.range.end.min(line.end);
+            if start > position {
+                runs.push(build_run(start.saturating_sub(position), theme::TEXT));
+            }
+            if end > start {
+                runs.push(build_run(
+                    end.saturating_sub(start),
+                    get_syntax_color(highlight.syntax),
+                ));
+            }
+            position = end;
+        }
+        // Empty lines still need one run to shape.
+        if position < line.end || runs.is_empty() {
+            runs.push(build_run(line.end.saturating_sub(position), theme::TEXT));
+        }
+        runs
     }
 
     /// Build the highlight behind each selected line segment.

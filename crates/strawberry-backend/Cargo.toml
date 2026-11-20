@@ -26,6 +26,7 @@ natord = "1.0"
 
 tempfile = "3.27"
 zip = { version = "9.6", default-features = false, features = ["deflate-flate2-zlib-rs", "zstd"] }
+by_address = "1.2.1"
 
 [lints]
 workspace = true
