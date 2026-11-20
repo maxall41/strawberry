@@ -25,7 +25,8 @@ super::actions::actions!([
 
 /// Key context that editor shortcuts are bound in.
 pub const KEY_CONTEXT: &str = "CodeEditor";
-const FONT_FAMILY: &str = "Menlo";
+/// Monospace font the editor draws code in, shared by other views that show code-like text.
+pub const MONOSPACE_FONT: &str = "Menlo";
 const FONT_SIZE: f32 = 12.0;
 const LINE_HEIGHT: f32 = 18.0;
 const GUTTER_WIDTH: f32 = 36.0;
@@ -514,7 +515,7 @@ impl CodeEditor {
 
     /// Shape every line of the text in the editor font, colored by its syntax.
     fn shape_lines(&self, window: &Window) -> Vec<ShapedLine> {
-        let run_font = font(FONT_FAMILY);
+        let run_font = font(MONOSPACE_FONT);
         let mut line_start = 0usize;
         self.buffer
             .text()
@@ -741,7 +742,7 @@ impl Render for CodeEditor {
             })
             .bg(theme::SURFACE_DEEP)
             .cursor_text()
-            .font_family(FONT_FAMILY)
+            .font_family(MONOSPACE_FONT)
             .text_size(px(FONT_SIZE))
             .child(
                 div()

@@ -2,6 +2,7 @@ pub mod actions;
 pub mod busy;
 pub mod button;
 pub mod code_editor;
+pub mod dropdown;
 pub mod feedback;
 pub mod fuzzy;
 pub mod generic_picker;

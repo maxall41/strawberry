@@ -66,6 +66,11 @@ impl Icon {
         Self::from_asset("minus.svg").size(12.)
     }
 
+    /// Create the code icon, which marks script controls.
+    pub fn code() -> Self {
+        Self::from_asset("code.svg").size(14.)
+    }
+
     /// Create the expanded or collapsed disclosure icon.
     pub fn disclosure(expanded: bool) -> Self {
         Self::from_asset(if expanded {

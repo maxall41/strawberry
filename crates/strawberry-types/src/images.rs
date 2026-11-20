@@ -36,6 +36,18 @@ impl Dimension {
         }
     }
 
+    /// Return the name this dimension is shown to the user by, such as "Channel".
+    #[must_use]
+    pub const fn get_name(self) -> &'static str {
+        match self {
+            Self::X => "Tile column",
+            Self::Y => "Tile row",
+            Self::Z => "Depth",
+            Self::C => "Channel",
+            Self::T => "Time",
+        }
+    }
+
     /// Return the storage axis of this dimension; planes are stored in T, Z, C, Y, X order.
     const fn axis(self) -> Axis {
         Axis(match self {
