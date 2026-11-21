@@ -29,7 +29,6 @@ impl Icon {
         self
     }
 
-    #[allow(dead_code)]
     /// Set the icon’s displayed color.
     pub const fn color(mut self, color: Rgba) -> Self {
         self.color = color;
@@ -64,6 +63,16 @@ impl Icon {
     /// Create the subtract icon.
     pub fn minus() -> Self {
         Self::from_asset("minus.svg").size(12.)
+    }
+
+    /// Create the warning icon, which marks out-of-date results.
+    pub fn warning() -> Self {
+        Self::from_asset("warning.svg").size(12.)
+    }
+
+    /// Create the code icon, which marks script controls.
+    pub fn code() -> Self {
+        Self::from_asset("code.svg").size(14.)
     }
 
     /// Create the expanded or collapsed disclosure icon.

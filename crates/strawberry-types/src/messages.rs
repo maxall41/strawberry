@@ -6,14 +6,20 @@ use strawberry_processing::segmentation::{FeatureConfig, ForestConfig, Inference
 use strawberry_processing::threshold::AutoThresholdMethod;
 
 use super::{
-    AnnotationKind, BackendToolType, BrushRadius, ClassId, DatasetImportMode, ObjectSizeFilterMode,
-    RgbColor, SegmentationOutputMode, StrokeId, ToolState,
+    AnnotationKind, AnnotationPlacement, BackendToolType, BrushRadius, ClassId, Coordinates,
+    DatasetImportMode, ExportScope, ImageArrangement, ObjectSizeFilterMode, RgbColor,
+    SegmentationOutputMode, Shape, StrokeId, ToolState,
 };
 
+/// The displayed output plane.
 #[derive(Debug, Clone)]
 pub struct OutputFrame {
     pub load_generation: u64,
+    pub coordinates: Coordinates,
+    pub shape: Shape,
     pub image: Arc<RgbaImage>,
+    /// False when a failed run left an older result on screen.
+    pub is_current: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -122,8 +128,8 @@ pub enum NerveTracerMessage {
     DeletePathSegmentInCommitedPath(usize, usize),
     DeletePath(usize),
     SaveTraces(PathBuf),
-    LoadTraces(PathBuf),
-    SetSelectedImageIndex(usize),
+    LoadTraces(PathBuf, AnnotationPlacement),
+    SelectLayer(usize),
 }
 
 // Note: counter module types need to be forward-declared since they're in the backend crate
@@ -137,7 +143,7 @@ pub enum CountMessage {
     SetActiveCountType(u16),
     SetActiveTool(Option<CounterTool>),
     SaveCounts(PathBuf),
-    LoadCounts(PathBuf),
+    LoadCounts(PathBuf, AnnotationPlacement),
     CopyToManual,
     ReviewNavigatePrevious,
     ReviewNavigateNext,
@@ -176,12 +182,22 @@ pub enum FeedbackLevel {
 
 #[derive(Debug, Clone)]
 pub struct PipelineProgress {
-    /// 0-based index of the stage about to run (display code adds 1).
+    /// 0-based index of the active stage (display code adds 1).
     pub stage: usize,
     /// Number of stages this run will execute in total.
     pub total: usize,
     /// Display name
     pub name: String,
+    /// Plane counts when the stage reports progress within its own work.
+    pub planes: Option<PlaneProgress>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneProgress {
+    /// Number of input planes with completed predictions.
+    pub completed: usize,
+    /// Number of input planes that need predictions in this run.
+    pub total: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -193,7 +209,7 @@ pub enum FrontendMessage {
     UserFeedback(String, FeedbackLevel),
     ReturnOverlays(crate::overlay::OverlayCollection),
     SnapToPosition(f32, f32),
-    /// Sent just before each stage of a pipeline run executes.
+    /// Sent when a stage starts or reports new progress.
     PipelineProgress(PipelineProgress),
     PipelineFinished,
 }
@@ -252,10 +268,13 @@ pub enum PipelineCommand {
     },
     Load {
         files: Vec<PathBuf>,
+        arrangement: ImageArrangement,
         reply: CommandResult,
     },
+    SelectView(Coordinates),
     SaveOutput {
         path: PathBuf,
+        scope: ExportScope,
         reply: CommandResult,
     },
     HandleClick(u64, u64),

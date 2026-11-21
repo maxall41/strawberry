@@ -11,8 +11,8 @@ use strawberry_processing::{
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, DecomposerMessage, DecomposerState, FrontendMessage, PipelineObjectMessage,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, DecomposerMessage, DecomposerState, Dimension, FrontendMessage,
+    ImageCollection, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Decomposer {
@@ -37,46 +37,34 @@ impl ToolBackend for Decomposer {
         BackendToolType::Decomposer
     }
 
-    /// Decompose one image and composite the enabled channel layers.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        if input.len() > 1 {
-            let error_msg = format!(
-                "Decomposer can only process one image, received {}",
-                input.len()
-            );
-            self.base
-                .events
-                .emit(FrontendMessage::error(error_msg.clone()));
-            return Err(anyhow::anyhow!(error_msg));
+    /// Decompose the single layer at each position and composite its enabled channel layers.
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        let mut lanes = images.lanes(Dimension::C);
+        for lane in &mut lanes {
+            let [image] = lane.as_slice() else {
+                let error_msg = format!(
+                    "Decomposer can only process images with one layer, received {}",
+                    lane.len()
+                );
+                self.base
+                    .events
+                    .emit(FrontendMessage::error(error_msg.clone()));
+                return Err(anyhow::anyhow!(error_msg));
+            };
+
+            let decomposed = self.processor.apply_decomposition(image).await?;
+
+            let enabled: Vec<image::RgbaImage> = decomposed
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| self.state.enabled_layers.get(*i).copied().unwrap_or(false))
+                .map(|(_, channel)| channel)
+                .collect();
+
+            let composited = self.compositer.composite_images(&enabled).await?;
+            *lane = vec![Arc::new(composited)];
         }
-
-        let first_image = input.first().ok_or_else(|| {
-            let error_msg = "No input image provided to decomposer".to_string();
-            self.base
-                .events
-                .emit(FrontendMessage::error(error_msg.clone()));
-            anyhow::anyhow!(error_msg)
-        })?;
-
-        let decomposed = self.processor.apply_decomposition(first_image).await?;
-
-        let images: Vec<image::RgbaImage> = decomposed
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, image)| {
-                if self.state.enabled_layers.get(i).copied().unwrap_or(false) {
-                    Some(image)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let composited = self.compositer.composite_images(&images).await?;
-
-        *input = vec![Arc::new(composited)];
-
-        Ok(())
+        images.replace_lanes(Dimension::C, lanes)
     }
 
     /// Apply tool commands and canvas input to this instance.

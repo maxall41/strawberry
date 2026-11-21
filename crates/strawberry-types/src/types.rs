@@ -62,6 +62,26 @@ pub struct PipelineState {
     pub selected_tool: Option<ToolId>,
 }
 
+/// Where annotations read from a file are placed among the loaded positions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotationPlacement {
+    /// Place every annotation on the current position.
+    CurrentPosition,
+    /// Place each annotation on the position its slice number refers to.
+    SplitByPosition,
+}
+
+/// Controls which planes should be exported
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportScope {
+    /// Write the displayed image.
+    CurrentView,
+    /// Write the channels at the displayed position composited into one image.
+    CompositeView,
+    /// Write every image the viewer can show as TIFF ZIP archive.
+    AllViews,
+}
+
 #[derive(Debug, Clone)]
 pub enum ToolInput {
     Message(crate::PipelineObjectMessage),

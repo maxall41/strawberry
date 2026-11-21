@@ -8,7 +8,8 @@ use indexmap::IndexMap;
 use std::{path::Path, sync::Arc};
 use strawberry_processing::GpuImageProcessor;
 use strawberry_types::{
-    BackendToolType, PendingProcessing, PipelineState, ToolBackend, ToolId, ToolState, ToolSummary,
+    BackendToolType, PendingProcessing, PipelineState, Position, ToolBackend, ToolId, ToolState,
+    ToolSummary,
 };
 use tokio::sync::watch;
 
@@ -40,6 +41,8 @@ impl std::ops::DerefMut for ToolInstance {
 pub struct ToolManager {
     pub tools: IndexMap<ToolId, ToolInstance>,
     pub selected_tool: Option<ToolId>,
+    /// Position shown in the viewer and edited by interactive tools.
+    pub selected_position: Position,
     /// Latest ordered tools, enablement, and selection for pipeline subscribers.
     pipeline_state_sender: watch::Sender<PipelineState>,
     gpu: Arc<GpuImageProcessor>,
@@ -53,6 +56,7 @@ impl ToolManager {
         Self {
             tools: IndexMap::new(),
             selected_tool: None,
+            selected_position: Position::default(),
             pipeline_state_sender: watch::channel(PipelineState::default()).0,
             gpu,
             next_tool_id: 1,
@@ -77,7 +81,7 @@ impl ToolManager {
     async fn create(&self, kind: &BackendToolType) -> anyhow::Result<ToolInstance> {
         let events = ToolEvents::default();
         let gpu = self.gpu.clone();
-        let backend: Box<dyn ToolBackend> = match kind {
+        let mut backend: Box<dyn ToolBackend> = match kind {
             BackendToolType::AutomaticSegmentation => {
                 Box::new(AutomaticSegmentation::new(events, gpu).await?)
             }
@@ -99,6 +103,7 @@ impl ToolManager {
             BackendToolType::Threshold => Box::new(Threshold::new(events, gpu).await?),
             BackendToolType::Watershed => Box::new(Watershed::new(events, gpu).await?),
         };
+        backend.select_position(self.selected_position);
         let tool_state_sender = watch::channel(backend.get_state()).0;
         Ok(ToolInstance {
             backend,
@@ -128,6 +133,17 @@ impl ToolManager {
                 tool.cancel_interaction();
             }
             self.selected_tool = id;
+        }
+    }
+    /// Select the position every tool edits, cancelling gestures begun on another position.
+    pub fn select_position(&mut self, position: Position) {
+        if position == self.selected_position {
+            return;
+        }
+        self.selected_position = position;
+        for tool in self.tools.values_mut() {
+            tool.cancel_interaction();
+            tool.select_position(position);
         }
     }
     /// Remove a tool instance and clear its selection when needed.
@@ -243,6 +259,8 @@ impl ToolManager {
             let kind = entry.kind()?;
             let mut tool = self.create(&kind).await?;
             tool.load_persisted_state(entry.state, &entry.assets, cli)?;
+            // Loading replaces runtime-only state, including the position selection.
+            tool.select_position(self.selected_position);
             tool.get_state().validate()?;
             tool.cancel_interaction();
             tool.tool_state_sender.send_replace(tool.get_state());

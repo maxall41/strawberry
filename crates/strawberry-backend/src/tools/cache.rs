@@ -1,7 +1,8 @@
 use strawberry_types::{
-    CompositorState, ContrastState, CounterState, DecomposerState, DifferenceOfGaussiansState,
-    GaussianBlurState, GrayscaleState, LocalMaximaState, MorphologyState, NerveTracerState,
-    ObjectSizeFilterState, RollingBallState, SobelState, ThresholdState, WatershedState,
+    AutomaticSegmentationState, CompositorState, ContrastState, CounterState, DecomposerState,
+    DifferenceOfGaussiansState, GaussianBlurState, GrayscaleState, ImageCollection,
+    LocalMaximaState, MorphologyState, NerveTracerState, ObjectSizeFilterState, RollingBallState,
+    SobelState, ThresholdState, WatershedState,
 };
 
 pub trait SyncState: Clone + PartialEq {
@@ -67,8 +68,7 @@ impl SyncState for NerveTracerState {
     }
     /// Return whether settings affecting image processing differ.
     fn processing_differs(&self, other: &Self) -> bool {
-        self.is_enabled != other.is_enabled
-            || self.selected_image_index != other.selected_image_index
+        self.is_enabled != other.is_enabled || self.selected_layer != other.selected_layer
     }
 }
 
@@ -103,8 +103,9 @@ impl<TState: SyncState> ToolSync<TState> {
 }
 
 pub struct ToolCache<TState> {
-    pub cached_output: Option<Vec<std::sync::Arc<image::RgbaImage>>>,
+    pub cached_output: Option<ImageCollection>,
     pub cached_state: Option<TState>,
+    cached_input: Option<ImageCollection>,
     pub sync: ToolSync<TState>,
 }
 
@@ -115,8 +116,20 @@ impl<TState: SyncState> ToolCache<TState> {
         Self {
             cached_output: None,
             cached_state: None,
+            cached_input: None,
             sync: ToolSync::new(state),
         }
+    }
+
+    /// Keep the images a run received so canvas interaction can read them until the next run.
+    pub fn remember_input(&mut self, images: &ImageCollection) {
+        self.cached_input = Some(images.clone());
+    }
+
+    /// Return the images the last run received, if this tool remembers its input.
+    #[must_use]
+    pub const fn get_input(&self) -> Option<&ImageCollection> {
+        self.cached_input.as_ref()
     }
 
     /// Invalidate stale cached output and report whether processing is needed.
@@ -130,21 +143,27 @@ impl<TState: SyncState> ToolCache<TState> {
 
     /// Return cached images when the processing settings still match.
     #[must_use]
-    pub fn valid_output(&self, state: &TState) -> Option<Vec<std::sync::Arc<image::RgbaImage>>> {
+    pub fn valid_output(&self, state: &TState) -> Option<ImageCollection> {
         self.cached_state
             .as_ref()
             .filter(|cached| !cached.processing_differs(state))
             .and_then(|_| self.cached_output.clone())
     }
 
-    /// Clear cached output and its associated settings.
+    /// Clear cached output and its associated settings, keeping the remembered input.
     pub fn invalidate(&mut self) {
         self.cached_output = None;
         self.cached_state = None;
     }
+
+    /// Clear cached output, its settings, and the remembered input.
+    pub fn invalidate_all(&mut self) {
+        self.invalidate();
+        self.cached_input = None;
+    }
 }
 
-impl SyncState for strawberry_types::AutomaticSegmentationState {
+impl SyncState for AutomaticSegmentationState {
     /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool {
         self.is_enabled

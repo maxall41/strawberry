@@ -9,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, compositor::GpuCompositor};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, CompositorMessage, CompositorState, FrontendMessage, PipelineObjectMessage,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, CompositorMessage, CompositorState, Dimension, FrontendMessage,
+    ImageCollection, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Compositor {
@@ -34,32 +34,24 @@ impl ToolBackend for Compositor {
         BackendToolType::Compositor
     }
 
-    /// Composite enabled input layers into a single BGRA image.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        self.state.real_layers_len = input.len();
-
-        if input.len() == 1 {
+    /// Composite the enabled layers at each position into a single BGRA image; positions holding
+    /// a single layer are left untouched.
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        self.state.real_layers_len = images.shape().c;
+        if images.shape().c <= 1 {
             return Ok(());
         }
-
-        let images: Vec<Arc<image::RgbaImage>> = input
-            .clone()
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, image)| {
-                if self.state.enabled_layers.get(i).copied().unwrap_or(false) {
-                    Some(image)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let composited = self.compositer.composite_images(&images).await?;
-
-        *input = vec![Arc::new(composited)];
-
-        Ok(())
+        let mut lanes = images.lanes(Dimension::C);
+        for lane in &mut lanes {
+            let enabled: Vec<_> = lane
+                .iter()
+                .zip(&self.state.enabled_layers)
+                .filter(|&(_, &enabled)| enabled)
+                .map(|(image, _)| image.clone())
+                .collect();
+            *lane = vec![Arc::new(self.compositer.composite_images(&enabled).await?)];
+        }
+        images.replace_lanes(Dimension::C, lanes)
     }
 
     /// Apply tool commands and canvas input to this instance.

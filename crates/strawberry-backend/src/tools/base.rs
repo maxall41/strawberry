@@ -70,19 +70,19 @@ macro_rules! impl_tool_cache {
         }
 
         /// Return cached output when its processing settings still match.
-        fn valid_cached_output(&self) -> Option<Vec<std::sync::Arc<image::RgbaImage>>> {
+        fn valid_cached_output(&self) -> Option<strawberry_types::ImageCollection> {
             self.cache.valid_output(&self.state)
         }
 
         /// Cache processed images together with their settings.
-        fn set_cached_output(&mut self, output: Vec<std::sync::Arc<image::RgbaImage>>) {
+        fn set_cached_output(&mut self, output: strawberry_types::ImageCollection) {
             self.cache.cached_output = Some(output);
             self.cache.cached_state = Some(self.state.clone());
         }
 
-        /// Discard cached processing data.
+        /// Discard cached output and the remembered input.
         fn invalidate_cache(&mut self) {
-            self.cache.invalidate();
+            self.cache.invalidate_all();
         }
     };
 }

@@ -1,5 +1,6 @@
 pub mod color;
 pub mod consts;
+pub mod images;
 pub mod messages;
 pub mod overlay;
 pub mod state;
@@ -9,6 +10,7 @@ pub mod types;
 // Re-export everything for convenience
 pub use color::*;
 pub use consts::*;
+pub use images::*;
 pub use messages::*;
 pub use overlay::*;
 pub use state::*;

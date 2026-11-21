@@ -9,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, watershed::GpuWatershed};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, PipelineObjectMessage, ToolBackend, ToolInput, ToolState, WatershedMessage,
-    WatershedState,
+    BackendToolType, ImageCollection, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
+    WatershedMessage, WatershedState,
 };
 
 pub struct Watershed {
@@ -34,9 +34,9 @@ impl ToolBackend for Watershed {
         BackendToolType::Watershed
     }
 
-    /// Apply the configured watershed segmentation to each input layer.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        for image in input {
+    /// Apply the configured watershed segmentation to every input plane.
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        for image in images.planes_mut() {
             *image = Arc::new(
                 self.processor
                     .apply_watershed(image, self.state.sigma, self.state.min_distance)

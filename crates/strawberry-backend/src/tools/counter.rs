@@ -4,21 +4,25 @@ use num_traits::ToPrimitive;
 use strawberry_types::RgbaColor;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::counter::fitting::{find_counts_within_polygon, ramer_douglas_peucker_closed};
 
-use crate::counter::io::export_counter_to_xml_file;
+use crate::counter::io::{export_counter_to_xml_file, read_marker_file};
 
 use crate::utils::binary_image::BinaryImageWrapper;
 use async_trait::async_trait;
+use image::RgbaImage;
 use lutz::{Pixel, lutz};
 use strawberry_types::consts::CIRCLE_COLORS;
 use strawberry_types::overlay::{CircleStyle, OverlayElement, ToolOverlay};
 use strawberry_types::{
     BackendToolType, CountData, CountMessage, CounterMode, CounterState, CounterTool,
-    FrontendMessage, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
+    FrontendMessage, ImageCollection, PerPosition, PipelineObjectMessage, Position, Shape,
+    ToolBackend, ToolInput, ToolState,
 };
+
+/// Distance in pixels from a click within which the delete tool removes counts.
+const DELETE_RADIUS: u64 = 6;
 
 pub struct Counter {
     pub state: CounterState,
@@ -27,6 +31,27 @@ pub struct Counter {
     pub lasso_points: Vec<(u64, u64)>,
     pub is_lasso_dragging: bool,
     overlays_dirty: bool,
+}
+
+/// Find the centroid of every connected foreground blob in a binary image.
+fn detect_blob_centroids(image: &RgbaImage) -> anyhow::Result<Vec<CountData>> {
+    let binary_wrapper = BinaryImageWrapper::new(image, 128); // Use threshold of 128
+    //TODO: move to gpu
+    lutz::<BinaryImageWrapper, Vec<Pixel>>(binary_wrapper)
+        .filter(|blob_pixels| !blob_pixels.is_empty())
+        .map(|blob_pixels| {
+            let sum_x: u64 = blob_pixels.iter().map(|p| u64::from(p.x)).sum();
+            let sum_y: u64 = blob_pixels.iter().map(|p| u64::from(p.y)).sum();
+            let count = u64::try_from(blob_pixels.len())?;
+            Ok(CountData {
+                position: (
+                    sum_x.checked_div(count).unwrap_or_default(),
+                    sum_y.checked_div(count).unwrap_or_default(),
+                ),
+                size: u16::try_from(blob_pixels.len()).unwrap_or(u16::MAX),
+            })
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -44,6 +69,17 @@ impl ToolBackend for Counter {
         self.overlays_dirty |= self.is_lasso_dragging && self.lasso_points.len() > 1;
         self.lasso_points.clear();
         self.is_lasso_dragging = false;
+    }
+    /// Drop the previous images' counts, which may lie on slices the new images lack; count
+    /// types are settings and stay.
+    fn release_previous_input(&mut self) {
+        self.state.counts.clear();
+        self.state.review_current_index = 0;
+    }
+    /// Place, review, and show counts on the given position.
+    fn select_position(&mut self, position: Position) {
+        self.state.counts.select(position);
+        self.state.review_current_index = 0;
     }
     /// Return and clear the pending overlay change flag.
     fn take_overlay_changes(&mut self) -> bool {
@@ -63,33 +99,27 @@ impl ToolBackend for Counter {
         ToolState::CounterState(self.state.clone())
     }
 
-    /// Detect connected components and update automatic counts when automatic mode is active.
-    async fn process(
-        &mut self,
-        output_images: &mut Vec<Arc<image::RgbaImage>>,
-    ) -> anyhow::Result<()> {
+    /// Detect connected components at every position when automatic mode is active, replacing
+    /// earlier detections and keeping manual counts.
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+        self.state.shape = images.shape();
         if self.state.mode == CounterMode::Auto {
-            self.state.auto_counts.clear();
-
-            for image in output_images.iter() {
-                let binary_wrapper = BinaryImageWrapper::new(image, 128); // Use threshold of 128
-                //TODO: move to gpu
-                for blob_pixels in lutz::<BinaryImageWrapper, Vec<Pixel>>(binary_wrapper) {
-                    if !blob_pixels.is_empty() {
-                        // Calculate centroid of this blob
-                        let sum_x: u64 = blob_pixels.iter().map(|p| u64::from(p.x)).sum();
-                        let sum_y: u64 = blob_pixels.iter().map(|p| u64::from(p.y)).sum();
-                        let count = u64::try_from(blob_pixels.len())?;
-
-                        self.state.auto_counts.push(CountData {
-                            position: (
-                                sum_x.checked_div(count).unwrap_or_default(),
-                                sum_y.checked_div(count).unwrap_or_default(),
-                            ),
-                            size: u16::try_from(blob_pixels.len()).unwrap_or(u16::MAX),
-                        });
+            let detected = images
+                .positions()
+                .map(|position| {
+                    let mut counts = Vec::new();
+                    for channel in images.channels_at(position) {
+                        counts.extend(detect_blob_centroids(channel)?);
                     }
-                }
+                    Ok((position, counts))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            // Positions a smaller stack no longer has must not keep their old detections.
+            for counts in self.state.counts.values_mut() {
+                counts.auto.clear();
+            }
+            for (position, counts) in detected {
+                self.state.counts.position_mut(position).auto = counts;
             }
         }
 
@@ -108,31 +138,30 @@ impl ToolBackend for Counter {
                     return Ok(());
                 }
                 if let Some(id) = self.state.active_count_type {
+                    let counts = self
+                        .state
+                        .counts
+                        .selected_mut()
+                        .manual
+                        .entry(id)
+                        .or_default();
                     match self.state.active_tool {
                         Some(CounterTool::Place) => {
-                            self.state
-                                .manual_counts
-                                .entry(id)
-                                .or_default()
-                                .push(CountData {
-                                    position: (x, y),
-                                    size: 0,
-                                });
+                            counts.push(CountData {
+                                position: (x, y),
+                                size: 0,
+                            });
                         }
                         Some(CounterTool::Delete) => {
-                            if let Some(counts) = self.state.manual_counts.get_mut(&id) {
-                                counts.retain(|count| {
-                                    let dx = count.position.0.abs_diff(x);
-                                    let dy = count.position.1.abs_diff(y);
-                                    // A six-pixel radius; avoid signed conversion and overflow.
-                                    dx > 6
-                                        || dy > 6
-                                        || dx
-                                            .saturating_mul(dx)
-                                            .saturating_add(dy.saturating_mul(dy))
-                                            > 36
-                                });
-                            }
+                            counts.retain(|count| {
+                                let dx = count.position.0.abs_diff(x);
+                                let dy = count.position.1.abs_diff(y);
+                                // Compare squared distances to avoid signed conversion and overflow.
+                                dx > DELETE_RADIUS
+                                    || dy > DELETE_RADIUS
+                                    || dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+                                        > DELETE_RADIUS.saturating_mul(DELETE_RADIUS)
+                            });
                         }
                         _ => {}
                     }
@@ -156,16 +185,8 @@ impl ToolBackend for Counter {
             }
             ToolInput::InteractionEnd => {
                 if self.is_lasso_dragging && !self.lasso_points.is_empty() {
-                    // Process the lasso deletion
-                    if let Some(active_count_type) = &self.state.active_count_type {
-                        let polygon = ramer_douglas_peucker_closed(self.lasso_points.clone());
-                        if let Some(counts) = self.state.manual_counts.get(active_count_type) {
-                            let filtered = find_counts_within_polygon(&polygon, counts.clone());
-                            self.state
-                                .manual_counts
-                                .insert(*active_count_type, filtered);
-                        }
-                    }
+                    let polygon = ramer_douglas_peucker_closed(self.lasso_points.clone());
+                    self.delete_counts_inside(&polygon);
                     self.cancel_interaction();
                 }
             }
@@ -175,29 +196,13 @@ impl ToolBackend for Counter {
                 };
                 match count_message {
                     CountMessage::NewCountType(id) => {
-                        self.state.manual_counts.insert(id, vec![]);
                         self.state.count_type_visibility.insert(id, true);
                         self.state.count_type_names.insert(id, format!("Type {id}"));
                         self.state.active_count_type = Some(id);
                     }
                     CountMessage::DeletionLasso(points) => {
-                        if let Some(active_count_type) = &self.state.active_count_type {
-                            let polygon = ramer_douglas_peucker_closed(points);
-                            let counts = self
-                                .state
-                                .manual_counts
-                                .get(active_count_type)
-                                .ok_or_else(|| {
-                                    anyhow::anyhow!(
-                                        "Active count type {active_count_type} not found"
-                                    )
-                                })?
-                                .clone();
-                            self.state.manual_counts.insert(
-                                *active_count_type,
-                                find_counts_within_polygon(&polygon, counts),
-                            );
-                        }
+                        let polygon = ramer_douglas_peucker_closed(points);
+                        self.delete_counts_inside(&polygon);
                     }
                     CountMessage::SetActiveCountType(id) => {
                         self.state.active_count_type = Some(id);
@@ -209,13 +214,15 @@ impl ToolBackend for Counter {
                         self.state.active_tool = tool;
                     }
                     CountMessage::DeleteCountType(id) => {
-                        self.state.manual_counts.remove(&id);
+                        for counts in self.state.counts.values_mut() {
+                            counts.manual.remove(&id);
+                        }
                         self.state.count_type_visibility.remove(&id);
                         self.state.count_type_names.remove(&id);
                         // Never let active_count_type dangle
                         if self.state.active_count_type == Some(id) {
                             self.state.active_count_type =
-                                self.state.manual_counts.keys().min().copied();
+                                self.state.count_type_names.keys().min().copied();
                             self.state.review_current_index = 0;
                         }
                     }
@@ -230,7 +237,6 @@ impl ToolBackend for Counter {
                         self.state.mode = new_mode;
                     }
                     CountMessage::SaveCounts(file) => {
-                        // Use the utils::io module to export to XML
                         if let Err(e) = export_counter_to_xml_file(&self.state, &file) {
                             self.events.emit(FrontendMessage::error(
                                 "Error saving counts: XML export failed".to_string(),
@@ -241,46 +247,32 @@ impl ToolBackend for Counter {
                             "Counts saved successfully!".to_string(),
                         ));
                     }
-                    CountMessage::LoadCounts(file) => {
-                        match crate::counter::io::import_counter_from_xml_file(&file) {
-                            Ok(loaded_state) => {
-                                self.state.manual_counts = loaded_state.manual_counts;
-                                self.state.auto_counts = loaded_state.auto_counts;
-                                self.state.mode = loaded_state.mode;
-                                self.state.active_count_type = loaded_state.active_count_type;
-                                self.state.count_type_names = loaded_state.count_type_names;
-                                self.state.is_enabled = true;
-
-                                // Initialize visibility for all loaded count types
-                                self.state.count_type_visibility.clear();
-                                for &count_type_id in self.state.manual_counts.keys() {
-                                    self.state.count_type_visibility.insert(count_type_id, true);
-                                }
-
-                                self.events.emit(FrontendMessage::success(
-                                    "Counts loaded successfully!".to_string(),
-                                ));
-                                println!(
-                                    "Sent count loaded user feedback over command_sender broadcast channel"
-                                );
-                            }
-                            Err(e) => {
-                                self.events.emit(FrontendMessage::error(
-                                    "Error loading counts: XML import failed".to_string(),
-                                ));
-                                return Err(anyhow::anyhow!("Error loading counts from file: {e}"));
-                            }
+                    CountMessage::LoadCounts(file, placement) => match read_marker_file(&file)
+                        .and_then(|marker_file| {
+                            marker_file.apply_to_counter_state(&mut self.state, placement)
+                        }) {
+                        Ok(()) => {
+                            self.events.emit(FrontendMessage::success(
+                                "Counts loaded successfully!".to_string(),
+                            ));
                         }
-                    }
+                        Err(e) => {
+                            eprintln!("Failed to load counts from {}: {e}", file.display());
+                            self.events.emit(FrontendMessage::error(format!(
+                                "Failed to load counts: {e}"
+                            )));
+                        }
+                    },
                     CountMessage::CopyToManual => {
                         // `len()` collides with existing ids once types have
                         // been deleted; pick the first genuinely free id.
                         let new_key = (0..=u16::MAX)
-                            .find(|k| !self.state.manual_counts.contains_key(k))
+                            .find(|k| !self.state.count_type_names.contains_key(k))
                             .ok_or_else(|| anyhow::anyhow!("No count type IDs available"))?;
-                        self.state
-                            .manual_counts
-                            .insert(new_key, self.state.auto_counts.clone());
+                        // Automatic counting covers every position, so every position's counts are copied.
+                        for counts in self.state.counts.values_mut() {
+                            counts.manual.insert(new_key, counts.auto.clone());
+                        }
                         self.state.count_type_visibility.insert(new_key, true);
                         self.state
                             .count_type_names
@@ -290,83 +282,45 @@ impl ToolBackend for Counter {
                         self.state.review_current_index = 0;
                     }
                     CountMessage::ReviewNavigatePrevious => {
-                        if let Some(active_count_type) = self.state.active_count_type
-                            && let Some(counts) = self.state.manual_counts.get(&active_count_type)
-                        {
-                            let counts_len = counts.len();
-
-                            if counts_len > 0 {
-                                // Clamp: the cursor can be stale when counts were
-                                // trimmed outside review (Delete tool, lasso).
-                                let current_index = self
-                                    .state
-                                    .review_current_index
-                                    .min(counts_len.saturating_sub(1));
-                                let new_index = if current_index == 0 {
-                                    counts_len.saturating_sub(1)
-                                } else {
-                                    current_index.saturating_sub(1)
-                                };
-                                self.state.review_current_index = new_index;
-
-                                // Emit snap to position
-                                if let Some(count) = counts.get(new_index) {
-                                    self.events.emit(FrontendMessage::SnapToPosition(
-                                        count
-                                            .position
-                                            .0
-                                            .to_f32()
-                                            .context("Count coordinate cannot be displayed")?,
-                                        count
-                                            .position
-                                            .1
-                                            .to_f32()
-                                            .context("Count coordinate cannot be displayed")?,
-                                    ));
-                                }
-                            }
+                        let counts_len = self.active_counts().len();
+                        if counts_len > 0 {
+                            // Clamp: the cursor can be stale when counts were
+                            // trimmed outside review (Delete tool, lasso).
+                            let current_index = self
+                                .state
+                                .review_current_index
+                                .min(counts_len.saturating_sub(1));
+                            self.state.review_current_index = if current_index == 0 {
+                                counts_len.saturating_sub(1)
+                            } else {
+                                current_index.saturating_sub(1)
+                            };
+                            self.snap_to_reviewed_count()?;
                         }
                     }
                     CountMessage::ReviewNavigateNext => {
-                        if let Some(active_count_type) = self.state.active_count_type
-                            && let Some(counts) = self.state.manual_counts.get(&active_count_type)
-                        {
-                            let counts_len = counts.len();
-
-                            if counts_len > 0 {
-                                // Clamp: the cursor can be stale when counts were
-                                // trimmed outside review (Delete tool, lasso).
-                                let current_index = self
-                                    .state
-                                    .review_current_index
-                                    .min(counts_len.saturating_sub(1));
-                                let new_index = (current_index.saturating_add(1))
-                                    .checked_rem(counts_len)
-                                    .unwrap_or_default();
-                                self.state.review_current_index = new_index;
-
-                                // Emit snap to position
-                                if let Some(count) = counts.get(new_index) {
-                                    self.events.emit(FrontendMessage::SnapToPosition(
-                                        count
-                                            .position
-                                            .0
-                                            .to_f32()
-                                            .context("Count coordinate cannot be displayed")?,
-                                        count
-                                            .position
-                                            .1
-                                            .to_f32()
-                                            .context("Count coordinate cannot be displayed")?,
-                                    ));
-                                }
-                            }
+                        let counts_len = self.active_counts().len();
+                        if counts_len > 0 {
+                            // Clamp: the cursor can be stale when counts were
+                            // trimmed outside review (Delete tool, lasso).
+                            let current_index = self
+                                .state
+                                .review_current_index
+                                .min(counts_len.saturating_sub(1));
+                            self.state.review_current_index = (current_index.saturating_add(1))
+                                .checked_rem(counts_len)
+                                .unwrap_or_default();
+                            self.snap_to_reviewed_count()?;
                         }
                     }
                     CountMessage::DeleteCurrentCount => {
                         if let Some(active_count_type) = self.state.active_count_type
-                            && let Some(counts) =
-                                self.state.manual_counts.get_mut(&active_count_type)
+                            && let Some(counts) = self
+                                .state
+                                .counts
+                                .selected_mut()
+                                .manual
+                                .get_mut(&active_count_type)
                             && !counts.is_empty()
                         {
                             // Clamp instead of the old `index < len` guard: a
@@ -378,26 +332,10 @@ impl ToolBackend for Counter {
                                 .min(counts.len().saturating_sub(1));
                             counts.remove(current_index);
 
-                            self.state.review_current_index = if counts.is_empty() {
-                                0
-                            } else {
-                                current_index.min(counts.len().saturating_sub(1))
-                            };
+                            self.state.review_current_index =
+                                current_index.min(counts.len().saturating_sub(1));
                             // Deleting the last count leaves nothing to snap to.
-                            if let Some(count) = counts.get(self.state.review_current_index) {
-                                self.events.emit(FrontendMessage::SnapToPosition(
-                                    count
-                                        .position
-                                        .0
-                                        .to_f32()
-                                        .context("Count coordinate cannot be displayed")?,
-                                    count
-                                        .position
-                                        .1
-                                        .to_f32()
-                                        .context("Count coordinate cannot be displayed")?,
-                                ));
-                            }
+                            self.snap_to_reviewed_count()?;
                         }
                     }
                 }
@@ -414,7 +352,7 @@ impl ToolBackend for Counter {
 
     crate::impl_tool_cache!();
 
-    /// Build the canvas overlays for this tool.
+    /// Build the canvas overlays for the selected position's counts.
     fn get_overlays(&self, id: strawberry_types::ToolId) -> Option<crate::overlay::ToolOverlay> {
         // Only the overlay is rounded to f32; stored count positions remain exact integers.
         if !self.state.is_enabled {
@@ -424,7 +362,8 @@ impl ToolBackend for Counter {
         let mut elements = Vec::new();
 
         // Manual counts
-        for (count_type_id, counts) in &self.state.manual_counts {
+        let manual_counts = self.state.counts.selected().map(|counts| &counts.manual);
+        for (count_type_id, counts) in manual_counts.into_iter().flatten() {
             let is_visible = self
                 .state
                 .count_type_visibility
@@ -466,7 +405,7 @@ impl ToolBackend for Counter {
         // Auto counts
         if self.state.mode == CounterMode::Auto {
             let color = CIRCLE_COLORS[0]; // Use first color for auto counts
-            for count in &self.state.auto_counts {
+            for count in self.state.auto_counts() {
                 elements.push(OverlayElement::Circle {
                     x: count.position.0.to_f32()?,
                     y: count.position.1.to_f32()?,
@@ -503,8 +442,8 @@ impl Counter {
     pub fn new(events: ToolEvents) -> Self {
         let state = CounterState {
             is_enabled: false,
-            manual_counts: HashMap::new(),
-            auto_counts: Vec::new(),
+            counts: PerPosition::default(),
+            shape: Shape::default(),
             mode: CounterMode::Manual,
             active_tool: None,
             active_count_type: None,
@@ -520,5 +459,40 @@ impl Counter {
             is_lasso_dragging: false,
             overlays_dirty: false,
         }
+    }
+
+    /// Return the selected position's counts of the active type.
+    fn active_counts(&self) -> &[CountData] {
+        self.state
+            .active_count_type
+            .map_or(&[], |id| self.state.manual_counts(id))
+    }
+
+    /// Delete the active type's counts on the selected position that lie inside a lasso polygon.
+    fn delete_counts_inside(&mut self, polygon: &[(u64, u64)]) {
+        if let Some(id) = self.state.active_count_type
+            && let Some(counts) = self.state.counts.selected_mut().manual.get_mut(&id)
+        {
+            *counts = find_counts_within_polygon(polygon, std::mem::take(counts));
+        }
+    }
+
+    /// Center the viewer on the count under the review cursor, if there is one.
+    fn snap_to_reviewed_count(&self) -> anyhow::Result<()> {
+        if let Some(count) = self.active_counts().get(self.state.review_current_index) {
+            self.events.emit(FrontendMessage::SnapToPosition(
+                count
+                    .position
+                    .0
+                    .to_f32()
+                    .context("Count coordinate cannot be displayed")?,
+                count
+                    .position
+                    .1
+                    .to_f32()
+                    .context("Count coordinate cannot be displayed")?,
+            ));
+        }
+        Ok(())
     }
 }

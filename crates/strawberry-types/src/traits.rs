@@ -1,21 +1,33 @@
 use async_trait::async_trait;
-use image::RgbaImage;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::{
-    BackendToolType, PersistedState, PipelineObjectMessage, ToolInput, ToolState,
-    overlay::ToolOverlay,
+    BackendToolType, ImageCollection, PersistedState, PipelineObjectMessage, PlaneProgress,
+    Position, ToolInput, ToolState, overlay::ToolOverlay,
 };
 
 /// Named files stored alongside a tool's configuration in a pipeline archive.
 pub type ToolAssets = HashMap<String, Vec<u8>>;
 
+/// Publish an active stage's plane counts from the thread processing them.
+pub type ReportPlaneProgress = Box<dyn FnMut(PlaneProgress) + Send>;
+
 /// Trait for image processing tools (backend)
 #[async_trait]
 pub trait ToolBackend: Send + Sync {
-    /// Process input images and return modified images
-    async fn process(&mut self, output_images: &mut Vec<Arc<RgbaImage>>) -> anyhow::Result<()>;
+    /// Process the images of the collection in place.
+    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()>;
+
+    /// Process the collection and report plane counts when supported by the stage.
+    /// # Errors
+    /// Returns an error if processing fails.
+    async fn process_with_progress(
+        &mut self,
+        images: &mut ImageCollection,
+        _report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
+        self.process(images).await
+    }
 
     /// Check if this tool is currently enabled
     fn is_enabled(&self) -> bool;
@@ -43,6 +55,13 @@ pub trait ToolBackend: Send + Sync {
     }
     /// Cancel any active canvas interaction owned by this tool.
     fn cancel_interaction(&mut self) {}
+    /// Direct canvas edits and per-position annotations to the given position.
+    fn select_position(&mut self, _position: Position) {}
+    /// Return whether the tool is computing an overlay in the background, which the viewer shows
+    /// as pipeline activity.
+    fn has_pending_overlay(&self) -> bool {
+        false
+    }
     /// Report and consume pending overlay changes; return false by default.
     fn take_overlay_changes(&mut self) -> bool {
         false
@@ -122,12 +141,12 @@ pub trait ToolBackend: Send + Sync {
     }
 
     /// Return the cached output only if it is still valid for the tool's current state.
-    fn valid_cached_output(&self) -> Option<Vec<Arc<RgbaImage>>> {
+    fn valid_cached_output(&self) -> Option<ImageCollection> {
         None
     }
 
     /// Cache the output
-    fn set_cached_output(&mut self, _output: Vec<Arc<RgbaImage>>) {}
+    fn set_cached_output(&mut self, _output: ImageCollection) {}
 
     /// Invalidate reusable output while retaining input needed for canvas interactions.
     fn invalidate_cached_output(&mut self) {
@@ -136,6 +155,10 @@ pub trait ToolBackend: Send + Sync {
 
     /// Invalidate all processing caches, including cached input.
     fn invalidate_cache(&mut self) {}
+
+    /// Release state tied to the previous images, such as predictions or annotations, once new
+    /// images are loaded, whether or not the tool is enabled.
+    fn release_previous_input(&mut self) {}
 
     /// Get overlay elements to render on the primary viewer.
     /// Returns None if the tool doesn't produce overlays.
