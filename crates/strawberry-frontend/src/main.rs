@@ -47,7 +47,7 @@ use strawberry_types::{
     Shape,
     overlay::{CircleStyle, OverlayCollection, OverlayElement},
 };
-use tokio::sync::broadcast;
+use tokio::{runtime::Runtime, sync::broadcast};
 
 struct Assets {
     base: PathBuf,
@@ -1389,20 +1389,20 @@ fn humanize_tool_name(name: &str) -> String {
     result
 }
 
-#[tokio::main]
 #[expect(
     clippy::too_many_lines,
     reason = "Keep declarative GPUI layout and its event bindings together"
 )]
 /// Initialize the application, backend, and primary viewer window.
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     env_logger::init();
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    let (mut pipeline, view_sender, view_recv, output_frames) = Pipeline::new().await?;
+    let runtime = Runtime::new()?;
+    let (mut pipeline, view_sender, view_recv, output_frames) = runtime.block_on(Pipeline::new())?;
 
-    let pipeline_handle = tokio::spawn(async move {
+    let pipeline_handle = runtime.spawn(async move {
         loop {
             if let Err(e) = pipeline.process_commands().await {
                 eprintln!("Error processing pipeline commands: {e}");
@@ -1413,7 +1413,7 @@ async fn main() -> Result<()> {
     });
 
     // Spawn a task to monitor the pipeline and propagate panics
-    tokio::spawn(async move {
+    runtime.spawn(async move {
         let Err(e) = pipeline_handle.await;
         if e.is_panic() {
             eprintln!("Pipeline task panicked, shutting down application");
@@ -1423,6 +1423,9 @@ async fn main() -> Result<()> {
 
     let image_directory: Arc<RwLock<Option<PathBuf>>> = Arc::new(RwLock::new(None));
 
+    // GPUI drives its own event loop. Running it inside a single Tokio poll exhausts
+    // that poll's cooperative budget and stalls the UI's channel receivers.
+    let _runtime_context = runtime.enter();
     gpui_platform::application()
         .with_assets(Assets {
             base: manifest_dir.join("examples"),

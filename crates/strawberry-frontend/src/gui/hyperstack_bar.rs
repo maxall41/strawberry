@@ -43,6 +43,7 @@ impl DimensionControl {
                 },
                 cx,
             )
+            .show_errors_in_tooltip()
         });
         cx.subscribe(&slider, |this, _, event: &SliderEvent, cx| {
             this.select_index(usize::try_from(event.0).unwrap_or_default(), cx);

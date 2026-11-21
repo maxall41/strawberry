@@ -6,7 +6,7 @@ use crate::segmentation::{
 };
 use crate::tools::base::ToolEvents;
 use crate::utils::file_io::write_artifact;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use async_trait::async_trait;
 use by_address::ByAddress;
 use image::RgbaImage;
@@ -50,7 +50,7 @@ struct TrainingJob {
 
 /// A background prediction of one input image for the overlay preview.
 struct PreviewJob {
-    receiver: flume::Receiver<Result<Vec<image::GrayImage>>>,
+    receiver: flume::Receiver<Result<Vec<Vec<image::GrayImage>>>>,
     image: Arc<RgbaImage>,
     model: Arc<SegmentationModel>,
 }
@@ -662,19 +662,19 @@ impl AutomaticSegmentation {
             .get(&ByAddress(Arc::clone(input)))
             .filter(|cached| Arc::ptr_eq(&cached.model, model))
     }
-    /// Start predicting class planes for an image on a blocking worker, which sends its result
-    /// to the returned receiver.
+    /// Start predicting class planes for each image on a blocking worker, which sends their
+    /// results to the returned receiver.
     fn spawn_prediction(
         &self,
-        image: Arc<RgbaImage>,
+        images: Vec<Arc<RgbaImage>>,
         model: Arc<SegmentationModel>,
-    ) -> flume::Receiver<Result<Vec<image::GrayImage>>> {
+    ) -> flume::Receiver<Result<Vec<Vec<image::GrayImage>>>> {
         let extractor = self.extractor.clone();
         let inference = self.state.inference.clone();
         let (tx, rx) = flume::bounded(1);
         tokio::task::spawn_blocking(move || {
             let _ = tx.send(futures::executor::block_on(
-                model.predict(&extractor, &image, &inference),
+                model.predict(&extractor, &images, &inference),
             ));
         });
         rx
@@ -695,23 +695,33 @@ impl AutomaticSegmentation {
             },
         );
     }
-    /// Predict class planes for an image, reusing a cached prediction for the same image and model.
-    async fn predict(
+    /// Predict every image without a cached prediction under `model` in one background job,
+    /// so their tiles share one parallel limit, and cache the results.
+    async fn cache_predictions<'a>(
         &mut self,
-        image: Arc<RgbaImage>,
-        model: Arc<SegmentationModel>,
-    ) -> Result<Arc<Vec<image::GrayImage>>> {
-        if let Some(cached) = self.get_cached_inference(&image, &model) {
-            return Ok(cached.output.clone());
+        images: impl Iterator<Item = &'a Arc<RgbaImage>>,
+        model: &Arc<SegmentationModel>,
+    ) -> Result<()> {
+        let mut seen = HashSet::new();
+        let uncached: Vec<_> = images
+            .filter(|image| {
+                self.get_cached_inference(image, model).is_none()
+                    && seen.insert(ByAddress(Arc::clone(image)))
+            })
+            .cloned()
+            .collect();
+        if uncached.is_empty() {
+            return Ok(());
         }
-        let output = self
-            .spawn_prediction(image.clone(), model.clone())
+        let outputs = self
+            .spawn_prediction(uncached.clone(), model.clone())
             .recv_async()
             .await
             .map_err(|_| anyhow::anyhow!("Prediction worker stopped unexpectedly"))??;
-        let output = Arc::new(output);
-        self.cache_inference(image, model, output.clone());
-        Ok(output)
+        for (image, output) in uncached.into_iter().zip(outputs) {
+            self.cache_inference(image, model.clone(), Arc::new(output));
+        }
+        Ok(())
     }
     /// Predict the selected input in the background for the overlay preview, unless a model is
     /// missing or the prediction is cached or already running.
@@ -727,7 +737,7 @@ impl AutomaticSegmentation {
             return;
         }
         self.preview_job = Some(PreviewJob {
-            receiver: self.spawn_prediction(image.clone(), model.clone()),
+            receiver: self.spawn_prediction(vec![image.clone()], model.clone()),
             image,
             model,
         });
@@ -761,7 +771,7 @@ impl AutomaticSegmentation {
                 .model
                 .as_ref()
                 .is_some_and(|model| Arc::ptr_eq(model, &job.model));
-        match result {
+        match result.and_then(|mut outputs| outputs.pop().context("Missing preview prediction")) {
             Ok(output) if selected => {
                 self.cache_inference(job.image, job.model, Arc::new(output));
                 self.refresh_prediction_overlay();
@@ -1405,8 +1415,14 @@ impl ToolBackend for AutomaticSegmentation {
         let Some(model) = self.model.clone() else {
             return Ok(());
         };
+        self.cache_predictions(images.channel(self.state.selected_layer), &model)
+            .await?;
         for slot in images.channel_mut(self.state.selected_layer) {
-            let output = self.predict(slot.clone(), model.clone()).await?;
+            let output = self
+                .get_cached_inference(slot, &model)
+                .context("Missing plane prediction")?
+                .output
+                .clone();
             *slot = Arc::new(self.render_prediction(&output)?);
         }
         Ok(())

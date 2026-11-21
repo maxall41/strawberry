@@ -10,7 +10,7 @@ use gpui::{
 };
 use tokio::time::Instant;
 
-use super::{icon::Icon, theme};
+use super::{icon::Icon, theme, tooltip::TooltipView};
 
 #[derive(Clone)]
 pub struct ValueControlEvent {
@@ -46,6 +46,7 @@ pub struct ValueControl {
     pub text: String,
     pub value: f32,
     input_error: Option<String>,
+    error_tooltip: bool,
     initialized: bool,
     focus_handle: FocusHandle,
     highlight: bool,
@@ -74,6 +75,7 @@ impl ValueControl {
             text,
             value,
             input_error: None,
+            error_tooltip: false,
             initialized: false,
             focus_handle: cx.focus_handle(),
             highlight: false,
@@ -91,6 +93,12 @@ impl ValueControl {
         let mut control = Self::new(String::new(), 0.0, config, cx);
         control.set_integer_value(value);
         control
+    }
+
+    /// Report invalid input in a hover tooltip instead of a message below the field.
+    pub const fn show_errors_in_tooltip(mut self) -> Self {
+        self.error_tooltip = true;
+        self
     }
 
     /// Clamp and store an exact integer value and refresh its text.
@@ -420,6 +428,14 @@ impl Render for ValueControl {
                                     .child(self.formatted_value())
                             })
                             .id(ElementId::Name(SharedString::from(id)))
+                            .when_some(
+                                self.input_error.clone().filter(|_| self.error_tooltip),
+                                |field, error| {
+                                    field.tooltip(move |_, cx| {
+                                        cx.new(|_| TooltipView { text: error.clone() }).into()
+                                    })
+                                },
+                            )
                             .on_scroll_wheel(cx.listener(
                                 |this, event: &gpui::ScrollWheelEvent, window, cx| {
                                     if matches!(this.kind, ValueKind::Integer(_))
@@ -506,7 +522,7 @@ impl Render for ValueControl {
                             .child(Self::step_button(inc_id, 1.0, cx)),
                     ),
             )
-            .when_some(self.input_error.clone(), |control, error| {
+            .when_some(self.input_error.clone().filter(|_| !self.error_tooltip), |control, error| {
                 control.child(div().text_xs().text_color(theme::DANGER).child(error))
             })
     }
