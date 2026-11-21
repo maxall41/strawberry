@@ -19,3 +19,16 @@ tempfile = "3.27"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+criterion = "0.8.2"
+fastrand = "2.5"
+gag = "1.0.0"
+
+[[bench]]
+name = "segmentation_prediction"
+harness = false
+
+[[bench]]
+name = "gpu_tools"
+harness = false
