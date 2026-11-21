@@ -182,15 +182,25 @@ impl Pipeline {
             .skip(earliest_processing_index)
         {
             if tool.is_enabled() && tool.supports_processing() {
-                let _ =
-                    self.output_sender
-                        .send(FrontendMessage::PipelineProgress(PipelineProgress {
+                let name = format!("{:?}", tool.iam());
+                let output_sender = self.output_sender.clone();
+                let publish_progress = move |planes| {
+                    let _ =
+                        output_sender.send(FrontendMessage::PipelineProgress(PipelineProgress {
                             stage,
                             total: total_stages,
-                            name: format!("{:?}", tool.iam()),
+                            name: name.clone(),
+                            planes,
                         }));
+                };
+                publish_progress(None);
                 stage = stage.saturating_add(1);
-                let result = tool.process(&mut images).await;
+                let result = tool
+                    .process_with_progress(
+                        &mut images,
+                        Box::new(move |planes| publish_progress(Some(planes))),
+                    )
+                    .await;
                 tool.acknowledge_processed_state();
                 result.with_context(|| format!("{:?} processing failed", tool.iam()))?;
                 self.gpu
@@ -507,6 +517,7 @@ impl Pipeline {
                 stage: 0,
                 total: 1,
                 name: "Loading images".into(),
+                planes: None,
             }));
         let mut images = Vec::with_capacity(files.len());
         for file in files {
@@ -624,6 +635,7 @@ impl Pipeline {
                             stage: 0,
                             total: 1,
                             name,
+                            planes: None,
                         }));
             }
             None if self.overlay_activity_shown => self.finish_pipeline_activity(),

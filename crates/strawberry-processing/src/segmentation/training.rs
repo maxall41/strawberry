@@ -146,8 +146,8 @@ impl TrainingData {
                 continue;
             }
             // Include unlabeled neighbors when constructing the probability context map.
-            let mut predictor = TilePredictor::new(inference, class_count);
-            let output = predictor.add_image(image.dimensions())?;
+            let mut predictor = TilePredictor::new(inference, class_count, || {});
+            let output = predictor.add_image(image.dimensions(), indices.len())?;
             for &index in &indices {
                 predictor
                     .submit(

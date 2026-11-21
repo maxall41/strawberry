@@ -325,20 +325,48 @@ impl SegmentationModel {
         images: &[Arc<image::RgbaImage>],
         config: &InferenceConfig,
     ) -> Result<Vec<Vec<image::GrayImage>>> {
+        self.predict_with_progress(extractor, images, config, |_| {})
+            .await
+    }
+
+    /// Report the cumulative number of input planes whose final prediction tiles are written.
+    /// # Errors
+    /// Returns an error if configuration, feature extraction, or inference fails.
+    pub async fn predict_with_progress(
+        &self,
+        extractor: &FeatureExtractor,
+        images: &[Arc<image::RgbaImage>],
+        config: &InferenceConfig,
+        mut report_completed_planes: impl FnMut(usize) + Send,
+    ) -> Result<Vec<Vec<image::GrayImage>>> {
         config.validate()?;
         // Every image's tiles share one queue, so the next image's first tiles fill the cores
         // that the previous image's last tiles leave idle.
-        let mut predictor = TilePredictor::new(config, self.class_count);
+        let mut completed = 0usize;
+        let mut predictor = TilePredictor::new(config, self.class_count, || {
+            completed = completed.saturating_add(1);
+            report_completed_planes(completed);
+        });
+        let passes = if self.second_stage_forest.is_some() {
+            2
+        } else {
+            1
+        };
         for original in images {
             let scaled = self.parameters.rescale_input(original)?;
             let image = scaled.as_ref();
-            let index = predictor.add_image(image.dimensions())?;
+            let tiles = extractor.tiles(image, &self.features)?;
+            let tile_count = tiles
+                .len()
+                .checked_mul(passes)
+                .context("Too many prediction tiles")?;
+            let index = predictor.add_image(image.dimensions(), tile_count)?;
             let mut cache = if self.second_stage_forest.is_some() {
                 Some(FeatureCache::new(self.features.count())?)
             } else {
                 None
             };
-            for tile in extractor.tiles(image, &self.features)? {
+            for tile in tiles {
                 let data = extractor.extract(image, &self.features, &tile).await?;
                 if let Some(cache) = &mut cache {
                     cache.store(0, &tile, &data, Vec::new())?;
@@ -425,23 +453,30 @@ struct TilePrediction {
     probabilities: DenseMatrix<f32>,
 }
 
-/// Predicts tiles from any number of images on the Rayon pool, with at most the configured
-/// number predicting at once across all of them.
-struct TilePredictor {
-    parallel_tiles: usize,
-    class_count: usize,
-    outputs: Vec<Vec<image::GrayImage>>,
-    running: FuturesUnordered<oneshot::Receiver<Result<TilePrediction>>>,
+struct PredictionOutput {
+    planes: Vec<image::GrayImage>,
+    remaining_tiles: usize,
 }
 
-impl TilePredictor {
+/// Predicts tiles from any number of images on the Rayon pool, with at most the configured
+/// number predicting at once across all of them.
+struct TilePredictor<F> {
+    parallel_tiles: usize,
+    class_count: usize,
+    outputs: Vec<PredictionOutput>,
+    running: FuturesUnordered<oneshot::Receiver<Result<TilePrediction>>>,
+    on_plane_completed: F,
+}
+
+impl<F: FnMut() + Send> TilePredictor<F> {
     /// Create a predictor with no images, capped by the inference configuration.
-    fn new(config: &InferenceConfig, class_count: usize) -> Self {
+    fn new(config: &InferenceConfig, class_count: usize, on_plane_completed: F) -> Self {
         Self {
             parallel_tiles: config.get_parallel_tile_count(),
             class_count,
             outputs: Vec::new(),
             running: FuturesUnordered::new(),
+            on_plane_completed,
         }
     }
 
@@ -468,17 +503,23 @@ impl TilePredictor {
         Ok(planes)
     }
 
-    /// Add an image's zeroed probability planes and return the index its tiles are submitted
-    /// under.
-    fn add_image(&mut self, dimensions: (u32, u32)) -> Result<usize> {
-        self.outputs
-            .push(Self::create_blank_planes(self.class_count, dimensions)?);
-        Ok(self.outputs.len().saturating_sub(1))
+    /// Allocate an image's probability planes and track its expected tile count across passes.
+    fn add_image(&mut self, dimensions: (u32, u32), tile_count: usize) -> Result<usize> {
+        let index = self.outputs.len();
+        self.outputs.push(PredictionOutput {
+            planes: Self::create_blank_planes(self.class_count, dimensions)?,
+            remaining_tiles: tile_count,
+        });
+        Ok(index)
     }
 
     /// Replace an image's probability planes with zeroed ones, returning the finished planes.
     fn restart_image(&mut self, image: usize) -> Result<Vec<image::GrayImage>> {
-        let planes = self.outputs.get_mut(image).context("Missing tile image")?;
+        let planes = &mut self
+            .outputs
+            .get_mut(image)
+            .context("Missing tile image")?
+            .planes;
         let dimensions = planes
             .first()
             .context("Missing probability planes")?
@@ -527,6 +568,9 @@ impl TilePredictor {
     /// Return each image's probability planes in the order the images were added.
     fn into_outputs(self) -> Vec<Vec<image::GrayImage>> {
         self.outputs
+            .into_iter()
+            .map(|output| output.planes)
+            .collect()
     }
 
     /// Predict the class probabilities of every pixel in a tile.
@@ -556,7 +600,7 @@ impl TilePredictor {
         })
     }
 
-    /// Write a finished tile's class probabilities into its image's byte planes.
+    /// Write a tile's probabilities and report when all tiles for its input plane are complete.
     fn write_tile(
         &mut self,
         prediction: Result<Result<TilePrediction>, oneshot::Canceled>,
@@ -570,7 +614,7 @@ impl TilePredictor {
         } = prediction.context("Tile prediction stopped unexpectedly")??;
         let output = self.outputs.get_mut(image).context("Missing tile image")?;
         for row in 0..probabilities.shape().0 {
-            for (class, plane) in output.iter_mut().enumerate() {
+            for (class, plane) in output.planes.iter_mut().enumerate() {
                 let probability = *probabilities.get((row, class));
                 ensure!(
                     probability.is_finite() && (0.0..=1.0).contains(&probability),
@@ -584,6 +628,13 @@ impl TilePredictor {
                     .context("Probability pixel lies outside its image")?;
                 *pixel = image::Luma([value]);
             }
+        }
+        output.remaining_tiles = output
+            .remaining_tiles
+            .checked_sub(1)
+            .context("Unexpected prediction tile")?;
+        if output.remaining_tiles == 0 {
+            (self.on_plane_completed)();
         }
         Ok(())
     }

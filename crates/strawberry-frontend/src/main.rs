@@ -44,7 +44,7 @@ use std::{fs, panic};
 use strawberry_backend::{Pipeline, hyperstack::collect_file_names};
 use strawberry_types::{
     ExportScope, FeedbackLevel, FrontendMessage, ImageArrangement, OutputFrame, PipelineCommand,
-    Shape,
+    PipelineProgress, PlaneProgress, Shape,
     overlay::{CircleStyle, OverlayCollection, OverlayElement},
 };
 use tokio::{runtime::Runtime, sync::broadcast};
@@ -67,11 +67,53 @@ struct PipelineActivity {
     label: String,
     stage: usize,
     total: usize,
+    planes: Option<PlaneProgress>,
     /// Flips once the run outlasts `ACTIVITY_SHOW_DELAY`.
     shown: bool,
     /// The run ended but the indicator is lingering; a new run's progress
     /// message clears this and takes the indicator over seamlessly.
     finishing: bool,
+}
+
+impl PipelineActivity {
+    /// Format the active stage and any completed plane counts for the canvas.
+    fn format_status(&self) -> String {
+        let label = if self.total > 1 {
+            format!(
+                "{} · {}/{}",
+                self.label,
+                self.stage.saturating_add(1),
+                self.total
+            )
+        } else {
+            self.label.clone()
+        };
+        match self.planes {
+            Some(planes) => format!("{label} · {}/{} planes", planes.completed, planes.total),
+            None if self.total > 1 => label,
+            None => format!("{label}…"),
+        }
+    }
+
+    /// Fill the existing progress bar by completed planes when counts are available.
+    fn render_progress_fill(&self) -> impl IntoElement {
+        let fill = div().h_full().bg(gui::theme::ACCENT);
+        if let Some(planes) = self.planes {
+            let completed = planes.completed.to_f32().unwrap_or_default();
+            let total = planes.total.to_f32().unwrap_or(1.0).max(1.0);
+            fill.w(gpui::relative(completed / total)).into_any_element()
+        } else {
+            fill.w_full()
+                .with_animation(
+                    "pipeline-busy-pulse",
+                    Animation::new(Duration::from_millis(1500))
+                        .repeat()
+                        .with_easing(gpui::pulsating_between(0.3, 1.0)),
+                    gpui::Styled::opacity,
+                )
+                .into_any_element()
+        }
+    }
 }
 
 impl AssetSource for Assets {
@@ -450,16 +492,13 @@ impl PrimaryViewer {
     }
 
     /// Update busy indicators and progress from a pipeline event.
-    fn pipeline_progress(
-        &mut self,
-        progress: &strawberry_types::PipelineProgress,
-        cx: &Context<Self>,
-    ) {
+    fn pipeline_progress(&mut self, progress: &PipelineProgress, cx: &Context<Self>) {
         let label = humanize_tool_name(&progress.name);
         if let Some(activity) = &mut self.activity {
             activity.label = label;
             activity.stage = progress.stage;
             activity.total = progress.total;
+            activity.planes = progress.planes;
             activity.finishing = false;
             return;
         }
@@ -468,6 +507,7 @@ impl PrimaryViewer {
             label,
             stage: progress.stage,
             total: progress.total,
+            planes: progress.planes,
             shown: false,
             finishing: false,
         });
@@ -1031,13 +1071,7 @@ impl Render for PrimaryViewer {
             self.pressed_keys.clear();
         }
 
-        let activity_status = self.activity.as_ref().filter(|a| a.shown).map(|a| {
-            if a.total > 1 {
-                format!("{} · {}/{}", a.label, a.stage.saturating_add(1), a.total)
-            } else {
-                format!("{}…", a.label)
-            }
-        });
+        let activity = self.activity.as_ref().filter(|a| a.shown);
 
         let img = img(self.display_image.clone())
             .use_nearest_filter(true)
@@ -1215,7 +1249,7 @@ impl Render for PrimaryViewer {
                 )
             })
             .child(self.busy_overlay.clone())
-            .when_some(activity_status, |el, status| {
+            .when_some(activity, |el, activity| {
                 el.child(
                     div()
                         .absolute()
@@ -1227,15 +1261,7 @@ impl Render for PrimaryViewer {
                             a: 0.5,
                             ..gui::theme::SURFACE_DEEP
                         })
-                        .child(
-                            div().size_full().bg(gui::theme::ACCENT).with_animation(
-                                "pipeline-busy-pulse",
-                                Animation::new(Duration::from_millis(1500))
-                                    .repeat()
-                                    .with_easing(gpui::pulsating_between(0.3, 1.0)),
-                                gpui::Styled::opacity,
-                            ),
-                        ),
+                        .child(activity.render_progress_fill()),
                 )
                 .child(
                     div()
@@ -1251,7 +1277,7 @@ impl Render for PrimaryViewer {
                         })
                         .text_xs()
                         .text_color(gui::theme::TEXT_MUTED)
-                        .child(status),
+                        .child(activity.format_status()),
                 )
             });
 

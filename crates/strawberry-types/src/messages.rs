@@ -182,12 +182,22 @@ pub enum FeedbackLevel {
 
 #[derive(Debug, Clone)]
 pub struct PipelineProgress {
-    /// 0-based index of the stage about to run (display code adds 1).
+    /// 0-based index of the active stage (display code adds 1).
     pub stage: usize,
     /// Number of stages this run will execute in total.
     pub total: usize,
     /// Display name
     pub name: String,
+    /// Plane counts when the stage reports progress within its own work.
+    pub planes: Option<PlaneProgress>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneProgress {
+    /// Number of input planes with completed predictions.
+    pub completed: usize,
+    /// Number of input planes that need predictions in this run.
+    pub total: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -199,7 +209,7 @@ pub enum FrontendMessage {
     UserFeedback(String, FeedbackLevel),
     ReturnOverlays(crate::overlay::OverlayCollection),
     SnapToPosition(f32, f32),
-    /// Sent just before each stage of a pipeline run executes.
+    /// Sent when a stage starts or reports new progress.
     PipelineProgress(PipelineProgress),
     PipelineFinished,
 }
