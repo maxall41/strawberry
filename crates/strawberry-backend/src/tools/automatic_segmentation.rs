@@ -24,9 +24,9 @@ use strawberry_processing::{
 use strawberry_types::{
     AnnotationKind, AnnotationStroke, AutomaticSegmentationMessage, AutomaticSegmentationState,
     BackendToolType, BgraColor, CLASS_PALETTE, ClassId, DatasetImportMode, DatasetOperation,
-    FrontendMessage, ImageCollection, MAX_CLASSES, PipelineObjectMessage, Position, RgbaColor,
-    SampleId, SegmentationClass, SegmentationClasses, SegmentationOutputMode, StrokeId, ToolAssets,
-    ToolBackend, ToolInput, ToolState,
+    FrontendMessage, ImageCollection, MAX_CLASSES, PipelineObjectMessage, PlaneProgress, Position,
+    ReportPlaneProgress, RgbaColor, SampleId, SegmentationClass, SegmentationClasses,
+    SegmentationOutputMode, StrokeId, ToolAssets, ToolBackend, ToolInput, ToolState,
     overlay::{CircleStyle, OverlayElement, ToolOverlay},
 };
 
@@ -662,20 +662,23 @@ impl AutomaticSegmentation {
             .get(&ByAddress(Arc::clone(input)))
             .filter(|cached| Arc::ptr_eq(&cached.model, model))
     }
-    /// Start predicting class planes for each image on a blocking worker, which sends their
-    /// results to the returned receiver.
+    /// Start a prediction worker that reports completed input planes and sends the results.
     fn spawn_prediction(
         &self,
         images: Vec<Arc<RgbaImage>>,
         model: Arc<SegmentationModel>,
+        report_completed_planes: impl FnMut(usize) + Send + 'static,
     ) -> flume::Receiver<Result<Vec<Vec<image::GrayImage>>>> {
         let extractor = self.extractor.clone();
         let inference = self.state.inference.clone();
         let (tx, rx) = flume::bounded(1);
         tokio::task::spawn_blocking(move || {
-            let _ = tx.send(futures::executor::block_on(
-                model.predict(&extractor, &images, &inference),
-            ));
+            let _ = tx.send(futures::executor::block_on(model.predict_with_progress(
+                &extractor,
+                &images,
+                &inference,
+                report_completed_planes,
+            )));
         });
         rx
     }
@@ -696,11 +699,12 @@ impl AutomaticSegmentation {
         );
     }
     /// Predict every image without a cached prediction under `model` in one background job,
-    /// so their tiles share one parallel limit, and cache the results.
+    /// reporting progress across the uncached planes before storing the results.
     async fn cache_predictions<'a>(
         &mut self,
         images: impl Iterator<Item = &'a Arc<RgbaImage>>,
         model: &Arc<SegmentationModel>,
+        mut report_planes: ReportPlaneProgress,
     ) -> Result<()> {
         let mut seen = HashSet::new();
         let uncached: Vec<_> = images
@@ -713,8 +717,15 @@ impl AutomaticSegmentation {
         if uncached.is_empty() {
             return Ok(());
         }
+        let total = uncached.len();
+        report_planes(PlaneProgress {
+            completed: 0,
+            total,
+        });
         let outputs = self
-            .spawn_prediction(uncached.clone(), model.clone())
+            .spawn_prediction(uncached.clone(), model.clone(), move |completed| {
+                report_planes(PlaneProgress { completed, total });
+            })
             .recv_async()
             .await
             .map_err(|_| anyhow::anyhow!("Prediction worker stopped unexpectedly"))??;
@@ -737,7 +748,7 @@ impl AutomaticSegmentation {
             return;
         }
         self.preview_job = Some(PreviewJob {
-            receiver: self.spawn_prediction(vec![image.clone()], model.clone()),
+            receiver: self.spawn_prediction(vec![image.clone()], model.clone(), |_| {}),
             image,
             model,
         });
@@ -1389,9 +1400,16 @@ impl ToolBackend for AutomaticSegmentation {
     fn get_state(&self) -> ToolState {
         ToolState::AutomaticSegmentationState(self.state.clone())
     }
-    /// Remember the images for annotation, then preview the selected position while training
-    /// or segment every position.
+    /// Process images for callers that do not need plane progress.
     async fn process(&mut self, images: &mut ImageCollection) -> Result<()> {
+        self.process_with_progress(images, Box::new(|_| {})).await
+    }
+    /// Preview the selected position while training or report progress while segmenting all positions.
+    async fn process_with_progress(
+        &mut self,
+        images: &mut ImageCollection,
+        report_planes: ReportPlaneProgress,
+    ) -> Result<()> {
         self.state.total_layers = images.shape().c;
         if self.state.selected_layer >= self.state.total_layers {
             self.state.selected_layer = 0;
@@ -1415,9 +1433,9 @@ impl ToolBackend for AutomaticSegmentation {
         let Some(model) = self.model.clone() else {
             return Ok(());
         };
-        self.cache_predictions(images.channel(self.state.selected_layer), &model)
+        self.cache_predictions(images.channel(layer), &model, report_planes)
             .await?;
-        for slot in images.channel_mut(self.state.selected_layer) {
+        for slot in images.channel_mut(layer) {
             let output = self
                 .get_cached_inference(slot, &model)
                 .context("Missing plane prediction")?

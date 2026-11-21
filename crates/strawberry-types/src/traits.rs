@@ -2,18 +2,32 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use crate::{
-    BackendToolType, ImageCollection, PersistedState, PipelineObjectMessage, Position, ToolInput,
-    ToolState, overlay::ToolOverlay,
+    BackendToolType, ImageCollection, PersistedState, PipelineObjectMessage, PlaneProgress,
+    Position, ToolInput, ToolState, overlay::ToolOverlay,
 };
 
 /// Named files stored alongside a tool's configuration in a pipeline archive.
 pub type ToolAssets = HashMap<String, Vec<u8>>;
+
+/// Publish an active stage's plane counts from the thread processing them.
+pub type ReportPlaneProgress = Box<dyn FnMut(PlaneProgress) + Send>;
 
 /// Trait for image processing tools (backend)
 #[async_trait]
 pub trait ToolBackend: Send + Sync {
     /// Process the images of the collection in place.
     async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()>;
+
+    /// Process the collection and report plane counts when supported by the stage.
+    /// # Errors
+    /// Returns an error if processing fails.
+    async fn process_with_progress(
+        &mut self,
+        images: &mut ImageCollection,
+        _report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
+        self.process(images).await
+    }
 
     /// Check if this tool is currently enabled
     fn is_enabled(&self) -> bool;
