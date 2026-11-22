@@ -12,14 +12,24 @@ pub type ToolAssets = HashMap<String, Vec<u8>>;
 /// Publish an active stage's plane counts from the thread processing them.
 pub type ReportPlaneProgress = Box<dyn FnMut(PlaneProgress) + Send>;
 
-/// Adapts plane iterators so a processing loop reports its progress.
+/// Adapts iterators so a processing loop reports its progress in planes.
 pub trait PlaneProgressExt: ExactSizeIterator + Sized {
-    /// Wrap the iterator so a loop over it reports how many planes it has finished.
+    /// Report one completed plane per iteration.
     fn report_progress(self, report_planes: ReportPlaneProgress) -> PlaneProgressIter<Self> {
+        self.report_progress_in_batches(1, report_planes)
+    }
+
+    /// Report progress for items that each process the same number of planes.
+    fn report_progress_in_batches(
+        self,
+        planes_per_item: usize,
+        report_planes: ReportPlaneProgress,
+    ) -> PlaneProgressIter<Self> {
         PlaneProgressIter {
-            total: self.len(),
+            total: self.len().saturating_mul(planes_per_item),
             completed: 0,
-            planes: self,
+            items: self,
+            planes_per_item,
             report_planes,
         }
     }
@@ -27,9 +37,10 @@ pub trait PlaneProgressExt: ExactSizeIterator + Sized {
 
 impl<I: ExactSizeIterator> PlaneProgressExt for I {}
 
-/// Iterator that treats each plane as finished once the loop asks for the next one.
+/// Iterator that counts an item's planes as finished when the loop asks for the next item.
 pub struct PlaneProgressIter<I> {
-    planes: I,
+    items: I,
+    planes_per_item: usize,
     completed: usize,
     total: usize,
     report_planes: ReportPlaneProgress,
@@ -38,15 +49,15 @@ pub struct PlaneProgressIter<I> {
 impl<I: Iterator> Iterator for PlaneProgressIter<I> {
     type Item = I::Item;
 
-    /// Report the planes finished so far, then yield the next plane.
+    /// Report the planes finished so far, then yield the next item.
     fn next(&mut self) -> Option<I::Item> {
         (self.report_planes)(PlaneProgress {
             completed: self.completed,
             total: self.total,
         });
-        let plane = self.planes.next()?;
-        self.completed = self.completed.saturating_add(1);
-        Some(plane)
+        let item = self.items.next()?;
+        self.completed = self.completed.saturating_add(self.planes_per_item);
+        Some(item)
     }
 }
 

@@ -45,7 +45,10 @@ impl ToolBackend for Decomposer {
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
         let mut lanes = images.lanes(Dimension::C);
-        for lane in lanes.iter_mut().report_progress(report_planes) {
+        for lane in lanes
+            .iter_mut()
+            .report_progress_in_batches(GpuDecomposer::CHANNEL_COUNT, report_planes)
+        {
             let [image] = lane.as_slice() else {
                 let error_msg = format!(
                     "Decomposer can only process images with one layer, received {}",
@@ -113,7 +116,7 @@ impl Decomposer {
     ) -> Result<Self> {
         let state = DecomposerState {
             is_enabled: false,
-            enabled_layers: vec![true; 3],
+            enabled_layers: vec![true; GpuDecomposer::CHANNEL_COUNT],
         };
         Ok(Self {
             state: state.clone(),

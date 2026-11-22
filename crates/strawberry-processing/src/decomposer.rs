@@ -24,6 +24,9 @@ pub struct GpuDecomposer {
 }
 
 impl GpuDecomposer {
+    /// Number of RGB planes produced for each input image.
+    pub const CHANNEL_COUNT: usize = 3;
+
     /// # Errors
     /// Returns an error if GPU resources cannot be initialized.
     pub async fn new(gpu: Arc<GpuImageProcessor>) -> Result<Self> {
@@ -175,7 +178,7 @@ impl GpuDecomposer {
         println!("Applied GPU decomposition to {width}x{height} image in single dispatch");
 
         // Verify we have exactly 3 channel images
-        assert_eq!(result_images.len(), 3);
+        assert_eq!(result_images.len(), Self::CHANNEL_COUNT);
         Ok(result_images)
     }
 
@@ -218,9 +221,10 @@ impl GpuDecomposer {
             let processed_tiles = self.apply_decomposition_single(&tile_image).await?;
 
             // Store tiles for each channel
-            let [red, green, blue]: [RgbaImage; 3] = processed_tiles
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("Expected three decomposed channels"))?;
+            let [red, green, blue]: [RgbaImage; Self::CHANNEL_COUNT] =
+                processed_tiles
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("Expected three decomposed channels"))?;
             red_tiles.push((tile_info.clone(), red));
             green_tiles.push((tile_info.clone(), green));
             blue_tiles.push((tile_info.clone(), blue));
@@ -232,7 +236,7 @@ impl GpuDecomposer {
         let blue_image = merge_rgba_tiles(&blue_tiles, full_width, full_height)?;
 
         let result = vec![red_image, green_image, blue_image];
-        assert_eq!(result.len(), 3);
+        assert_eq!(result.len(), Self::CHANNEL_COUNT);
         Ok(result)
     }
 }
