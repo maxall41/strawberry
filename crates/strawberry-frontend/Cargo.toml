@@ -9,7 +9,7 @@ strawberry-types = { path = "../strawberry-types" }
 strawberry-backend = { path = "../strawberry-backend" }
 strawberry-processing = { path = "../strawberry-processing" }
 gpui = { git = "https://github.com/maxall41/gpui-m", rev = "0b0eaea6d930b771c93fec0e56b8f5b58f7d5eb5", version = "0.2.2" }
-gpui_platform = { git = "https://github.com/maxall41/gpui-m", rev = "0b0eaea6d930b771c93fec0e56b8f5b58f7d5eb5", version = "0.1.0", features = ["font-kit"] }
+gpui_platform = { git = "https://github.com/maxall41/gpui-m", rev = "0b0eaea6d930b771c93fec0e56b8f5b58f7d5eb5", version = "0.1.0", features = ["font-kit", "wayland", "x11"] }
 anyhow = "1.0"
 rfd = "0.17"
 futures = "0.3"
