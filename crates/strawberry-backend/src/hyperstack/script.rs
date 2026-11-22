@@ -14,6 +14,7 @@ const MAX_STRING_SIZE: usize = 1 << 20;
 const MAX_ARRAY_SIZE: usize = 1 << 22;
 const MAX_EXPRESSION_DEPTH: usize = 64;
 const MAX_FUNCTION_EXPRESSION_DEPTH: usize = 32;
+const MAX_CACHED_PATTERNS: usize = 16;
 
 /// A file a parser script keeps, with the dimensions string the script assigned it.
 pub(super) struct FileAssignment {
@@ -60,6 +61,9 @@ fn build_parser_engine() -> Engine {
         "captures",
         move |text: &str, pattern: &str| -> Result<Array, Box<EvalAltResult>> {
             let mut patterns = cached_regex_patterns.borrow_mut();
+            if patterns.len() >= MAX_CACHED_PATTERNS && !patterns.contains_key(pattern) {
+                patterns.clear();
+            }
             let regex = match patterns.entry(pattern.to_owned()) {
                 Entry::Occupied(entry) => entry.into_mut(),
                 Entry::Vacant(entry) => entry.insert(

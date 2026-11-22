@@ -43,8 +43,8 @@ use std::time::Duration;
 use std::{fs, panic};
 use strawberry_backend::{Pipeline, hyperstack::collect_file_names};
 use strawberry_types::{
-    ExportScope, FeedbackLevel, FrontendMessage, ImageArrangement, OutputFrame, PipelineCommand,
-    PipelineProgress, PlaneProgress, Shape,
+    Coordinates, ExportScope, FeedbackLevel, FrontendMessage, ImageArrangement, OutputFrame,
+    PipelineCommand, PipelineProgress, PlaneProgress, Shape,
     overlay::{CircleStyle, OverlayCollection, OverlayElement},
 };
 use tokio::{runtime::Runtime, sync::broadcast};
@@ -358,7 +358,7 @@ impl PrimaryViewer {
                 }
 
                 if output_frames.has_changed().unwrap_or(false) {
-                    latest_output.clone_from(&output_frames.borrow_and_update());
+                    latest_output = Some(output_frames.borrow_and_update().clone());
                 }
 
                 if latest_output.is_none()
@@ -383,8 +383,10 @@ impl PrimaryViewer {
                             None => this.pipeline_finished(cx),
                         }
                     }
-                    if let Some(frame) = latest_output {
-                        this.show_output(frame, window, cx);
+                    match latest_output {
+                        Some(Some(frame)) => this.show_output(frame, window, cx),
+                        Some(None) => this.clear_output(cx),
+                        None => {}
                     }
                     if let Some(overlays) = latest_overlays {
                         let masks: HashMap<_, _> = overlays
@@ -444,11 +446,7 @@ impl PrimaryViewer {
         // flight cannot pull a slider back to an earlier image.
         if self.load_generation != Some(frame.load_generation) || self.shape != frame.shape {
             self.load_generation = Some(frame.load_generation);
-            self.shape = frame.shape;
-            self.hyperstack_bar.update(cx, |bar, cx| {
-                bar.set_view(frame.coordinates, frame.shape, cx);
-            });
-            self.layout.status_bar_rows = self.hyperstack_bar.read(cx).row_count();
+            self.set_hyperstack_view(frame.coordinates, frame.shape, cx);
         }
         self.output_is_current = frame.is_current;
         if std::ptr::eq(self.displayed_frame.as_ptr(), Arc::as_ptr(&frame.image)) {
@@ -489,6 +487,32 @@ impl PrimaryViewer {
         if let Err(e) = self.command_sender.send(PipelineCommand::RequestOverlays) {
             eprintln!("Failed to request overlays after image update: {e}");
         }
+    }
+
+    /// Return the canvas and hyperstack bar to their empty state once a new load discards the
+    /// displayed output.
+    fn clear_output(&mut self, cx: &mut Context<Self>) {
+        self.load_generation = None;
+        self.set_hyperstack_view(Coordinates::default(), Shape::default(), cx);
+        self.image_loaded = false;
+        self.output_is_current = false;
+        self.displayed_frame = Weak::new();
+        cx.notify();
+    }
+
+    /// Show the hyperstack bar for `shape` with `coordinates` selected, sizing the status bar
+    /// to its rows.
+    fn set_hyperstack_view(
+        &mut self,
+        coordinates: Coordinates,
+        shape: Shape,
+        cx: &mut Context<Self>,
+    ) {
+        self.shape = shape;
+        self.hyperstack_bar.update(cx, |bar, cx| {
+            bar.set_view(coordinates, shape, cx);
+        });
+        self.layout.status_bar_rows = self.hyperstack_bar.read(cx).row_count();
     }
 
     /// Update busy indicators and progress from a pipeline event.

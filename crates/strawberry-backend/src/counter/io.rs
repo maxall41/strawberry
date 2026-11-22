@@ -74,9 +74,9 @@ impl Marker {
     }
 
     /// Return the position this marker was saved on, reading its one-based slice number
-    /// against `shape`.
-    fn get_saved_position(&self, shape: Shape) -> Position {
-        shape.unflatten(usize::from(self.marker_z.saturating_sub(1)))
+    /// against `shape` on the tile of `selected`.
+    fn get_saved_position(&self, shape: Shape, selected: Position) -> Position {
+        shape.get_slice_position(usize::from(self.marker_z.saturating_sub(1)), selected)
     }
 }
 
@@ -112,8 +112,8 @@ impl Default for ImageProperties {
 }
 
 impl CellCounterMarkerFile {
-    /// Create a marker file from every position's counts, numbering positions of the counter's
-    /// shape as one-based slices in Z.
+    /// Create a marker file from the counts of every position on the selected tile, numbering
+    /// its depth slices through time points as one-based slices in Z.
     ///
     /// # Errors
     /// Returns an error if counts lie outside the shape or a slice number exceeds the marker Z
@@ -123,10 +123,16 @@ impl CellCounterMarkerFile {
         image_filename: Option<String>,
     ) -> Result<Self, Box<dyn Error>> {
         let shape = state.shape;
-        shape.ensure_contains_positions(
+        let selected = state.counts.selected_position();
+        // Marker files cannot number tiles, so other tiles' counts would land on this tile.
+        let tile_counts = || {
             state
                 .counts
                 .iter()
+                .filter(move |(position, _)| position.shares_tile_with(selected))
+        };
+        shape.ensure_contains_positions(
+            tile_counts()
                 .filter(|(_, counts)| {
                     get_exported_counts(counts, state.mode)
                         .iter()
@@ -145,13 +151,13 @@ impl CellCounterMarkerFile {
         if state.mode == CounterMode::Auto {
             markers_by_type.insert(0, Vec::new());
         }
-        for (position, counts) in state.counts.iter() {
+        for (position, counts) in tile_counts() {
             let typed_counts = get_exported_counts(counts, state.mode);
             if typed_counts.iter().all(|(_, counts)| counts.is_empty()) {
                 continue;
             }
             let marker_z = shape
-                .flatten(position)
+                .get_slice_index(position)
                 .and_then(|slice| slice.checked_add(1))
                 .ok_or("Count position exceeds the slice range")?;
             let marker_z = u16::try_from(marker_z)?;
@@ -212,19 +218,20 @@ impl CellCounterMarkerFile {
         Ok(cell_counter_file)
     }
 
-    /// Return the positions markers were saved on, reading their slice numbers against `shape`.
+    /// Return the positions markers were saved on, reading their slice numbers against `shape`
+    /// on the tile of `selected`.
     #[must_use]
-    pub fn get_saved_positions(&self, shape: Shape) -> HashSet<Position> {
+    pub fn get_saved_positions(&self, shape: Shape, selected: Position) -> HashSet<Position> {
         self.marker_data
             .marker_types
             .iter()
             .flat_map(|marker_type| &marker_type.markers)
-            .map(|marker| marker.get_saved_position(shape))
+            .map(|marker| marker.get_saved_position(shape, selected))
             .collect()
     }
 
     /// Replace the manual counts of each position the markers are placed on, reading slice
-    /// numbers against the counter's shape, and register their types.
+    /// numbers against the counter's shape on the selected tile, and register their types.
     ///
     /// # Errors
     /// Returns an error, leaving the state unchanged, if markers split across positions would
@@ -234,12 +241,13 @@ impl CellCounterMarkerFile {
         state: &mut CounterState,
         placement: AnnotationPlacement,
     ) -> Result<(), Box<dyn Error>> {
-        if placement == AnnotationPlacement::SplitByPosition {
-            state
-                .shape
-                .ensure_contains_positions(self.get_saved_positions(state.shape), "Counts")?;
-        }
         let selected = state.counts.selected_position();
+        if placement == AnnotationPlacement::SplitByPosition {
+            state.shape.ensure_contains_positions(
+                self.get_saved_positions(state.shape, selected),
+                "Counts",
+            )?;
+        }
         let mut imported: HashMap<Position, HashMap<u16, Vec<CountData>>> = HashMap::new();
         if placement == AnnotationPlacement::CurrentPosition {
             imported.insert(selected, HashMap::new());
@@ -252,7 +260,9 @@ impl CellCounterMarkerFile {
             for marker in &marker_type.markers {
                 let position = match placement {
                     AnnotationPlacement::CurrentPosition => selected,
-                    AnnotationPlacement::SplitByPosition => marker.get_saved_position(state.shape),
+                    AnnotationPlacement::SplitByPosition => {
+                        marker.get_saved_position(state.shape, selected)
+                    }
                 };
                 imported
                     .entry(position)
@@ -283,7 +293,7 @@ impl CellCounterMarkerFile {
     }
 }
 
-/// Export the counts of every position to a `CellCounter` XML file.
+/// Export the counts of every position on the selected tile to a `CellCounter` XML file.
 /// # Errors
 /// Returns an error if counts lie outside the counter's shape, or XML conversion or file I/O
 /// fails.

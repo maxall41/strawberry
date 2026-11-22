@@ -142,8 +142,10 @@ impl CounterView {
                     return;
                 };
                 // Load unreadable files per norm, such that the backend can report why they failed.
-                let saved = read_marker_file(&file)
-                    .map_or_else(|_| HashSet::new(), |file| file.get_saved_positions(shape));
+                let saved = read_marker_file(&file).map_or_else(
+                    |_| HashSet::new(),
+                    |file| file.get_saved_positions(shape, selected),
+                );
                 let Some(placement) =
                     ask_annotation_placement(cx, "counts", &saved, selected, shape).await
                 else {

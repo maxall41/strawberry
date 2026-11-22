@@ -9,9 +9,7 @@ use quick_xml::se::to_string;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
-use strawberry_types::{
-    AnnotationPlacement, Dimension, NerveTracerState, Position, PositionTraces, Shape,
-};
+use strawberry_types::{AnnotationPlacement, NerveTracerState, Position, PositionTraces};
 
 // XML serialization structures matching the nerve tracer format
 #[derive(Debug, Serialize, Deserialize)]
@@ -90,17 +88,20 @@ pub struct PointElement {
 }
 
 impl PointElement {
-    /// Return the position this point was saved on, reading its Z against `shape` and taking
-    /// the time point from the path's one-based `frame`.
+    /// Return the position this point was saved on the tile of `selected`, taking the depth
+    /// slice from its Z and the time point from the path's one-based `frame`.
     ///
     /// # Errors
     /// Returns an error if the Z index or frame cannot address a position.
-    fn get_saved_position(&self, frame: u32, shape: Shape) -> Result<Position, Box<dyn Error>> {
-        // The frame carries time, so Z only numbers the Z, Y, and X positions.
-        let frame_shape = shape.with_extent(Dimension::T, 1);
+    fn get_saved_position(
+        &self,
+        frame: u32,
+        selected: Position,
+    ) -> Result<Position, Box<dyn Error>> {
         Ok(Position {
             t: usize::try_from(frame.saturating_sub(1))?,
-            ..frame_shape.unflatten(usize::try_from(self.z)?)
+            z: usize::try_from(self.z)?,
+            ..selected
         })
     }
 }
@@ -129,8 +130,8 @@ impl Default for ImageSize {
 }
 
 impl Tracings {
-    /// Create tracings from the committed paths of every position of the tracer's shape,
-    /// numbering the Z, Y, X position as the point Z and the time point as the path frame.
+    /// Create tracings from the committed paths of every position on the tracer's selected
+    /// tile, numbering the depth slice as the point Z and the time point as the path frame.
     ///
     /// # Errors
     /// Returns an error if traces lie outside the shape, or a position or trace coordinate
@@ -142,33 +143,32 @@ impl Tracings {
     ) -> Result<Self, Box<dyn Error>> {
         let samplespacing = samplespacing.unwrap_or_default();
         let mut imagesize = imagesize.unwrap_or_default();
-        let shape = state.shape;
-        let has_points = |traces: &PositionTraces| {
-            traces
-                .paths
-                .iter()
-                .flatten()
-                .any(|segment| !segment.is_empty())
+        let selected = state.traces.selected_position();
+        // Trace files cannot number tiles, so other tiles' traces would land on this tile.
+        let traced_positions = || {
+            state.traces.iter().filter(move |(position, traces)| {
+                position.shares_tile_with(selected)
+                    && traces
+                        .paths
+                        .iter()
+                        .flatten()
+                        .any(|segment| !segment.is_empty())
+            })
         };
-        shape.ensure_contains_positions(
-            state
-                .traces
-                .iter()
-                .filter(|(_, traces)| has_points(traces))
-                .map(|(position, _)| position),
+        state.shape.ensure_contains_positions(
+            traced_positions().map(|(position, _)| position),
             "Traces",
         )?;
 
         let mut paths = Vec::new();
         let mut path_id = 1usize;
 
-        for (position, traces) in state.traces.iter().filter(|(_, traces)| has_points(traces)) {
-            let slice = shape
-                .flatten(Position { t: 0, ..position })
-                .ok_or("Trace position exceeds the slice range")?;
-            let z = u64::try_from(slice)?;
+        for (position, traces) in traced_positions() {
+            let z = u64::try_from(position.z)?;
             let zd = calibrate(z, samplespacing.z, "Z")?;
-            imagesize.depth = imagesize.depth.max(u32::try_from(slice)?.saturating_add(1));
+            imagesize.depth = imagesize
+                .depth
+                .max(u32::try_from(position.z)?.saturating_add(1));
             let frame = u32::try_from(position.t)?.saturating_add(1);
 
             for path in &traces.paths {
@@ -240,24 +240,27 @@ impl Tracings {
         Ok(tracings)
     }
 
-    /// Return the positions trace points were saved on, reading point Z and path frames
-    /// against `shape`.
+    /// Return the positions trace points were saved on the tile of `selected`, reading point Z
+    /// and path frames.
     ///
     /// # Errors
     /// Returns an error if a Z index or frame cannot address a position.
-    pub fn get_saved_positions(&self, shape: Shape) -> Result<HashSet<Position>, Box<dyn Error>> {
+    pub fn get_saved_positions(
+        &self,
+        selected: Position,
+    ) -> Result<HashSet<Position>, Box<dyn Error>> {
         self.paths
             .iter()
             .flat_map(|path| {
                 path.points
                     .iter()
-                    .map(|point| point.get_saved_position(path.frame, shape))
+                    .map(|point| point.get_saved_position(path.frame, selected))
             })
             .collect()
     }
 
     /// Replace the traces of each position the imported paths are placed on, reading point Z
-    /// and path frames against the tracer's shape.
+    /// and path frames on the tracer's selected tile.
     ///
     /// # Errors
     /// Returns an error if a Z index or frame cannot address a position, or if paths split
@@ -267,12 +270,12 @@ impl Tracings {
         state: &mut NerveTracerState,
         placement: AnnotationPlacement,
     ) -> Result<(), Box<dyn Error>> {
+        let selected = state.traces.selected_position();
         if placement == AnnotationPlacement::SplitByPosition {
             state
                 .shape
-                .ensure_contains_positions(self.get_saved_positions(state.shape)?, "Traces")?;
+                .ensure_contains_positions(self.get_saved_positions(selected)?, "Traces")?;
         }
-        let selected = state.traces.selected_position();
         let mut imported: HashMap<Position, PositionTraces> = HashMap::new();
         if placement == AnnotationPlacement::CurrentPosition {
             imported.insert(selected, PositionTraces::default());
@@ -294,7 +297,7 @@ impl Tracings {
                 let position = match placement {
                     AnnotationPlacement::CurrentPosition => selected,
                     AnnotationPlacement::SplitByPosition => {
-                        first.get_saved_position(path_element.frame, state.shape)?
+                        first.get_saved_position(path_element.frame, selected)?
                     }
                 };
                 // The XML format has no segment boundaries, so each path is one segment.
@@ -340,7 +343,7 @@ fn calculate_path_length(points: &[PointElement]) -> f64 {
         .sum()
 }
 
-/// Export the traces of every position to an XML file.
+/// Export the traces of every position on the selected tile to an XML file.
 /// # Errors
 /// Returns an error if traces lie outside the tracer's shape, or XML conversion or file I/O
 /// fails.

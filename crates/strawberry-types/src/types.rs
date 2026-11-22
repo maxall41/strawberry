@@ -67,7 +67,7 @@ pub struct PipelineState {
 pub enum AnnotationPlacement {
     /// Place every annotation on the current position.
     CurrentPosition,
-    /// Place each annotation on the position its slice number refers to.
+    /// Place each annotation on the position its slice number refers to on the current tile.
     SplitByPosition,
 }
 

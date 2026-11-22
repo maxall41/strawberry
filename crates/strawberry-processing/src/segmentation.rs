@@ -325,19 +325,22 @@ impl SegmentationModel {
         images: &[Arc<image::RgbaImage>],
         config: &InferenceConfig,
     ) -> Result<Vec<Vec<image::GrayImage>>> {
-        self.predict_with_progress(extractor, images, config, |_| {})
+        self.predict_with_progress(extractor, images, config, |_| {}, || false)
             .await
     }
 
-    /// Report the cumulative number of input planes whose final prediction tiles are written.
+    /// Report the cumulative number of input planes whose final prediction tiles are written,
+    /// stopping before the next tile once `is_cancelled` returns true.
     /// # Errors
-    /// Returns an error if configuration, feature extraction, or inference fails.
+    /// Returns an error if configuration, feature extraction, or inference fails, or if the
+    /// prediction is cancelled.
     pub async fn predict_with_progress(
         &self,
         extractor: &FeatureExtractor,
         images: &[Arc<image::RgbaImage>],
         config: &InferenceConfig,
         mut report_completed_planes: impl FnMut(usize) + Send,
+        is_cancelled: impl Fn() -> bool,
     ) -> Result<Vec<Vec<image::GrayImage>>> {
         config.validate()?;
         // Every image's tiles share one queue, so the next image's first tiles fill the cores
@@ -367,6 +370,7 @@ impl SegmentationModel {
                 None
             };
             for tile in tiles {
+                ensure!(!is_cancelled(), "Prediction was cancelled");
                 let data = extractor.extract(image, &self.features, &tile).await?;
                 if let Some(cache) = &mut cache {
                     cache.store(0, &tile, &data, Vec::new())?;
@@ -380,6 +384,7 @@ impl SegmentationModel {
                 predictor.finish_running().await?;
                 let context = predictor.restart_image(index)?;
                 for tile_index in cache.image_tiles(0) {
+                    ensure!(!is_cancelled(), "Prediction was cancelled");
                     let entry = cache.tiles.get(tile_index).context("Missing cached tile")?;
                     let context_tile = extractor
                         .extract_context(&context, &self.features, &entry.tile)
