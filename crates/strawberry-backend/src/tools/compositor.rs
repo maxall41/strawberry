@@ -10,7 +10,8 @@ use strawberry_processing::{GpuImageProcessor, compositor::GpuCompositor};
 use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, CompositorMessage, CompositorState, Dimension, FrontendMessage,
-    ImageCollection, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
+    ImageCollection, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress, ToolBackend,
+    ToolInput, ToolState,
 };
 
 pub struct Compositor {
@@ -36,13 +37,17 @@ impl ToolBackend for Compositor {
 
     /// Composite the enabled layers at each position into a single BGRA image; positions holding
     /// a single layer are left untouched.
-    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
         self.state.real_layers_len = images.shape().c;
         if images.shape().c <= 1 {
             return Ok(());
         }
         let mut lanes = images.lanes(Dimension::C);
-        for lane in &mut lanes {
+        for lane in lanes.iter_mut().report_progress(report_planes) {
             let enabled: Vec<_> = lane
                 .iter()
                 .zip(&self.state.enabled_layers)

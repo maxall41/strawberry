@@ -1400,12 +1400,8 @@ impl ToolBackend for AutomaticSegmentation {
     fn get_state(&self) -> ToolState {
         ToolState::AutomaticSegmentationState(self.state.clone())
     }
-    /// Process images for callers that do not need plane progress.
-    async fn process(&mut self, images: &mut ImageCollection) -> Result<()> {
-        self.process_with_progress(images, Box::new(|_| {})).await
-    }
     /// Preview the selected position while training or report progress while segmenting all positions.
-    async fn process_with_progress(
+    async fn process(
         &mut self,
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,

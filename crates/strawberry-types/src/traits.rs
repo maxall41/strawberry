@@ -12,22 +12,56 @@ pub type ToolAssets = HashMap<String, Vec<u8>>;
 /// Publish an active stage's plane counts from the thread processing them.
 pub type ReportPlaneProgress = Box<dyn FnMut(PlaneProgress) + Send>;
 
+/// Adapts plane iterators so a processing loop reports its progress.
+pub trait PlaneProgressExt: ExactSizeIterator + Sized {
+    /// Wrap the iterator so a loop over it reports how many planes it has finished.
+    fn report_progress(self, report_planes: ReportPlaneProgress) -> PlaneProgressIter<Self> {
+        PlaneProgressIter {
+            total: self.len(),
+            completed: 0,
+            planes: self,
+            report_planes,
+        }
+    }
+}
+
+impl<I: ExactSizeIterator> PlaneProgressExt for I {}
+
+/// Iterator that treats each plane as finished once the loop asks for the next one.
+pub struct PlaneProgressIter<I> {
+    planes: I,
+    completed: usize,
+    total: usize,
+    report_planes: ReportPlaneProgress,
+}
+
+impl<I: Iterator> Iterator for PlaneProgressIter<I> {
+    type Item = I::Item;
+
+    /// Report the planes finished so far, then yield the next plane.
+    fn next(&mut self) -> Option<I::Item> {
+        (self.report_planes)(PlaneProgress {
+            completed: self.completed,
+            total: self.total,
+        });
+        let plane = self.planes.next()?;
+        self.completed = self.completed.saturating_add(1);
+        Some(plane)
+    }
+}
+
 /// Trait for image processing tools (backend)
 #[async_trait]
 pub trait ToolBackend: Send + Sync {
-    /// Process the images of the collection in place.
-    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()>;
-
-    /// Process the collection and report plane counts when supported by the stage.
+    /// Process the images of the collection in place, reporting plane counts when the stage
+    /// tracks them.
     /// # Errors
     /// Returns an error if processing fails.
-    async fn process_with_progress(
+    async fn process(
         &mut self,
         images: &mut ImageCollection,
-        _report_planes: ReportPlaneProgress,
-    ) -> anyhow::Result<()> {
-        self.process(images).await
-    }
+        report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()>;
 
     /// Check if this tool is currently enabled
     fn is_enabled(&self) -> bool;

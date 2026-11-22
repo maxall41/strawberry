@@ -9,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, sobel::GpuSobel};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, ImageCollection, PipelineObjectMessage, SobelMessage, SobelState, ToolBackend,
-    ToolInput, ToolState,
+    BackendToolType, ImageCollection, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress,
+    SobelMessage, SobelState, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Sobel {
@@ -35,14 +35,18 @@ impl ToolBackend for Sobel {
     }
 
     /// Apply Sobel edge detection to every input plane.
-    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
         let threshold = if self.state.use_threshold {
             Some(self.state.threshold_value)
         } else {
             None
         };
 
-        for image in images.planes_mut() {
+        for image in images.planes_mut().report_progress(report_planes) {
             *image = Arc::new(self.processor.apply_sobel(image, threshold).await?);
         }
         Ok(())

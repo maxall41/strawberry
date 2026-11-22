@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use strawberry_processing::{GpuImageProcessor, difference_of_gaussians::GpuDifferenceOfGaussians};
 use strawberry_types::{
     BackendToolType, DifferenceOfGaussiansMessage, DifferenceOfGaussiansState, ImageCollection,
-    PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
+    PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput,
+    ToolState,
 };
 
 use crate::{
@@ -36,8 +37,12 @@ impl ToolBackend for DifferenceOfGaussians {
     }
 
     /// Apply the configured difference of Gaussian blurs to every input plane.
-    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.planes_mut() {
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
+        for image in images.planes_mut().report_progress(report_planes) {
             *image = Arc::new(
                 self.processor
                     .apply(image, self.state.small_sigma, self.state.large_sigma)

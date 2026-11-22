@@ -12,7 +12,8 @@ use strawberry_processing::{
 use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, DecomposerMessage, DecomposerState, Dimension, FrontendMessage,
-    ImageCollection, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
+    ImageCollection, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress, ToolBackend,
+    ToolInput, ToolState,
 };
 
 pub struct Decomposer {
@@ -38,9 +39,13 @@ impl ToolBackend for Decomposer {
     }
 
     /// Decompose the single layer at each position and composite its enabled channel layers.
-    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
         let mut lanes = images.lanes(Dimension::C);
-        for lane in &mut lanes {
+        for lane in lanes.iter_mut().report_progress(report_planes) {
             let [image] = lane.as_slice() else {
                 let error_msg = format!(
                     "Decomposer can only process images with one layer, received {}",

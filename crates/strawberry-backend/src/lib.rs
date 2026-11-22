@@ -196,7 +196,7 @@ impl Pipeline {
                 publish_progress(None);
                 stage = stage.saturating_add(1);
                 let result = tool
-                    .process_with_progress(
+                    .process(
                         &mut images,
                         Box::new(move |planes| publish_progress(Some(planes))),
                     )
