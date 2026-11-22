@@ -17,8 +17,8 @@ use strawberry_types::consts::CIRCLE_COLORS;
 use strawberry_types::overlay::{CircleStyle, OverlayElement, ToolOverlay};
 use strawberry_types::{
     BackendToolType, CountData, CountMessage, CounterMode, CounterState, CounterTool,
-    FrontendMessage, ImageCollection, PerPosition, PipelineObjectMessage, Position, Shape,
-    ToolBackend, ToolInput, ToolState,
+    FrontendMessage, ImageCollection, PerPosition, PipelineObjectMessage, Position,
+    ReportPlaneProgress, Shape, ToolBackend, ToolInput, ToolState,
 };
 
 /// Distance in pixels from a click within which the delete tool removes counts.
@@ -101,7 +101,11 @@ impl ToolBackend for Counter {
 
     /// Detect connected components at every position when automatic mode is active, replacing
     /// earlier detections and keeping manual counts.
-    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        _report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
         self.state.shape = images.shape();
         if self.state.mode == CounterMode::Auto {
             let detected = images

@@ -10,7 +10,7 @@ use strawberry_processing::nervetracer::create_path;
 use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, FrontendMessage, ImageCollection, NerveTracerMessage, NerveTracerState,
-    PipelineObjectMessage, Position, ToolBackend, ToolInput, ToolState,
+    PipelineObjectMessage, Position, ReportPlaneProgress, ToolBackend, ToolInput, ToolState,
     overlay::{OverlayElement, ToolOverlay},
 };
 
@@ -63,7 +63,11 @@ impl ToolBackend for NerveTracer {
     }
 
     /// Remember the images for tracing and refresh the available layer count.
-    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        _report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
         self.state.shape = images.shape();
         let layers = self.state.shape.c;
         if self.state.selected_layer >= layers && layers > 0 {

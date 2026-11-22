@@ -494,11 +494,13 @@ impl PrimaryViewer {
     /// Update busy indicators and progress from a pipeline event.
     fn pipeline_progress(&mut self, progress: &PipelineProgress, cx: &Context<Self>) {
         let label = humanize_tool_name(&progress.name);
+        // A single plane's 0/1 count says less than the pulsing bar it would replace.
+        let planes = progress.planes.filter(|planes| planes.total > 1);
         if let Some(activity) = &mut self.activity {
             activity.label = label;
             activity.stage = progress.stage;
             activity.total = progress.total;
-            activity.planes = progress.planes;
+            activity.planes = planes;
             activity.finishing = false;
             return;
         }
@@ -507,7 +509,7 @@ impl PrimaryViewer {
             label,
             stage: progress.stage,
             total: progress.total,
-            planes: progress.planes,
+            planes,
             shown: false,
             finishing: false,
         });

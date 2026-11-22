@@ -194,9 +194,9 @@ pub struct PipelineProgress {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneProgress {
-    /// Number of input planes with completed predictions.
+    /// Number of planes the stage has finished processing.
     pub completed: usize,
-    /// Number of input planes that need predictions in this run.
+    /// Number of planes the stage processes in this run.
     pub total: usize,
 }
 

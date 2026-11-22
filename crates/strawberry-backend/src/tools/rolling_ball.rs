@@ -9,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, rolling_ball::GpuRollingBall};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, ImageCollection, PipelineObjectMessage, RollingBallMessage, RollingBallState,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, ImageCollection, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress,
+    RollingBallMessage, RollingBallState, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct RollingBall {
@@ -35,8 +35,12 @@ impl ToolBackend for RollingBall {
     }
 
     /// Subtract the configured rolling-ball background from every input plane.
-    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.planes_mut() {
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
+        for image in images.planes_mut().report_progress(report_planes) {
             *image = Arc::new(
                 self.processor
                     .apply_rolling_ball(image, self.state.ball_radius)

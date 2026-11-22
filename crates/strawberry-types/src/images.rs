@@ -524,7 +524,7 @@ impl ImageCollection {
     }
 
     /// Iterate mutably over every plane.
-    pub fn planes_mut(&mut self) -> impl Iterator<Item = &mut Arc<RgbaImage>> {
+    pub fn planes_mut(&mut self) -> impl ExactSizeIterator<Item = &mut Arc<RgbaImage>> {
         self.planes.iter_mut()
     }
 

@@ -6,7 +6,8 @@ use image::Rgba;
 use lutz::{Pixel, lutz};
 use strawberry_types::{
     BackendToolType, ImageCollection, ObjectSizeFilterMessage, ObjectSizeFilterMode,
-    ObjectSizeFilterState, PipelineObjectMessage, ToolBackend, ToolInput, ToolState,
+    ObjectSizeFilterState, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress,
+    ToolBackend, ToolInput, ToolState,
 };
 
 use crate::{
@@ -36,8 +37,12 @@ impl ToolBackend for ObjectSizeFilter {
     }
 
     /// Filter connected image objects using the configured size range.
-    async fn process(&mut self, images: &mut ImageCollection) -> anyhow::Result<()> {
-        for image in images.planes_mut() {
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
+        for image in images.planes_mut().report_progress(report_planes) {
             let mut output = None;
             for pixels in lutz::<_, Vec<Pixel>>(BinaryImageWrapper::new(image, 128)) {
                 let area = u64::try_from(pixels.len())?;
