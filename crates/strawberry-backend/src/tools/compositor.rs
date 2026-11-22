@@ -42,12 +42,23 @@ impl ToolBackend for Compositor {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        self.state.real_layers_len = images.shape().c;
-        if images.shape().c <= 1 {
+        let channel_count = images.shape().c;
+        self.state.real_layers_len = channel_count;
+        if channel_count <= 1 {
             return Ok(());
         }
+        let enabled_plane_count = self
+            .state
+            .enabled_layers
+            .iter()
+            .take(channel_count)
+            .filter(|&&enabled| enabled)
+            .count();
         let mut lanes = images.lanes(Dimension::C);
-        for lane in lanes.iter_mut().report_progress(report_planes) {
+        for lane in lanes
+            .iter_mut()
+            .report_progress_in_batches(enabled_plane_count, report_planes)
+        {
             let enabled: Vec<_> = lane
                 .iter()
                 .zip(&self.state.enabled_layers)
