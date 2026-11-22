@@ -119,7 +119,7 @@ impl NerveTracerView {
                 // Unreadable files load as usual so the backend reports why they failed.
                 let saved = read_tracings_file(&file)
                     .ok()
-                    .and_then(|tracings| tracings.get_saved_positions(shape).ok())
+                    .and_then(|tracings| tracings.get_saved_positions(selected).ok())
                     .unwrap_or_default();
                 let Some(placement) =
                     ask_annotation_placement(cx, "traces", &saved, selected, shape).await

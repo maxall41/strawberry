@@ -504,7 +504,8 @@ impl Pipeline {
         }
         let _ = reply.send(result.map_err(|error| format!("{error:#}")));
     }
-    /// Load images as BGRA planes in the requested arrangement and invalidate previous processing.
+    /// Load images as BGRA planes in the requested arrangement, invalidating previous processing
+    /// and clearing the displayed frame.
     fn load_images(
         &mut self,
         files: &[PathBuf],
@@ -548,6 +549,9 @@ impl Pipeline {
         self.input_images = images;
         self.load_generation = generation;
         self.output_is_current = false;
+        // The previous load's frame no longer matches the output, so viewers must stop
+        // offering its images for selection.
+        self.output_frame_sender.send_replace(None);
         Ok(())
     }
     /// Show another plane and direct per-position tool edits to its position. After a failed

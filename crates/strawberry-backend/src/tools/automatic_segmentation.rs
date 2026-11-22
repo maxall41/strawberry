@@ -662,7 +662,8 @@ impl AutomaticSegmentation {
             .get(&ByAddress(Arc::clone(input)))
             .filter(|cached| Arc::ptr_eq(&cached.model, model))
     }
-    /// Start a prediction worker that reports completed input planes and sends the results.
+    /// Start a prediction worker that reports completed input planes and sends the results,
+    /// stopping early once the returned receiver is dropped.
     fn spawn_prediction(
         &self,
         images: Vec<Arc<RgbaImage>>,
@@ -673,11 +674,13 @@ impl AutomaticSegmentation {
         let inference = self.state.inference.clone();
         let (tx, rx) = flume::bounded(1);
         tokio::task::spawn_blocking(move || {
+            let is_abandoned = || tx.is_disconnected();
             let _ = tx.send(futures::executor::block_on(model.predict_with_progress(
                 &extractor,
                 &images,
                 &inference,
                 report_completed_planes,
+                is_abandoned,
             )));
         });
         rx
@@ -753,7 +756,7 @@ impl AutomaticSegmentation {
             model,
         });
     }
-    /// Discard cached predictions and any running preview prediction.
+    /// Discard cached predictions and stop any running preview prediction.
     fn clear_predictions(&mut self) {
         self.preview_job = None;
         self.overlays_dirty |= !std::mem::take(&mut self.inference_cache).is_empty();

@@ -222,42 +222,33 @@ impl Shape {
         Ok(shape)
     }
 
-    /// Return the index of a position among this shape's positions in storage order, used as
-    /// its slice ID in annotation files, or `None` if the shape does not contain the position.
+    /// Return a position's slice index in annotation files, counting depth slices through time
+    /// points, or `None` if the shape does not contain the position.
+    ///
+    /// Annotation files describe a single image stack, so the position's tile is not numbered.
     #[must_use]
-    pub fn flatten(self, position: Position) -> Option<usize> {
+    pub fn get_slice_index(self, position: Position) -> Option<usize> {
         if !self.contains_position(position) {
             return None;
         }
-        position
-            .t
-            .checked_mul(self.z)?
-            .checked_add(position.z)?
-            .checked_mul(self.y)?
-            .checked_add(position.y)?
-            .checked_mul(self.x)?
-            .checked_add(position.x)
+        position.t.checked_mul(self.z)?.checked_add(position.z)
     }
 
-    /// Map the unique frame ID produced by flatten back to a full Position
+    /// Return the position an annotation file's slice index refers to on the tile of `tile`.
     ///
-    /// Without several time points, numbers past the last slice continue along Z.
+    /// Without several time points, indices past the last slice continue along Z.
     #[must_use]
-    pub fn unflatten(self, index: usize) -> Position {
-        let (x_extent, y_extent, z_extent) = (self.x.max(1), self.y.max(1), self.z.max(1));
-        let x = index.checked_rem(x_extent).unwrap_or_default();
-        let rest = index.checked_div(x_extent).unwrap_or_default();
-        let y = rest.checked_rem(y_extent).unwrap_or_default();
-        let rest = rest.checked_div(y_extent).unwrap_or_default();
+    pub fn get_slice_position(self, index: usize, tile: Position) -> Position {
+        let z_extent = self.z.max(1);
         let (z, t) = if self.t > 1 {
             (
-                rest.checked_rem(z_extent).unwrap_or_default(),
-                rest.checked_div(z_extent).unwrap_or_default(),
+                index.checked_rem(z_extent).unwrap_or_default(),
+                index.checked_div(z_extent).unwrap_or_default(),
             )
         } else {
-            (rest, 0)
+            (index, 0)
         };
-        Position { t, z, y, x }
+        Position { t, z, ..tile }
     }
 }
 
@@ -386,6 +377,12 @@ pub struct Position {
 }
 
 impl Position {
+    /// Return whether two positions lie on the same mosaic tile.
+    #[must_use]
+    pub const fn shares_tile_with(self, other: Self) -> bool {
+        self.y == other.y && self.x == other.x
+    }
+
     /// Return the coordinates of one channel at this position.
     #[must_use]
     pub const fn with_channel(self, c: usize) -> Coordinates {
