@@ -88,7 +88,16 @@ jobs:
         run: cargo install cargo-bundle --version 0.12.0 --locked
       - name: Bundle
         if: github.ref_type == 'tag'
-        run: cargo bundle --release --package strawberry-frontend -t ${{ matrix.target }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            # cargo-bundle 0.12 appends .exe to the binary path only when --format names a Windows package
+            for format in msi exe; do
+              cargo bundle --release --package strawberry-frontend -t ${{ matrix.target }} --format "$format"
+            done
+          else
+            cargo bundle --release --package strawberry-frontend -t ${{ matrix.target }}
+          fi
       - name: Collect bundles
         if: github.ref_type == 'tag'
         shell: bash
