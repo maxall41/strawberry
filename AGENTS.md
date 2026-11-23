@@ -82,9 +82,23 @@ GPUI's `VisualTestAppContext` renders views offscreen with the real Metal render
 
 - Decoherence: you must review for decoherence; this is a phenomena in which patterns which make sense in isolation within a code base become nonsensical or overcomplicated when combined. For instance, some code performing thresholding on a f32 between 0 and 1, while another part of the code performs thresholding on a u8 between 0 and 255 is one example of decoherence. 
 
-## BTreeMaps
+## Antipatterns
+
+### Excessive BTreeMaps
 
 Do not use a BTreeMap unless determinstic ordering is desired; use a regular HashMap instead for simplicity.
+
+### Returning tuples of like types from functions
+
+Functions should (almost) never return a tuple like (String, String) or (f64, f64, f64), as it is trivial for these to get mixed up, and the contract is not well defined.
+
+### Not utilizing type-driven design
+
+Invalid states should be unrepresentable in code by design. That is, types should be designed and used wherever possible and reasonable without introducing excessive complexity to prevent bugs that may arise from representing impossible states. It is better, for instance, to use a custom type to represent an Email rather than a String, as a custom type can enforce requirements like the validity of the email. Second example: representing validated users with a seperate type, such as ValidatedUser, than unvalidated users, User, such that only functions defined on the ValidatedUser struct can be called. 
+
+### Excessivley long functions
+
+Very long functions should be broken up into smaller components which are easier to reason about. Contracts between functions should be well defined and represented in the type system.
 
 ## Imports
 
