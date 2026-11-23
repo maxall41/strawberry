@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - "**"
     tags:
       - "v*"
 
@@ -11,6 +13,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -35,11 +38,17 @@ jobs:
           sudo apt-get install -y libfontconfig-dev libssl-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
+      - name: Build Strawberry
+        if: github.ref_type == 'branch'
+        run: cargo build --release --locked --package strawberry-frontend --target ${{ matrix.target }}
       - name: Install cargo-bundle
+        if: github.ref_type == 'tag'
         run: cargo install cargo-bundle --version 0.12.0 --locked
       - name: Bundle
+        if: github.ref_type == 'tag'
         run: cargo bundle --release --package strawberry-frontend -t ${{ matrix.target }}
       - name: Collect bundles
+        if: github.ref_type == 'tag'
         shell: bash
         run: |
           shopt -s nullglob
@@ -48,12 +57,14 @@ jobs:
             cp "$bundle" "dist/Strawberry-$GITHUB_REF_NAME-${{ matrix.label }}.${bundle##*.}"
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.ref_type == 'tag'
         with:
           name: ${{ matrix.label }}
           path: dist/*
           if-no-files-found: error
 
   release:
+    if: github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-latest
     permissions:
