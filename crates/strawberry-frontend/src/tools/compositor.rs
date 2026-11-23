@@ -86,7 +86,8 @@ impl CompositorView {
         self.toggle_enabled(current_enabled, window, cx);
     }
 
-    /// Handle the keyboard action toggling a channel by its position in the current state.
+    /// Handle the keyboard action toggling a channel by its position, ignoring channels the
+    /// current image lacks.
     fn toggle_channel_action(
         &mut self,
         action: &ToggleChannel,
@@ -97,7 +98,9 @@ impl CompositorView {
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(&current_value) = state.enabled_channels.get(action.index) {
+        if action.index < state.channel_count
+            && let Some(&current_value) = state.enabled_channels.get(action.index)
+        {
             drop(state);
             self.toggle_channel(current_value, action.index, window, cx);
         }

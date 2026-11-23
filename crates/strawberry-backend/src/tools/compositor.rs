@@ -78,12 +78,13 @@ impl ToolBackend for Compositor {
                 CompositorMessage::ToggleVisibility(value, channel_index) => {
                     let mut mutated = self.state.enabled_channels.clone();
                     let index = usize::from(channel_index);
+                    // Toggles kept for channels of an earlier, wider image are not shown, so
+                    // they must not change either.
+                    let channel_count = self.state.channel_count.min(mutated.len());
 
-                    if index >= mutated.len() {
+                    if index >= channel_count {
                         let error_msg = format!(
-                            "Compositor: Channel index {} out of bounds (max: {})",
-                            index,
-                            mutated.len()
+                            "Compositor: Channel index {index} out of bounds for {channel_count} channel(s)"
                         );
                         self.base
                             .events
@@ -95,9 +96,8 @@ impl ToolBackend for Compositor {
                         *channel = value;
                     }
 
-                    let end_range = self.state.channel_count.min(mutated.len());
                     if mutated
-                        .get(0..end_range)
+                        .get(0..channel_count)
                         .is_none_or(|slice| slice.iter().all(|&x| !x))
                     {
                         return Ok(());
