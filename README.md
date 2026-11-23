@@ -1,4 +1,4 @@
-# 🍓 Strawberry
+# 🍓 Strawberry 
 
 A modern scientific image editor.
 
