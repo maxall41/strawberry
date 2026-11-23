@@ -40,10 +40,11 @@ pub enum CounterTool {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompositorState {
     pub is_enabled: bool,
-    pub enabled_layers: Vec<bool>,
-    /// Don't include runtime layer metadata in persisted state
+    #[serde(alias = "enabled_layers")]
+    pub enabled_channels: Vec<bool>,
+    /// Number of channels in the last processed images; runtime-only.
     #[serde(skip)]
-    pub real_layers_len: usize,
+    pub channel_count: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -100,9 +101,9 @@ pub struct NerveTracerState {
     pub traces: PerPosition<PositionTraces>,
     #[serde(skip)]
     pub first_point: Option<(u64, u64)>,
-    #[serde(alias = "selected_image_index")]
-    pub selected_layer: usize,
-    /// Shape of the last processed images, which numbers trace positions in files.
+    #[serde(alias = "selected_layer", alias = "selected_image_index")]
+    pub selected_channel: usize,
+    /// Shape of the images being traced, which numbers trace positions in files.
     #[serde(skip)]
     pub shape: Shape,
 }
@@ -110,17 +111,17 @@ pub struct NerveTracerState {
 impl NerveTracerState {
     /// Return the committed paths traced on the selected position.
     #[must_use]
-    pub fn paths(&self) -> &[Path] {
+    pub fn get_paths(&self) -> &[Path] {
         self.traces
-            .selected()
+            .get_selected()
             .map_or(&[], |traces| traces.paths.as_slice())
     }
 
     /// Return the uncommitted segments traced on the selected position.
     #[must_use]
-    pub fn current_path_segments(&self) -> &[PathSegment] {
+    pub fn get_current_path_segments(&self) -> &[PathSegment] {
         self.traces
-            .selected()
+            .get_selected()
             .map_or(&[], |traces| traces.current_path_segments.as_slice())
     }
 }
@@ -234,7 +235,9 @@ where
 /// Values kept separately for each X, Y, Z, T position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerPosition<T> {
-    positions: Arc<BTreeMap<Position, T>>,
+    // Tool state is cloned for every published snapshot, so the map is shared; each value is
+    // shared too, so editing one position copies only that position's value.
+    positions: Arc<BTreeMap<Position, Arc<T>>>,
     selected: Position,
 }
 
@@ -251,7 +254,7 @@ impl<T> Default for PerPosition<T> {
 impl<T: Clone + Default> PerPosition<T> {
     /// Return the selected position.
     #[must_use]
-    pub const fn selected_position(&self) -> Position {
+    pub const fn get_selected_position(&self) -> Position {
         self.selected
     }
 
@@ -262,32 +265,52 @@ impl<T: Clone + Default> PerPosition<T> {
 
     /// Return the selected position's value, if one has been recorded.
     #[must_use]
-    pub fn selected(&self) -> Option<&T> {
-        self.positions.get(&self.selected)
+    pub fn get_selected(&self) -> Option<&T> {
+        self.positions.get(&self.selected).map(Arc::as_ref)
     }
 
     /// Return the selected position's value, creating an empty one if needed.
-    pub fn selected_mut(&mut self) -> &mut T {
-        self.position_mut(self.selected)
+    pub fn get_selected_mut(&mut self) -> &mut T {
+        self.get_position_mut(self.selected)
     }
 
     /// Return a position's value, creating an empty one if needed.
-    pub fn position_mut(&mut self, position: Position) -> &mut T {
-        Arc::make_mut(&mut self.positions)
-            .entry(position)
-            .or_default()
+    pub fn get_position_mut(&mut self, position: Position) -> &mut T {
+        Arc::make_mut(
+            Arc::make_mut(&mut self.positions)
+                .entry(position)
+                .or_default(),
+        )
     }
 
     /// Iterate over recorded positions and their values in frame-major order.
     pub fn iter(&self) -> impl Iterator<Item = (Position, &T)> {
         self.positions
             .iter()
-            .map(|(&position, value)| (position, value))
+            .map(|(&position, value)| (position, value.as_ref()))
+    }
+
+    /// Iterate over the recorded positions on the selected position's mosaic tile, in
+    /// frame-major order.
+    pub fn iter_selected_tile(&self) -> impl Iterator<Item = (Position, &T)> {
+        let selected = self.selected;
+        self.iter()
+            .filter(move |(position, _)| position.shares_tile_with(selected))
     }
 
     /// Iterate mutably over every recorded position's value.
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        Arc::make_mut(&mut self.positions).values_mut()
+        Arc::make_mut(&mut self.positions)
+            .values_mut()
+            .map(Arc::make_mut)
+    }
+
+    /// Replace the values of the given positions, keeping every other position's value.
+    pub fn replace_positions(&mut self, values: impl IntoIterator<Item = (Position, T)>) {
+        let positions = Arc::make_mut(&mut self.positions);
+        for (position, value) in values {
+            positions.insert(position, Arc::new(value));
+        }
     }
 
     /// Remove every position's value, keeping the selected position.
@@ -308,7 +331,7 @@ pub struct CounterState {
     pub is_enabled: bool,
     #[serde(skip)]
     pub counts: PerPosition<PositionCounts>,
-    /// Shape of the last processed images, which numbers count positions in files.
+    /// Shape of the images being counted, which numbers count positions in files.
     #[serde(skip)]
     pub shape: Shape,
     pub mode: CounterMode,
@@ -324,18 +347,18 @@ pub struct CounterState {
 impl CounterState {
     /// Return the selected position's manual counts of one type.
     #[must_use]
-    pub fn manual_counts(&self, count_type: u16) -> &[CountData] {
+    pub fn get_manual_counts(&self, count_type: u16) -> &[CountData] {
         self.counts
-            .selected()
+            .get_selected()
             .and_then(|counts| counts.manual.get(&count_type))
             .map_or(&[], Vec::as_slice)
     }
 
     /// Return the counts detected in the selected position.
     #[must_use]
-    pub fn auto_counts(&self) -> &[CountData] {
+    pub fn get_auto_counts(&self) -> &[CountData] {
         self.counts
-            .selected()
+            .get_selected()
             .map_or(&[], |counts| counts.auto.as_slice())
     }
 }
@@ -343,7 +366,8 @@ impl CounterState {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecomposerState {
     pub is_enabled: bool,
-    pub enabled_layers: Vec<bool>,
+    #[serde(alias = "enabled_layers")]
+    pub enabled_channels: Vec<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -706,9 +730,10 @@ pub struct AutomaticSegmentationState {
     pub active_class: ClassId,
     pub brush: AnnotationKind,
     pub brush_radius: BrushRadius,
-    pub selected_layer: usize,
+    #[serde(alias = "selected_layer")]
+    pub selected_channel: usize,
     #[serde(skip)]
-    pub total_layers: usize,
+    pub channel_count: usize,
     #[serde(skip)]
     pub selected_position: Position,
     pub features: FeatureConfig,
@@ -878,8 +903,8 @@ impl Default for AutomaticSegmentationState {
             active_class: ClassId::new(1),
             brush: AnnotationKind::default(),
             brush_radius: BrushRadius::default(),
-            selected_layer: 0,
-            total_layers: 0,
+            selected_channel: 0,
+            channel_count: 0,
             selected_position: Position::default(),
             features: FeatureConfig::default(),
             forest: ForestConfig::default(),

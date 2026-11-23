@@ -241,7 +241,7 @@ impl HyperstackImporter {
             .map_or_else(Shape::default, |layout| layout.shape);
         Dimension::ALL
             .into_iter()
-            .filter(|&dimension| shape.extent(dimension) > 1)
+            .filter(|&dimension| shape.get_extent(dimension) > 1)
             .collect()
     }
 
@@ -288,7 +288,7 @@ impl HyperstackImporter {
             .children(
                 self.get_preview_dimensions()
                     .into_iter()
-                    .map(|dimension| build_coordinate_cell(dimension.label())),
+                    .map(|dimension| build_coordinate_cell(dimension.get_label())),
             );
         build_well()
             .flex_none()
@@ -670,7 +670,7 @@ fn render_name_pattern(parts: &[TemplatePart]) -> impl IntoElement + use<> {
                                 .text_color(tag_text)
                                 .text_size(px(11.))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(dimension.label()),
+                                .child(dimension.get_label()),
                         ),
                         None => chip.pl(px(8.)),
                     }
@@ -684,7 +684,7 @@ fn render_name_pattern(parts: &[TemplatePart]) -> impl IntoElement + use<> {
 fn get_dimension_options() -> Vec<SharedString> {
     Dimension::ALL
         .into_iter()
-        .map(|dimension| format!("{} · {}", dimension.label(), dimension.get_name()).into())
+        .map(|dimension| format!("{} · {}", dimension.get_label(), dimension.get_name()).into())
         .chain(["Ignore".into()])
         .collect()
 }

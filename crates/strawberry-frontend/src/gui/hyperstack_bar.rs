@@ -29,7 +29,7 @@ pub struct DimensionControl {
 impl DimensionControl {
     /// Create the control and keep its slider and number in step.
     pub fn new(dimension: Dimension, cx: &mut Context<Self>) -> Self {
-        let id = dimension.label().to_lowercase();
+        let id = dimension.get_label().to_lowercase();
         let slider = cx.new(|_| Slider::new(format!("{id}-slider"), 0, 0));
         let number = cx.new(|cx| {
             ValueControl::new_integer(
@@ -109,7 +109,7 @@ impl Render for DimensionControl {
                     .w(px(12.))
                     .text_xs()
                     .text_color(theme::TEXT_MUTED)
-                    .child(self.dimension.label()),
+                    .child(self.dimension.get_label()),
             )
             .child(div().flex_1().min_w_0().child(self.slider.clone()))
             .child(self.number.clone())
@@ -165,17 +165,21 @@ impl HyperstackBar {
         self.shape = shape;
         for (dimension, control) in &self.controls {
             control.update(cx, |control, cx| {
-                control.set_extent(coordinates.get(*dimension), shape.extent(*dimension), cx);
+                control.set_extent(
+                    coordinates.get(*dimension),
+                    shape.get_extent(*dimension),
+                    cx,
+                );
             });
         }
         cx.notify();
     }
 
     /// Return the number of rows shown, one per dimension holding several images.
-    pub fn row_count(&self) -> usize {
+    pub fn get_row_count(&self) -> usize {
         Dimension::ALL
             .into_iter()
-            .filter(|&dimension| self.shape.extent(dimension) > 1)
+            .filter(|&dimension| self.shape.get_extent(dimension) > 1)
             .count()
     }
 }
@@ -186,7 +190,7 @@ impl Render for HyperstackBar {
         let rows = self
             .controls
             .iter()
-            .filter(|(dimension, _)| self.shape.extent(*dimension) > 1)
+            .filter(|(dimension, _)| self.shape.get_extent(*dimension) > 1)
             .map(|(_, control)| {
                 div()
                     .flex()
@@ -198,7 +202,7 @@ impl Render for HyperstackBar {
             .flex()
             .flex_col()
             .flex_none()
-            .h(px(status_bar_height(self.row_count())))
+            .h(px(status_bar_height(self.get_row_count())))
             .px_3()
             .py(px(STATUS_BAR_PADDING))
             .border_t_1()

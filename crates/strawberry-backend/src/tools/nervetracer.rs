@@ -5,12 +5,13 @@ use strawberry_types::RgbaColor;
 use crate::nervetracer::io::{
     export_nervetracer_to_xml_file, import_nervetracer_from_xml_file_into,
 };
+use std::mem;
 use strawberry_processing::nervetracer::create_path;
 
 use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, FrontendMessage, ImageCollection, NerveTracerMessage, NerveTracerState,
-    PipelineObjectMessage, Position, ReportPlaneProgress, ToolBackend, ToolInput, ToolState,
+    PipelineObjectMessage, Position, ReportPlaneProgress, Shape, ToolBackend, ToolInput, ToolState,
     overlay::{OverlayElement, ToolOverlay},
 };
 
@@ -36,9 +37,11 @@ impl ToolBackend for NerveTracer {
     fn cancel_interaction(&mut self) {
         self.state.first_point = None;
     }
-    /// Drop the previous images' traces, which may lie on slices the new images lack.
-    fn release_previous_input(&mut self) {
+    /// Drop the previous images' traces, which may lie on slices the new images lack, and
+    /// number positions by the new images' shape.
+    fn replace_input(&mut self, shape: Shape) {
         self.state.traces.clear();
+        self.state.shape = shape;
     }
     /// Trace on, and show the paths of, the given position.
     fn select_position(&mut self, position: Position) {
@@ -62,16 +65,16 @@ impl ToolBackend for NerveTracer {
         ToolState::NerveTracerState(self.state.clone())
     }
 
-    /// Remember the images for tracing and refresh the available layer count.
+    /// Remember the images for tracing and keep the traced channel within their channels.
     async fn process(
         &mut self,
         images: &mut ImageCollection,
         _report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        self.state.shape = images.shape();
-        let layers = self.state.shape.c;
-        if self.state.selected_layer >= layers && layers > 0 {
-            self.state.selected_layer = layers.saturating_sub(1);
+        self.state.shape = images.get_shape();
+        let channels = self.state.shape.c;
+        if self.state.selected_channel >= channels && channels > 0 {
+            self.state.selected_channel = channels.saturating_sub(1);
         }
         self.cache.remember_input(images);
         Ok(())
@@ -85,25 +88,25 @@ impl ToolBackend for NerveTracer {
             ToolInput::Message(PipelineObjectMessage::NerveTracerMessage(message)) => match message
             {
                 NerveTracerMessage::CommitCurrentPathSegments() => {
-                    let traces = self.state.traces.selected_mut();
-                    let segments = std::mem::take(&mut traces.current_path_segments);
+                    let traces = self.state.traces.get_selected_mut();
+                    let segments = mem::take(&mut traces.current_path_segments);
                     traces.paths.push(segments);
                 }
                 NerveTracerMessage::DeletePath(id) => {
-                    let paths = &mut self.state.traces.selected_mut().paths;
+                    let paths = &mut self.state.traces.get_selected_mut().paths;
                     if id < paths.len() {
                         paths.remove(id);
                     }
                 }
                 NerveTracerMessage::DeletePathSegmentInCommitedPath(path_id, segment_id) => {
-                    if let Some(path) = self.state.traces.selected_mut().paths.get_mut(path_id)
+                    if let Some(path) = self.state.traces.get_selected_mut().paths.get_mut(path_id)
                         && segment_id < path.len()
                     {
                         path.remove(segment_id);
                     }
                 }
                 NerveTracerMessage::DeleteUncomittedPathSegment(id) => {
-                    let segments = &mut self.state.traces.selected_mut().current_path_segments;
+                    let segments = &mut self.state.traces.get_selected_mut().current_path_segments;
                     if id < segments.len() {
                         segments.remove(id);
                     }
@@ -139,8 +142,8 @@ impl ToolBackend for NerveTracer {
                         }
                     }
                 }
-                NerveTracerMessage::SelectLayer(index) => {
-                    self.state.selected_layer = index;
+                NerveTracerMessage::SelectChannel(index) => {
+                    self.state.selected_channel = index;
                 }
             },
             _ => {}
@@ -191,7 +194,7 @@ impl ToolBackend for NerveTracer {
         }
 
         // Draw uncommitted segments
-        for segment in self.state.current_path_segments() {
+        for segment in self.state.get_current_path_segments() {
             let points: Vec<(f32, f32)> = segment
                 .iter()
                 .copied()
@@ -208,7 +211,7 @@ impl ToolBackend for NerveTracer {
         }
 
         // Draw committed paths
-        for path in self.state.paths() {
+        for path in self.state.get_paths() {
             for segment in path {
                 let points: Vec<(f32, f32)> = segment
                     .iter()
@@ -242,16 +245,19 @@ impl NerveTracer {
     /// Construct the tool with its initial settings and required resources.
     #[must_use]
     pub fn new(events: ToolEvents) -> Self {
-        let state = NerveTracerState::default();
+        let state = NerveTracerState {
+            shape: Shape::SINGLE_PLANE,
+            ..NerveTracerState::default()
+        };
         Self {
-            cache: crate::tools::cache::ToolCache::new(&state),
+            cache: ToolCache::new(&state),
             state,
             events,
         }
     }
 
     /// Start a path segment at `point`, or finish the pending one there by tracing the selected
-    /// layer of the viewed position.
+    /// channel of the viewed position.
     fn trace_to_point(&mut self, point: (u64, u64)) {
         if !self.state.is_enabled {
             return;
@@ -259,12 +265,12 @@ impl NerveTracer {
         let coordinates = self
             .state
             .traces
-            .selected_position()
-            .with_channel(self.state.selected_layer);
+            .get_selected_position()
+            .with_channel(self.state.selected_channel);
         let Some(image) = self
             .cache
             .get_input()
-            .and_then(|input| input.plane(coordinates))
+            .and_then(|input| input.get_plane(coordinates))
         else {
             return;
         };
@@ -275,7 +281,7 @@ impl NerveTracer {
         if let Some(segment) = create_path(first, point, image) {
             self.state
                 .traces
-                .selected_mut()
+                .get_selected_mut()
                 .current_path_segments
                 .push(segment);
         }

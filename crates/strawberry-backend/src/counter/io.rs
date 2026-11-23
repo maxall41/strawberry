@@ -49,7 +49,7 @@ pub struct MarkerType {
     pub type_id: u16,
     #[serde(rename = "Name")]
     pub name: String,
-    #[serde(rename = "Marker")]
+    #[serde(rename = "Marker", default)]
     pub markers: Vec<Marker>,
 }
 
@@ -64,7 +64,7 @@ pub struct Marker {
 }
 
 impl Marker {
-    /// Convert a count data object to a marker
+    /// Convert a count to a marker on the one-based slice `marker_z`.
     const fn from_count(count_data: &CountData, marker_z: u16) -> Self {
         Self {
             marker_x: count_data.position.0,
@@ -123,14 +123,8 @@ impl CellCounterMarkerFile {
         image_filename: Option<String>,
     ) -> Result<Self, Box<dyn Error>> {
         let shape = state.shape;
-        let selected = state.counts.selected_position();
         // Marker files cannot number tiles, so other tiles' counts would land on this tile.
-        let tile_counts = || {
-            state
-                .counts
-                .iter()
-                .filter(move |(position, _)| position.shares_tile_with(selected))
-        };
+        let tile_counts = || state.counts.iter_selected_tile();
         shape.ensure_contains_positions(
             tile_counts()
                 .filter(|(_, counts)| {
@@ -241,29 +235,23 @@ impl CellCounterMarkerFile {
         state: &mut CounterState,
         placement: AnnotationPlacement,
     ) -> Result<(), Box<dyn Error>> {
-        let selected = state.counts.selected_position();
+        let selected = state.counts.get_selected_position();
         if placement == AnnotationPlacement::SplitByPosition {
             state.shape.ensure_contains_positions(
                 self.get_saved_positions(state.shape, selected),
                 "Counts",
             )?;
         }
-        let mut imported: HashMap<Position, HashMap<u16, Vec<CountData>>> = HashMap::new();
-        if placement == AnnotationPlacement::CurrentPosition {
-            imported.insert(selected, HashMap::new());
-        }
+        let mut imported: HashMap<Position, HashMap<u16, Vec<CountData>>> =
+            placement.create_import_map(selected);
 
         for marker_type in &self.marker_data.marker_types {
             if marker_type.markers.is_empty() {
                 continue;
             }
             for marker in &marker_type.markers {
-                let position = match placement {
-                    AnnotationPlacement::CurrentPosition => selected,
-                    AnnotationPlacement::SplitByPosition => {
-                        marker.get_saved_position(state.shape, selected)
-                    }
-                };
+                let position = placement
+                    .get_target(selected, marker.get_saved_position(state.shape, selected));
                 imported
                     .entry(position)
                     .or_default()
@@ -279,8 +267,9 @@ impl CellCounterMarkerFile {
                 .insert(marker_type.type_id, true);
         }
 
+        // Imported counts replace manual counts only, keeping each position's detections.
         for (position, manual) in imported {
-            state.counts.position_mut(position).manual = manual;
+            state.counts.get_position_mut(position).manual = manual;
         }
         let current_type = self.marker_data.current_type;
         if state.count_type_names.contains_key(&current_type) {
@@ -304,7 +293,7 @@ pub fn export_counter_to_xml_file(
     let filename = file_path
         .file_name()
         .and_then(|name| name.to_str())
-        .map(std::string::ToString::to_string);
+        .map(str::to_owned);
 
     let xml = CellCounterMarkerFile::from_counter_state(state, filename)?.to_xml_string()?;
     fs::write(file_path, xml)?;

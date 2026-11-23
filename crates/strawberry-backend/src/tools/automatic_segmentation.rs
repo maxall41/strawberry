@@ -6,14 +6,16 @@ use crate::segmentation::{
 };
 use crate::tools::base::ToolEvents;
 use crate::utils::file_io::write_artifact;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use async_trait::async_trait;
 use by_address::ByAddress;
+use futures::executor::block_on;
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io::Write,
+    mem,
     path::PathBuf,
     sync::Arc,
 };
@@ -26,9 +28,10 @@ use strawberry_types::{
     BackendToolType, BgraColor, CLASS_PALETTE, ClassId, DatasetImportMode, DatasetOperation,
     FrontendMessage, ImageCollection, MAX_CLASSES, PipelineObjectMessage, PlaneProgress, Position,
     ReportPlaneProgress, RgbaColor, SampleId, SegmentationClass, SegmentationClasses,
-    SegmentationOutputMode, StrokeId, ToolAssets, ToolBackend, ToolInput, ToolState,
+    SegmentationOutputMode, Shape, StrokeId, ToolAssets, ToolBackend, ToolInput, ToolState,
     overlay::{CircleStyle, OverlayElement, ToolOverlay},
 };
+use tokio::task::spawn_blocking;
 
 const MODEL_ASSET: &str = "model.sbm";
 
@@ -62,7 +65,7 @@ fn try_receive_result<T>(receiver: &flume::Receiver<Result<T>>, worker: &str) ->
         Ok(result) => Some(result),
         Err(flume::TryRecvError::Empty) => None,
         Err(flume::TryRecvError::Disconnected) => {
-            Some(Err(anyhow::anyhow!("{worker} worker stopped unexpectedly")))
+            Some(Err(anyhow!("{worker} worker stopped unexpectedly")))
         }
     }
 }
@@ -133,7 +136,7 @@ impl PreparedDataset {
                         state.next_class_id = state
                             .next_class_id
                             .checked_add(1)
-                            .ok_or_else(|| anyhow::anyhow!("Class ID exhausted"))?;
+                            .ok_or_else(|| anyhow!("Class ID exhausted"))?;
                         class.annotations.clear();
                         state.classes.insert(destination, class)?;
                         names.insert(name, destination);
@@ -150,16 +153,16 @@ impl PreparedDataset {
             for (kind, stroke) in sample.annotations {
                 next_stroke_id = next_stroke_id
                     .checked_add(1)
-                    .ok_or_else(|| anyhow::anyhow!("Stroke ID exhausted"))?;
+                    .ok_or_else(|| anyhow!("Stroke ID exhausted"))?;
                 let annotations = match kind {
                     AnnotationKind::Paint(id) => {
                         let destination = class_mapping
                             .get(&id)
-                            .ok_or_else(|| anyhow::anyhow!("Unknown imported class"))?;
+                            .ok_or_else(|| anyhow!("Unknown imported class"))?;
                         state
                             .classes
                             .annotations_mut(*destination)
-                            .ok_or_else(|| anyhow::anyhow!("Unknown destination class"))?
+                            .ok_or_else(|| anyhow!("Unknown destination class"))?
                     }
                     AnnotationKind::Eraser => &mut state.erasers,
                 };
@@ -394,7 +397,7 @@ impl AutomaticSegmentation {
             path: path.clone(),
         });
         self.state.dataset_operation = Some(DatasetOperation::Saving);
-        tokio::task::spawn_blocking(move || {
+        spawn_blocking(move || {
             let result = dataset.save(&path).map(|()| DatasetResult::Saved);
             let _ = tx.send(result);
         });
@@ -435,7 +438,7 @@ impl AutomaticSegmentation {
             DatasetImportMode::Replace => DatasetOperation::Loading,
             DatasetImportMode::Merge => DatasetOperation::Merging,
         });
-        tokio::task::spawn_blocking(move || {
+        spawn_blocking(move || {
             let result = Dataset::load(&path, existing.as_ref())
                 .and_then(|dataset| {
                     PreparedDataset::new(
@@ -476,7 +479,7 @@ impl AutomaticSegmentation {
             }
             Ok(DatasetResult::Imported(prepared)) => {
                 if job.revision != self.dataset_revision {
-                    self.error(&anyhow::anyhow!(
+                    self.error(&anyhow!(
                         "Dataset changed during import; nothing was imported"
                     ));
                     return;
@@ -495,7 +498,7 @@ impl AutomaticSegmentation {
                     self.annotation_masks.clear();
                     self.state.hidden_classes.clear();
                     let Some(fallback) = self.state.classes.keys().nth(1).copied() else {
-                        self.error(&anyhow::anyhow!("Missing foreground class"));
+                        self.error(&anyhow!("Missing foreground class"));
                         return;
                     };
                     self.state.active_class = fallback;
@@ -503,7 +506,7 @@ impl AutomaticSegmentation {
                     self.state.brush = AnnotationKind::Paint(fallback);
                     if let Some(ids) = prepared.model_class_ids {
                         self.model_class_ids = ids;
-                        self.inference_cache.clear();
+                        self.clear_predictions();
                         self.state.model_revision = self.state.model_revision.wrapping_add(1);
                     } else {
                         self.invalidate_model();
@@ -537,14 +540,14 @@ impl AutomaticSegmentation {
         self.state
             .classes
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("Unknown class"))
+            .ok_or_else(|| anyhow!("Unknown class"))
     }
     /// Install model classes and reset annotations and dataset state.
     fn install_classes(&mut self, classes: SegmentationClasses) -> Result<()> {
         let active = *classes
             .keys()
             .nth(1)
-            .ok_or_else(|| anyhow::anyhow!("Missing foreground class"))?;
+            .ok_or_else(|| anyhow!("Missing foreground class"))?;
         self.state.next_class_id = self.state.next_class_id.max(
             classes
                 .keys()
@@ -564,7 +567,7 @@ impl AutomaticSegmentation {
         self.stroke = None;
         self.annotation_masks.clear();
         self.state.selected_stroke = None;
-        self.inference_cache.clear();
+        self.clear_predictions();
         self.reset_dataset_status();
         Ok(())
     }
@@ -573,7 +576,7 @@ impl AutomaticSegmentation {
         let model = self
             .model
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Train or load a model first"))?;
+            .ok_or_else(|| anyhow!("Train or load a model first"))?;
         Ok(serde_json::to_vec(&ModelDocument {
             version: ModelDocument::VERSION,
             classes: self.state.classes.clone(),
@@ -607,7 +610,7 @@ impl AutomaticSegmentation {
         if !self.state.is_enabled || !self.state.training || !self.state.show_overlay {
             return;
         }
-        let Some(cached) = self.selected_inference() else {
+        let Some(cached) = self.get_selected_inference() else {
             self.request_preview();
             return;
         };
@@ -649,7 +652,7 @@ impl AutomaticSegmentation {
         }
     }
     /// Return the cached prediction for the selected position's input under the current model.
-    fn selected_inference(&self) -> Option<&InferenceCache> {
+    fn get_selected_inference(&self) -> Option<&InferenceCache> {
         self.get_cached_inference(self.input.as_ref()?, self.model.as_ref()?)
     }
     /// Return the cached prediction for an input image under `model`.
@@ -673,9 +676,9 @@ impl AutomaticSegmentation {
         let extractor = self.extractor.clone();
         let inference = self.state.inference.clone();
         let (tx, rx) = flume::bounded(1);
-        tokio::task::spawn_blocking(move || {
+        spawn_blocking(move || {
             let is_abandoned = || tx.is_disconnected();
-            let _ = tx.send(futures::executor::block_on(model.predict_with_progress(
+            let _ = tx.send(block_on(model.predict_with_progress(
                 &extractor,
                 &images,
                 &inference,
@@ -731,7 +734,7 @@ impl AutomaticSegmentation {
             })
             .recv_async()
             .await
-            .map_err(|_| anyhow::anyhow!("Prediction worker stopped unexpectedly"))??;
+            .map_err(|_| anyhow!("Prediction worker stopped unexpectedly"))??;
         for (image, output) in uncached.into_iter().zip(outputs) {
             self.cache_inference(image, model.clone(), Arc::new(output));
         }
@@ -759,7 +762,7 @@ impl AutomaticSegmentation {
     /// Discard cached predictions and stop any running preview prediction.
     fn clear_predictions(&mut self) {
         self.preview_job = None;
-        self.overlays_dirty |= !std::mem::take(&mut self.inference_cache).is_empty();
+        self.overlays_dirty |= !mem::take(&mut self.inference_cache).is_empty();
     }
     /// Show a finished preview prediction if its input and model are still selected, abandoning
     /// it once the overlay is no longer shown.
@@ -800,11 +803,11 @@ impl AutomaticSegmentation {
         let coordinates = self
             .state
             .selected_position
-            .with_channel(self.state.selected_layer);
+            .with_channel(self.state.selected_channel);
         let image = self
             .cache
             .get_input()
-            .and_then(|input| input.plane(coordinates))
+            .and_then(|input| input.get_plane(coordinates))
             .cloned();
         let unchanged = match (&self.input, &image) {
             (Some(old), Some(new)) => Arc::ptr_eq(old, new),
@@ -863,7 +866,7 @@ impl AutomaticSegmentation {
         self.training_generation = self.training_generation.wrapping_add(1);
         self.model = None;
         self.model_class_ids.clear();
-        self.inference_cache.clear();
+        self.clear_predictions();
         self.state.model_ready = false;
         self.state.model_path = None;
         self.state.oob_error = None;
@@ -922,8 +925,8 @@ impl AutomaticSegmentation {
             generation: self.training_generation,
         });
         self.state.busy = true;
-        tokio::task::spawn_blocking(move || {
-            let result = futures::executor::block_on(async move {
+        spawn_blocking(move || {
+            let result = block_on(async move {
                 let model =
                     train(&samples, &classes, features, forest, &inference, &extractor).await?;
                 Ok((model, classes))
@@ -970,14 +973,14 @@ impl AutomaticSegmentation {
                 let id = self.state.next_class_id;
                 let next_class_id = id
                     .checked_add(1)
-                    .ok_or_else(|| anyhow::anyhow!("Class ID exhausted"))?;
+                    .ok_or_else(|| anyhow!("Class ID exhausted"))?;
                 let id = ClassId::new(id);
                 let name = self.state.classes.unused_name()?;
                 let palette_len = u64::try_from(CLASS_PALETTE.len())?;
                 let index = usize::try_from(id.get().checked_rem(palette_len).unwrap_or_default())?;
                 let color = *CLASS_PALETTE
                     .get(index)
-                    .ok_or_else(|| anyhow::anyhow!("Empty class palette"))?;
+                    .ok_or_else(|| anyhow!("Empty class palette"))?;
                 self.state.classes.insert(
                     id,
                     SegmentationClass {
@@ -1006,7 +1009,7 @@ impl AutomaticSegmentation {
                     .classes
                     .keys()
                     .next()
-                    .ok_or_else(|| anyhow::anyhow!("Missing remaining class"))?;
+                    .ok_or_else(|| anyhow!("Missing remaining class"))?;
                 if self.state.brush == AnnotationKind::Paint(id) {
                     self.state.brush = AnnotationKind::Paint(fallback);
                 }
@@ -1065,11 +1068,11 @@ impl AutomaticSegmentation {
                 self.rebuild_mask();
             }
             AutomaticSegmentationMessage::SetBrushRadius(value) => self.state.brush_radius = value,
-            AutomaticSegmentationMessage::SelectLayer(value) => {
-                if self.state.selected_layer == value {
+            AutomaticSegmentationMessage::SelectChannel(value) => {
+                if self.state.selected_channel == value {
                     return Ok(());
                 }
-                self.state.selected_layer = value;
+                self.state.selected_channel = value;
                 self.adopt_selected_input();
             }
             AutomaticSegmentationMessage::SetFeatures(value) => {
@@ -1151,7 +1154,7 @@ impl AutomaticSegmentation {
                 self.state.forest = model.parameters.clone();
                 self.state.oob_error = model.oob_error;
                 self.model = Some(model);
-                self.inference_cache.clear();
+                self.clear_predictions();
                 self.state.model_ready = true;
                 self.state.model_path = Some(path);
                 self.state.model_revision = self.state.model_revision.wrapping_add(1);
@@ -1209,7 +1212,7 @@ impl AutomaticSegmentation {
                 Ok((model, class_ids)) => {
                     self.state.oob_error = model.oob_error;
                     self.model = Some(Arc::new(model));
-                    self.inference_cache.clear();
+                    self.clear_predictions();
                     self.model_class_ids = class_ids;
                     self.state.model_ready = true;
                     self.state.model_path = None;
@@ -1236,7 +1239,7 @@ impl AutomaticSegmentation {
                     self.next_stroke_id = self
                         .next_stroke_id
                         .checked_add(1)
-                        .ok_or_else(|| anyhow::anyhow!("Stroke ID exhausted"))?;
+                        .ok_or_else(|| anyhow!("Stroke ID exhausted"))?;
                     self.stroke = Some(PendingStroke {
                         id: self.next_stroke_id,
                         kind: self.state.brush,
@@ -1287,7 +1290,7 @@ impl AutomaticSegmentation {
 }
 #[async_trait]
 impl ToolBackend for AutomaticSegmentation {
-    crate::impl_tool_backend_basics!(AutomaticSegmentation, release_previous_input);
+    crate::impl_tool_backend_basics!(AutomaticSegmentation, replace_input);
     /// Serialize the trained model as an optional pipeline asset.
     fn pipeline_assets(&self) -> Result<ToolAssets> {
         let mut assets = ToolAssets::new();
@@ -1360,7 +1363,7 @@ impl ToolBackend for AutomaticSegmentation {
                 .copied()
                 .map_or(0, ClassId::get)
                 .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("Class ID exhausted"))?,
+                .ok_or_else(|| anyhow!("Class ID exhausted"))?,
         );
         state.erasers.clear();
         state.current_sample = None;
@@ -1386,7 +1389,7 @@ impl ToolBackend for AutomaticSegmentation {
             self.current = None;
             self.input = None;
             self.annotation_masks.clear();
-            self.inference_cache.clear();
+            self.clear_predictions();
             self.training_job = None;
             self.stroke = None;
             self.training_generation = self.training_generation.wrapping_add(1);
@@ -1409,17 +1412,17 @@ impl ToolBackend for AutomaticSegmentation {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> Result<()> {
-        self.state.total_layers = images.shape().c;
-        if self.state.selected_layer >= self.state.total_layers {
-            self.state.selected_layer = 0;
+        self.state.channel_count = images.get_shape().c;
+        if self.state.selected_channel >= self.state.channel_count {
+            self.state.selected_channel = 0;
         }
         self.cache.remember_input(images);
         // Prune before any early return so predictions for replaced inputs never keep their
         // images alive.
-        let layer = self.state.selected_layer;
+        let channel = self.state.selected_channel;
         self.inference_cache.retain(|input, _| {
             images
-                .channel(layer)
+                .get_channel_planes(channel)
                 .any(|plane| Arc::ptr_eq(plane, &input.0))
         });
         self.adopt_selected_input();
@@ -1432,9 +1435,9 @@ impl ToolBackend for AutomaticSegmentation {
         let Some(model) = self.model.clone() else {
             return Ok(());
         };
-        self.cache_predictions(images.channel(layer), &model, report_planes)
+        self.cache_predictions(images.get_channel_planes(channel), &model, report_planes)
             .await?;
-        for slot in images.channel_mut(layer) {
+        for slot in images.get_channel_planes_mut(channel) {
             let output = self
                 .get_cached_inference(slot, &model)
                 .context("Missing plane prediction")?
@@ -1463,7 +1466,7 @@ impl ToolBackend for AutomaticSegmentation {
         self.clear_predictions();
     }
     /// Drop predictions and clear the selected sample after the previous input is discarded.
-    fn release_previous_input(&mut self) {
+    fn replace_input(&mut self, _shape: Shape) {
         self.clear_predictions();
         self.adopt_selected_input();
     }
@@ -1473,7 +1476,7 @@ impl ToolBackend for AutomaticSegmentation {
     }
     /// Return and clear the pending overlay change flag.
     fn take_overlay_changes(&mut self) -> bool {
-        std::mem::take(&mut self.overlays_dirty)
+        mem::take(&mut self.overlays_dirty)
     }
     /// Cancel the active canvas interaction.
     fn cancel_interaction(&mut self) {
@@ -1501,7 +1504,7 @@ impl ToolBackend for AutomaticSegmentation {
         }
         let mut elements = Vec::new();
         if self.state.show_overlay
-            && let Some(cached) = self.selected_inference()
+            && let Some(cached) = self.get_selected_inference()
             && let Some(overlay) = &cached.overlay
         {
             elements.push(OverlayElement::ImageMask {

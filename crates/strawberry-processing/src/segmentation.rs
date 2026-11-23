@@ -9,6 +9,7 @@ use futures::{
     channel::oneshot,
     stream::{FuturesUnordered, StreamExt},
 };
+use image::imageops::{self, FilterType};
 use serde::{Deserialize, Serialize};
 use smartcore::{
     ensemble::random_forest_classifier::RandomForestClassifier,
@@ -17,6 +18,7 @@ use smartcore::{
 use std::{
     borrow::Cow,
     collections::HashMap,
+    mem,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::Arc,
 };
@@ -187,13 +189,13 @@ impl ForestConfig {
             let scaled = (f64::from(size) * f64::from(self.input_scale))
                 .round()
                 .max(1.0);
-            num_traits::cast(scaled).ok_or_else(|| anyhow::anyhow!("Invalid scaled image size"))
+            num_traits::cast(scaled).ok_or_else(|| anyhow!("Invalid scaled image size"))
         };
-        Ok(Cow::Owned(image::imageops::resize(
+        Ok(Cow::Owned(imageops::resize(
             image,
             dimension(image.width())?,
             dimension(image.height())?,
-            image::imageops::FilterType::Triangle,
+            FilterType::Triangle,
         )))
     }
 }
@@ -411,11 +413,11 @@ impl SegmentationModel {
                         if plane.dimensions() == original.dimensions() {
                             plane
                         } else {
-                            image::imageops::resize(
+                            imageops::resize(
                                 &plane,
                                 original.width(),
                                 original.height(),
-                                image::imageops::FilterType::Triangle,
+                                FilterType::Triangle,
                             )
                         }
                     })
@@ -530,7 +532,7 @@ impl<F: FnMut() + Send> TilePredictor<F> {
             .context("Missing probability planes")?
             .dimensions();
         let blank = Self::create_blank_planes(self.class_count, dimensions)?;
-        Ok(std::mem::replace(planes, blank))
+        Ok(mem::replace(planes, blank))
     }
 
     /// Start predicting a loaded tile of an image, first waiting for a free slot if every slot
@@ -551,6 +553,9 @@ impl<F: FnMut() + Send> TilePredictor<F> {
         let forest = Arc::clone(forest);
         let class_count = self.class_count;
         rayon::spawn(move || {
+            if sender.is_canceled() {
+                return;
+            }
             // Rayon aborts the process when a spawned job panics, so report panics as errors.
             let result = catch_unwind(AssertUnwindSafe(|| {
                 Self::predict_tile(&forest, image, &tile, feature_count, class_count)

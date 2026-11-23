@@ -1,4 +1,7 @@
-use std::sync::Mutex;
+use std::{
+    mem,
+    sync::{Mutex, PoisonError},
+};
 use strawberry_types::FrontendMessage;
 
 #[derive(Default)]
@@ -8,17 +11,12 @@ impl ToolEvents {
     pub fn emit(&self, event: FrontendMessage) {
         self.0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(event);
     }
     /// Return and clear all queued frontend events.
     pub fn drain(&self) -> Vec<FrontendMessage> {
-        std::mem::take(
-            &mut *self
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
 
@@ -34,7 +32,7 @@ impl ToolBase {
 }
 #[macro_export]
 macro_rules! impl_tool_backend_basics {
-    ($tool_type:ty $(, $release_input:ident)?) => {
+    ($tool_type:ty $(, $replace_input:ident)?) => {
         /// Expose mutable settings for pipeline persistence.
         fn persisted_state_mut(&mut self) -> Option<&mut dyn strawberry_types::PersistedState> {
             Some(&mut self.state)
@@ -51,14 +49,14 @@ macro_rules! impl_tool_backend_basics {
         fn drain_events(&mut self) -> Vec<strawberry_types::FrontendMessage> {
             self.base.events.drain()
         }
-        $crate::impl_tool_cache!($($release_input)?);
+        $crate::impl_tool_cache!($($replace_input)?);
     };
 }
 
-/// Share cache management, optionally releasing derived state when a bypassed input changes.
+/// Share cache management, optionally replacing derived state when a bypassed input changes.
 #[macro_export]
 macro_rules! impl_tool_cache {
-    ($($release_input:ident)?) => {
+    ($($replace_input:ident)?) => {
         /// Reconcile settings and report whether processing is needed.
         fn reconcile_state(&mut self) -> bool {
             self.cache.reconcile(&self.state)
@@ -90,7 +88,7 @@ macro_rules! impl_tool_cache {
         fn reconcile_bypassed_input(&mut self, input: &strawberry_types::ImageCollection) {
             if self.cache.input_differs(input) {
                 self.invalidate_cache();
-                $(self.$release_input();)?
+                $(self.$replace_input(input.get_shape());)?
             }
         }
 

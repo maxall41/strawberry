@@ -26,7 +26,7 @@ impl Dimension {
 
     /// Return the letter that names this dimension.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn get_label(self) -> &'static str {
         match self {
             Self::X => "X",
             Self::Y => "Y",
@@ -82,7 +82,7 @@ impl Shape {
 
     /// Return the number of planes along a dimension.
     #[must_use]
-    pub const fn extent(self, dimension: Dimension) -> usize {
+    pub const fn get_extent(self, dimension: Dimension) -> usize {
         match dimension {
             Dimension::X => self.x,
             Dimension::Y => self.y,
@@ -174,12 +174,12 @@ impl Shape {
         Dimension::ALL
             .into_iter()
             .try_fold(1usize, |count, dimension| {
-                count.checked_mul(self.extent(dimension))
+                count.checked_mul(self.get_extent(dimension))
             })
     }
 
     /// Iterate over the coordinates of every plane in storage order.
-    pub fn coordinates(self) -> impl Iterator<Item = Coordinates> {
+    pub fn coordinates(self) -> impl ExactSizeIterator<Item = Coordinates> {
         indices(self.dims()).into_iter().map(Coordinates::from)
     }
 
@@ -199,7 +199,7 @@ impl Shape {
         let shape = coordinates.iter().fold(Self::default(), |shape, plane| {
             Dimension::ALL.into_iter().fold(shape, |shape, dimension| {
                 let extent = plane.get(dimension).saturating_add(1);
-                shape.with_extent(dimension, shape.extent(dimension).max(extent))
+                shape.with_extent(dimension, shape.get_extent(dimension).max(extent))
             })
         });
         // Enumerating the grid multiplies its extents, which malformed placements can overflow.
@@ -257,8 +257,8 @@ impl Display for Shape {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let spanned: Vec<String> = Dimension::ALL
             .into_iter()
-            .filter(|&dimension| self.extent(dimension) > 1)
-            .map(|dimension| format!("{} {}", dimension.label(), self.extent(dimension)))
+            .filter(|&dimension| self.get_extent(dimension) > 1)
+            .map(|dimension| format!("{} {}", dimension.get_label(), self.get_extent(dimension)))
             .collect();
         if spanned.is_empty() {
             write!(f, "1 image")
@@ -325,10 +325,10 @@ impl Coordinates {
     }
 
     /// Return the one-based index along each dimension that `shape` spans, in presentation order.
-    pub fn spanned(self, shape: Shape) -> impl Iterator<Item = (Dimension, usize)> {
+    pub fn get_spanned_indices(self, shape: Shape) -> impl Iterator<Item = (Dimension, usize)> {
         Dimension::ALL
             .into_iter()
-            .filter(move |&dimension| shape.extent(dimension) > 1)
+            .filter(move |&dimension| shape.get_extent(dimension) > 1)
             .map(move |dimension| (dimension, self.get(dimension).saturating_add(1)))
     }
 
@@ -336,15 +336,15 @@ impl Coordinates {
     #[must_use]
     pub fn describe(self, shape: Shape) -> String {
         let mut parts: Vec<String> = self
-            .spanned(shape)
-            .map(|(dimension, number)| format!("{}{number}", dimension.label()))
+            .get_spanned_indices(shape)
+            .map(|(dimension, number)| format!("{}{number}", dimension.get_label()))
             .collect();
         if parts.is_empty() {
             parts = [Dimension::C, Dimension::Z, Dimension::T]
                 .map(|dimension| {
                     format!(
                         "{}{}",
-                        dimension.label(),
+                        dimension.get_label(),
                         self.get(dimension).saturating_add(1)
                     )
                 })
@@ -400,7 +400,7 @@ impl Position {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageArrangement {
     /// Place the images as the channels of one image.
-    Layers,
+    Channels,
     /// Place the images along Z.
     Stack,
     /// Place each image at its own coordinates.
@@ -428,7 +428,7 @@ impl ImageArrangement {
                 .collect()
         };
         Ok(match self {
-            Self::Layers => along(Dimension::C),
+            Self::Channels => along(Dimension::C),
             Self::Stack => along(Dimension::Z),
             Self::Hyperstack(coordinates) => {
                 ensure!(
@@ -468,7 +468,7 @@ impl ImageCollection {
             if let Some(first) = channels.next() {
                 ensure!(
                     channels.all(|channel| channel.dimensions() == first.dimensions()),
-                    "All layers of an image must have the same dimensions"
+                    "All channels of an image must have the same dimensions"
                 );
             }
         }
@@ -488,7 +488,7 @@ impl ImageCollection {
 
     /// Return the number of planes along each dimension.
     #[must_use]
-    pub fn shape(&self) -> Shape {
+    pub fn get_shape(&self) -> Shape {
         Shape::from_dims(self.planes.dim())
     }
 
@@ -500,12 +500,12 @@ impl ImageCollection {
 
     /// Iterate over every position in storage order.
     pub fn positions(&self) -> impl Iterator<Item = Position> + use<> {
-        self.shape().positions()
+        self.get_shape().positions()
     }
 
     /// Return the plane at the given coordinates.
     #[must_use]
-    pub fn plane(&self, coordinates: Coordinates) -> Option<&Arc<RgbaImage>> {
+    pub fn get_plane(&self, coordinates: Coordinates) -> Option<&Arc<RgbaImage>> {
         self.planes.get((
             coordinates.t,
             coordinates.z,
@@ -517,7 +517,7 @@ impl ImageCollection {
 
     /// Iterate over the channels at one position in channel order.
     pub fn channels_at(&self, position: Position) -> impl Iterator<Item = &Arc<RgbaImage>> {
-        (0..self.shape().c).filter_map(move |c| self.plane(position.with_channel(c)))
+        (0..self.get_shape().c).filter_map(move |c| self.get_plane(position.with_channel(c)))
     }
 
     /// Iterate over every plane in storage order.
@@ -539,14 +539,17 @@ impl ImageCollection {
     }
 
     /// Iterate over one channel's plane at every position; empty if the channel is missing.
-    pub fn channel(&self, channel: usize) -> impl Iterator<Item = &Arc<RgbaImage>> {
+    pub fn get_channel_planes(&self, channel: usize) -> impl Iterator<Item = &Arc<RgbaImage>> {
         self.planes
             .slice_axis(Dimension::C.axis(), self.get_channel_slice(channel))
             .into_iter()
     }
 
     /// Iterate mutably over one channel's plane at every position; empty if the channel is missing.
-    pub fn channel_mut(&mut self, channel: usize) -> impl Iterator<Item = &mut Arc<RgbaImage>> {
+    pub fn get_channel_planes_mut(
+        &mut self,
+        channel: usize,
+    ) -> impl Iterator<Item = &mut Arc<RgbaImage>> {
         let slice = self.get_channel_slice(channel);
         self.planes
             .slice_axis_mut(Dimension::C.axis(), slice)
@@ -558,7 +561,7 @@ impl ImageCollection {
         dimensions
             .iter()
             .fold(shape, |shape, &dimension| {
-                shape.with_extent(dimension, shape.extent(dimension).min(1))
+                shape.with_extent(dimension, shape.get_extent(dimension).min(1))
             })
             .coordinates()
     }
@@ -567,7 +570,7 @@ impl ImageCollection {
     /// coordinates in storage order.
     #[must_use]
     pub fn groups(&self, dimensions: &[Dimension]) -> Vec<Self> {
-        Self::group_origins(self.shape(), dimensions)
+        Self::group_origins(self.get_shape(), dimensions)
             .map(|origin| {
                 let planes = self.planes.slice_each_axis(|axis| {
                     let Some(dimension) = Dimension::ALL
@@ -597,7 +600,7 @@ impl ImageCollection {
     /// Returns an error if the group count is wrong, groups differ in shape, a group spans other
     /// dimensions, or a group is empty.
     pub fn replace_groups(&mut self, dimensions: &[Dimension], groups: Vec<Self>) -> Result<()> {
-        let shape = self.shape();
+        let shape = self.get_shape();
         let origins: Vec<_> = Self::group_origins(shape, dimensions).collect();
         ensure!(
             groups.len() == origins.len(),
@@ -605,15 +608,15 @@ impl ImageCollection {
             origins.len(),
             groups.len()
         );
-        let Some(group_shape) = groups.first().map(Self::shape) else {
+        let Some(group_shape) = groups.first().map(Self::get_shape) else {
             return Ok(());
         };
         ensure!(
-            groups.iter().all(|group| group.shape() == group_shape),
+            groups.iter().all(|group| group.get_shape() == group_shape),
             "Every image group must have the same shape"
         );
         for dimension in Dimension::ALL {
-            let extent = group_shape.extent(dimension);
+            let extent = group_shape.get_extent(dimension);
             if dimensions.contains(&dimension) {
                 ensure!(extent > 0, "Every image group must keep at least one image");
             } else {
@@ -624,14 +627,14 @@ impl ImageCollection {
             }
         }
         let new_shape = dimensions.iter().fold(shape, |shape, &dimension| {
-            shape.with_extent(dimension, group_shape.extent(dimension))
+            shape.with_extent(dimension, group_shape.get_extent(dimension))
         });
         let groups: HashMap<_, _> = origins.into_iter().zip(groups).collect();
         *self = Self::from_fn(new_shape, |coordinates| {
             let (origin, offset) = coordinates.split(dimensions);
             groups
                 .get(&origin)
-                .and_then(|group| group.plane(offset))
+                .and_then(|group| group.get_plane(offset))
                 .cloned()
                 .ok_or_else(|| anyhow!("No image for {}", coordinates.describe(new_shape)))
         })?;
@@ -640,14 +643,14 @@ impl ImageCollection {
 
     /// Return the planes along one dimension for every combination of the other coordinates.
     #[must_use]
-    pub fn lanes(&self, dimension: Dimension) -> Vec<Vec<Arc<RgbaImage>>> {
+    pub fn get_lanes(&self, dimension: Dimension) -> Vec<Vec<Arc<RgbaImage>>> {
         self.groups(&[dimension])
             .into_iter()
             .map(|group| group.planes.into_iter().collect())
             .collect()
     }
 
-    /// Replace the lanes returned by `lanes`; every lane must keep the same, non-zero length.
+    /// Replace the lanes returned by `get_lanes`; every lane must keep the same, non-zero length.
     ///
     /// # Errors
     /// Returns an error if the lane count is wrong or lanes differ in length.

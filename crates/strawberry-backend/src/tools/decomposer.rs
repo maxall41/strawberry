@@ -1,5 +1,6 @@
 use crate::tools::base::ToolEvents;
-use anyhow::Result;
+use anyhow::{Result, anyhow, bail};
+use image::RgbaImage;
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -11,9 +12,9 @@ use strawberry_processing::{
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, DecomposerMessage, DecomposerState, Dimension, FrontendMessage,
-    ImageCollection, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress, ToolBackend,
-    ToolInput, ToolState,
+    BackendToolType, DecomposerMessage, DecomposerState, FrontendMessage, ImageCollection,
+    PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput,
+    ToolState,
 };
 
 pub struct Decomposer {
@@ -38,67 +39,62 @@ impl ToolBackend for Decomposer {
         BackendToolType::Decomposer
     }
 
-    /// Decompose the single layer at each position and composite its enabled channel layers.
+    /// Decompose each single-channel plane into its stain channels and composite the enabled
+    /// ones back into one plane.
     async fn process(
         &mut self,
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        let mut lanes = images.lanes(Dimension::C);
-        for lane in lanes
-            .iter_mut()
-            .report_progress_in_batches(GpuDecomposer::CHANNEL_COUNT, report_planes)
-        {
-            let [image] = lane.as_slice() else {
-                let error_msg = format!(
-                    "Decomposer can only process images with one layer, received {}",
-                    lane.len()
-                );
-                self.base
-                    .events
-                    .emit(FrontendMessage::error(error_msg.clone()));
-                return Err(anyhow::anyhow!(error_msg));
-            };
-
-            let decomposed = self.processor.apply_decomposition(image).await?;
-
-            let enabled: Vec<image::RgbaImage> = decomposed
-                .into_iter()
-                .enumerate()
-                .filter(|(i, _)| self.state.enabled_layers.get(*i).copied().unwrap_or(false))
-                .map(|(_, channel)| channel)
-                .collect();
-
-            let composited = self.compositer.composite_images(&enabled).await?;
-            *lane = vec![Arc::new(composited)];
+        let channel_count = images.get_shape().c;
+        if channel_count != 1 {
+            let error_msg = format!(
+                "Decomposer can only process images with one channel, received {channel_count}"
+            );
+            self.base
+                .events
+                .emit(FrontendMessage::error(error_msg.clone()));
+            bail!(error_msg);
         }
-        images.replace_lanes(Dimension::C, lanes)
+        for image in images.planes_mut().report_progress(report_planes) {
+            let enabled: Vec<RgbaImage> = self
+                .processor
+                .apply_decomposition(image)
+                .await?
+                .into_iter()
+                .zip(&self.state.enabled_channels)
+                .filter(|&(_, &enabled)| enabled)
+                .map(|(channel, _)| channel)
+                .collect();
+            *image = Arc::new(self.compositer.composite_images(&enabled).await?);
+        }
+        Ok(())
     }
 
     /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::DecomposerMessage(message)) = message {
             match message {
-                DecomposerMessage::ToggleVisibility(value, layer_index) => {
-                    let mut mutated = self.state.enabled_layers.clone();
-                    let index = usize::from(layer_index);
+                DecomposerMessage::ToggleVisibility(value, channel_index) => {
+                    let mut mutated = self.state.enabled_channels.clone();
+                    let index = usize::from(channel_index);
 
                     if index >= mutated.len() {
                         let error_msg = format!(
-                            "Decomposer: Layer index {} out of bounds (max: {})",
+                            "Decomposer: Channel index {} out of bounds (max: {})",
                             index,
                             mutated.len()
                         );
                         self.base
                             .events
                             .emit(FrontendMessage::error(error_msg.clone()));
-                        return Err(anyhow::anyhow!(error_msg));
+                        return Err(anyhow!(error_msg));
                     }
 
-                    if let Some(layer) = mutated.get_mut(index) {
-                        *layer = value;
+                    if let Some(channel) = mutated.get_mut(index) {
+                        *channel = value;
                     }
-                    self.state.enabled_layers = mutated;
+                    self.state.enabled_channels = mutated;
                 }
             }
         }
@@ -116,7 +112,7 @@ impl Decomposer {
     ) -> Result<Self> {
         let state = DecomposerState {
             is_enabled: false,
-            enabled_layers: vec![true; GpuDecomposer::CHANNEL_COUNT],
+            enabled_channels: vec![true; GpuDecomposer::CHANNEL_COUNT],
         };
         Ok(Self {
             state: state.clone(),

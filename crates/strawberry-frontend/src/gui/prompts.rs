@@ -12,7 +12,7 @@ use strawberry_types::{AnnotationPlacement, ExportScope, Position, Shape};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportChoice {
     /// Place the images as the channels of one image.
-    Layers,
+    Channels,
     /// Place the images along Z.
     Stack,
     /// Place the images by parsing their file names.
@@ -38,19 +38,17 @@ async fn choose<T: Copy>(
     options.get(answer).map(|(_, value)| *value)
 }
 
-/// Ask whether several images load as layers of one image, a stack, or a hyperstack.
+/// Ask whether several images load as the channels of one image, a stack, or a hyperstack.
 pub async fn ask_image_arrangement(
     cx: &mut AsyncWindowContext,
     image_count: usize,
 ) -> Option<ImportChoice> {
     choose(
         cx,
-        &format!("Load {image_count} images as layers, a stack, or a hyperstack?"),
-        Some(
-            "Layers become the channels of one image. Stacks have only one dimension. Hyperstacks have multiple dimensions.",
-        ),
+        &format!("Load {image_count} images as channels, a stack, or a hyperstack?"),
+        Some("Stacks have only one dimension. Hyperstacks have multiple dimensions."),
         &[
-            ("Layers", ImportChoice::Layers),
+            ("Channels", ImportChoice::Channels),
             ("Stack", ImportChoice::Stack),
             ("Hyperstack", ImportChoice::Hyperstack),
         ],
@@ -61,7 +59,9 @@ pub async fn ask_image_arrangement(
 /// Ask where annotations read from a file load, given the positions of `shape` they were
 /// `saved` on. Annotations saved on several positions load onto the current position or split
 /// across positions, and those saved on another loaded position load onto the current or saved
-/// one; otherwise they load onto the `selected` position without asking.
+/// one. Annotations saved on positions `shape` lacks cannot be split, so the user is warned and
+/// may only load them onto the current position. Otherwise they load onto the `selected`
+/// position without asking.
 pub async fn ask_annotation_placement(
     cx: &mut AsyncWindowContext,
     annotations: &str,
@@ -72,14 +72,26 @@ pub async fn ask_annotation_placement(
     if shape.position_count() <= 1 {
         return Some(AnnotationPlacement::CurrentPosition);
     }
+    let missing = saved
+        .iter()
+        .filter(|&&position| !shape.contains_position(position))
+        .count();
+    if missing > 0 {
+        return choose(
+            cx,
+            &format!("These {annotations} were saved on {missing} image(s) that are not loaded."),
+            None,
+            &[(
+                "Load onto Current Image",
+                AnnotationPlacement::CurrentPosition,
+            )],
+        )
+        .await;
+    }
     let (message, split_label) = match saved.len() {
         0 => return Some(AnnotationPlacement::CurrentPosition),
         1 => {
-            if saved.contains(&selected)
-                || !saved
-                    .iter()
-                    .all(|&position| shape.contains_position(position))
-            {
+            if saved.contains(&selected) {
                 return Some(AnnotationPlacement::CurrentPosition);
             }
             (

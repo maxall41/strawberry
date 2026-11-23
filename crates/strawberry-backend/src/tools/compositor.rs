@@ -1,5 +1,5 @@
 use crate::tools::base::ToolEvents;
-use anyhow::Result;
+use anyhow::{Result, anyhow, ensure};
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -35,33 +35,34 @@ impl ToolBackend for Compositor {
         BackendToolType::Compositor
     }
 
-    /// Composite the enabled layers at each position into a single BGRA image; positions holding
-    /// a single layer are left untouched.
+    /// Composite the enabled channels at each position into a single BGRA image; positions
+    /// holding a single channel are left untouched.
     async fn process(
         &mut self,
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        let channel_count = images.shape().c;
-        self.state.real_layers_len = channel_count;
+        let channel_count = images.get_shape().c;
+        self.state.channel_count = channel_count;
+        if self.state.enabled_channels.len() < channel_count {
+            self.state.enabled_channels.resize(channel_count, true);
+        }
         if channel_count <= 1 {
             return Ok(());
         }
-        let enabled_plane_count = self
-            .state
-            .enabled_layers
-            .iter()
-            .take(channel_count)
-            .filter(|&&enabled| enabled)
-            .count();
-        let mut lanes = images.lanes(Dimension::C);
-        for lane in lanes
-            .iter_mut()
-            .report_progress_in_batches(enabled_plane_count, report_planes)
-        {
+        ensure!(
+            self.state
+                .enabled_channels
+                .iter()
+                .take(channel_count)
+                .any(|&enabled| enabled),
+            "Compositor has no enabled channels"
+        );
+        let mut lanes = images.get_lanes(Dimension::C);
+        for lane in lanes.iter_mut().report_progress(report_planes) {
             let enabled: Vec<_> = lane
                 .iter()
-                .zip(&self.state.enabled_layers)
+                .zip(&self.state.enabled_channels)
                 .filter(|&(_, &enabled)| enabled)
                 .map(|(image, _)| image.clone())
                 .collect();
@@ -74,27 +75,27 @@ impl ToolBackend for Compositor {
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::CompositorMessage(message)) = message {
             match message {
-                CompositorMessage::ToggleVisibility(value, layer_index) => {
-                    let mut mutated = self.state.enabled_layers.clone();
-                    let index = usize::from(layer_index);
+                CompositorMessage::ToggleVisibility(value, channel_index) => {
+                    let mut mutated = self.state.enabled_channels.clone();
+                    let index = usize::from(channel_index);
 
                     if index >= mutated.len() {
                         let error_msg = format!(
-                            "Compositor: Layer index {} out of bounds (max: {})",
+                            "Compositor: Channel index {} out of bounds (max: {})",
                             index,
                             mutated.len()
                         );
                         self.base
                             .events
                             .emit(FrontendMessage::error(error_msg.clone()));
-                        return Err(anyhow::anyhow!(error_msg));
+                        return Err(anyhow!(error_msg));
                     }
 
-                    if let Some(layer) = mutated.get_mut(index) {
-                        *layer = value;
+                    if let Some(channel) = mutated.get_mut(index) {
+                        *channel = value;
                     }
 
-                    let end_range = std::cmp::min(self.state.real_layers_len, mutated.len());
+                    let end_range = self.state.channel_count.min(mutated.len());
                     if mutated
                         .get(0..end_range)
                         .is_none_or(|slice| slice.iter().all(|&x| !x))
@@ -102,7 +103,7 @@ impl ToolBackend for Compositor {
                         return Ok(());
                     }
 
-                    self.state.enabled_layers = mutated;
+                    self.state.enabled_channels = mutated;
                 }
             }
         }
@@ -120,8 +121,8 @@ impl Compositor {
     ) -> Result<Self> {
         let state = CompositorState {
             is_enabled: false,
-            enabled_layers: vec![true; 8],
-            real_layers_len: 0,
+            enabled_channels: Vec::new(),
+            channel_count: 0,
         };
         Ok(Self {
             state: state.clone(),

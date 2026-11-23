@@ -40,14 +40,17 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
-use std::{fs, panic};
+use std::{fs, mem, panic, ptr};
 use strawberry_backend::{Pipeline, hyperstack::collect_file_names};
 use strawberry_types::{
     Coordinates, ExportScope, FeedbackLevel, FrontendMessage, ImageArrangement, OutputFrame,
     PipelineCommand, PipelineProgress, PlaneProgress, Shape,
     overlay::{CircleStyle, OverlayCollection, OverlayElement},
 };
-use tokio::{runtime::Runtime, sync::broadcast};
+use tokio::{
+    runtime::Runtime,
+    sync::{broadcast, oneshot},
+};
 
 struct Assets {
     base: PathBuf,
@@ -197,10 +200,10 @@ async fn load_images(
         };
         choice
     } else {
-        ImportChoice::Layers
+        ImportChoice::Channels
     };
     if let Err(e) = viewer.update_in(cx, |viewer, window, cx| match choice {
-        ImportChoice::Layers => viewer.send_load(files, ImageArrangement::Layers),
+        ImportChoice::Channels => viewer.send_load(files, ImageArrangement::Channels),
         ImportChoice::Stack => viewer.send_load(files, ImageArrangement::Stack),
         ImportChoice::Hyperstack => viewer.open_hyperstack_importer(files, window, cx),
     }) {
@@ -449,7 +452,7 @@ impl PrimaryViewer {
             self.set_hyperstack_view(frame.coordinates, frame.shape, cx);
         }
         self.output_is_current = frame.is_current;
-        if std::ptr::eq(self.displayed_frame.as_ptr(), Arc::as_ptr(&frame.image)) {
+        if ptr::eq(self.displayed_frame.as_ptr(), Arc::as_ptr(&frame.image)) {
             cx.notify();
             return;
         }
@@ -474,7 +477,7 @@ impl PrimaryViewer {
         self.original_width = new_width;
         self.original_height = new_height;
         self.image_loaded = true;
-        let previous = std::mem::replace(&mut self.display_image, ImageSource::Render(img_data));
+        let previous = mem::replace(&mut self.display_image, ImageSource::Render(img_data));
 
         if let ImageSource::Render(previous) = previous
             && let Err(e) = window.drop_image(previous)
@@ -512,7 +515,7 @@ impl PrimaryViewer {
         self.hyperstack_bar.update(cx, |bar, cx| {
             bar.set_view(coordinates, shape, cx);
         });
-        self.layout.status_bar_rows = self.hyperstack_bar.read(cx).row_count();
+        self.layout.status_bar_rows = self.hyperstack_bar.read(cx).get_row_count();
     }
 
     /// Update busy indicators and progress from a pipeline event.
@@ -647,7 +650,7 @@ impl PrimaryViewer {
             };
 
             if let Some(path) = output_file {
-                let (reply, result) = tokio::sync::oneshot::channel();
+                let (reply, result) = oneshot::channel();
                 if sender_p
                     .send(PipelineCommand::SaveOutput { path, scope, reply })
                     .is_ok()
@@ -850,7 +853,7 @@ impl PrimaryViewer {
         if let Err(e) = self.command_sender.send(PipelineCommand::Load {
             files,
             arrangement,
-            reply: tokio::sync::oneshot::channel().0,
+            reply: oneshot::channel().0,
         }) {
             eprintln!("Failed to send loaded images to pipeline: {e}");
         }
@@ -1604,9 +1607,14 @@ fn main() -> Result<()> {
                     cx.subscribe(
                         &hyperstack_bar,
                         |viewer: &mut PrimaryViewer, _, event: &ViewSelected, _| {
-                            if let Err(e) = viewer
-                                .command_sender
-                                .send(PipelineCommand::SelectView(event.0))
+                            let Some(load_generation) = viewer.load_generation else {
+                                return;
+                            };
+                            if let Err(e) =
+                                viewer.command_sender.send(PipelineCommand::SelectView {
+                                    coordinates: event.0,
+                                    load_generation,
+                                })
                             {
                                 eprintln!("Failed to select image: {e}");
                             }

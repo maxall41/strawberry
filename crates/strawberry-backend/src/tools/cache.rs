@@ -42,6 +42,7 @@ macro_rules! processing_states {
 }
 processing_states!(
     ContrastState,
+    DecomposerState,
     DifferenceOfGaussiansState,
     GaussianBlurState,
     GrayscaleState,
@@ -57,28 +58,9 @@ processing_states!(
 impl SyncState for CompositorState {
     type Settings = Vec<bool>;
 
-    /// Capture the channel selection used for composition.
+    /// Capture the channel selection used for composition, leaving out the runtime channel count.
     fn capture_settings(&self) -> Self::Settings {
-        self.enabled_layers.clone()
-    }
-
-    /// Compare the channel selection used for composition.
-    fn processing_differs(&self, saved: &Self::Settings) -> bool {
-        self.enabled_layers != *saved
-    }
-}
-
-impl SyncState for DecomposerState {
-    type Settings = Vec<bool>;
-
-    /// Capture the channel selection used for decomposition.
-    fn capture_settings(&self) -> Self::Settings {
-        self.enabled_layers.clone()
-    }
-
-    /// Compare the channel selection used for decomposition.
-    fn processing_differs(&self, saved: &Self::Settings) -> bool {
-        self.enabled_layers != *saved
+        self.enabled_channels.clone()
     }
 }
 
@@ -96,7 +78,7 @@ impl SyncState for NerveTracerState {
 
     /// Capture the channel used for tracing.
     fn capture_settings(&self) -> Self::Settings {
-        self.selected_layer
+        self.selected_channel
     }
 }
 
@@ -114,7 +96,7 @@ fn matches_input(
     shape: Shape,
     planes: impl Iterator<Item = *const RgbaImage>,
 ) -> bool {
-    input.shape() == shape
+    input.get_shape() == shape
         && planes
             .zip(input.planes())
             .all(|(previous, current)| ptr::eq(previous, Arc::as_ptr(current)))
@@ -159,7 +141,11 @@ impl<TState: SyncState> ToolCache<TState> {
             );
         }
         self.cached_input.as_ref().is_some_and(|previous| {
-            !matches_input(input, previous.shape(), previous.planes().map(Arc::as_ptr))
+            !matches_input(
+                input,
+                previous.get_shape(),
+                previous.planes().map(Arc::as_ptr),
+            )
         })
     }
 
@@ -191,7 +177,7 @@ impl<TState: SyncState> ToolCache<TState> {
     ) {
         self.cached_run = Some(CachedRun {
             settings: state.capture_settings(),
-            input_shape: input.shape(),
+            input_shape: input.get_shape(),
             input_planes: input.planes().map(Arc::downgrade).collect(),
             output,
         });
@@ -214,7 +200,7 @@ pub struct SegmentationSettings {
     training: bool,
     show_overlay: bool,
     threshold: Option<u32>,
-    selected_layer: usize,
+    selected_channel: usize,
     class_colors: Vec<(ClassId, RgbColor)>,
     output_mode: SegmentationOutputMode,
     output_class: ClassId,
@@ -242,7 +228,7 @@ impl SyncState for AutomaticSegmentationState {
             training: self.training,
             show_overlay: self.training && self.show_overlay,
             threshold: get_segmentation_threshold(self),
-            selected_layer: self.selected_layer,
+            selected_channel: self.selected_channel,
             class_colors: get_class_colors(self).collect(),
             output_mode: self.output_mode,
             output_class: self.output_class,
@@ -255,7 +241,7 @@ impl SyncState for AutomaticSegmentationState {
         self.training != saved.training
             || (self.training && self.show_overlay != saved.show_overlay)
             || get_segmentation_threshold(self) != saved.threshold
-            || self.selected_layer != saved.selected_layer
+            || self.selected_channel != saved.selected_channel
             || self.output_mode != saved.output_mode
             || self.output_class != saved.output_class
             || self.model_revision != saved.model_revision

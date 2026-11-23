@@ -7,9 +7,10 @@ use colored::Colorize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Display;
 use std::fs;
+use std::future::{Future, pending};
 use std::path::{Path, PathBuf};
 use tokio::sync::{broadcast, watch};
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant, sleep_until, timeout_at};
 
 use strawberry_backend::{
     Pipeline,
@@ -20,15 +21,12 @@ use strawberry_types::{
     Shape,
 };
 
-/// Budget for one group, measured from the moment its load is dispatched.
-const GROUP_TIMEOUT: Duration = Duration::from_secs(60);
-
 /// Most group names a warning lists for one channel count before eliding the rest.
 const MAX_LISTED_GROUP_NAMES: usize = 3;
 
 /// Warn when groups load different numbers of channels, since channel-specific tool settings
 /// then pick different images, or none, in each group.
-fn check_for_channel_mismatch(groups: &HashMap<String, ImageGroup>) {
+fn warn_about_channel_mismatch(groups: &HashMap<String, ImageGroup>) {
     // Ordered so the warning lists channel counts and group names predictably.
     let mut groups_by_channels: BTreeMap<usize, BTreeSet<&str>> = BTreeMap::new();
     for (name, group) in groups {
@@ -74,6 +72,28 @@ fn print_success(message: impl Display) {
 /// Discard everything currently queued on a broadcast receiver.
 fn drain(receiver: &mut broadcast::Receiver<FrontendMessage>) {
     while let Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) = receiver.try_recv() {}
+}
+
+/// Sleep until `deadline`, or forever without one.
+async fn sleep_until_deadline(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => sleep_until(deadline).await,
+        None => pending().await,
+    }
+}
+
+/// Await `future`, failing with a timeout naming the `operation` if `deadline` passes first.
+async fn await_before<T>(
+    deadline: Option<Instant>,
+    future: impl Future<Output = T>,
+    operation: &str,
+) -> Result<T> {
+    match deadline {
+        Some(deadline) => timeout_at(deadline, future)
+            .await
+            .with_context(|| format!("Timeout {operation}")),
+        None => Ok(future.await),
+    }
 }
 
 /// Strawberry - Advanced Image Processing Pipeline
@@ -142,9 +162,13 @@ pub struct Args {
     #[arg(long, value_name = "PATTERN")]
     pub group_regex: Option<String>,
 
-    /// Rhai script whose `parse_file_names` function places each group's files in a hyperstack; without it, files load as layers
+    /// Rhai script whose `parse_file_names` function places each group's files in a hyperstack; without it, files load as channels
     #[arg(long, value_name = "SCRIPT")]
     pub hyperstack: Option<PathBuf>,
+
+    /// Set a time limit on how long it takes to load/process/save (one group of) the pipeline; actions over this time limit fail the  pipeline.
+    #[arg(long, value_name = "SECONDS")]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -333,7 +357,7 @@ impl CliProcessor {
         }
 
         let groups = self.arrange_groups(self.group_images(image_files)?)?;
-        check_for_channel_mismatch(&groups);
+        warn_about_channel_mismatch(&groups);
 
         if self.args.verbose {
             print_success(format!("Found {} group(s) to process:", groups.len()));
@@ -482,14 +506,8 @@ impl CliProcessor {
                 }
             }
             GroupingMode::Subdirectory => {
-                // Group by parent directory
                 for file in image_files {
-                    let group_name = file
-                        .parent()
-                        .and_then(Path::file_name)
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("root")
-                        .to_string();
+                    let group_name = self.get_subdirectory_group_name(&file);
                     groups.entry(group_name).or_insert_with(Vec::new).push(file);
                 }
             }
@@ -519,6 +537,23 @@ impl CliProcessor {
         }
 
         Ok(groups)
+    }
+
+    /// Name a file's subdirectory group by its directory's path relative to the input
+    /// directory, so equally named directories in different places form separate groups.
+    /// Files directly in the input directory, or outside it, are named by their directory.
+    fn get_subdirectory_group_name(&self, file: &Path) -> String {
+        let directory = file.parent().unwrap_or_else(|| Path::new(""));
+        self.args
+            .input
+            .as_deref()
+            .and_then(|input| directory.strip_prefix(input).ok())
+            .filter(|relative| !relative.as_os_str().is_empty())
+            .or_else(|| directory.file_name().map(Path::new))
+            .map_or_else(
+                || "root".to_owned(),
+                |name| name.to_string_lossy().into_owned(),
+            )
     }
 
     /// Load the pipeline and process each image group through the backend.
@@ -555,9 +590,8 @@ impl CliProcessor {
             })
             .map_err(|e| anyhow!("{e}"))?;
         let loaded = async {
-            tokio::time::timeout(GROUP_TIMEOUT, result)
-                .await
-                .context("Timeout loading pipeline")?
+            await_before(self.get_deadline()?, result, "loading pipeline")
+                .await?
                 .context("Pipeline closed while loading")?
                 .map_err(|error| anyhow!("{error}"))
         }
@@ -636,6 +670,8 @@ impl CliProcessor {
         expected_generation: u64,
     ) -> Result<ExportScope> {
         let (group_name, image_group) = group;
+        // One budget covers the whole group, so a slow load leaves less time to process.
+        let deadline = self.get_deadline()?;
         // Only feedback generated by this group's run should be able to fail it.
         drain(view_recv);
         let (reply, loaded) = tokio::sync::oneshot::channel();
@@ -646,16 +682,16 @@ impl CliProcessor {
                 reply,
             })
             .map_err(|e| anyhow!("Failed to send load command for group {group_name}: {e}"))?;
-        tokio::time::timeout(GROUP_TIMEOUT, loaded)
-            .await
-            .context("Timeout loading images")?
+        await_before(deadline, loaded, "loading images")
+            .await?
             .context("Pipeline closed while loading")?
             .map_err(|e| anyhow!("{e}"))?;
 
         let shape = self
-            .await_generation(view_recv, frame_rx, expected_generation, group_name)
-            .await?;
-        // Without a hyperstack script, files load as layers that are composited into the single
+            .await_generation(view_recv, frame_rx, expected_generation, deadline)
+            .await
+            .with_context(|| format!("Group {group_name} did not finish processing"))?;
+        // Without a hyperstack script, files load as channels that are composited into the single
         // image the output path names. A hyperstack output holding several images is saved whole
         // as a ZIP, like the GUI's "All Images" export, rather than as its first image alone.
         let scope = if self.hyperstack_script.is_none() {
@@ -678,9 +714,8 @@ impl CliProcessor {
                 reply,
             })
             .map_err(|e| anyhow!("{e}"))?;
-        tokio::time::timeout(GROUP_TIMEOUT, result)
-            .await
-            .context("Timeout saving output")?
+        await_before(deadline, result, "saving output")
+            .await?
             .context("Pipeline closed while saving")?
             .map_err(|e| anyhow!("{e}"))?;
 
@@ -695,7 +730,7 @@ impl CliProcessor {
         Ok(scope)
     }
 
-    /// Place each group's files with the hyperstack script, or as layers without one.
+    /// Place each group's files with the hyperstack script, or as channels without one.
     fn arrange_groups(
         &self,
         groups: HashMap<String, Vec<PathBuf>>,
@@ -711,12 +746,12 @@ impl CliProcessor {
             .collect()
     }
 
-    /// Place one group's files with the hyperstack script, or as layers without one.
+    /// Place one group's files with the hyperstack script, or as channels without one.
     fn arrange_group(&self, files: Vec<PathBuf>) -> Result<ImageGroup> {
         let (loaded_files, arrangement) = match &self.hyperstack_script {
             Some(script) => HyperstackLayout::from_script(script, &collect_file_names(&files)?)?
                 .arrange(files.clone()),
-            None => (files.clone(), ImageArrangement::Layers),
+            None => (files.clone(), ImageArrangement::Channels),
         };
         let channels = arrangement.get_shape(loaded_files.len())?.c;
         Ok(ImageGroup {
@@ -747,7 +782,7 @@ impl CliProcessor {
             // For single files, preserve the directory structure and filename
             self.generate_output_filename_with_structure(first_file, output_path)?
         } else {
-            output_path.join(self.generate_group_output_filename(group_name, first_file))
+            self.generate_group_output_path(group_name, first_file, output_path)?
         };
         let archive = match scope {
             ExportScope::CurrentView | ExportScope::CompositeView => return Ok(output_file),
@@ -773,22 +808,28 @@ impl CliProcessor {
         }
     }
 
+    /// Return the deadline for an operation starting now, or `None` without `--timeout`.
+    fn get_deadline(&self) -> Result<Option<Instant>> {
+        self.args
+            .timeout
+            .map(|seconds| {
+                Instant::now()
+                    .checked_add(Duration::from_secs(seconds))
+                    .ok_or_else(|| anyhow!("Timeout of {seconds} seconds is too long"))
+            })
+            .transpose()
+    }
+
     /// Wait for the frame produced by `expected_generation` and return the output's shape,
     /// draining backend feedback meanwhile so a failed group reports why it failed instead of
-    /// expiring the timeout in silence.
+    /// waiting in silence.
     async fn await_generation(
         &self,
         view_recv: &mut broadcast::Receiver<FrontendMessage>,
         frame_rx: &mut watch::Receiver<Option<OutputFrame>>,
         expected_generation: u64,
-        group_name: &str,
+        deadline: Option<Instant>,
     ) -> Result<Shape> {
-        // Absolute deadline: frames from other generations must not keep
-        // extending the budget.
-        let deadline = tokio::time::Instant::now()
-            .checked_add(GROUP_TIMEOUT)
-            .ok_or_else(|| anyhow!("Group deadline overflow"))?;
-
         loop {
             tokio::select! {
                 changed = frame_rx.changed() => {
@@ -807,17 +848,15 @@ impl CliProcessor {
                 message = view_recv.recv() => {
                     self.handle_feedback(message)?;
                 }
-                () = tokio::time::sleep_until(deadline) => {
-                    return Err(anyhow!(
-                        "Timeout waiting for group {group_name} processing to complete"
-                    ));
+                () = sleep_until_deadline(deadline) => {
+                    return Err(anyhow!("Timeout waiting for processing to complete"));
                 }
             }
         }
     }
 
     /// Turn one backend message into a hard failure if it reports an error, so a
-    /// bad group aborts with the real reason rather than a bare timeout.
+    /// bad group aborts with the real reason rather than hanging or timing out.
     fn handle_feedback(
         &self,
         message: Result<FrontendMessage, broadcast::error::RecvError>,
@@ -840,6 +879,25 @@ impl CliProcessor {
                 Err(anyhow!("Pipeline shut down unexpectedly"))
             }
         }
+    }
+
+    /// Build a group's output path under `output_path`, mirroring the subdirectories a nested
+    /// group name holds and creating them.
+    fn generate_group_output_path(
+        &self,
+        group_name: &str,
+        reference_file: &Path,
+        output_path: &Path,
+    ) -> Result<PathBuf> {
+        let group_path = Path::new(group_name);
+        let directory = output_path.join(group_path.parent().unwrap_or_else(|| Path::new("")));
+        fs::create_dir_all(&directory).with_context(|| {
+            format!("Failed to create output directory: {}", directory.display())
+        })?;
+        let name = group_path
+            .file_name()
+            .map_or_else(|| group_name.into(), |name| name.to_string_lossy());
+        Ok(directory.join(self.generate_group_output_filename(&name, reference_file)))
     }
 
     /// Build a group output filename using the configured format, prefix, and suffix.

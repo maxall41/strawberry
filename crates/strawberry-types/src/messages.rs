@@ -99,7 +99,7 @@ pub enum AutomaticSegmentationMessage {
     SetOutputClass(ClassId),
     SetBrush(AnnotationKind),
     SetBrushRadius(BrushRadius),
-    SelectLayer(usize),
+    SelectChannel(usize),
     SetFeatures(FeatureConfig),
     SetForest(ForestConfig),
     SetInference(InferenceConfig),
@@ -129,7 +129,7 @@ pub enum NerveTracerMessage {
     DeletePath(usize),
     SaveTraces(PathBuf),
     LoadTraces(PathBuf, AnnotationPlacement),
-    SelectLayer(usize),
+    SelectChannel(usize),
 }
 
 // Note: counter module types need to be forward-declared since they're in the backend crate
@@ -271,7 +271,12 @@ pub enum PipelineCommand {
         arrangement: ImageArrangement,
         reply: CommandResult,
     },
-    SelectView(Coordinates),
+    /// Show the plane at `coordinates` of the output produced by `load_generation`; requests
+    /// made for an earlier load are ignored.
+    SelectView {
+        coordinates: Coordinates,
+        load_generation: u64,
+    },
     SaveOutput {
         path: PathBuf,
         scope: ExportScope,
