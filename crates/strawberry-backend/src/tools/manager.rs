@@ -4,11 +4,13 @@ use super::{
     automatic_segmentation::AutomaticSegmentation, base::ToolEvents, nervetracer::NerveTracer,
 };
 use crate::utils::pipeline_io;
+use anyhow::anyhow;
 use indexmap::IndexMap;
 use std::{path::Path, sync::Arc};
 use strawberry_processing::GpuImageProcessor;
 use strawberry_types::{
-    BackendToolType, PendingProcessing, PipelineState, ToolBackend, ToolId, ToolState, ToolSummary,
+    BackendToolType, PendingProcessing, PipelineState, Position, ToolBackend, ToolId, ToolState,
+    ToolSummary,
 };
 use tokio::sync::watch;
 
@@ -70,14 +72,19 @@ impl ToolManager {
         self.next_tool_id = self
             .next_tool_id
             .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("Tool IDs exhausted"))?;
+            .ok_or_else(|| anyhow!("Tool IDs exhausted"))?;
         Ok(id)
     }
-    /// Detached construction has no externally visible side effects.
-    async fn create(&self, kind: &BackendToolType) -> anyhow::Result<ToolInstance> {
+    /// Construct a detached tool instance editing `position`; construction has no externally
+    /// visible side effects.
+    async fn create(
+        &self,
+        kind: &BackendToolType,
+        position: Position,
+    ) -> anyhow::Result<ToolInstance> {
         let events = ToolEvents::default();
         let gpu = self.gpu.clone();
-        let backend: Box<dyn ToolBackend> = match kind {
+        let mut backend: Box<dyn ToolBackend> = match kind {
             BackendToolType::AutomaticSegmentation => {
                 Box::new(AutomaticSegmentation::new(events, gpu).await?)
             }
@@ -99,18 +106,23 @@ impl ToolManager {
             BackendToolType::Threshold => Box::new(Threshold::new(events, gpu).await?),
             BackendToolType::Watershed => Box::new(Watershed::new(events, gpu).await?),
         };
+        backend.select_position(position);
         let tool_state_sender = watch::channel(backend.get_state()).0;
         Ok(ToolInstance {
             backend,
             tool_state_sender,
         })
     }
-    /// Create, enable, and select a new tool instance.
+    /// Create, enable, and select a new tool instance editing the viewed `position`.
     ///
     /// # Errors
     /// Returns an error if GPU initialization fails or the tool ID space is exhausted.
-    pub async fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<ToolId> {
-        let mut tool = self.create(kind).await?;
+    pub async fn add_tool(
+        &mut self,
+        kind: &BackendToolType,
+        position: Position,
+    ) -> anyhow::Result<ToolId> {
+        let mut tool = self.create(kind, position).await?;
         tool.set_enabled(true);
         tool.tool_state_sender.send_replace(tool.get_state());
         let id = self.allocate_id()?;
@@ -130,6 +142,13 @@ impl ToolManager {
             self.selected_tool = id;
         }
     }
+    /// Select the position every tool edits, cancelling gestures begun on another position.
+    pub fn select_position(&mut self, position: Position) {
+        for tool in self.tools.values_mut() {
+            tool.cancel_interaction();
+            tool.select_position(position);
+        }
+    }
     /// Remove a tool instance and clear its selection when needed.
     pub fn remove_tool(&mut self, id: ToolId) {
         if self.selected_tool == Some(id) {
@@ -137,19 +156,12 @@ impl ToolManager {
         }
         self.tools.shift_remove(&id);
     }
-    /// Move a tool before another instance, or to the end of the stack.
-    pub fn move_tool(&mut self, id: ToolId, before: Option<ToolId>) {
-        let Some(from) = self.tools.get_index_of(&id) else {
-            return;
-        };
-        if before == Some(id) {
-            return;
-        }
+    /// Move a tool and return the first affected stack index if its position changed.
+    pub fn move_tool(&mut self, id: ToolId, before: Option<ToolId>) -> Option<usize> {
+        let from = self.tools.get_index_of(&id)?;
         let to = match before {
             Some(before) => {
-                let Some(index) = self.tools.get_index_of(&before) else {
-                    return;
-                };
+                let index = self.tools.get_index_of(&before)?;
                 if from < index {
                     index.saturating_sub(1)
                 } else {
@@ -158,7 +170,11 @@ impl ToolManager {
             }
             None => self.tools.len().saturating_sub(1),
         };
+        if from == to {
+            return None;
+        }
         self.tools.move_index(from, to);
+        Some(from.min(to))
     }
     /// Request processing from the first changed enabled tool position.
     pub fn reconcile(&mut self, pending: &mut PendingProcessing) {
@@ -166,7 +182,7 @@ impl ToolManager {
             .tools
             .iter()
             .enumerate()
-            .filter(|(_, (_, tool))| tool.is_enabled() && tool.supports_processing())
+            .filter(|(_, (_, tool))| tool.is_enabled())
             .map(|(index, (id, _))| (index, *id))
             .collect();
         let common = self
@@ -232,17 +248,25 @@ impl ToolManager {
             .collect::<anyhow::Result<Vec<_>>>()?;
         pipeline_io::save(path, &entries)
     }
-    /// Replace the pipeline with validated tool instances from an archive.
+    /// Replace the pipeline with validated tool instances from an archive, editing the viewed
+    /// `position`.
     ///
     /// # Errors
     /// Returns an error if the archive, settings, or assets cannot be loaded or
     /// validated, or if the tool ID space is exhausted.
-    pub async fn load_pipeline(&mut self, path: &Path, cli: bool) -> anyhow::Result<()> {
+    pub async fn load_pipeline(
+        &mut self,
+        path: &Path,
+        cli: bool,
+        position: Position,
+    ) -> anyhow::Result<()> {
         let mut candidate = IndexMap::new();
         for entry in pipeline_io::load(path)? {
             let kind = entry.kind()?;
-            let mut tool = self.create(&kind).await?;
+            let mut tool = self.create(&kind, position).await?;
             tool.load_persisted_state(entry.state, &entry.assets, cli)?;
+            // Loading replaces runtime-only state, including the position selection.
+            tool.select_position(position);
             tool.get_state().validate()?;
             tool.cancel_interaction();
             tool.tool_state_sender.send_replace(tool.get_state());

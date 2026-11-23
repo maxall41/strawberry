@@ -8,7 +8,10 @@ use crate::tools::cache::ToolCache;
 use strawberry_processing::{GpuImageProcessor, grayscale::GpuGrayscale};
 
 use async_trait::async_trait;
-use strawberry_types::{BackendToolType, GrayscaleState, ToolBackend, ToolInput, ToolState};
+use strawberry_types::{
+    BackendToolType, GrayscaleState, ImageCollection, PlaneProgressExt, ReportPlaneProgress,
+    ToolBackend, ToolInput, ToolState,
+};
 
 pub struct Grayscale {
     pub state: GrayscaleState,
@@ -31,9 +34,13 @@ impl ToolBackend for Grayscale {
         BackendToolType::Grayscale
     }
 
-    /// Convert each input layer to grayscale.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        for image in input {
+    /// Convert every input plane to grayscale.
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
+        for image in images.planes_mut().report_progress(report_planes) {
             *image = Arc::new(self.processor.apply_grayscale(image).await?);
         }
         Ok(())

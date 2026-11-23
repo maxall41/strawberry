@@ -1,4 +1,7 @@
-use std::sync::Mutex;
+use std::{
+    mem,
+    sync::{Mutex, PoisonError},
+};
 use strawberry_types::FrontendMessage;
 
 #[derive(Default)]
@@ -8,17 +11,12 @@ impl ToolEvents {
     pub fn emit(&self, event: FrontendMessage) {
         self.0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .push(event);
     }
     /// Return and clear all queued frontend events.
     pub fn drain(&self) -> Vec<FrontendMessage> {
-        std::mem::take(
-            &mut *self
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
 
@@ -34,7 +32,7 @@ impl ToolBase {
 }
 #[macro_export]
 macro_rules! impl_tool_backend_basics {
-    ($tool_type:ty) => {
+    ($tool_type:ty $(, $replace_input:ident)?) => {
         /// Expose mutable settings for pipeline persistence.
         fn persisted_state_mut(&mut self) -> Option<&mut dyn strawberry_types::PersistedState> {
             Some(&mut self.state)
@@ -51,14 +49,14 @@ macro_rules! impl_tool_backend_basics {
         fn drain_events(&mut self) -> Vec<strawberry_types::FrontendMessage> {
             self.base.events.drain()
         }
-        $crate::impl_tool_cache!();
+        $crate::impl_tool_cache!($($replace_input)?);
     };
 }
 
-/// Shared cache and reconciliation lifecycle, also used by interactive tools.
+/// Share cache management, optionally replacing derived state when a bypassed input changes.
 #[macro_export]
 macro_rules! impl_tool_cache {
-    () => {
+    ($($replace_input:ident)?) => {
         /// Reconcile settings and report whether processing is needed.
         fn reconcile_state(&mut self) -> bool {
             self.cache.reconcile(&self.state)
@@ -66,23 +64,37 @@ macro_rules! impl_tool_cache {
 
         /// Record the settings acknowledged by processing.
         fn acknowledge_processed_state(&mut self) {
-            self.cache.sync.acknowledge(&self.state);
+            self.cache.reconcile(&self.state);
         }
 
-        /// Return cached output when its processing settings still match.
-        fn valid_cached_output(&self) -> Option<Vec<std::sync::Arc<image::RgbaImage>>> {
-            self.cache.valid_output(&self.state)
+        /// Return cached output when its input and processing settings still match.
+        fn valid_cached_output(
+            &self,
+            input: &strawberry_types::ImageCollection,
+        ) -> Option<strawberry_types::ImageCollection> {
+            self.cache.valid_output(&self.state, input)
         }
 
-        /// Cache processed images together with their settings.
-        fn set_cached_output(&mut self, output: Vec<std::sync::Arc<image::RgbaImage>>) {
-            self.cache.cached_output = Some(output);
-            self.cache.cached_state = Some(self.state.clone());
+        /// Cache processed images together with their input and settings.
+        fn set_cached_output(
+            &mut self,
+            input: &strawberry_types::ImageCollection,
+            output: strawberry_types::ImageCollection,
+        ) {
+            self.cache.store_output(&self.state, input, output);
         }
 
-        /// Discard cached processing data.
+        /// Discard retained data when the bypassed input changes.
+        fn reconcile_bypassed_input(&mut self, input: &strawberry_types::ImageCollection) {
+            if self.cache.input_differs(input) {
+                self.invalidate_cache();
+                $(self.$replace_input(input.get_shape());)?
+            }
+        }
+
+        /// Discard cached output and the remembered input.
         fn invalidate_cache(&mut self) {
-            self.cache.invalidate();
+            self.cache.invalidate_all();
         }
     };
 }

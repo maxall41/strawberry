@@ -11,39 +11,53 @@ use commands::{
     ZoomIn, ZoomOut,
 };
 use gpui::{
-    Animation, AnimationExt, App, AppContext, AssetSource, Bounds, Context, Entity, ExternalPaths,
-    FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent, KeyUpEvent, Menu, MenuItem,
-    ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, img, prelude::*, px, size,
+    Animation, AnimationExt, App, AppContext, AssetSource, AsyncWindowContext, Bounds, Context,
+    Entity, ExternalPaths, FocusHandle, Focusable, ImageSource, KeyBinding, KeyDownEvent,
+    KeyUpEvent, Menu, MenuItem, ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString, TitlebarOptions,
+    WeakEntity, Window, WindowBounds, WindowOptions, div, img, prelude::*, px, size,
 };
 use gui::busy::{BusyOverlay, set_pipeline_busy};
+use gui::code_editor::{
+    EditorCopy, EditorCut, EditorPaste, EditorRedo, EditorSelectAll, EditorUndo,
+    KEY_CONTEXT as CODE_EDITOR_CONTEXT,
+};
 use gui::feedback::FeedbackModal;
 use gui::generic_picker::PickerPaste;
+use gui::hyperstack_bar::{HyperstackBar, ViewSelected};
+use gui::hyperstack_importer::{HyperstackImporter, ImporterClosed};
 use gui::icon::Icon;
 use gui::palette::{CommandPalette, PaletteDismissed};
+use gui::prompts::{ImportChoice, ask_export_scope, ask_image_arrangement};
 use gui::sidebar::{ToolSelected, ToolSidebar};
 use gui::workspace::{
     SIDEBAR_GRIP_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, TOOLBAR_HEIGHT, WorkspaceLayout,
 };
 use image::{Frame, RgbaImage};
 use rfd::FileDialog;
+use rust_embed::RustEmbed;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
-use std::{fs, panic};
-use strawberry_backend::Pipeline;
+use std::{mem, panic, ptr};
+use strawberry_backend::{Pipeline, hyperstack::collect_file_names};
 use strawberry_types::{
-    FeedbackLevel, FrontendMessage, PipelineCommand,
+    Coordinates, ExportScope, FeedbackLevel, FrontendMessage, ImageArrangement, OutputFrame,
+    PipelineCommand, PipelineProgress, PlaneProgress, Shape,
     overlay::{CircleStyle, OverlayCollection, OverlayElement},
 };
-use tokio::sync::broadcast;
+use tokio::{
+    runtime::Runtime,
+    sync::{broadcast, oneshot},
+};
 
-struct Assets {
-    base: PathBuf,
-}
+#[derive(RustEmbed)]
+#[folder = "../../assets/icons"]
+#[prefix = "icons/"]
+struct Assets;
 
 mod commands;
 mod gui;
@@ -59,6 +73,7 @@ struct PipelineActivity {
     label: String,
     stage: usize,
     total: usize,
+    planes: Option<PlaneProgress>,
     /// Flips once the run outlasts `ACTIVITY_SHOW_DELAY`.
     shown: bool,
     /// The run ended but the indicator is lingering; a new run's progress
@@ -66,28 +81,59 @@ struct PipelineActivity {
     finishing: bool,
 }
 
-impl AssetSource for Assets {
-    /// Load an embedded application asset by its path.
-    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        fs::read(self.base.join(path))
-            .map(|data| Some(std::borrow::Cow::Owned(data)))
-            .map_err(std::convert::Into::into)
+impl PipelineActivity {
+    /// Format the active stage and any completed plane counts for the canvas.
+    fn format_status(&self) -> String {
+        let label = if self.total > 1 {
+            format!(
+                "{} · {}/{}",
+                self.label,
+                self.stage.saturating_add(1),
+                self.total
+            )
+        } else {
+            self.label.clone()
+        };
+        match self.planes {
+            Some(planes) => format!("{label} · {}/{} planes", planes.completed, planes.total),
+            None if self.total > 1 => label,
+            None => format!("{label}…"),
+        }
     }
 
-    /// List embedded application assets matching the path.
+    /// Fill the existing progress bar by completed planes when counts are available.
+    fn render_progress_fill(&self) -> impl IntoElement {
+        let fill = div().h_full().bg(gui::theme::ACCENT);
+        if let Some(planes) = self.planes {
+            let completed = planes.completed.to_f32().unwrap_or_default();
+            let total = planes.total.to_f32().unwrap_or(1.0).max(1.0);
+            fill.w(gpui::relative(completed / total)).into_any_element()
+        } else {
+            fill.w_full()
+                .with_animation(
+                    "pipeline-busy-pulse",
+                    Animation::new(Duration::from_millis(1500))
+                        .repeat()
+                        .with_easing(gpui::pulsating_between(0.3, 1.0)),
+                    gpui::Styled::opacity,
+                )
+                .into_any_element()
+        }
+    }
+}
+
+impl AssetSource for Assets {
+    /// Load an embedded application asset by its path.
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        Ok(Self::get(path).map(|file| file.data))
+    }
+
+    /// List embedded application assets whose paths start with `path`.
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        fs::read_dir(self.base.join(path))
-            .map(|entries| {
-                entries
-                    .filter_map(|entry| {
-                        entry
-                            .ok()
-                            .and_then(|entry| entry.file_name().into_string().ok())
-                            .map(SharedString::from)
-                    })
-                    .collect()
-            })
-            .map_err(std::convert::Into::into)
+        Ok(Self::iter()
+            .filter(|asset| asset.starts_with(path))
+            .map(SharedString::from)
+            .collect())
     }
 }
 
@@ -103,6 +149,8 @@ struct PrimaryViewer {
     command_sender: strawberry_types::CommandSender,
     output_frame_receiver: tokio::sync::watch::Receiver<Option<strawberry_types::OutputFrame>>,
     display_image: ImageSource,
+    displayed_frame: Weak<RgbaImage>,
+    output_is_current: bool,
     img_coords: Arc<RwLock<Option<Bounds<Pixels>>>>,
     overlays: OverlayCollection,
     annotation_images: HashMap<usize, (Arc<RgbaImage>, Arc<RenderImage>)>,
@@ -116,9 +164,44 @@ struct PrimaryViewer {
     activity_epoch: u64,
     busy_overlay: Entity<BusyOverlay>,
     palette: Option<Entity<CommandPalette>>,
+    focus_before_palette: Option<FocusHandle>,
     commands: Rc<[PalleteCommand]>,
     sidebar: Entity<ToolSidebar>,
+    importer: Option<Entity<HyperstackImporter>>,
+    hyperstack_bar: Entity<HyperstackBar>,
+    /// Shape of the displayed output, which sets the hyperstack bar's rows.
+    shape: Shape,
+    /// Load that produced the displayed frame; a new load resets the view.
+    load_generation: Option<u64>,
     layout: WorkspaceLayout,
+}
+
+/// Ask how to arrange several images, then queue them for loading or open the hyperstack
+/// importer.
+#[expect(
+    clippy::future_not_send,
+    reason = "Native dialogs run on GPUI's main-thread window context"
+)]
+async fn load_images(
+    viewer: WeakEntity<PrimaryViewer>,
+    files: Vec<PathBuf>,
+    cx: &mut AsyncWindowContext,
+) {
+    let choice = if files.len() > 1 {
+        let Some(choice) = ask_image_arrangement(cx, files.len()).await else {
+            return;
+        };
+        choice
+    } else {
+        ImportChoice::Channels
+    };
+    if let Err(e) = viewer.update_in(cx, |viewer, window, cx| match choice {
+        ImportChoice::Channels => viewer.send_load(files, ImageArrangement::Channels),
+        ImportChoice::Stack => viewer.send_load(files, ImageArrangement::Stack),
+        ImportChoice::Hyperstack => viewer.open_hyperstack_importer(files, window, cx),
+    }) {
+        eprintln!("Failed to load images: {e}");
+    }
 }
 
 impl PrimaryViewer {
@@ -271,10 +354,7 @@ impl PrimaryViewer {
                 }
 
                 if output_frames.has_changed().unwrap_or(false) {
-                    latest_output = output_frames
-                        .borrow_and_update()
-                        .as_ref()
-                        .map(|frame| frame.image.clone());
+                    latest_output = Some(output_frames.borrow_and_update().clone());
                 }
 
                 if latest_output.is_none()
@@ -299,8 +379,10 @@ impl PrimaryViewer {
                             None => this.pipeline_finished(cx),
                         }
                     }
-                    if let Some(image) = latest_output {
-                        this.show_output(image, window, cx);
+                    match latest_output {
+                        Some(Some(frame)) => this.show_output(frame, window, cx),
+                        Some(None) => this.clear_output(cx),
+                        None => {}
                     }
                     if let Some(overlays) = latest_overlays {
                         let masks: HashMap<_, _> = overlays
@@ -354,10 +436,22 @@ impl PrimaryViewer {
         .detach();
     }
 
-    /// Display a processed image and refresh its canvas overlays.
-    fn show_output(&mut self, image: Arc<RgbaImage>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Display a processed image and refresh the hyperstack bar and canvas overlays.
+    fn show_output(&mut self, frame: OutputFrame, window: &mut Window, cx: &mut Context<Self>) {
+        // Within one load the hyperstack bar leads and frames follow it, so a frame still in
+        // flight cannot pull a slider back to an earlier image.
+        if self.load_generation != Some(frame.load_generation) || self.shape != frame.shape {
+            self.load_generation = Some(frame.load_generation);
+            self.set_hyperstack_view(frame.coordinates, frame.shape, cx);
+        }
+        self.output_is_current = frame.is_current;
+        if ptr::eq(self.displayed_frame.as_ptr(), Arc::as_ptr(&frame.image)) {
+            cx.notify();
+            return;
+        }
+        self.displayed_frame = Arc::downgrade(&frame.image);
         let img_data = Arc::new(RenderImage::new(vec![Frame::new(Arc::unwrap_or_clone(
-            image,
+            frame.image,
         ))]));
         let new_width = u32::try_from(img_data.size(0).width.0).unwrap_or_default();
         let new_height = u32::try_from(img_data.size(0).height.0).unwrap_or_default();
@@ -376,7 +470,7 @@ impl PrimaryViewer {
         self.original_width = new_width;
         self.original_height = new_height;
         self.image_loaded = true;
-        let previous = std::mem::replace(&mut self.display_image, ImageSource::Render(img_data));
+        let previous = mem::replace(&mut self.display_image, ImageSource::Render(img_data));
 
         if let ImageSource::Render(previous) = previous
             && let Err(e) = window.drop_image(previous)
@@ -391,17 +485,42 @@ impl PrimaryViewer {
         }
     }
 
-    /// Update busy indicators and progress from a pipeline event.
-    fn pipeline_progress(
+    /// Return the canvas and hyperstack bar to their empty state once a new load discards the
+    /// displayed output.
+    fn clear_output(&mut self, cx: &mut Context<Self>) {
+        self.load_generation = None;
+        self.set_hyperstack_view(Coordinates::default(), Shape::default(), cx);
+        self.image_loaded = false;
+        self.output_is_current = false;
+        self.displayed_frame = Weak::new();
+        cx.notify();
+    }
+
+    /// Show the hyperstack bar for `shape` with `coordinates` selected, sizing the status bar
+    /// to its rows.
+    fn set_hyperstack_view(
         &mut self,
-        progress: &strawberry_types::PipelineProgress,
-        cx: &Context<Self>,
+        coordinates: Coordinates,
+        shape: Shape,
+        cx: &mut Context<Self>,
     ) {
+        self.shape = shape;
+        self.hyperstack_bar.update(cx, |bar, cx| {
+            bar.set_view(coordinates, shape, cx);
+        });
+        self.layout.status_bar_rows = self.hyperstack_bar.read(cx).get_row_count();
+    }
+
+    /// Update busy indicators and progress from a pipeline event.
+    fn pipeline_progress(&mut self, progress: &PipelineProgress, cx: &Context<Self>) {
         let label = humanize_tool_name(&progress.name);
+        // A single plane's 0/1 count says less than the pulsing bar it would replace.
+        let planes = progress.planes.filter(|planes| planes.total > 1);
         if let Some(activity) = &mut self.activity {
             activity.label = label;
             activity.stage = progress.stage;
             activity.total = progress.total;
+            activity.planes = planes;
             activity.finishing = false;
             return;
         }
@@ -410,6 +529,7 @@ impl PrimaryViewer {
             label,
             stage: progress.stage,
             total: progress.total,
+            planes,
             shown: false,
             finishing: false,
         });
@@ -477,10 +597,9 @@ impl PrimaryViewer {
 
     /// Prompt for input images and queue them for loading.
     fn handle_open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
-        let sender_p = self.command_sender.clone();
         let image_dir = self.image_directory.clone();
 
-        cx.spawn_in(window, async move |_, _| {
+        cx.spawn_in(window, async move |this, cx| {
             let files = FileDialog::new()
                 .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
                 .set_directory("~/")
@@ -494,38 +613,52 @@ impl PrimaryViewer {
                     *dir = Some(parent.to_path_buf());
                 }
 
-                if let Err(e) = sender_p.send(PipelineCommand::Load {
-                    files,
-                    reply: tokio::sync::oneshot::channel().0,
-                }) {
-                    eprintln!("Failed to send loaded images to pipeline: {e}");
-                }
+                load_images(this, files, cx).await;
             }
         })
         .detach();
     }
 
-    /// Prompt for an output path and request the processed image be saved.
+    /// Ask which images to export when several are loaded, then prompt for an output path
+    /// and request the processed output be saved.
     fn handle_save_image(&mut self, _: &SaveImage, window: &mut Window, cx: &mut Context<Self>) {
         let sender_p = self.command_sender.clone();
+        let shape = self.shape;
 
         cx.spawn_in(window, async move |this, cx| {
-            let output_file = FileDialog::new()
-                .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
-                .set_directory("~/")
-                .save_file();
+            let scope = if shape.holds_several_images() {
+                let Some(scope) = ask_export_scope(cx, shape).await else {
+                    return;
+                };
+                scope
+            } else {
+                ExportScope::CurrentView
+            };
+            let dialog = FileDialog::new().set_directory("~/");
+            let output_file = match scope {
+                ExportScope::CurrentView | ExportScope::CompositeView => dialog
+                    .add_filter("image", &["tif", "tiff", "png", "jpg", "jpeg", "bmp"])
+                    .save_file(),
+                ExportScope::AllViews => dialog.add_filter("ZIP archive", &["zip"]).save_file(),
+            };
 
             if let Some(path) = output_file {
-                let (reply, result) = tokio::sync::oneshot::channel();
+                let (reply, result) = oneshot::channel();
                 if sender_p
-                    .send(PipelineCommand::SaveOutput { path, reply })
+                    .send(PipelineCommand::SaveOutput { path, scope, reply })
                     .is_ok()
                 {
                     let result = result.await;
                     let _ = this.update(cx, |this, cx| {
                         let (text, level) = match result {
                             Ok(Ok(())) => (
-                                "Image saved successfully".to_string(),
+                                match scope {
+                                    ExportScope::CurrentView | ExportScope::CompositeView => {
+                                        "Image saved successfully"
+                                    }
+                                    ExportScope::AllViews => "Images saved successfully",
+                                }
+                                .to_string(),
                                 FeedbackLevel::Success,
                             ),
                             Ok(Err(error)) => (error, FeedbackLevel::Error),
@@ -708,11 +841,55 @@ impl PrimaryViewer {
         }
     }
 
+    /// Queue images for loading in the given arrangement.
+    fn send_load(&self, files: Vec<PathBuf>, arrangement: ImageArrangement) {
+        if let Err(e) = self.command_sender.send(PipelineCommand::Load {
+            files,
+            arrangement,
+            reply: oneshot::channel().0,
+        }) {
+            eprintln!("Failed to send loaded images to pipeline: {e}");
+        }
+    }
+
+    /// Open the hyperstack importer.
+    fn open_hyperstack_importer(
+        &mut self,
+        files: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let file_names = match collect_file_names(&files) {
+            Ok(file_names) => file_names,
+            Err(error) => {
+                self.add_toast(error.to_string(), FeedbackLevel::Error, cx);
+                return;
+            }
+        };
+        self.pressed_keys.clear();
+        let importer = cx.new(|cx| HyperstackImporter::new(files, file_names, cx));
+        cx.subscribe_in(
+            &importer,
+            window,
+            |viewer, _importer, event: &ImporterClosed, window, cx| {
+                if let ImporterClosed::Imported { files, arrangement } = event {
+                    viewer.send_load(files.clone(), arrangement.clone());
+                }
+                viewer.importer = None;
+                viewer.focus_handle.focus(window, cx);
+                cx.notify();
+            },
+        )
+        .detach();
+        window.focus(&importer.focus_handle(cx), cx);
+        self.importer = Some(importer);
+        cx.notify();
+    }
+
     /// Open or close the command palette.
     fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.palette.take().is_some() {
-            self.focus_handle.focus(window, cx);
-            cx.notify();
+        if self.palette.is_some() {
+            self.close_palette(window, cx);
             return;
         }
         self.pressed_keys.clear();
@@ -722,16 +899,23 @@ impl PrimaryViewer {
         cx.subscribe_in(
             &palette,
             window,
-            |viewer, _palette, _: &PaletteDismissed, window, cx| {
-                viewer.palette = None;
-                viewer.focus_handle.focus(window, cx);
-                cx.notify();
-            },
+            |viewer, _palette, _: &PaletteDismissed, window, cx| viewer.close_palette(window, cx),
         )
         .detach();
 
+        self.focus_before_palette = window.focused(cx);
         window.focus(&palette.read(cx).focus_handle(cx), cx);
         self.palette = Some(palette);
+        cx.notify();
+    }
+
+    /// Close the command palette and return focus to where it was, such as the importer.
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette = None;
+        match self.focus_before_palette.take() {
+            Some(previous) => window.focus(&previous, cx),
+            None => self.focus_handle.focus(window, cx),
+        }
         cx.notify();
     }
 
@@ -909,13 +1093,7 @@ impl Render for PrimaryViewer {
             self.pressed_keys.clear();
         }
 
-        let activity_status = self.activity.as_ref().filter(|a| a.shown).map(|a| {
-            if a.total > 1 {
-                format!("{} · {}/{}", a.label, a.stage.saturating_add(1), a.total)
-            } else {
-                format!("{}…", a.label)
-            }
-        });
+        let activity = self.activity.as_ref().filter(|a| a.shown);
 
         let img = img(self.display_image.clone())
             .use_nearest_filter(true)
@@ -1002,7 +1180,7 @@ impl Render for PrimaryViewer {
             .track_focus(&self.focus_handle(cx))
             .flex_1()
             .min_w_0()
-            .h_full()
+            .min_h_0()
             .bg(gui::theme::CANVAS)
             .overflow_hidden()
             .on_mouse_down(
@@ -1016,16 +1194,15 @@ impl Render for PrimaryViewer {
             .on_key_up(cx.listener(Self::on_key_up))
             .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
             .on_drop(cx.listener(
-                |this: &mut Self,
+                |_this: &mut Self,
                  paths: &ExternalPaths,
-                 _window: &mut Window,
-                 _cx: &mut Context<Self>| {
-                    if let Err(e) = this.command_sender.send(PipelineCommand::Load {
-                        files: paths.paths().to_vec(),
-                        reply: tokio::sync::oneshot::channel().0,
-                    }) {
-                        eprintln!("Failed to send loaded images to pipeline: {e}");
-                    }
+                 window: &mut Window,
+                 cx: &mut Context<Self>| {
+                    let files = paths.paths().to_vec();
+                    cx.spawn_in(window, async move |this, cx| {
+                        load_images(this, files, cx).await;
+                    })
+                    .detach();
                 },
             ))
             .when(self.image_loaded, |el| {
@@ -1071,8 +1248,30 @@ impl Render for PrimaryViewer {
                     .right(px(20.0))
                     .child(toast.clone())
             }))
+            .when(self.image_loaded && !self.output_is_current, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top(px(9.))
+                        .left(px(10.))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(gpui::Rgba {
+                            a: 0.85,
+                            ..gui::theme::CANVAS
+                        })
+                        .text_xs()
+                        .text_color(gui::theme::WARNING)
+                        .child(Icon::warning().color(gui::theme::WARNING))
+                        .child("Out of date"),
+                )
+            })
             .child(self.busy_overlay.clone())
-            .when_some(activity_status, |el, status| {
+            .when_some(activity, |el, activity| {
                 el.child(
                     div()
                         .absolute()
@@ -1084,15 +1283,7 @@ impl Render for PrimaryViewer {
                             a: 0.5,
                             ..gui::theme::SURFACE_DEEP
                         })
-                        .child(
-                            div().size_full().bg(gui::theme::ACCENT).with_animation(
-                                "pipeline-busy-pulse",
-                                Animation::new(Duration::from_millis(1500))
-                                    .repeat()
-                                    .with_easing(gpui::pulsating_between(0.3, 1.0)),
-                                gpui::Styled::opacity,
-                            ),
-                        ),
+                        .child(activity.render_progress_fill()),
                 )
                 .child(
                     div()
@@ -1108,7 +1299,7 @@ impl Render for PrimaryViewer {
                         })
                         .text_xs()
                         .text_color(gui::theme::TEXT_MUTED)
-                        .child(status),
+                        .child(activity.format_status()),
                 )
             });
 
@@ -1164,7 +1355,10 @@ impl Render for PrimaryViewer {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .child(canvas),
+                            .child(canvas)
+                            .when(self.layout.status_bar_rows > 0, |column| {
+                                column.child(self.hyperstack_bar.clone())
+                            }),
                     )
                     .when(self.layout.sidebar_visible, |el| {
                         el.child(
@@ -1198,7 +1392,8 @@ impl Render for PrimaryViewer {
                         )
                     }),
             )
-            // Paint the command palette over the complete workspace.
+            // Paint the importer and command palette over the complete workspace.
+            .when_some(self.importer.clone(), gpui::ParentElement::child)
             .when_some(self.palette.clone(), gpui::ParentElement::child)
     }
 }
@@ -1242,20 +1437,18 @@ fn humanize_tool_name(name: &str) -> String {
     result
 }
 
-#[tokio::main]
 #[expect(
     clippy::too_many_lines,
     reason = "Keep declarative GPUI layout and its event bindings together"
 )]
 /// Initialize the application, backend, and primary viewer window.
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     env_logger::init();
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let runtime = Runtime::new()?;
+    let (mut pipeline, view_sender, view_recv, output_frames) = runtime.block_on(Pipeline::new())?;
 
-    let (mut pipeline, view_sender, view_recv, output_frames) = Pipeline::new().await?;
-
-    let pipeline_handle = tokio::spawn(async move {
+    let pipeline_handle = runtime.spawn(async move {
         loop {
             if let Err(e) = pipeline.process_commands().await {
                 eprintln!("Error processing pipeline commands: {e}");
@@ -1266,7 +1459,7 @@ async fn main() -> Result<()> {
     });
 
     // Spawn a task to monitor the pipeline and propagate panics
-    tokio::spawn(async move {
+    runtime.spawn(async move {
         let Err(e) = pipeline_handle.await;
         if e.is_panic() {
             eprintln!("Pipeline task panicked, shutting down application");
@@ -1276,10 +1469,11 @@ async fn main() -> Result<()> {
 
     let image_directory: Arc<RwLock<Option<PathBuf>>> = Arc::new(RwLock::new(None));
 
+    // GPUI drives its own event loop. Running it inside a single Tokio poll exhausts
+    // that poll's cooperative budget and stalls the UI's channel receivers.
+    let _runtime_context = runtime.enter();
     gpui_platform::application()
-        .with_assets(Assets {
-            base: manifest_dir.join("examples"),
-        })
+        .with_assets(Assets)
         .run(move |cx: &mut App| {
             cx.on_action(|_: &Quit, cx| cx.quit());
 
@@ -1291,6 +1485,12 @@ async fn main() -> Result<()> {
                 KeyBinding::new("f", ZoomFit, Some("PrimaryViewer")),
                 KeyBinding::new("secondary-p", ToggleCommandPalette, None),
                 KeyBinding::new("secondary-v", PickerPaste, Some("SearchPicker")),
+                KeyBinding::new("secondary-a", EditorSelectAll, Some(CODE_EDITOR_CONTEXT)),
+                KeyBinding::new("secondary-c", EditorCopy, Some(CODE_EDITOR_CONTEXT)),
+                KeyBinding::new("secondary-x", EditorCut, Some(CODE_EDITOR_CONTEXT)),
+                KeyBinding::new("secondary-v", EditorPaste, Some(CODE_EDITOR_CONTEXT)),
+                KeyBinding::new("secondary-z", EditorUndo, Some(CODE_EDITOR_CONTEXT)),
+                KeyBinding::new("secondary-shift-z", EditorRedo, Some(CODE_EDITOR_CONTEXT)),
                 KeyBinding::new("+", ZoomIn, Some("PrimaryViewer && !CommandPalette")),
                 KeyBinding::new("-", ZoomOut, Some("PrimaryViewer && !CommandPalette")),
             ]);
@@ -1343,6 +1543,7 @@ async fn main() -> Result<()> {
             let primary_viewer_image_dir = image_directory.clone();
             let main_window = cx.open_window(window_options, |window, cx| {
                 let sidebar = cx.new(|cx| ToolSidebar::new(view_sender.clone(), window, cx));
+                let hyperstack_bar = cx.new(HyperstackBar::new);
                 let commands =
                     commands::install(cx, &sidebar, view_sender.clone(), image_directory.clone());
                 let raw_primary_viewer = PrimaryViewer {
@@ -1357,6 +1558,8 @@ async fn main() -> Result<()> {
                     command_sender: view_sender.clone(),
                     output_frame_receiver: output_frames.clone(),
                     display_image: ImageSource::Render(img_data),
+                    displayed_frame: Weak::new(),
+                    output_is_current: false,
                     img_coords: Arc::new(RwLock::new(None)),
                     overlays: OverlayCollection::new(),
                     annotation_images: HashMap::new(),
@@ -1370,8 +1573,13 @@ async fn main() -> Result<()> {
                     activity_epoch: 0,
                     busy_overlay: cx.new(|cx| BusyOverlay::new(false, cx)),
                     palette: None,
+                    focus_before_palette: None,
                     commands,
                     sidebar: sidebar.clone(),
+                    importer: None,
+                    hyperstack_bar: hyperstack_bar.clone(),
+                    shape: Shape::default(),
+                    load_generation: None,
                     layout: WorkspaceLayout::default(),
                 };
 
@@ -1382,6 +1590,23 @@ async fn main() -> Result<()> {
                             viewer.layout.sidebar_visible = true;
                             viewer.pressed_keys.clear();
                             cx.notify();
+                        },
+                    )
+                    .detach();
+                    cx.subscribe(
+                        &hyperstack_bar,
+                        |viewer: &mut PrimaryViewer, _, event: &ViewSelected, _| {
+                            let Some(load_generation) = viewer.load_generation else {
+                                return;
+                            };
+                            if let Err(e) =
+                                viewer.command_sender.send(PipelineCommand::SelectView {
+                                    coordinates: event.0,
+                                    load_generation,
+                                })
+                            {
+                                eprintln!("Failed to select image: {e}");
+                            }
                         },
                     )
                     .detach();

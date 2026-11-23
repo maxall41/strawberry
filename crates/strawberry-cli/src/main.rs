@@ -4,21 +4,96 @@
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use colored::Colorize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt::Display;
 use std::fs;
+use std::future::{Future, pending};
 use std::path::{Path, PathBuf};
 use tokio::sync::{broadcast, watch};
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant, sleep_until, timeout_at};
 
-use strawberry_backend::Pipeline;
-use strawberry_types::{FeedbackLevel, FrontendMessage, OutputFrame, PipelineCommand};
+use strawberry_backend::{
+    Pipeline,
+    hyperstack::{HyperstackLayout, collect_file_names},
+};
+use strawberry_types::{
+    ExportScope, FeedbackLevel, FrontendMessage, ImageArrangement, OutputFrame, PipelineCommand,
+    Shape,
+};
 
-/// Budget for one group, measured from the moment its load is dispatched.
-const GROUP_TIMEOUT: Duration = Duration::from_secs(60);
+/// Most group names a warning lists for one channel count before eliding the rest.
+const MAX_LISTED_GROUP_NAMES: usize = 3;
+
+/// Warn when groups load different numbers of channels, since channel-specific tool settings
+/// then pick different images, or none, in each group.
+fn warn_about_channel_mismatch(groups: &HashMap<String, ImageGroup>) {
+    // Ordered so the warning lists channel counts and group names predictably.
+    let mut groups_by_channels: BTreeMap<usize, BTreeSet<&str>> = BTreeMap::new();
+    for (name, group) in groups {
+        groups_by_channels
+            .entry(group.channels)
+            .or_default()
+            .insert(name);
+    }
+    if groups_by_channels.len() <= 1 {
+        return;
+    }
+    let counts: Vec<String> = groups_by_channels
+        .iter()
+        .map(|(channels, names)| {
+            let mut listed: Vec<&str> =
+                names.iter().take(MAX_LISTED_GROUP_NAMES).copied().collect();
+            if names.len() > MAX_LISTED_GROUP_NAMES {
+                listed.push("…");
+            }
+            format!(
+                "{channels} in {} group(s) ({})",
+                names.len(),
+                listed.join(", ")
+            )
+        })
+        .collect();
+    print_warning(format!(
+        "Groups have different numbers of channels: {}.",
+        counts.join("; ")
+    ));
+}
+
+/// Print a warning in yellow, prefixed so it stands out from progress output.
+fn print_warning(message: impl Display) {
+    println!("{}", format!("Warning: {message}").yellow());
+}
+
+/// Print a success message in green.
+fn print_success(message: impl Display) {
+    println!("{}", message.to_string().green());
+}
 
 /// Discard everything currently queued on a broadcast receiver.
 fn drain(receiver: &mut broadcast::Receiver<FrontendMessage>) {
     while let Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) = receiver.try_recv() {}
+}
+
+/// Sleep until `deadline`, or forever without one.
+async fn sleep_until_deadline(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => sleep_until(deadline).await,
+        None => pending().await,
+    }
+}
+
+/// Await `future`, failing with a timeout naming the `operation` if `deadline` passes first.
+async fn await_before<T>(
+    deadline: Option<Instant>,
+    future: impl Future<Output = T>,
+    operation: &str,
+) -> Result<T> {
+    match deadline {
+        Some(deadline) => timeout_at(deadline, future)
+            .await
+            .with_context(|| format!("Timeout {operation}")),
+        None => Ok(future.await),
+    }
 }
 
 /// Strawberry - Advanced Image Processing Pipeline
@@ -86,6 +161,14 @@ pub struct Args {
     /// Regex pattern to extract group identifier from filename (for regex grouping)
     #[arg(long, value_name = "PATTERN")]
     pub group_regex: Option<String>,
+
+    /// Rhai script whose `parse_file_names` function places each group's files in a hyperstack; without it, files load as channels
+    #[arg(long, value_name = "SCRIPT")]
+    pub hyperstack: Option<PathBuf>,
+
+    /// Set a time limit on how long it takes to load/process/save (one group of) the pipeline; actions over this time limit fail the  pipeline.
+    #[arg(long, value_name = "SECONDS")]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -145,10 +228,48 @@ impl OutputFormat {
     }
 }
 
+/// One group's files and how they load.
+struct ImageGroup {
+    /// Every file in the group; these name its output.
+    files: Vec<PathBuf>,
+    /// The files that load, which a hyperstack script may narrow.
+    loaded_files: Vec<PathBuf>,
+    arrangement: ImageArrangement,
+    channels: usize,
+}
+
+impl ImageGroup {
+    /// Count the files the hyperstack script left out of loading.
+    const fn count_excluded_files(&self) -> usize {
+        self.files.len().saturating_sub(self.loaded_files.len())
+    }
+}
+
+/// Count the files that load across groups, and those the hyperstack script left out.
+fn count_group_files(groups: &HashMap<String, ImageGroup>) -> (usize, usize) {
+    groups.values().fold((0, 0), |(loaded, excluded), group| {
+        (
+            loaded.saturating_add(group.loaded_files.len()),
+            excluded.saturating_add(group.count_excluded_files()),
+        )
+    })
+}
+
+/// Describe how many images are processed, noting any the hyperstack script left out.
+fn describe_image_totals(groups: &HashMap<String, ImageGroup>) -> String {
+    let (loaded, excluded) = count_group_files(groups);
+    if excluded == 0 {
+        format!("{loaded} total image(s)")
+    } else {
+        format!("{loaded} total image(s) ({excluded} left out by the hyperstack script)")
+    }
+}
+
 pub struct CliProcessor {
     args: Args,
     regex: regex::Regex,
     group_regex: Option<regex::Regex>,
+    hyperstack_script: Option<String>,
 }
 
 impl CliProcessor {
@@ -167,6 +288,16 @@ impl CliProcessor {
             None
         };
 
+        let hyperstack_script = args
+            .hyperstack
+            .as_ref()
+            .map(|path| {
+                fs::read_to_string(path).with_context(|| {
+                    format!("Failed to read hyperstack script: {}", path.display())
+                })
+            })
+            .transpose()?;
+
         // Validate grouping configuration
         if matches!(args.group, GroupingMode::Regex) && args.group_regex.is_none() {
             return Err(anyhow!(
@@ -175,13 +306,16 @@ impl CliProcessor {
         }
 
         if matches!(args.group, GroupingMode::Subdirectory) && !args.recursive {
-            println!("{}", "Warning: Subdirectory grouping enabled but recursive is disabled. Consider enabling --recursive for better results.".yellow());
+            print_warning(
+                "Subdirectory grouping enabled but recursive is disabled. Consider enabling --recursive for better results.",
+            );
         }
 
         Ok(Self {
             args,
             regex,
             group_regex,
+            hyperstack_script,
         })
     }
 
@@ -218,41 +352,39 @@ impl CliProcessor {
         let image_files = self.discover_images(input_path)?;
 
         if image_files.is_empty() {
-            println!(
-                "{}",
-                "No images found matching the filter criteria.".yellow()
-            );
+            print_warning("No images found matching the filter criteria.");
             return Ok(());
         }
 
-        let groups = self.group_images(image_files)?;
+        let groups = self.arrange_groups(self.group_images(image_files)?)?;
+        warn_about_channel_mismatch(&groups);
 
         if self.args.verbose {
-            println!(
-                "{}",
-                format!("Found {} group(s) to process:", groups.len()).green()
-            );
-            for (group_name, files) in &groups {
-                println!("  {}: {} image(s)", group_name.cyan(), files.len());
-                if self.args.verbose {
-                    for file in files {
-                        println!("    {}", file.display().to_string().dimmed());
-                    }
+            print_success(format!("Found {} group(s) to process:", groups.len()));
+            for (group_name, group) in &groups {
+                println!(
+                    "  {}: {} image(s)",
+                    group_name.cyan(),
+                    group.loaded_files.len()
+                );
+                let loaded: HashSet<&PathBuf> = group.loaded_files.iter().collect();
+                for file in &group.files {
+                    let line = if loaded.contains(file) {
+                        file.display().to_string().dimmed()
+                    } else {
+                        format!("{} (left out by the hyperstack script)", file.display()).yellow()
+                    };
+                    println!("    {line}");
                 }
             }
         }
 
         if self.args.dry_run {
-            let total_images: usize = groups.values().map(std::vec::Vec::len).sum();
-            println!(
-                "{}",
-                format!(
-                    "Dry run completed. {} group(s) with {} total image(s) would be processed.",
-                    groups.len(),
-                    total_images
-                )
-                .green()
-            );
+            print_success(format!(
+                "Dry run completed. {} group(s) with {} would be processed.",
+                groups.len(),
+                describe_image_totals(&groups)
+            ));
             return Ok(());
         }
 
@@ -374,14 +506,8 @@ impl CliProcessor {
                 }
             }
             GroupingMode::Subdirectory => {
-                // Group by parent directory
                 for file in image_files {
-                    let group_name = file
-                        .parent()
-                        .and_then(Path::file_name)
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("root")
-                        .to_string();
+                    let group_name = self.get_subdirectory_group_name(&file);
                     groups.entry(group_name).or_insert_with(Vec::new).push(file);
                 }
             }
@@ -413,10 +539,27 @@ impl CliProcessor {
         Ok(groups)
     }
 
+    /// Name a file's subdirectory group by its directory's path relative to the input
+    /// directory, so equally named directories in different places form separate groups.
+    /// Files directly in the input directory, or outside it, are named by their directory.
+    fn get_subdirectory_group_name(&self, file: &Path) -> String {
+        let directory = file.parent().unwrap_or_else(|| Path::new(""));
+        self.args
+            .input
+            .as_deref()
+            .and_then(|input| directory.strip_prefix(input).ok())
+            .filter(|relative| !relative.as_os_str().is_empty())
+            .or_else(|| directory.file_name().map(Path::new))
+            .map_or_else(
+                || "root".to_owned(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+    }
+
     /// Load the pipeline and process each image group through the backend.
     async fn process_groups(
         &self,
-        groups: HashMap<String, Vec<PathBuf>>,
+        groups: HashMap<String, ImageGroup>,
         output_path: &Path,
         pipeline_file: &Path,
     ) -> Result<()> {
@@ -447,9 +590,8 @@ impl CliProcessor {
             })
             .map_err(|e| anyhow!("{e}"))?;
         let loaded = async {
-            tokio::time::timeout(GROUP_TIMEOUT, result)
-                .await
-                .context("Timeout loading pipeline")?
+            await_before(self.get_deadline()?, result, "loading pipeline")
+                .await?
                 .context("Pipeline closed while loading")?
                 .map_err(|error| anyhow!("{error}"))
         }
@@ -460,7 +602,7 @@ impl CliProcessor {
         }
 
         let total_groups = groups.len();
-        let total_images: usize = groups.values().map(std::vec::Vec::len).sum();
+        let (total_images, _) = count_group_files(&groups);
         let input_is_dir = self.args.input.as_ref().is_some_and(|i| i.is_dir());
         let output_is_dir =
             output_path.is_dir() || input_is_dir || total_groups > 1 || total_images > 1;
@@ -474,7 +616,8 @@ impl CliProcessor {
             })?;
         }
 
-        for (group_index, (group_name, group_files)) in groups.iter().enumerate() {
+        let mut archive_count: usize = 0;
+        for (group_index, (group_name, group)) in groups.iter().enumerate() {
             if self.args.verbose {
                 println!(
                     "{} [{}/{}]: {} ({} image(s))",
@@ -482,91 +625,83 @@ impl CliProcessor {
                     group_index.saturating_add(1),
                     total_groups,
                     group_name.cyan(),
-                    group_files.len()
+                    group.loaded_files.len()
                 );
             }
 
-            self.process_group(
-                (group_name, group_files),
-                output_path,
-                &view_sender,
-                &mut view_recv,
-                &mut frame_rx,
-                u64::try_from(group_index.saturating_add(1)).unwrap_or(u64::MAX),
-            )
-            .await
-            .with_context(|| format!("Failed to process group: {group_name}"))?;
+            let scope = self
+                .process_group(
+                    (group_name, group),
+                    output_path,
+                    &view_sender,
+                    &mut view_recv,
+                    &mut frame_rx,
+                    u64::try_from(group_index.saturating_add(1)).unwrap_or(u64::MAX),
+                )
+                .await
+                .with_context(|| format!("Failed to process group: {group_name}"))?;
+            if scope == ExportScope::AllViews {
+                archive_count = archive_count.saturating_add(1);
+            }
         }
 
         pipeline_handle.abort();
+        self.warn_about_ignored_format(archive_count);
 
         if self.args.verbose {
-            println!(
-                "{}",
-                format!(
-                    "Successfully processed {total_groups} group(s) with {total_images} total image(s)."
-                )
-                .green()
-            );
+            print_success(format!(
+                "Successfully processed {total_groups} group(s) with {}.",
+                describe_image_totals(&groups)
+            ));
         }
 
         Ok(())
     }
 
-    /// Load one image group, await its output frame, and save the result.
+    /// Load one image group, await its output frame, and save the result, returning whether it
+    /// was saved as one image or as a ZIP of every image.
     async fn process_group(
         &self,
-        group: (&str, &[PathBuf]),
+        group: (&str, &ImageGroup),
         output_path: &Path,
         view_sender: &strawberry_types::CommandSender,
         view_recv: &mut broadcast::Receiver<FrontendMessage>,
         frame_rx: &mut watch::Receiver<Option<OutputFrame>>,
         expected_generation: u64,
-    ) -> Result<()> {
-        let (group_name, group_files) = group;
+    ) -> Result<ExportScope> {
+        let (group_name, image_group) = group;
+        // One budget covers the whole group, so a slow load leaves less time to process.
+        let deadline = self.get_deadline()?;
         // Only feedback generated by this group's run should be able to fail it.
         drain(view_recv);
         let (reply, loaded) = tokio::sync::oneshot::channel();
         view_sender
             .send(PipelineCommand::Load {
-                files: group_files.to_vec(),
+                files: image_group.loaded_files.clone(),
+                arrangement: image_group.arrangement.clone(),
                 reply,
             })
             .map_err(|e| anyhow!("Failed to send load command for group {group_name}: {e}"))?;
-        tokio::time::timeout(GROUP_TIMEOUT, loaded)
-            .await
-            .context("Timeout loading images")?
+        await_before(deadline, loaded, "loading images")
+            .await?
             .context("Pipeline closed while loading")?
             .map_err(|e| anyhow!("{e}"))?;
 
-        self.await_generation(view_recv, frame_rx, expected_generation, group_name)
-            .await?;
-
-        let input_is_dir = self.args.input.as_ref().is_some_and(|i| i.is_dir());
-        let output_is_dir = output_path.is_dir() || input_is_dir;
-
-        let output_file = if output_is_dir {
-            if group_files.len() == 1 {
-                // For single files, preserve the directory structure and filename
-                self.generate_output_filename_with_structure(
-                    group_files
-                        .first()
-                        .ok_or_else(|| anyhow!("Image group is empty"))?,
-                    output_path,
-                )?
-            } else {
-                // For multiple files, use group-based naming
-                let output_filename = self.generate_group_output_filename(
-                    group_name,
-                    group_files
-                        .first()
-                        .ok_or_else(|| anyhow!("Image group is empty"))?,
-                );
-                output_path.join(output_filename)
-            }
+        let shape = self
+            .await_generation(view_recv, frame_rx, expected_generation, deadline)
+            .await
+            .with_context(|| format!("Group {group_name} did not finish processing"))?;
+        // Without a hyperstack script, files load as channels that are composited into the single
+        // image the output path names. A hyperstack output holding several images is saved whole
+        // as a ZIP, like the GUI's "All Images" export, rather than as its first image alone.
+        let scope = if self.hyperstack_script.is_none() {
+            ExportScope::CompositeView
+        } else if shape.holds_several_images() {
+            ExportScope::AllViews
         } else {
-            output_path.to_path_buf()
+            ExportScope::CurrentView
         };
+        let output_file = self.choose_output_file(group, output_path, scope)?;
 
         // The backend writes the file: the pipeline holds its output in BGRA (the
         // format GPUI renders), and only the backend owns the GPU colorspace
@@ -575,12 +710,12 @@ impl CliProcessor {
         view_sender
             .send(PipelineCommand::SaveOutput {
                 path: output_file.clone(),
+                scope,
                 reply,
             })
             .map_err(|e| anyhow!("{e}"))?;
-        tokio::time::timeout(GROUP_TIMEOUT, result)
-            .await
-            .context("Timeout saving output")?
+        await_before(deadline, result, "saving output")
+            .await?
             .context("Pipeline closed while saving")?
             .map_err(|e| anyhow!("{e}"))?;
 
@@ -592,51 +727,136 @@ impl CliProcessor {
             );
         }
 
-        Ok(())
+        Ok(scope)
     }
 
-    /// Wait for the frame produced by `expected_generation`, draining backend
-    /// feedback meanwhile so a failed group reports why it failed instead of
-    /// expiring the timeout in silence.
+    /// Place each group's files with the hyperstack script, or as channels without one.
+    fn arrange_groups(
+        &self,
+        groups: HashMap<String, Vec<PathBuf>>,
+    ) -> Result<HashMap<String, ImageGroup>> {
+        groups
+            .into_iter()
+            .map(|(name, files)| {
+                let group = self.arrange_group(files).with_context(|| {
+                    format!("Failed to place the files of group {name} with the hyperstack script")
+                })?;
+                Ok((name, group))
+            })
+            .collect()
+    }
+
+    /// Place one group's files with the hyperstack script, or as channels without one.
+    fn arrange_group(&self, files: Vec<PathBuf>) -> Result<ImageGroup> {
+        let (loaded_files, arrangement) = match &self.hyperstack_script {
+            Some(script) => HyperstackLayout::from_script(script, &collect_file_names(&files)?)?
+                .arrange(files.clone()),
+            None => (files.clone(), ImageArrangement::Channels),
+        };
+        let channels = arrangement.get_shape(loaded_files.len())?.c;
+        Ok(ImageGroup {
+            files,
+            loaded_files,
+            arrangement,
+            channels,
+        })
+    }
+
+    /// Choose where a group's output is written: a ZIP when it holds several images, with a
+    /// warning when that replaces the extension of an output file the user named.
+    fn choose_output_file(
+        &self,
+        (group_name, group): (&str, &ImageGroup),
+        output_path: &Path,
+        scope: ExportScope,
+    ) -> Result<PathBuf> {
+        let group_files = &group.files;
+        let first_file = group_files
+            .first()
+            .ok_or_else(|| anyhow!("Image group is empty"))?;
+        let input_is_dir = self.args.input.as_ref().is_some_and(|i| i.is_dir());
+        let output_is_dir = output_path.is_dir() || input_is_dir;
+        let output_file = if !output_is_dir {
+            output_path.to_path_buf()
+        } else if group_files.len() == 1 {
+            // For single files, preserve the directory structure and filename
+            self.generate_output_filename_with_structure(first_file, output_path)?
+        } else {
+            self.generate_group_output_path(group_name, first_file, output_path)?
+        };
+        let archive = match scope {
+            ExportScope::CurrentView | ExportScope::CompositeView => return Ok(output_file),
+            ExportScope::AllViews => output_file.with_extension("zip"),
+        };
+        if !output_is_dir && archive != output_file {
+            print_warning(format!(
+                "Saving {group_name} as a ZIP to {} instead of {}, since it holds several images.",
+                archive.display(),
+                output_file.display()
+            ));
+        }
+        Ok(archive)
+    }
+
+    /// Warn that `--format` did not apply to the groups saved as ZIPs, whose entries are TIFF.
+    fn warn_about_ignored_format(&self, archive_count: usize) {
+        if archive_count > 0 && !matches!(self.args.format, OutputFormat::Preserve) {
+            print_warning(format!(
+                "{archive_count} group(s) held several images and were saved as ZIPs of TIFF images; --format {} applies only to single images.",
+                self.args.format.extension()
+            ));
+        }
+    }
+
+    /// Return the deadline for an operation starting now, or `None` without `--timeout`.
+    fn get_deadline(&self) -> Result<Option<Instant>> {
+        self.args
+            .timeout
+            .map(|seconds| {
+                Instant::now()
+                    .checked_add(Duration::from_secs(seconds))
+                    .ok_or_else(|| anyhow!("Timeout of {seconds} seconds is too long"))
+            })
+            .transpose()
+    }
+
+    /// Wait for the frame produced by `expected_generation` and return the output's shape,
+    /// draining backend feedback meanwhile so a failed group reports why it failed instead of
+    /// waiting in silence.
     async fn await_generation(
         &self,
         view_recv: &mut broadcast::Receiver<FrontendMessage>,
         frame_rx: &mut watch::Receiver<Option<OutputFrame>>,
         expected_generation: u64,
-        group_name: &str,
-    ) -> Result<()> {
-        // Absolute deadline: frames from other generations must not keep
-        // extending the budget.
-        let deadline = tokio::time::Instant::now()
-            .checked_add(GROUP_TIMEOUT)
-            .ok_or_else(|| anyhow!("Group deadline overflow"))?;
-
+        deadline: Option<Instant>,
+    ) -> Result<Shape> {
         loop {
             tokio::select! {
                 changed = frame_rx.changed() => {
                     changed.map_err(|e| anyhow!("Pipeline communication error: {e}"))?;
-                    let generation = frame_rx
+                    let shape = frame_rx
                         .borrow_and_update()
                         .as_ref()
-                        .map(|frame| frame.load_generation);
-                    if generation == Some(expected_generation) {
-                        return Ok(());
+                        .filter(|frame| {
+                            frame.load_generation == expected_generation && frame.is_current
+                        })
+                        .map(|frame| frame.shape);
+                    if let Some(shape) = shape {
+                        return Ok(shape);
                     }
                 }
                 message = view_recv.recv() => {
                     self.handle_feedback(message)?;
                 }
-                () = tokio::time::sleep_until(deadline) => {
-                    return Err(anyhow!(
-                        "Timeout waiting for group {group_name} processing to complete"
-                    ));
+                () = sleep_until_deadline(deadline) => {
+                    return Err(anyhow!("Timeout waiting for processing to complete"));
                 }
             }
         }
     }
 
     /// Turn one backend message into a hard failure if it reports an error, so a
-    /// bad group aborts with the real reason rather than a bare timeout.
+    /// bad group aborts with the real reason rather than hanging or timing out.
     fn handle_feedback(
         &self,
         message: Result<FrontendMessage, broadcast::error::RecvError>,
@@ -659,6 +879,25 @@ impl CliProcessor {
                 Err(anyhow!("Pipeline shut down unexpectedly"))
             }
         }
+    }
+
+    /// Build a group's output path under `output_path`, mirroring the subdirectories a nested
+    /// group name holds and creating them.
+    fn generate_group_output_path(
+        &self,
+        group_name: &str,
+        reference_file: &Path,
+        output_path: &Path,
+    ) -> Result<PathBuf> {
+        let group_path = Path::new(group_name);
+        let directory = output_path.join(group_path.parent().unwrap_or_else(|| Path::new("")));
+        fs::create_dir_all(&directory).with_context(|| {
+            format!("Failed to create output directory: {}", directory.display())
+        })?;
+        let name = group_path
+            .file_name()
+            .map_or_else(|| group_name.into(), |name| name.to_string_lossy());
+        Ok(directory.join(self.generate_group_output_filename(&name, reference_file)))
     }
 
     /// Build a group output filename using the configured format, prefix, and suffix.

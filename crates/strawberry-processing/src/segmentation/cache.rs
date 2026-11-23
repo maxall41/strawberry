@@ -59,11 +59,6 @@ impl FeatureCache {
             .load(&mut self.file, self.feature_count)
     }
 
-    /// Load the requested cached feature tiles in the supplied order.
-    pub fn load_batch(&mut self, indices: &[usize]) -> Result<Vec<FeatureTile>> {
-        indices.iter().map(|&index| self.load(index)).collect()
-    }
-
     /// Collect cache indices for all tiles belonging to an image.
     pub fn image_tiles(&self, image_index: usize) -> Vec<usize> {
         self.tiles
