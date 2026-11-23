@@ -2,9 +2,9 @@ use gpui::{IntoElement, Rgba, SharedString, div, prelude::*, px, svg};
 
 use super::theme;
 
-/// Build the filesystem path for an icon asset.
+/// Build the embedded asset path for an icon file.
 pub fn asset_path(name: &str) -> String {
-    format!("{}/../../assets/icons/{name}", env!("CARGO_MANIFEST_DIR"))
+    format!("icons/{name}")
 }
 
 pub struct Icon {

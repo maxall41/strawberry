@@ -35,12 +35,14 @@ use gui::workspace::{
 };
 use image::{Frame, RgbaImage};
 use rfd::FileDialog;
+use rust_embed::RustEmbed;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
-use std::{fs, mem, panic, ptr};
+use std::{mem, panic, ptr};
 use strawberry_backend::{Pipeline, hyperstack::collect_file_names};
 use strawberry_types::{
     Coordinates, ExportScope, FeedbackLevel, FrontendMessage, ImageArrangement, OutputFrame,
@@ -52,9 +54,10 @@ use tokio::{
     sync::{broadcast, oneshot},
 };
 
-struct Assets {
-    base: PathBuf,
-}
+#[derive(RustEmbed)]
+#[folder = "../../assets/icons"]
+#[prefix = "icons/"]
+struct Assets;
 
 mod commands;
 mod gui;
@@ -121,26 +124,16 @@ impl PipelineActivity {
 
 impl AssetSource for Assets {
     /// Load an embedded application asset by its path.
-    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        fs::read(self.base.join(path))
-            .map(|data| Some(std::borrow::Cow::Owned(data)))
-            .map_err(std::convert::Into::into)
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        Ok(Self::get(path).map(|file| file.data))
     }
 
-    /// List embedded application assets matching the path.
+    /// List embedded application assets whose paths start with `path`.
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        fs::read_dir(self.base.join(path))
-            .map(|entries| {
-                entries
-                    .filter_map(|entry| {
-                        entry
-                            .ok()
-                            .and_then(|entry| entry.file_name().into_string().ok())
-                            .map(SharedString::from)
-                    })
-                    .collect()
-            })
-            .map_err(std::convert::Into::into)
+        Ok(Self::iter()
+            .filter(|asset| asset.starts_with(path))
+            .map(SharedString::from)
+            .collect())
     }
 }
 
@@ -1452,8 +1445,6 @@ fn humanize_tool_name(name: &str) -> String {
 fn main() -> Result<()> {
     env_logger::init();
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-
     let runtime = Runtime::new()?;
     let (mut pipeline, view_sender, view_recv, output_frames) = runtime.block_on(Pipeline::new())?;
 
@@ -1482,9 +1473,7 @@ fn main() -> Result<()> {
     // that poll's cooperative budget and stalls the UI's channel receivers.
     let _runtime_context = runtime.enter();
     gpui_platform::application()
-        .with_assets(Assets {
-            base: manifest_dir.join("examples"),
-        })
+        .with_assets(Assets)
         .run(move |cx: &mut App| {
             cx.on_action(|_: &Quit, cx| cx.quit());
 
