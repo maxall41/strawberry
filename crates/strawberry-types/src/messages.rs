@@ -182,9 +182,9 @@ pub enum FeedbackLevel {
 
 #[derive(Debug, Clone)]
 pub struct PipelineProgress {
-    /// 0-based index of the active stage (display code adds 1).
+    /// 0-based position of the active stage among the stages visited in this pass.
     pub stage: usize,
-    /// Number of stages this run will execute in total.
+    /// Number of stages visited in this pass, including restored outputs.
     pub total: usize,
     /// Display name
     pub name: String,

@@ -185,13 +185,19 @@ pub trait ToolBackend: Send + Sync {
         None
     }
 
-    /// Return the cached output only if it is still valid for the tool's current state.
-    fn valid_cached_output(&self) -> Option<ImageCollection> {
+    /// Return cached output for the supplied input and current processing settings.
+    fn valid_cached_output(&self, _input: &ImageCollection) -> Option<ImageCollection> {
         None
     }
 
-    /// Cache the output
-    fn set_cached_output(&mut self, _output: ImageCollection) {}
+    /// Refresh transient state when a processing pass restores this tool's output.
+    fn refresh_after_cache_hit(&mut self) {}
+
+    /// Cache the output of a successful run for the supplied input.
+    fn set_cached_output(&mut self, _input: &ImageCollection, _output: ImageCollection) {}
+
+    /// Clear a bypassed tool's retained input and output if its upstream images have changed.
+    fn reconcile_bypassed_input(&mut self, _input: &ImageCollection) {}
 
     /// Invalidate reusable output while retaining input needed for canvas interactions.
     fn invalidate_cached_output(&mut self) {
@@ -201,8 +207,7 @@ pub trait ToolBackend: Send + Sync {
     /// Invalidate all processing caches, including cached input.
     fn invalidate_cache(&mut self) {}
 
-    /// Release state tied to the previous images, such as predictions or annotations, once new
-    /// images are loaded, whether or not the tool is enabled.
+    /// Release state tied to cleared input images, including when a new collection is loaded.
     fn release_previous_input(&mut self) {}
 
     /// Get overlay elements to render on the primary viewer.

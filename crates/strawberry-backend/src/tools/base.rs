@@ -34,7 +34,7 @@ impl ToolBase {
 }
 #[macro_export]
 macro_rules! impl_tool_backend_basics {
-    ($tool_type:ty) => {
+    ($tool_type:ty $(, $release_input:ident)?) => {
         /// Expose mutable settings for pipeline persistence.
         fn persisted_state_mut(&mut self) -> Option<&mut dyn strawberry_types::PersistedState> {
             Some(&mut self.state)
@@ -51,14 +51,14 @@ macro_rules! impl_tool_backend_basics {
         fn drain_events(&mut self) -> Vec<strawberry_types::FrontendMessage> {
             self.base.events.drain()
         }
-        $crate::impl_tool_cache!();
+        $crate::impl_tool_cache!($($release_input)?);
     };
 }
 
-/// Shared cache and reconciliation lifecycle, also used by interactive tools.
+/// Share cache management, optionally releasing derived state when a bypassed input changes.
 #[macro_export]
 macro_rules! impl_tool_cache {
-    () => {
+    ($($release_input:ident)?) => {
         /// Reconcile settings and report whether processing is needed.
         fn reconcile_state(&mut self) -> bool {
             self.cache.reconcile(&self.state)
@@ -66,18 +66,32 @@ macro_rules! impl_tool_cache {
 
         /// Record the settings acknowledged by processing.
         fn acknowledge_processed_state(&mut self) {
-            self.cache.sync.acknowledge(&self.state);
+            self.cache.reconcile(&self.state);
         }
 
-        /// Return cached output when its processing settings still match.
-        fn valid_cached_output(&self) -> Option<strawberry_types::ImageCollection> {
-            self.cache.valid_output(&self.state)
+        /// Return cached output when its input and processing settings still match.
+        fn valid_cached_output(
+            &self,
+            input: &strawberry_types::ImageCollection,
+        ) -> Option<strawberry_types::ImageCollection> {
+            self.cache.valid_output(&self.state, input)
         }
 
-        /// Cache processed images together with their settings.
-        fn set_cached_output(&mut self, output: strawberry_types::ImageCollection) {
-            self.cache.cached_output = Some(output);
-            self.cache.cached_state = Some(self.state.clone());
+        /// Cache processed images together with their input and settings.
+        fn set_cached_output(
+            &mut self,
+            input: &strawberry_types::ImageCollection,
+            output: strawberry_types::ImageCollection,
+        ) {
+            self.cache.store_output(&self.state, input, output);
+        }
+
+        /// Discard retained data when the bypassed input changes.
+        fn reconcile_bypassed_input(&mut self, input: &strawberry_types::ImageCollection) {
+            if self.cache.input_differs(input) {
+                self.invalidate_cache();
+                $(self.$release_input();)?
+            }
         }
 
         /// Discard cached output and the remembered input.
