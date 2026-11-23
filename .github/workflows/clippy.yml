@@ -13,5 +13,39 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Clippy
         run: rustup component add clippy
+      - name: Restore cargo-chef
+        id: chef-tool
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-chef*
+          key: cargo-chef-0.1.78-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
+      - name: Install cargo-chef
+        if: steps.chef-tool.outputs.cache-hit != 'true'
+        run: cargo install cargo-chef --version 0.1.78 --locked
+      - name: Prepare dependency recipe
+        run: cargo chef prepare --recipe-path recipe.json
+      - name: Restore cooked dependencies
+        id: chef-deps
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: chef-clippy-${{ hashFiles('recipe.json', 'rust-toolchain.toml') }}
+      - name: Cook dependencies
+        if: steps.chef-deps.outputs.cache-hit != 'true'
+        run: cargo chef cook --clippy --workspace --all-targets --locked --recipe-path recipe.json
+      - name: Save cooked dependencies
+        if: steps.chef-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.chef-deps.outputs.cache-primary-key }}
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets --locked
