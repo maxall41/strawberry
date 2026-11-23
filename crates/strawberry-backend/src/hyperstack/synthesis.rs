@@ -175,7 +175,8 @@ pub fn synthesize_parser_template(file_names: &[String]) -> ParserTemplate {
                 if placed == file_names.len() {
                     return template;
                 }
-                if best_template.is_none() || placed > best_placed {
+                // A template placing no files never beats the fallback, which places them all.
+                if placed > best_placed {
                     best_placed = placed;
                     best_template = Some(template);
                 }
@@ -296,7 +297,7 @@ impl ParserTemplate {
                     .collect();
                 Some(format!(
                     "{}={}",
-                    dimension.label().to_lowercase(),
+                    dimension.get_label().to_lowercase(),
                     value.join("_")
                 ))
             })

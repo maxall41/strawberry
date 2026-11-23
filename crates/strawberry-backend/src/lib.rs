@@ -2,6 +2,7 @@
 #![recursion_limit = "256"]
 
 use std::{
+    mem,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -128,12 +129,12 @@ impl Pipeline {
         {
             if !tool.is_enabled() {
                 tool.reconcile_bypassed_input(&images);
-            } else if tool.supports_processing() {
-                let Some(output) = tool.valid_cached_output(&images) else {
-                    return (i, images);
-                };
-                images = output;
+                continue;
             }
+            let Some(output) = tool.valid_cached_output(&images) else {
+                return (i, images);
+            };
+            images = output;
         }
         (start_index, images)
     }
@@ -163,20 +164,17 @@ impl Pipeline {
             .tools
             .values()
             .skip(earliest_processing_index)
-            .filter(|tool| tool.is_enabled() && tool.supports_processing())
+            .filter(|tool| tool.is_enabled())
             .count();
-        let mut tools = self
+        let mut next_stage = 0_usize;
+        for tool in self
             .tool_manager
             .tools
             .values_mut()
-            .skip(earliest_processing_index);
-        let mut next_stage = 0_usize;
-        while let Some(tool) = tools.next() {
+            .skip(earliest_processing_index)
+        {
             if !tool.is_enabled() {
                 tool.reconcile_bypassed_input(&images);
-                continue;
-            }
-            if !tool.supports_processing() {
                 continue;
             }
             let stage = next_stage;
@@ -214,15 +212,7 @@ impl Pipeline {
                     self.gpu
                         .ensure_device_availability("Complete pipeline stage")
                 });
-            if let Err(error) = result {
-                // These stages never received the inputs from this pass.
-                for downstream in tools {
-                    if downstream.is_enabled() && downstream.supports_processing() {
-                        downstream.invalidate_cache();
-                    }
-                }
-                return Err(error);
-            }
+            result?;
             tool.set_cached_output(&input, images.clone());
         }
 
@@ -240,22 +230,36 @@ impl Pipeline {
 
     /// Keep the view inside the output bounds after tools change its shape, moving tool edits with it.
     fn clamp_view(&mut self) {
-        let shape = self.last_output.shape();
+        let shape = self.last_output.get_shape();
+        let mut view = self.view;
         for dimension in Dimension::ALL {
-            let last = shape.extent(dimension).saturating_sub(1);
-            self.view.set(dimension, self.view.get(dimension).min(last));
+            let last = shape.get_extent(dimension).saturating_sub(1);
+            view.set(dimension, view.get(dimension).min(last));
         }
-        self.tool_manager.select_position(self.view.position());
+        self.set_view(view);
+    }
+
+    /// Show the plane at `coordinates`; moving to another position directs per-position tool
+    /// edits there and ends gestures begun on the previous position.
+    fn set_view(&mut self, coordinates: Coordinates) {
+        if coordinates.position() != self.view.position() {
+            self.gesture_owner = None;
+            self.tool_manager.select_position(coordinates.position());
+        }
+        self.view = coordinates;
     }
 
     /// Return the viewed output plane.
     fn get_displayed_image(&self) -> anyhow::Result<Arc<RgbaImage>> {
-        self.last_output.plane(self.view).cloned().ok_or_else(|| {
-            anyhow!(
-                "No output image available for {}",
-                self.view.describe(self.last_output.shape())
-            )
-        })
+        self.last_output
+            .get_plane(self.view)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!(
+                    "No output image available for {}",
+                    self.view.describe(self.last_output.get_shape())
+                )
+            })
     }
 
     /// Publish the displayed image to the viewer.
@@ -263,7 +267,7 @@ impl Pipeline {
         self.output_frame_sender.send_replace(Some(OutputFrame {
             load_generation: self.load_generation,
             coordinates: self.view,
-            shape: self.last_output.shape(),
+            shape: self.last_output.get_shape(),
             image: self.get_displayed_image()?,
             is_current: self.output_is_current,
         }));
@@ -312,20 +316,20 @@ impl Pipeline {
 
     /// Return every output plane, named by its coordinates for export.
     fn get_named_views(&self) -> Vec<(String, Arc<RgbaImage>)> {
-        let shape = self.last_output.shape();
+        let shape = self.last_output.get_shape();
         shape
             .coordinates()
             .filter_map(|coordinates| {
                 let name = coordinates
-                    .spanned(shape)
+                    .get_spanned_indices(shape)
                     .map(|(dimension, number)| {
-                        let width = shape.extent(dimension).to_string().len();
-                        format!("{}{number:0width$}", dimension.label().to_lowercase())
+                        let width = shape.get_extent(dimension).to_string().len();
+                        format!("{}{number:0width$}", dimension.get_label().to_lowercase())
                     })
                     .collect::<Vec<_>>()
                     .join("_");
                 self.last_output
-                    .plane(coordinates)
+                    .get_plane(coordinates)
                     .map(|image| (name, image.clone()))
             })
             .collect()
@@ -384,11 +388,20 @@ impl Pipeline {
                     self.complete_operation(reply, result, None);
                 }
                 PipelineCommand::AddTool { kind, reply } => {
-                    let result = self.tool_manager.add_tool(&kind).await;
-                    if result.is_ok() {
-                        self.gesture_owner = None;
-                    } else if let Err(error) = &result {
-                        self.report_error("Tool initialization failed", error);
+                    let result = self
+                        .tool_manager
+                        .add_tool(&kind, self.view.position())
+                        .await;
+                    match &result {
+                        Ok(id) => {
+                            self.gesture_owner = None;
+                            if let Some(tool) = self.tool_manager.tools.get_mut(id)
+                                && !self.input_images.is_empty()
+                            {
+                                tool.replace_input(self.input_images.get_shape());
+                            }
+                        }
+                        Err(error) => self.report_error("Tool initialization failed", error),
                     }
                     let _ = reply.send(result.map_err(|error| format!("{error:#}")));
                 }
@@ -454,9 +467,17 @@ impl Pipeline {
                     self.complete_operation(reply, result, Some("Pipeline saved"));
                 }
                 PipelineCommand::LoadPipeline { path, cli, reply } => {
-                    let result = self.tool_manager.load_pipeline(&path, cli).await;
+                    let result = self
+                        .tool_manager
+                        .load_pipeline(&path, cli, self.view.position())
+                        .await;
                     if result.is_ok() {
                         self.gesture_owner = None;
+                        for tool in self.tool_manager.tools.values_mut() {
+                            if !self.input_images.is_empty() {
+                                tool.replace_input(self.input_images.get_shape());
+                            }
+                        }
                         pending_processing_from.request_processing(0);
                     }
                     self.complete_operation(reply, result, Some("Pipeline loaded"));
@@ -472,8 +493,13 @@ impl Pipeline {
                     }
                     let _ = reply.send(result.map_err(|e| format!("{e:#}")));
                 }
-                PipelineCommand::SelectView(coordinates) => {
-                    if let Err(error) = self.select_view(coordinates) {
+                PipelineCommand::SelectView {
+                    coordinates,
+                    load_generation,
+                } => {
+                    if load_generation == self.load_generation
+                        && let Err(error) = self.select_view(coordinates)
+                    {
                         self.report_error("Image selection failed", &error);
                     }
                 }
@@ -561,11 +587,10 @@ impl Pipeline {
         for tool in self.tool_manager.tools.values_mut() {
             tool.cancel_interaction();
             tool.invalidate_cache();
-            tool.release_previous_input();
+            tool.replace_input(images.get_shape());
         }
         self.gesture_owner = None;
-        self.view = Coordinates::default();
-        self.tool_manager.select_position(self.view.position());
+        self.set_view(Coordinates::default());
         self.last_output = ImageCollection::default();
         self.input_images = images;
         self.load_generation = generation;
@@ -578,17 +603,13 @@ impl Pipeline {
     /// Show another plane and direct per-position tool edits to its position. After a failed
     /// run the plane comes from the last successful output, so edits stay on the plane shown.
     fn select_view(&mut self, coordinates: Coordinates) -> anyhow::Result<()> {
-        let shape = self.last_output.shape();
+        let shape = self.last_output.get_shape();
         ensure!(
             shape.contains(coordinates),
             "Image {} is not loaded",
             coordinates.describe(shape)
         );
-        if coordinates.position() != self.view.position() {
-            self.gesture_owner = None;
-            self.tool_manager.select_position(coordinates.position());
-        }
-        self.view = coordinates;
+        self.set_view(coordinates);
         self.publish_output_frame()
     }
     /// Route canvas input to the selected enabled tool.
@@ -690,7 +711,7 @@ impl Pipeline {
             }
         }
         self.overlays_dirty |= self.tool_manager.publish();
-        if std::mem::take(&mut self.overlays_dirty) {
+        if mem::take(&mut self.overlays_dirty) {
             self.publish_overlays();
         }
     }
@@ -706,7 +727,7 @@ impl Pipeline {
         }
         self.tool_manager.reconcile(pending);
         for (index, tool) in self.tool_manager.tools.values_mut().enumerate() {
-            if tool.reconcile_state() && tool.is_enabled() && tool.supports_processing() {
+            if tool.reconcile_state() && tool.is_enabled() {
                 pending.request_processing(index);
             }
         }

@@ -1,4 +1,4 @@
-use std::{cell::Cell, ops::Range, rc::Rc, time::Duration};
+use std::{cell::Cell, mem, ops::Range, rc::Rc, time::Duration};
 
 use gpui::{
     Animation, AnimationExt, App, Bounds, ClipboardItem, Context, Div, EventEmitter, FocusHandle,
@@ -702,7 +702,7 @@ impl Render for CodeEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
         self.lines = self.shape_lines(window);
-        if std::mem::take(&mut self.reveal_pending) {
+        if mem::take(&mut self.reveal_pending) {
             self.scroll_to_cursor();
         }
         let line_count = self.lines.len().to_f32().unwrap_or_default();

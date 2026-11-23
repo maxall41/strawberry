@@ -6,7 +6,6 @@ use strawberry_types::{CommandSender, ToolId};
 use crate::gui::{theme, tool_panel};
 // Implements UI for counter tool
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -137,15 +136,13 @@ impl CounterView {
 
                 let Ok((selected, shape)) = state
                     .read()
-                    .map(|state| (state.counts.selected_position(), state.shape))
+                    .map(|state| (state.counts.get_selected_position(), state.shape))
                 else {
                     return;
                 };
-                // Load unreadable files per norm, such that the backend can report why they failed.
-                let saved = read_marker_file(&file).map_or_else(
-                    |_| HashSet::new(),
-                    |file| file.get_saved_positions(shape, selected),
-                );
+                // Unreadable files load as usual so the backend reports why they failed.
+                let saved = read_marker_file(&file)
+                    .map_or_default(|file| file.get_saved_positions(shape, selected));
                 let Some(placement) =
                     ask_annotation_placement(cx, "counts", &saved, selected, shape).await
                 else {
@@ -781,7 +778,7 @@ impl CounterView {
             list = list.child(tool_panel::empty("No count types"));
         }
         for (position, id) in count_type_ids.into_iter().enumerate() {
-            let counts = state.manual_counts(id);
+            let counts = state.get_manual_counts(id);
             let name = state
                 .count_type_names
                 .get(&id)
@@ -916,7 +913,7 @@ impl CounterView {
                 div()
                     .text_2xl()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(state.auto_counts().len().to_string()),
+                    .child(state.get_auto_counts().len().to_string()),
             )
             .child(
                 div()
@@ -938,7 +935,7 @@ impl CounterView {
     fn render_review_ui(state: &CounterState, cx: &Context<Self>) -> impl IntoElement + use<> {
         let counts = state
             .active_count_type
-            .map_or(&[][..], |id| state.manual_counts(id));
+            .map_or(&[][..], |id| state.get_manual_counts(id));
         let mut review = tool_panel::section("Review");
         if counts.is_empty() {
             return review.child(tool_panel::empty("No counts to review"));

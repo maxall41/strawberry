@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::{
     BackendToolType, ImageCollection, PersistedState, PipelineObjectMessage, PlaneProgress,
-    Position, ToolInput, ToolState, overlay::ToolOverlay,
+    Position, Shape, ToolInput, ToolState, overlay::ToolOverlay,
 };
 
 /// Named files stored alongside a tool's configuration in a pipeline archive.
@@ -16,20 +16,10 @@ pub type ReportPlaneProgress = Box<dyn FnMut(PlaneProgress) + Send>;
 pub trait PlaneProgressExt: ExactSizeIterator + Sized {
     /// Report one completed plane per iteration.
     fn report_progress(self, report_planes: ReportPlaneProgress) -> PlaneProgressIter<Self> {
-        self.report_progress_in_batches(1, report_planes)
-    }
-
-    /// Report progress for items that each process the same number of planes.
-    fn report_progress_in_batches(
-        self,
-        planes_per_item: usize,
-        report_planes: ReportPlaneProgress,
-    ) -> PlaneProgressIter<Self> {
         PlaneProgressIter {
-            total: self.len().saturating_mul(planes_per_item),
+            total: self.len(),
             completed: 0,
             items: self,
-            planes_per_item,
             report_planes,
         }
     }
@@ -37,10 +27,9 @@ pub trait PlaneProgressExt: ExactSizeIterator + Sized {
 
 impl<I: ExactSizeIterator> PlaneProgressExt for I {}
 
-/// Iterator that counts an item's planes as finished when the loop asks for the next item.
+/// Iterator that counts an item's plane as finished when the loop asks for the next item.
 pub struct PlaneProgressIter<I> {
     items: I,
-    planes_per_item: usize,
     completed: usize,
     total: usize,
     report_planes: ReportPlaneProgress,
@@ -56,7 +45,7 @@ impl<I: Iterator> Iterator for PlaneProgressIter<I> {
             total: self.total,
         });
         let item = self.items.next()?;
-        self.completed = self.completed.saturating_add(self.planes_per_item);
+        self.completed = self.completed.saturating_add(1);
         Some(item)
     }
 }
@@ -64,8 +53,8 @@ impl<I: Iterator> Iterator for PlaneProgressIter<I> {
 /// Trait for image processing tools (backend)
 #[async_trait]
 pub trait ToolBackend: Send + Sync {
-    /// Process the images of the collection in place, reporting plane counts when the stage
-    /// tracks them.
+    /// Process the images of the collection in place. Stages that work plane by plane report
+    /// one completed plane per output plane.
     /// # Errors
     /// Returns an error if processing fails.
     async fn process(
@@ -128,11 +117,6 @@ pub trait ToolBackend: Send + Sync {
 
     /// Identify
     fn iam(&self) -> BackendToolType;
-
-    /// Supports processing
-    fn supports_processing(&self) -> bool {
-        true
-    }
 
     /// Load parsed settings into a detached candidate.
     /// # Errors
@@ -207,8 +191,9 @@ pub trait ToolBackend: Send + Sync {
     /// Invalidate all processing caches, including cached input.
     fn invalidate_cache(&mut self) {}
 
-    /// Release state tied to cleared input images, including when a new collection is loaded.
-    fn release_previous_input(&mut self) {}
+    /// Discard state tied to the previous input images, which images of `shape` replace, as
+    /// when a new collection is loaded.
+    fn replace_input(&mut self, _shape: Shape) {}
 
     /// Get overlay elements to render on the primary viewer.
     /// Returns None if the tool doesn't produce overlays.

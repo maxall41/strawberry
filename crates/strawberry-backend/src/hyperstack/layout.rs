@@ -9,7 +9,7 @@ use strawberry_types::{Coordinates, Dimension, ImageArrangement, Shape};
 
 use super::script::{FileAssignment, run_parser_script};
 
-/// Return a list containing every file name for the given input files. File names must be unique. File names should be ASCII.
+/// Return a list containing every file name for the given input files. File names must be unique.
 ///
 /// # Errors
 /// Returns an error if a path has no file name or two files share a name.
@@ -48,7 +48,7 @@ impl HyperstackLayout {
     }
 
     /// Place files by the dimension values a parser script assigned them; each dimension's
-    /// values are ordered by `sort_and_dedup_labels` and numbered from zero.
+    /// values are numbered from zero by `number_labels`.
     ///
     /// # Errors
     /// Returns an error if an assignment names an unknown or repeated file, its dimensions
@@ -83,20 +83,21 @@ impl HyperstackLayout {
         let numbering: HashMap<Dimension, HashMap<&str, usize>> = Dimension::ALL
             .into_iter()
             .map(|dimension| {
-                let mut labels: Vec<&str> = values
+                let labels = values
                     .iter()
                     .flatten()
                     .map(|labels| labels.get(&dimension).copied().unwrap_or_default())
                     .collect();
-                sort_and_dedup_labels(&mut labels);
-                let numbers = labels.into_iter().zip(0..).collect();
-                (dimension, numbers)
+                (dimension, number_labels(labels))
             })
             .collect();
         let shape = Dimension::ALL
             .into_iter()
             .fold(Shape::default(), |shape, dimension| {
-                let extent = numbering.get(&dimension).map_or(0, HashMap::len);
+                let extent = numbering
+                    .get(&dimension)
+                    .and_then(|numbers| numbers.values().max())
+                    .map_or(0, |&last| last.saturating_add(1));
                 shape.with_extent(dimension, extent)
             });
         let coordinates: Vec<Option<Coordinates>> = values
@@ -132,7 +133,6 @@ impl HyperstackLayout {
         }
         let placed: Vec<Coordinates> = coordinates.iter().flatten().copied().collect();
         Shape::from_coordinates(&placed)?;
-        //
         Ok(Self { coordinates, shape })
     }
 
@@ -158,9 +158,7 @@ impl HyperstackLayout {
 /// Whole numbers sort by value and other labels naturally. Exact spelling breaks ties, so labels
 /// natural ordering finds equal, such as "Green 1" and "Green  1", each keep one position.
 pub(super) fn sort_and_dedup_labels(labels: &mut Vec<&str>) {
-    let numeric = labels
-        .iter()
-        .all(|label| !label.is_empty() && is_digits(label));
+    let numeric = are_whole_numbers(labels);
     labels.sort_by(|a, b| {
         let order = if numeric {
             compare_numerically(a, b)
@@ -172,8 +170,34 @@ pub(super) fn sort_and_dedup_labels(labels: &mut Vec<&str>) {
     labels.dedup();
 }
 
-/// Compare whole numbers written in ASCII digits by value, ignoring leading zeros, so "2"
-/// precedes "010" at any length.
+/// Number labels from zero in the order `sort_and_dedup_labels` gives them. Whole numbers of
+/// equal value, such as "1" and "01", share a number, as they name the same position.
+fn number_labels(mut labels: Vec<&str>) -> HashMap<&str, usize> {
+    let numeric = are_whole_numbers(&labels);
+    sort_and_dedup_labels(&mut labels);
+    let mut numbers = HashMap::with_capacity(labels.len());
+    let mut previous: Option<&str> = None;
+    let mut number = 0usize;
+    for label in labels {
+        if let Some(previous) = previous
+            && !(numeric && compare_numerically(previous, label) == Ordering::Equal)
+        {
+            number = number.saturating_add(1);
+        }
+        numbers.insert(label, number);
+        previous = Some(label);
+    }
+    numbers
+}
+
+/// Return whether every label is a whole number written in ASCII digits.
+fn are_whole_numbers(labels: &[&str]) -> bool {
+    labels
+        .iter()
+        .all(|label| !label.is_empty() && is_digits(label))
+}
+
+/// Compare whole numbers written in ASCII digits by value, ignoring leading zeros
 fn compare_numerically(a: &str, b: &str) -> Ordering {
     let (a, b) = (a.trim_start_matches('0'), b.trim_start_matches('0'));
     a.len().cmp(&b.len()).then_with(|| a.cmp(b))
@@ -198,18 +222,18 @@ fn parse_dimensions(text: &str) -> Result<HashMap<Dimension, &str>> {
         let key = key.trim();
         let dimension = Dimension::ALL
             .into_iter()
-            .find(|dimension| dimension.label().eq_ignore_ascii_case(key))
+            .find(|dimension| dimension.get_label().eq_ignore_ascii_case(key))
             .ok_or_else(|| anyhow!("Unknown dimension \"{key}\"; use x, y, z, c, or t"))?;
         let value = value.trim();
         ensure!(
             !value.is_empty(),
             "Dimension {} has no value",
-            dimension.label()
+            dimension.get_label()
         );
         ensure!(
             values.insert(dimension, value).is_none(),
             "Dimension {} is given more than once",
-            dimension.label()
+            dimension.get_label()
         );
     }
     Ok(values)

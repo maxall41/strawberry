@@ -1,9 +1,9 @@
-use crate::tools::base::ToolEvents;
-use anyhow::Context as _;
+use crate::tools::{base::ToolEvents, cache::ToolCache};
+use anyhow::{Context as _, anyhow};
 use num_traits::ToPrimitive;
 use strawberry_types::RgbaColor;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, mem};
 
 use crate::counter::fitting::{find_counts_within_polygon, ramer_douglas_peucker_closed};
 
@@ -17,8 +17,8 @@ use strawberry_types::consts::CIRCLE_COLORS;
 use strawberry_types::overlay::{CircleStyle, OverlayElement, ToolOverlay};
 use strawberry_types::{
     BackendToolType, CountData, CountMessage, CounterMode, CounterState, CounterTool,
-    FrontendMessage, ImageCollection, PerPosition, PipelineObjectMessage, Position,
-    ReportPlaneProgress, Shape, ToolBackend, ToolInput, ToolState,
+    FrontendMessage, ImageCollection, PerPosition, PipelineObjectMessage, PlaneProgressExt,
+    Position, ReportPlaneProgress, Shape, ToolBackend, ToolInput, ToolState,
 };
 
 /// Distance in pixels from a click within which the delete tool removes counts.
@@ -27,7 +27,7 @@ const DELETE_RADIUS: u64 = 6;
 pub struct Counter {
     pub state: CounterState,
     pub events: ToolEvents,
-    pub cache: crate::tools::cache::ToolCache<CounterState>,
+    pub cache: ToolCache<CounterState>,
     pub lasso_points: Vec<(u64, u64)>,
     pub is_lasso_dragging: bool,
     overlays_dirty: bool,
@@ -35,7 +35,7 @@ pub struct Counter {
 
 /// Find the centroid of every connected foreground blob in a binary image.
 fn detect_blob_centroids(image: &RgbaImage) -> anyhow::Result<Vec<CountData>> {
-    let binary_wrapper = BinaryImageWrapper::new(image, 128); // Use threshold of 128
+    let binary_wrapper = BinaryImageWrapper::new(image, 128);
     //TODO: move to gpu
     lutz::<BinaryImageWrapper, Vec<Pixel>>(binary_wrapper)
         .filter(|blob_pixels| !blob_pixels.is_empty())
@@ -70,10 +70,11 @@ impl ToolBackend for Counter {
         self.lasso_points.clear();
         self.is_lasso_dragging = false;
     }
-    /// Drop the previous images' counts, which may lie on slices the new images lack; count
-    /// types are settings and stay.
-    fn release_previous_input(&mut self) {
+    /// Drop the previous images' counts, which may lie on slices the new images lack, and
+    /// number positions by the new images' shape; count types are settings and stay.
+    fn replace_input(&mut self, shape: Shape) {
         self.state.counts.clear();
+        self.state.shape = shape;
         self.state.review_current_index = 0;
     }
     /// Place, review, and show counts on the given position.
@@ -83,7 +84,7 @@ impl ToolBackend for Counter {
     }
     /// Return and clear the pending overlay change flag.
     fn take_overlay_changes(&mut self) -> bool {
-        std::mem::take(&mut self.overlays_dirty)
+        mem::take(&mut self.overlays_dirty)
     }
     /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool {
@@ -99,34 +100,33 @@ impl ToolBackend for Counter {
         ToolState::CounterState(self.state.clone())
     }
 
-    /// Detect connected components at every position when automatic mode is active, replacing
-    /// earlier detections and keeping manual counts.
+    /// Detect connected components in every plane when automatic mode is active, replacing each
+    /// position's earlier detections with those of its channels and keeping manual counts.
     async fn process(
         &mut self,
         images: &mut ImageCollection,
-        _report_planes: ReportPlaneProgress,
+        report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        self.state.shape = images.shape();
-        if self.state.mode == CounterMode::Auto {
-            let detected = images
-                .positions()
-                .map(|position| {
-                    let mut counts = Vec::new();
-                    for channel in images.channels_at(position) {
-                        counts.extend(detect_blob_centroids(channel)?);
-                    }
-                    Ok((position, counts))
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            // Positions a smaller stack no longer has must not keep their old detections.
-            for counts in self.state.counts.values_mut() {
-                counts.auto.clear();
-            }
-            for (position, counts) in detected {
-                self.state.counts.position_mut(position).auto = counts;
-            }
+        let shape = images.get_shape();
+        self.state.shape = shape;
+        if self.state.mode != CounterMode::Auto {
+            return Ok(());
         }
-
+        // Every position has a channel, so every position's earlier detections are replaced.
+        let mut detected: HashMap<Position, Vec<CountData>> = HashMap::new();
+        for (coordinates, plane) in shape
+            .coordinates()
+            .zip(images.planes())
+            .report_progress(report_planes)
+        {
+            detected
+                .entry(coordinates.position())
+                .or_default()
+                .extend(detect_blob_centroids(plane)?);
+        }
+        for (position, auto) in detected {
+            self.state.counts.get_position_mut(position).auto = auto;
+        }
         Ok(())
     }
 
@@ -145,7 +145,7 @@ impl ToolBackend for Counter {
                     let counts = self
                         .state
                         .counts
-                        .selected_mut()
+                        .get_selected_mut()
                         .manual
                         .entry(id)
                         .or_default();
@@ -272,7 +272,7 @@ impl ToolBackend for Counter {
                         // been deleted; pick the first genuinely free id.
                         let new_key = (0..=u16::MAX)
                             .find(|k| !self.state.count_type_names.contains_key(k))
-                            .ok_or_else(|| anyhow::anyhow!("No count type IDs available"))?;
+                            .ok_or_else(|| anyhow!("No count type IDs available"))?;
                         // Automatic counting covers every position, so every position's counts are copied.
                         for counts in self.state.counts.values_mut() {
                             counts.manual.insert(new_key, counts.auto.clone());
@@ -322,7 +322,7 @@ impl ToolBackend for Counter {
                             && let Some(counts) = self
                                 .state
                                 .counts
-                                .selected_mut()
+                                .get_selected_mut()
                                 .manual
                                 .get_mut(&active_count_type)
                             && !counts.is_empty()
@@ -366,7 +366,11 @@ impl ToolBackend for Counter {
         let mut elements = Vec::new();
 
         // Manual counts
-        let manual_counts = self.state.counts.selected().map(|counts| &counts.manual);
+        let manual_counts = self
+            .state
+            .counts
+            .get_selected()
+            .map(|counts| &counts.manual);
         for (count_type_id, counts) in manual_counts.into_iter().flatten() {
             let is_visible = self
                 .state
@@ -409,7 +413,7 @@ impl ToolBackend for Counter {
         // Auto counts
         if self.state.mode == CounterMode::Auto {
             let color = CIRCLE_COLORS[0]; // Use first color for auto counts
-            for count in self.state.auto_counts() {
+            for count in self.state.get_auto_counts() {
                 elements.push(OverlayElement::Circle {
                     x: count.position.0.to_f32()?,
                     y: count.position.1.to_f32()?,
@@ -447,7 +451,7 @@ impl Counter {
         let state = CounterState {
             is_enabled: false,
             counts: PerPosition::default(),
-            shape: Shape::default(),
+            shape: Shape::SINGLE_PLANE,
             mode: CounterMode::Manual,
             active_tool: None,
             active_count_type: None,
@@ -458,7 +462,7 @@ impl Counter {
         Self {
             state: state.clone(),
             events,
-            cache: crate::tools::cache::ToolCache::new(&state),
+            cache: ToolCache::new(&state),
             lasso_points: Vec::new(),
             is_lasso_dragging: false,
             overlays_dirty: false,
@@ -469,15 +473,15 @@ impl Counter {
     fn active_counts(&self) -> &[CountData] {
         self.state
             .active_count_type
-            .map_or(&[], |id| self.state.manual_counts(id))
+            .map_or(&[], |id| self.state.get_manual_counts(id))
     }
 
     /// Delete the active type's counts on the selected position that lie inside a lasso polygon.
     fn delete_counts_inside(&mut self, polygon: &[(u64, u64)]) {
         if let Some(id) = self.state.active_count_type
-            && let Some(counts) = self.state.counts.selected_mut().manual.get_mut(&id)
+            && let Some(counts) = self.state.counts.get_selected_mut().manual.get_mut(&id)
         {
-            *counts = find_counts_within_polygon(polygon, std::mem::take(counts));
+            *counts = find_counts_within_polygon(polygon, mem::take(counts));
         }
     }
 

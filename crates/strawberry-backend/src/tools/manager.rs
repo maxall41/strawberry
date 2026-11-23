@@ -4,6 +4,7 @@ use super::{
     automatic_segmentation::AutomaticSegmentation, base::ToolEvents, nervetracer::NerveTracer,
 };
 use crate::utils::pipeline_io;
+use anyhow::anyhow;
 use indexmap::IndexMap;
 use std::{path::Path, sync::Arc};
 use strawberry_processing::GpuImageProcessor;
@@ -41,8 +42,6 @@ impl std::ops::DerefMut for ToolInstance {
 pub struct ToolManager {
     pub tools: IndexMap<ToolId, ToolInstance>,
     pub selected_tool: Option<ToolId>,
-    /// Position shown in the viewer and edited by interactive tools.
-    pub selected_position: Position,
     /// Latest ordered tools, enablement, and selection for pipeline subscribers.
     pipeline_state_sender: watch::Sender<PipelineState>,
     gpu: Arc<GpuImageProcessor>,
@@ -56,7 +55,6 @@ impl ToolManager {
         Self {
             tools: IndexMap::new(),
             selected_tool: None,
-            selected_position: Position::default(),
             pipeline_state_sender: watch::channel(PipelineState::default()).0,
             gpu,
             next_tool_id: 1,
@@ -74,11 +72,16 @@ impl ToolManager {
         self.next_tool_id = self
             .next_tool_id
             .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("Tool IDs exhausted"))?;
+            .ok_or_else(|| anyhow!("Tool IDs exhausted"))?;
         Ok(id)
     }
-    /// Detached construction has no externally visible side effects.
-    async fn create(&self, kind: &BackendToolType) -> anyhow::Result<ToolInstance> {
+    /// Construct a detached tool instance editing `position`; construction has no externally
+    /// visible side effects.
+    async fn create(
+        &self,
+        kind: &BackendToolType,
+        position: Position,
+    ) -> anyhow::Result<ToolInstance> {
         let events = ToolEvents::default();
         let gpu = self.gpu.clone();
         let mut backend: Box<dyn ToolBackend> = match kind {
@@ -103,19 +106,23 @@ impl ToolManager {
             BackendToolType::Threshold => Box::new(Threshold::new(events, gpu).await?),
             BackendToolType::Watershed => Box::new(Watershed::new(events, gpu).await?),
         };
-        backend.select_position(self.selected_position);
+        backend.select_position(position);
         let tool_state_sender = watch::channel(backend.get_state()).0;
         Ok(ToolInstance {
             backend,
             tool_state_sender,
         })
     }
-    /// Create, enable, and select a new tool instance.
+    /// Create, enable, and select a new tool instance editing the viewed `position`.
     ///
     /// # Errors
     /// Returns an error if GPU initialization fails or the tool ID space is exhausted.
-    pub async fn add_tool(&mut self, kind: &BackendToolType) -> anyhow::Result<ToolId> {
-        let mut tool = self.create(kind).await?;
+    pub async fn add_tool(
+        &mut self,
+        kind: &BackendToolType,
+        position: Position,
+    ) -> anyhow::Result<ToolId> {
+        let mut tool = self.create(kind, position).await?;
         tool.set_enabled(true);
         tool.tool_state_sender.send_replace(tool.get_state());
         let id = self.allocate_id()?;
@@ -137,10 +144,6 @@ impl ToolManager {
     }
     /// Select the position every tool edits, cancelling gestures begun on another position.
     pub fn select_position(&mut self, position: Position) {
-        if position == self.selected_position {
-            return;
-        }
-        self.selected_position = position;
         for tool in self.tools.values_mut() {
             tool.cancel_interaction();
             tool.select_position(position);
@@ -179,7 +182,7 @@ impl ToolManager {
             .tools
             .iter()
             .enumerate()
-            .filter(|(_, (_, tool))| tool.is_enabled() && tool.supports_processing())
+            .filter(|(_, (_, tool))| tool.is_enabled())
             .map(|(index, (id, _))| (index, *id))
             .collect();
         let common = self
@@ -245,19 +248,25 @@ impl ToolManager {
             .collect::<anyhow::Result<Vec<_>>>()?;
         pipeline_io::save(path, &entries)
     }
-    /// Replace the pipeline with validated tool instances from an archive.
+    /// Replace the pipeline with validated tool instances from an archive, editing the viewed
+    /// `position`.
     ///
     /// # Errors
     /// Returns an error if the archive, settings, or assets cannot be loaded or
     /// validated, or if the tool ID space is exhausted.
-    pub async fn load_pipeline(&mut self, path: &Path, cli: bool) -> anyhow::Result<()> {
+    pub async fn load_pipeline(
+        &mut self,
+        path: &Path,
+        cli: bool,
+        position: Position,
+    ) -> anyhow::Result<()> {
         let mut candidate = IndexMap::new();
         for entry in pipeline_io::load(path)? {
             let kind = entry.kind()?;
-            let mut tool = self.create(&kind).await?;
+            let mut tool = self.create(&kind, position).await?;
             tool.load_persisted_state(entry.state, &entry.assets, cli)?;
             // Loading replaces runtime-only state, including the position selection.
-            tool.select_position(self.selected_position);
+            tool.select_position(position);
             tool.get_state().validate()?;
             tool.cancel_interaction();
             tool.tool_state_sender.send_replace(tool.get_state());

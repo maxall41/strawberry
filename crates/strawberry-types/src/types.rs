@@ -1,4 +1,7 @@
 use core::fmt;
+use std::collections::HashMap;
+
+use crate::Position;
 
 /// Coalesces processing requests at the earliest requested tool index.
 #[derive(Default)]
@@ -69,6 +72,28 @@ pub enum AnnotationPlacement {
     CurrentPosition,
     /// Place each annotation on the position its slice number refers to on the current tile.
     SplitByPosition,
+}
+
+impl AnnotationPlacement {
+    /// Return the position an annotation saved on `saved` loads onto while `selected` is shown.
+    #[must_use]
+    pub const fn get_target(self, selected: Position, saved: Position) -> Position {
+        match self {
+            Self::CurrentPosition => selected,
+            Self::SplitByPosition => saved,
+        }
+    }
+
+    /// Create the map that gathers imported annotations by target position. Loading onto the
+    /// current position starts it with that position empty, so the import replaces the
+    /// position's annotations even when the file holds none.
+    #[must_use]
+    pub fn create_import_map<T: Default>(self, selected: Position) -> HashMap<Position, T> {
+        match self {
+            Self::CurrentPosition => HashMap::from([(selected, T::default())]),
+            Self::SplitByPosition => HashMap::new(),
+        }
+    }
 }
 
 /// Controls which planes should be exported

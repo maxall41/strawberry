@@ -1482,22 +1482,22 @@ impl Render for AutomaticSegmentationView {
                 .render(cx),
             )
             .child(modes);
-        if s.total_layers > 1 {
+        if s.channel_count > 1 {
             panel = panel.child(
-                tool_panel::section("Input layer").child(
+                tool_panel::section("Input channel").child(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap_1()
-                        .children((0..s.total_layers).map(|i| {
+                        .children((0..s.channel_count).map(|i| {
                             Self::button(
-                                ("segmentation-layer", i),
+                                ("segmentation-channel", i),
                                 format!("{}", i.saturating_add(1)),
-                                AutomaticSegmentationMessage::SelectLayer(i),
+                                AutomaticSegmentationMessage::SelectChannel(i),
                                 cx,
                             )
                             .compact()
-                            .selected(i == s.selected_layer)
+                            .selected(i == s.selected_channel)
                             .disabled(importing)
                         })),
                 ),

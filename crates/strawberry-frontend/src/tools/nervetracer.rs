@@ -112,15 +112,13 @@ impl NerveTracerView {
 
                 let Ok((selected, shape)) = state
                     .read()
-                    .map(|state| (state.traces.selected_position(), state.shape))
+                    .map(|state| (state.traces.get_selected_position(), state.shape))
                 else {
                     return;
                 };
                 // Unreadable files load as usual so the backend reports why they failed.
                 let saved = read_tracings_file(&file)
-                    .ok()
-                    .and_then(|tracings| tracings.get_saved_positions(selected).ok())
-                    .unwrap_or_default();
+                    .map_or_default(|tracings| tracings.get_saved_positions(selected));
                 let Some(placement) =
                     ask_annotation_placement(cx, "traces", &saved, selected, shape).await
                 else {
@@ -199,15 +197,15 @@ impl NerveTracerView {
         }
     }
 
-    /// Select the layer used for tracing.
-    fn select_layer(&self, layer: usize) {
+    /// Select the channel used for tracing.
+    fn select_channel(&self, channel: usize) {
         if let Err(e) = self
             .base
             .send_to_backend(PipelineObjectMessage::NerveTracerMessage(
-                NerveTracerMessage::SelectLayer(layer),
+                NerveTracerMessage::SelectChannel(channel),
             ))
         {
-            eprintln!("Failed to send select layer command: {e}");
+            eprintln!("Failed to send select channel command: {e}");
         }
     }
 
@@ -276,18 +274,18 @@ impl NerveTracerView {
         .render(cx)
     }
 
-    /// Build the layer selector for the nervetracer view.
-    fn render_layer_selector(
+    /// Build the channel selector for the nervetracer view.
+    fn render_channel_selector(
         state: &NerveTracerState,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        tool_panel::section("Input layer").child(div().flex().gap_1().flex_wrap().children(
+        tool_panel::section("Input channel").child(div().flex().gap_1().flex_wrap().children(
             (0..state.shape.c).map(|i| {
-                Button::new(("trace-layer", i))
+                Button::new(("trace-channel", i))
                     .compact()
-                    .selected(i == state.selected_layer)
+                    .selected(i == state.selected_channel)
                     .label(format!("{}", i.saturating_add(1)))
-                    .on_click(cx.listener(move |this, _, _, _| this.select_layer(i)))
+                    .on_click(cx.listener(move |this, _, _, _| this.select_channel(i)))
             }),
         ))
     }
@@ -303,10 +301,10 @@ impl NerveTracerView {
             &self.segments_scroll,
             &self.base.focus_handle,
         );
-        if state.current_path_segments().is_empty() {
+        if state.get_current_path_segments().is_empty() {
             list = list.child(tool_panel::empty("No segments"));
         }
-        for (i, _) in state.current_path_segments().iter().enumerate() {
+        for (i, _) in state.get_current_path_segments().iter().enumerate() {
             list = list.child(
                 tool_panel::row()
                     .child(
@@ -332,7 +330,7 @@ impl NerveTracerView {
                 .large()
                 .w_full()
                 .label("Commit path")
-                .disabled(state.current_path_segments().is_empty())
+                .disabled(state.get_current_path_segments().is_empty())
                 .tooltip_text("Commit segments to a path (⌘C)")
                 .on_click(cx.listener(|this, _, _, _| this.commit_segments())),
         )
@@ -346,10 +344,10 @@ impl NerveTracerView {
     ) -> impl IntoElement + use<> {
         let mut list =
             tool_panel::list_for_tool("paths-list", &self.paths_scroll, &self.base.focus_handle);
-        if state.paths().is_empty() {
+        if state.get_paths().is_empty() {
             list = list.child(tool_panel::empty("No paths"));
         }
-        for (path_id, path) in state.paths().iter().enumerate() {
+        for (path_id, path) in state.get_paths().iter().enumerate() {
             list = list.child(
                 div()
                     .flex()
@@ -510,7 +508,7 @@ impl Render for NerveTracerView {
             .on_action(cx.listener(Self::load_traces_action))
             .child(Self::render_status(&state, cx))
             .when(state.shape.c > 1, |el| {
-                el.child(Self::render_layer_selector(&state, cx))
+                el.child(Self::render_channel_selector(&state, cx))
             })
             .child(self.render_segments_section(&state, cx))
             .child(self.render_paths_section(&state, cx))
