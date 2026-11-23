@@ -153,19 +153,12 @@ impl ToolManager {
         }
         self.tools.shift_remove(&id);
     }
-    /// Move a tool before another instance, or to the end of the stack.
-    pub fn move_tool(&mut self, id: ToolId, before: Option<ToolId>) {
-        let Some(from) = self.tools.get_index_of(&id) else {
-            return;
-        };
-        if before == Some(id) {
-            return;
-        }
+    /// Move a tool and return the first affected stack index if its position changed.
+    pub fn move_tool(&mut self, id: ToolId, before: Option<ToolId>) -> Option<usize> {
+        let from = self.tools.get_index_of(&id)?;
         let to = match before {
             Some(before) => {
-                let Some(index) = self.tools.get_index_of(&before) else {
-                    return;
-                };
+                let index = self.tools.get_index_of(&before)?;
                 if from < index {
                     index.saturating_sub(1)
                 } else {
@@ -174,7 +167,11 @@ impl ToolManager {
             }
             None => self.tools.len().saturating_sub(1),
         };
+        if from == to {
+            return None;
+        }
         self.tools.move_index(from, to);
+        Some(from.min(to))
     }
     /// Request processing from the first changed enabled tool position.
     pub fn reconcile(&mut self, pending: &mut PendingProcessing) {

@@ -116,7 +116,29 @@ impl Pipeline {
         collection
     }
 
-    /// Process images through the pipeline starting from the given index.
+    /// Restore the valid upstream results and return the first stage to visit with its input.
+    fn resume_from_cached_prefix(&mut self, start_index: usize) -> (usize, ImageCollection) {
+        let mut images = self.input_images.clone();
+        for (i, tool) in self
+            .tool_manager
+            .tools
+            .values_mut()
+            .take(start_index)
+            .enumerate()
+        {
+            if !tool.is_enabled() {
+                tool.reconcile_bypassed_input(&images);
+            } else if tool.supports_processing() {
+                let Some(output) = tool.valid_cached_output(&images) else {
+                    return (i, images);
+                };
+                images = output;
+            }
+        }
+        (start_index, images)
+    }
+
+    /// Process the pipeline from the requested index, reusing results with matching inputs.
     ///
     /// Callers must reconcile tool state first and include all resulting processing
     /// requests when choosing `start_index`.
@@ -125,46 +147,16 @@ impl Pipeline {
     /// Returns an error if configuration, image processing, file I/O, or communication fails.
     async fn process_from(&mut self, start_index: usize) -> anyhow::Result<()> {
         self.output_is_current = false;
-        let start_time = std::time::Instant::now();
+        let start_time = Instant::now();
         println!("Got process_from command!");
         if self.input_images.is_empty() {
             return Err(anyhow!("No input images provided"));
         }
 
-        let mut earliest_processing_index = start_index;
-        let mut resume_images = None;
-
         let now = Instant::now();
-
-        // First pass: find the earliest index where we need to start processing.
-        for (i, tool) in self.tool_manager.tools.values().enumerate() {
-            if i >= start_index {
-                break;
-            }
-
-            if tool.is_enabled() && tool.supports_processing() {
-                if let Some(cached_output) = tool.valid_cached_output() {
-                    resume_images = Some(cached_output);
-                } else {
-                    earliest_processing_index = i;
-                    break;
-                }
-            }
-        }
-
-        let mut images = resume_images.unwrap_or_else(|| self.input_images.clone());
-
+        let (earliest_processing_index, mut images) = self.resume_from_cached_prefix(start_index);
         let elapsed = now.elapsed();
         println!("Catching up on cache: {elapsed:.2?}");
-
-        for tool in self
-            .tool_manager
-            .tools
-            .values_mut()
-            .skip(earliest_processing_index)
-        {
-            tool.invalidate_cache();
-        }
 
         let total_stages = self
             .tool_manager
@@ -173,40 +165,65 @@ impl Pipeline {
             .skip(earliest_processing_index)
             .filter(|tool| tool.is_enabled() && tool.supports_processing())
             .count();
-        let mut stage: usize = 0;
-
-        for tool in self
+        let mut tools = self
             .tool_manager
             .tools
             .values_mut()
-            .skip(earliest_processing_index)
-        {
-            if tool.is_enabled() && tool.supports_processing() {
-                let name = format!("{:?}", tool.iam());
-                let output_sender = self.output_sender.clone();
-                let publish_progress = move |planes| {
-                    let _ =
-                        output_sender.send(FrontendMessage::PipelineProgress(PipelineProgress {
-                            stage,
-                            total: total_stages,
-                            name: name.clone(),
-                            planes,
-                        }));
-                };
-                publish_progress(None);
-                stage = stage.saturating_add(1);
-                let result = tool
-                    .process(
-                        &mut images,
-                        Box::new(move |planes| publish_progress(Some(planes))),
-                    )
-                    .await;
-                tool.acknowledge_processed_state();
-                result.with_context(|| format!("{:?} processing failed", tool.iam()))?;
-                self.gpu
-                    .ensure_device_availability("Complete pipeline stage")?;
-                tool.set_cached_output(images.clone());
+            .skip(earliest_processing_index);
+        let mut next_stage = 0_usize;
+        while let Some(tool) = tools.next() {
+            if !tool.is_enabled() {
+                tool.reconcile_bypassed_input(&images);
+                continue;
             }
+            if !tool.supports_processing() {
+                continue;
+            }
+            let stage = next_stage;
+            next_stage = next_stage.saturating_add(1);
+
+            if let Some(output) = tool.valid_cached_output(&images) {
+                images = output;
+                tool.refresh_after_cache_hit();
+                continue;
+            }
+
+            tool.invalidate_cache();
+            let input = images.clone();
+            let name = format!("{:?}", tool.iam());
+            let output_sender = self.output_sender.clone();
+            let publish_progress = move |planes| {
+                let _ = output_sender.send(FrontendMessage::PipelineProgress(PipelineProgress {
+                    stage,
+                    total: total_stages,
+                    name: name.clone(),
+                    planes,
+                }));
+            };
+            publish_progress(None);
+            let result = tool
+                .process(
+                    &mut images,
+                    Box::new(move |planes| publish_progress(Some(planes))),
+                )
+                .await;
+            tool.acknowledge_processed_state();
+            let result = result
+                .with_context(|| format!("{:?} processing failed", tool.iam()))
+                .and_then(|()| {
+                    self.gpu
+                        .ensure_device_availability("Complete pipeline stage")
+                });
+            if let Err(error) = result {
+                // These stages never received the inputs from this pass.
+                for downstream in tools {
+                    if downstream.is_enabled() && downstream.supports_processing() {
+                        downstream.invalidate_cache();
+                    }
+                }
+                return Err(error);
+            }
+            tool.set_cached_output(&input, images.clone());
         }
 
         self.ensure_no_stage_gpu_errors("Publish pipeline output")?;
@@ -381,7 +398,11 @@ impl Pipeline {
                     }
                     self.tool_manager.remove_tool(id);
                 }
-                PipelineCommand::MoveTool { id, before } => self.tool_manager.move_tool(id, before),
+                PipelineCommand::MoveTool { id, before } => {
+                    if let Some(index) = self.tool_manager.move_tool(id, before) {
+                        pending_processing_from.request_processing(index);
+                    }
+                }
                 PipelineCommand::SelectTool(id) => {
                     let previous = self.tool_manager.selected_tool;
                     self.tool_manager.select(id);

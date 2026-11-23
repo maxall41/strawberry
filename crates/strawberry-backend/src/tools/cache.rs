@@ -1,18 +1,26 @@
-use strawberry_types::{
-    AutomaticSegmentationState, CompositorState, ContrastState, CounterState, DecomposerState,
-    DifferenceOfGaussiansState, GaussianBlurState, GrayscaleState, ImageCollection,
-    LocalMaximaState, MorphologyState, NerveTracerState, ObjectSizeFilterState, RollingBallState,
-    SobelState, ThresholdState, WatershedState,
+use std::{
+    ptr,
+    sync::{Arc, Weak},
 };
 
-pub trait SyncState: Clone + PartialEq {
-    // Check if enabled
-    /// Return whether this tool is enabled.
-    fn is_enabled(&self) -> bool;
-    // Check if processing specific data mismatches. Does not include UI data in check.
-    /// Return whether settings affecting image processing differ.
-    fn processing_differs(&self, other: &Self) -> bool {
-        self != other
+use image::RgbaImage;
+use strawberry_types::{
+    AutomaticSegmentationState, ClassId, CompositorState, ContrastState, CounterMode, CounterState,
+    DecomposerState, DifferenceOfGaussiansState, GaussianBlurState, GrayscaleState,
+    ImageCollection, LocalMaximaState, MorphologyState, NerveTracerState, ObjectSizeFilterState,
+    RgbColor, RollingBallState, SegmentationOutputMode, Shape, SobelState, ThresholdState,
+    WatershedState,
+};
+
+pub trait SyncState {
+    type Settings: PartialEq;
+
+    /// Snapshot the settings that affect a tool's processing.
+    fn capture_settings(&self) -> Self::Settings;
+
+    /// Return whether settings affecting processing differ when the tool is active.
+    fn processing_differs(&self, saved: &Self::Settings) -> bool {
+        self.capture_settings() != *saved
     }
 }
 
@@ -20,8 +28,14 @@ macro_rules! processing_states {
     ($($state:ty),* $(,)?) => {
         $(
             impl SyncState for $state {
-                /// Return whether this tool is enabled.
-                fn is_enabled(&self) -> bool { self.is_enabled }
+                type Settings = Self;
+
+                /// Capture the tool settings independently of pipeline enablement.
+                fn capture_settings(&self) -> Self {
+                    let mut settings = self.clone();
+                    settings.is_enabled = false;
+                    settings
+                }
             }
         )*
     };
@@ -37,87 +51,89 @@ processing_states!(
     RollingBallState,
     SobelState,
     ThresholdState,
-    DecomposerState,
     WatershedState
 );
 
 impl SyncState for CompositorState {
-    /// Return whether this tool is enabled.
-    fn is_enabled(&self) -> bool {
-        self.is_enabled
+    type Settings = Vec<bool>;
+
+    /// Capture the channel selection used for composition.
+    fn capture_settings(&self) -> Self::Settings {
+        self.enabled_layers.clone()
     }
-    /// Return whether settings affecting image processing differ.
-    fn processing_differs(&self, other: &Self) -> bool {
-        self.is_enabled != other.is_enabled || self.enabled_layers != other.enabled_layers
+
+    /// Compare the channel selection used for composition.
+    fn processing_differs(&self, saved: &Self::Settings) -> bool {
+        self.enabled_layers != *saved
     }
 }
+
+impl SyncState for DecomposerState {
+    type Settings = Vec<bool>;
+
+    /// Capture the channel selection used for decomposition.
+    fn capture_settings(&self) -> Self::Settings {
+        self.enabled_layers.clone()
+    }
+
+    /// Compare the channel selection used for decomposition.
+    fn processing_differs(&self, saved: &Self::Settings) -> bool {
+        self.enabled_layers != *saved
+    }
+}
+
 impl SyncState for CounterState {
-    /// Return whether this tool is enabled.
-    fn is_enabled(&self) -> bool {
-        self.is_enabled
-    }
-    /// Return whether settings affecting image processing differ.
-    fn processing_differs(&self, other: &Self) -> bool {
-        self.is_enabled != other.is_enabled || self.mode != other.mode
+    type Settings = CounterMode;
+
+    /// Capture the mode that determines whether to detect objects.
+    fn capture_settings(&self) -> Self::Settings {
+        self.mode
     }
 }
+
 impl SyncState for NerveTracerState {
-    /// Return whether this tool is enabled.
-    fn is_enabled(&self) -> bool {
-        self.is_enabled
-    }
-    /// Return whether settings affecting image processing differ.
-    fn processing_differs(&self, other: &Self) -> bool {
-        self.is_enabled != other.is_enabled || self.selected_layer != other.selected_layer
+    type Settings = usize;
+
+    /// Capture the channel used for tracing.
+    fn capture_settings(&self) -> Self::Settings {
+        self.selected_layer
     }
 }
 
-/// Frontend delivery never determines whether processing is out of date.
-pub struct ToolSync<TState> {
-    reconciled: TState,
+struct CachedRun<TSettings> {
+    settings: TSettings,
+    input_shape: Shape,
+    // Weak references preserve plane identity without retaining the input pixels.
+    input_planes: Vec<Weak<RgbaImage>>,
+    output: ImageCollection,
 }
 
-impl<TState: SyncState> ToolSync<TState> {
-    /// Initialize synchronization or caching from the supplied settings.
-    #[must_use]
-    pub fn new(state: &TState) -> Self {
-        Self {
-            reconciled: state.clone(),
-        }
-    }
-
-    /// Returns (invalidate this cache, rerun the pipeline).
-    pub(crate) fn reconcile(&mut self, state: &TState) -> (bool, bool) {
-        let changed = self.reconciled.processing_differs(state);
-        let process = changed && (self.reconciled.is_enabled() || state.is_enabled());
-        self.acknowledge(state);
-        (changed, process)
-    }
-
-    /// Record the latest reconciled settings without changing cached images.
-    pub fn acknowledge(&mut self, state: &TState) {
-        if self.reconciled != *state {
-            self.reconciled = state.clone();
-        }
-    }
+/// Check that the collection still has the same shape and planes at each coordinate.
+fn matches_input(
+    input: &ImageCollection,
+    shape: Shape,
+    planes: impl Iterator<Item = *const RgbaImage>,
+) -> bool {
+    input.shape() == shape
+        && planes
+            .zip(input.planes())
+            .all(|(previous, current)| ptr::eq(previous, Arc::as_ptr(current)))
 }
 
-pub struct ToolCache<TState> {
-    pub cached_output: Option<ImageCollection>,
-    pub cached_state: Option<TState>,
+pub struct ToolCache<TState: SyncState> {
+    cached_run: Option<CachedRun<TState::Settings>>,
     cached_input: Option<ImageCollection>,
-    pub sync: ToolSync<TState>,
+    reconciled: TState::Settings,
 }
 
 impl<TState: SyncState> ToolCache<TState> {
-    /// Initialize synchronization or caching from the supplied settings.
+    /// Create an empty cache and record the initial settings.
     #[must_use]
     pub fn new(state: &TState) -> Self {
         Self {
-            cached_output: None,
-            cached_state: None,
+            cached_run: None,
             cached_input: None,
-            sync: ToolSync::new(state),
+            reconciled: state.capture_settings(),
         }
     }
 
@@ -132,28 +148,58 @@ impl<TState: SyncState> ToolCache<TState> {
         self.cached_input.as_ref()
     }
 
-    /// Invalidate stale cached output and report whether processing is needed.
-    pub fn reconcile(&mut self, state: &TState) -> bool {
-        let (invalidate, process) = self.sync.reconcile(state);
-        if invalidate {
-            self.invalidate();
-        }
-        process
-    }
-
-    /// Return cached images when the processing settings still match.
+    /// Check whether the input differs from the last run or the remembered canvas input.
     #[must_use]
-    pub fn valid_output(&self, state: &TState) -> Option<ImageCollection> {
-        self.cached_state
-            .as_ref()
-            .filter(|cached| !cached.processing_differs(state))
-            .and_then(|_| self.cached_output.clone())
+    pub fn input_differs(&self, input: &ImageCollection) -> bool {
+        if let Some(cached) = &self.cached_run {
+            return !matches_input(
+                input,
+                cached.input_shape,
+                cached.input_planes.iter().map(Weak::as_ptr),
+            );
+        }
+        self.cached_input.as_ref().is_some_and(|previous| {
+            !matches_input(input, previous.shape(), previous.planes().map(Arc::as_ptr))
+        })
     }
 
-    /// Clear cached output and its associated settings, keeping the remembered input.
+    /// Record current settings and report whether the processing settings changed.
+    pub fn reconcile(&mut self, state: &TState) -> bool {
+        if !state.processing_differs(&self.reconciled) {
+            return false;
+        }
+        self.reconciled = state.capture_settings();
+        true
+    }
+
+    /// Return cached images when the settings, shape, and ordered input planes still match.
+    #[must_use]
+    pub fn valid_output(&self, state: &TState, input: &ImageCollection) -> Option<ImageCollection> {
+        let cached = self.cached_run.as_ref()?;
+        if state.processing_differs(&cached.settings) || self.input_differs(input) {
+            return None;
+        }
+        Some(cached.output.clone())
+    }
+
+    /// Keep the output of a successful run with the input and settings that produced it.
+    pub fn store_output(
+        &mut self,
+        state: &TState,
+        input: &ImageCollection,
+        output: ImageCollection,
+    ) {
+        self.cached_run = Some(CachedRun {
+            settings: state.capture_settings(),
+            input_shape: input.shape(),
+            input_planes: input.planes().map(Arc::downgrade).collect(),
+            output,
+        });
+    }
+
+    /// Clear the last run's reusable output while keeping input for canvas interaction.
     pub fn invalidate(&mut self) {
-        self.cached_output = None;
-        self.cached_state = None;
+        self.cached_run = None;
     }
 
     /// Clear cached output, its settings, and the remembered input.
@@ -163,30 +209,56 @@ impl<TState: SyncState> ToolCache<TState> {
     }
 }
 
+#[derive(PartialEq, Eq)]
+pub struct SegmentationSettings {
+    training: bool,
+    show_overlay: bool,
+    threshold: Option<u32>,
+    selected_layer: usize,
+    class_colors: Vec<(ClassId, RgbColor)>,
+    output_mode: SegmentationOutputMode,
+    output_class: ClassId,
+    model_revision: u64,
+}
+
+/// Return the exact threshold used in inference, when thresholding is enabled.
+fn get_segmentation_threshold(state: &AutomaticSegmentationState) -> Option<u32> {
+    (!state.training && state.use_threshold).then_some(state.threshold_value.to_bits())
+}
+
+/// Iterate over the class colors in class ID order.
+fn get_class_colors(
+    state: &AutomaticSegmentationState,
+) -> impl Iterator<Item = (ClassId, RgbColor)> + '_ {
+    state.classes.iter().map(|(&id, class)| (id, class.color))
+}
+
 impl SyncState for AutomaticSegmentationState {
-    /// Return whether this tool is enabled.
-    fn is_enabled(&self) -> bool {
-        self.is_enabled
+    type Settings = SegmentationSettings;
+
+    /// Capture the parameters used for the training preview or segmentation output.
+    fn capture_settings(&self) -> Self::Settings {
+        SegmentationSettings {
+            training: self.training,
+            show_overlay: self.training && self.show_overlay,
+            threshold: get_segmentation_threshold(self),
+            selected_layer: self.selected_layer,
+            class_colors: get_class_colors(self).collect(),
+            output_mode: self.output_mode,
+            output_class: self.output_class,
+            model_revision: self.model_revision,
+        }
     }
-    /// Return whether settings affecting image processing differ.
-    fn processing_differs(&self, other: &Self) -> bool {
-        self.is_enabled != other.is_enabled
-            || self.training != other.training
-            || (self.training && self.show_overlay != other.show_overlay)
-            || (!self.training
-                && (self.use_threshold != other.use_threshold
-                    || (self.use_threshold
-                        && self.threshold_value.to_bits() != other.threshold_value.to_bits())))
-            || self.selected_layer != other.selected_layer
-            || self.classes.len() != other.classes.len()
-            || self.classes.iter().any(|(id, class)| {
-                other
-                    .classes
-                    .get(id)
-                    .is_none_or(|other| class.color != other.color)
-            })
-            || self.output_mode != other.output_mode
-            || self.output_class != other.output_class
-            || self.model_revision != other.model_revision
+
+    /// Compare processing parameters directly, borrowing class colors from the live state.
+    fn processing_differs(&self, saved: &Self::Settings) -> bool {
+        self.training != saved.training
+            || (self.training && self.show_overlay != saved.show_overlay)
+            || get_segmentation_threshold(self) != saved.threshold
+            || self.selected_layer != saved.selected_layer
+            || self.output_mode != saved.output_mode
+            || self.output_class != saved.output_class
+            || self.model_revision != saved.model_revision
+            || get_class_colors(self).ne(saved.class_colors.iter().copied())
     }
 }

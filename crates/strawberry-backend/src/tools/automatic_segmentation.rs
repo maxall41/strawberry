@@ -1287,7 +1287,7 @@ impl AutomaticSegmentation {
 }
 #[async_trait]
 impl ToolBackend for AutomaticSegmentation {
-    crate::impl_tool_backend_basics!(AutomaticSegmentation);
+    crate::impl_tool_backend_basics!(AutomaticSegmentation, release_previous_input);
     /// Serialize the trained model as an optional pipeline asset.
     fn pipeline_assets(&self) -> Result<ToolAssets> {
         let mut assets = ToolAssets::new();
@@ -1444,6 +1444,10 @@ impl ToolBackend for AutomaticSegmentation {
         }
         Ok(())
     }
+    /// Resume the training preview if the cached output is restored after a bypass.
+    fn refresh_after_cache_hit(&mut self) {
+        self.refresh_prediction_overlay();
+    }
     /// Annotate and preview the given position.
     fn select_position(&mut self, position: Position) {
         self.state.selected_position = position;
@@ -1458,10 +1462,10 @@ impl ToolBackend for AutomaticSegmentation {
         self.cache.invalidate();
         self.clear_predictions();
     }
-    /// Drop predictions of the previous images, which processing alone would prune only while
-    /// the tool is enabled.
+    /// Drop predictions and clear the selected sample after the previous input is discarded.
     fn release_previous_input(&mut self) {
         self.clear_predictions();
+        self.adopt_selected_input();
     }
     /// Return whether the overlay preview is being predicted in the background.
     fn has_pending_overlay(&self) -> bool {

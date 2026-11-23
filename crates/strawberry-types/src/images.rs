@@ -520,6 +520,11 @@ impl ImageCollection {
         (0..self.shape().c).filter_map(move |c| self.plane(position.with_channel(c)))
     }
 
+    /// Iterate over every plane in storage order.
+    pub fn planes(&self) -> impl ExactSizeIterator<Item = &Arc<RgbaImage>> {
+        self.planes.iter()
+    }
+
     /// Iterate mutably over every plane.
     pub fn planes_mut(&mut self) -> impl ExactSizeIterator<Item = &mut Arc<RgbaImage>> {
         self.planes.iter_mut()
