@@ -1,7 +1,12 @@
 // wgpu auto-trait checks exceed the default compiler recursion depth.
 #![recursion_limit = "256"]
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    mem,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 use image::{ImageReader, RgbaImage};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -13,13 +18,16 @@ use strawberry_processing::{
 
 // Import all types from strawberry-types
 use strawberry_types::{
-    CommandSender, FrontendMessage, OutputFrame, PendingProcessing, PipelineCommand,
-    PipelineProgress, ToolId, ToolInput, overlay,
+    CommandSender, Coordinates, Dimension, ExportScope, FrontendMessage, ImageArrangement,
+    ImageCollection, OutputFrame, PendingProcessing, PipelineCommand, PipelineProgress, ToolId,
+    ToolInput, overlay,
 };
 
 use tools::{ToolManager, manager::ToolInstance};
+use utils::file_io::ImageArchiveWriter;
 
 pub mod counter;
+pub mod hyperstack;
 pub mod nervetracer;
 mod segmentation;
 pub mod tools;
@@ -38,18 +46,23 @@ pub struct Pipeline {
     /// Bumped per Load command; published with each frame so consumers can match results to the load that produced them
     load_generation: u64,
     /// Input images to process
-    input_images: Vec<Arc<RgbaImage>>,
+    input_images: ImageCollection,
     /// Captured owner of the current canvas gesture
     gesture_owner: Option<ToolId>,
     overlays_dirty: bool,
-    /// Last output images
-    last_output: Option<Arc<RgbaImage>>,
+    /// Whether the frontend was told a tool is computing an overlay in the background.
+    overlay_activity_shown: bool,
+    /// Output of the last successful run
+    last_output: ImageCollection,
+    /// Plane shown in the viewer; interactive tools edit its position
+    view: Coordinates,
     /// The canvas may retain an older successful frame after a failed run.
     output_is_current: bool,
+    /// Reference to GPU image processor
     gpu: Arc<GpuImageProcessor>,
     /// Colorspace conversions
     colorspace_converter: GpuColorspaceConverter,
-    /// Composite all remaining layers independently, if the user compositor is disabled and multiple images remain.
+    /// Composites the channels at the displayed position for `ExportScope::CompositeView`.
     fallback_compositor: GpuCompositor,
 }
 
@@ -76,10 +89,12 @@ impl Pipeline {
             output_sender: output_tx,
             output_frame_sender: frame_tx,
             load_generation: 0,
-            input_images: vec![],
+            input_images: ImageCollection::default(),
             gesture_owner: None,
             overlays_dirty: true,
-            last_output: None,
+            overlay_activity_shown: false,
+            last_output: ImageCollection::default(),
+            view: Coordinates::default(),
             output_is_current: false,
             gpu: gpu_image_processor.clone(),
             fallback_compositor: GpuCompositor::new(gpu_image_processor.clone()).await?,
@@ -102,7 +117,29 @@ impl Pipeline {
         collection
     }
 
-    /// Process images through the pipeline starting from the given index.
+    /// Restore the valid upstream results and return the first stage to visit with its input.
+    fn resume_from_cached_prefix(&mut self, start_index: usize) -> (usize, ImageCollection) {
+        let mut images = self.input_images.clone();
+        for (i, tool) in self
+            .tool_manager
+            .tools
+            .values_mut()
+            .take(start_index)
+            .enumerate()
+        {
+            if !tool.is_enabled() {
+                tool.reconcile_bypassed_input(&images);
+                continue;
+            }
+            let Some(output) = tool.valid_cached_output(&images) else {
+                return (i, images);
+            };
+            images = output;
+        }
+        (start_index, images)
+    }
+
+    /// Process the pipeline from the requested index, reusing results with matching inputs.
     ///
     /// Callers must reconcile tool state first and include all resulting processing
     /// requests when choosing `start_index`.
@@ -111,98 +148,79 @@ impl Pipeline {
     /// Returns an error if configuration, image processing, file I/O, or communication fails.
     async fn process_from(&mut self, start_index: usize) -> anyhow::Result<()> {
         self.output_is_current = false;
-        let start_time = std::time::Instant::now();
+        let start_time = Instant::now();
         println!("Got process_from command!");
         if self.input_images.is_empty() {
             return Err(anyhow!("No input images provided"));
         }
 
-        let mut earliest_processing_index = start_index;
-        let mut resume_images = None;
-
         let now = Instant::now();
-
-        // First pass: find the earliest index where we need to start processing.
-        for (i, tool) in self.tool_manager.tools.values().enumerate() {
-            if i >= start_index {
-                break;
-            }
-
-            if tool.is_enabled() && tool.supports_processing() {
-                if let Some(cached_output) = tool.valid_cached_output() {
-                    resume_images = Some(cached_output);
-                } else {
-                    earliest_processing_index = i;
-                    break;
-                }
-            }
-        }
-
-        let mut images = resume_images.unwrap_or_else(|| self.input_images.clone());
-
+        let (earliest_processing_index, mut images) = self.resume_from_cached_prefix(start_index);
         let elapsed = now.elapsed();
         println!("Catching up on cache: {elapsed:.2?}");
-
-        for tool in self
-            .tool_manager
-            .tools
-            .values_mut()
-            .skip(earliest_processing_index)
-        {
-            tool.invalidate_cache();
-        }
 
         let total_stages = self
             .tool_manager
             .tools
             .values()
             .skip(earliest_processing_index)
-            .filter(|tool| tool.is_enabled() && tool.supports_processing())
+            .filter(|tool| tool.is_enabled())
             .count();
-        let mut stage: usize = 0;
-
+        let mut next_stage = 0_usize;
         for tool in self
             .tool_manager
             .tools
             .values_mut()
             .skip(earliest_processing_index)
         {
-            if tool.is_enabled() && tool.supports_processing() {
-                let _ =
-                    self.output_sender
-                        .send(FrontendMessage::PipelineProgress(PipelineProgress {
-                            stage,
-                            total: total_stages,
-                            name: format!("{:?}", tool.iam()),
-                        }));
-                stage = stage.saturating_add(1);
-                let result = tool.process(&mut images).await;
-                tool.acknowledge_processed_state();
-                result.with_context(|| format!("{:?} processing failed", tool.iam()))?;
-                self.gpu
-                    .ensure_device_availability("Complete pipeline stage")?;
-                tool.set_cached_output(images.clone());
+            if !tool.is_enabled() {
+                tool.reconcile_bypassed_input(&images);
+                continue;
             }
-        }
+            let stage = next_stage;
+            next_stage = next_stage.saturating_add(1);
 
-        if images.len() > 1 {
-            println!("OUTPUT CONTAINS >1 IMAGE");
-            let composited = self.fallback_compositor.composite_images(&images).await?;
-            images = vec![Arc::new(composited)];
-        }
+            if let Some(output) = tool.valid_cached_output(&images) {
+                images = output;
+                tool.refresh_after_cache_hit();
+                continue;
+            }
 
-        let output_image = images
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("No output image available from pipeline"))?;
+            tool.invalidate_cache();
+            let input = images.clone();
+            let name = format!("{:?}", tool.iam());
+            let output_sender = self.output_sender.clone();
+            let publish_progress = move |planes| {
+                let _ = output_sender.send(FrontendMessage::PipelineProgress(PipelineProgress {
+                    stage,
+                    total: total_stages,
+                    name: name.clone(),
+                    planes,
+                }));
+            };
+            publish_progress(None);
+            let result = tool
+                .process(
+                    &mut images,
+                    Box::new(move |planes| publish_progress(Some(planes))),
+                )
+                .await;
+            tool.acknowledge_processed_state();
+            let result = result
+                .with_context(|| format!("{:?} processing failed", tool.iam()))
+                .and_then(|()| {
+                    self.gpu
+                        .ensure_device_availability("Complete pipeline stage")
+                });
+            result?;
+            tool.set_cached_output(&input, images.clone());
+        }
 
         self.ensure_no_stage_gpu_errors("Publish pipeline output")?;
-        self.output_frame_sender.send_replace(Some(OutputFrame {
-            load_generation: self.load_generation,
-            image: output_image.clone(),
-        }));
-
-        self.last_output = Some(output_image.clone());
+        self.last_output = images;
+        self.clamp_view();
         self.output_is_current = true;
+        self.publish_output_frame()?;
 
         let duration = start_time.elapsed();
         println!("Pipeline processing took: {duration:?}");
@@ -210,24 +228,133 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Convert the last output back out of the internal BGRA representation and
-    /// write it to `file`.
-    async fn save_output(&mut self, file: &std::path::Path) -> anyhow::Result<()> {
+    /// Keep the view inside the output bounds after tools change its shape, moving tool edits with it.
+    fn clamp_view(&mut self) {
+        let shape = self.last_output.get_shape();
+        let mut view = self.view;
+        for dimension in Dimension::ALL {
+            let last = shape.get_extent(dimension).saturating_sub(1);
+            view.set(dimension, view.get(dimension).min(last));
+        }
+        self.set_view(view);
+    }
+
+    /// Show the plane at `coordinates`; moving to another position directs per-position tool
+    /// edits there and ends gestures begun on the previous position.
+    fn set_view(&mut self, coordinates: Coordinates) {
+        if coordinates.position() != self.view.position() {
+            self.gesture_owner = None;
+            self.tool_manager.select_position(coordinates.position());
+        }
+        self.view = coordinates;
+    }
+
+    /// Return the viewed output plane.
+    fn get_displayed_image(&self) -> anyhow::Result<Arc<RgbaImage>> {
+        self.last_output
+            .get_plane(self.view)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!(
+                    "No output image available for {}",
+                    self.view.describe(self.last_output.get_shape())
+                )
+            })
+    }
+
+    /// Publish the displayed image to the viewer.
+    fn publish_output_frame(&self) -> anyhow::Result<()> {
+        self.output_frame_sender.send_replace(Some(OutputFrame {
+            load_generation: self.load_generation,
+            coordinates: self.view,
+            shape: self.last_output.get_shape(),
+            image: self.get_displayed_image()?,
+            is_current: self.output_is_current,
+        }));
+        Ok(())
+    }
+
+    /// Flag the displayed frame as out of date after a failed run, if it is, keeping its image on screen.
+    fn flag_stale_output_frame(&self) {
+        if self.output_is_current {
+            return;
+        }
+        self.output_frame_sender
+            .send_if_modified(|frame| match frame {
+                Some(frame) if frame.is_current => {
+                    frame.is_current = false;
+                    true
+                }
+                _ => false,
+            });
+    }
+
+    /// Composite the channels at the displayed position into one image.
+    async fn composite_displayed_position(&self) -> anyhow::Result<Arc<RgbaImage>> {
+        let channels: Vec<_> = self
+            .last_output
+            .channels_at(self.view.position())
+            .cloned()
+            .collect();
+        match channels.as_slice() {
+            [image] => Ok(image.clone()),
+            _ => Ok(Arc::new(
+                self.fallback_compositor.composite_images(&channels).await?,
+            )),
+        }
+    }
+
+    /// Convert an output plane from BGRA to RGBA, rejecting GPU failures during conversion.
+    async fn convert_output_plane(&mut self, image: &RgbaImage) -> anyhow::Result<RgbaImage> {
+        let converted = self
+            .colorspace_converter
+            .convert_bgra_to_rgba(image)
+            .await?;
+        self.ensure_no_stage_gpu_errors("Write pipeline output")?;
+        Ok(converted)
+    }
+
+    /// Return every output plane, named by its coordinates for export.
+    fn get_named_views(&self) -> Vec<(String, Arc<RgbaImage>)> {
+        let shape = self.last_output.get_shape();
+        shape
+            .coordinates()
+            .filter_map(|coordinates| {
+                let name = coordinates
+                    .get_spanned_indices(shape)
+                    .map(|(dimension, number)| {
+                        let width = shape.get_extent(dimension).to_string().len();
+                        format!("{}{number:0width$}", dimension.get_label().to_lowercase())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("_");
+                self.last_output
+                    .get_plane(coordinates)
+                    .map(|image| (name, image.clone()))
+            })
+            .collect()
+    }
+
+    /// Convert from internal BGRA representation to external file format and write, per `ExportScope` reqs.
+    async fn save_output(&mut self, file: &Path, scope: ExportScope) -> anyhow::Result<()> {
         ensure!(
             self.output_is_current,
             "No current pipeline output to save; process the image successfully first"
         );
         self.ensure_no_stage_gpu_errors("Save pipeline output")?;
-        let last_output = self
-            .last_output
-            .as_ref()
-            .ok_or_else(|| anyhow!("no image in the output buffer"))?;
-        let out_img = self
-            .colorspace_converter
-            .convert_bgra_to_rgba(last_output)
-            .await?;
-        self.ensure_no_stage_gpu_errors("Write pipeline output")?;
-        out_img.save(file)?;
+        let image = match scope {
+            ExportScope::CurrentView => self.get_displayed_image()?,
+            ExportScope::CompositeView => self.composite_displayed_position().await?,
+            ExportScope::AllViews => {
+                // Converting and appending one plane at a time holds one RGBA plane, not the stack.
+                let mut archive = ImageArchiveWriter::create(file)?;
+                for (name, plane) in self.get_named_views() {
+                    archive.append(&name, &self.convert_output_plane(&plane).await?)?;
+                }
+                return archive.finish();
+            }
+        };
+        self.convert_output_plane(&image).await?.save(file)?;
         Ok(())
     }
 
@@ -247,21 +374,34 @@ impl Pipeline {
         let mut pending_processing_from = PendingProcessing::default();
         for cmd in commands {
             match cmd {
-                PipelineCommand::Load { files, reply } => {
-                    let result = self.load_images(&files);
+                PipelineCommand::Load {
+                    files,
+                    arrangement,
+                    reply,
+                } => {
+                    let result = self.load_images(&files, &arrangement);
                     if result.is_ok() {
                         pending_processing_from.request_processing(0);
                     } else {
-                        let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
+                        self.finish_pipeline_activity();
                     }
                     self.complete_operation(reply, result, None);
                 }
                 PipelineCommand::AddTool { kind, reply } => {
-                    let result = self.tool_manager.add_tool(&kind).await;
-                    if result.is_ok() {
-                        self.gesture_owner = None;
-                    } else if let Err(error) = &result {
-                        self.report_error("Tool initialization failed", error);
+                    let result = self
+                        .tool_manager
+                        .add_tool(&kind, self.view.position())
+                        .await;
+                    match &result {
+                        Ok(id) => {
+                            self.gesture_owner = None;
+                            if let Some(tool) = self.tool_manager.tools.get_mut(id)
+                                && !self.input_images.is_empty()
+                            {
+                                tool.replace_input(self.input_images.get_shape());
+                            }
+                        }
+                        Err(error) => self.report_error("Tool initialization failed", error),
                     }
                     let _ = reply.send(result.map_err(|error| format!("{error:#}")));
                 }
@@ -271,7 +411,11 @@ impl Pipeline {
                     }
                     self.tool_manager.remove_tool(id);
                 }
-                PipelineCommand::MoveTool { id, before } => self.tool_manager.move_tool(id, before),
+                PipelineCommand::MoveTool { id, before } => {
+                    if let Some(index) = self.tool_manager.move_tool(id, before) {
+                        pending_processing_from.request_processing(index);
+                    }
+                }
                 PipelineCommand::SelectTool(id) => {
                     let previous = self.tool_manager.selected_tool;
                     self.tool_manager.select(id);
@@ -323,16 +467,24 @@ impl Pipeline {
                     self.complete_operation(reply, result, Some("Pipeline saved"));
                 }
                 PipelineCommand::LoadPipeline { path, cli, reply } => {
-                    let result = self.tool_manager.load_pipeline(&path, cli).await;
+                    let result = self
+                        .tool_manager
+                        .load_pipeline(&path, cli, self.view.position())
+                        .await;
                     if result.is_ok() {
                         self.gesture_owner = None;
+                        for tool in self.tool_manager.tools.values_mut() {
+                            if !self.input_images.is_empty() {
+                                tool.replace_input(self.input_images.get_shape());
+                            }
+                        }
                         pending_processing_from.request_processing(0);
                     }
                     self.complete_operation(reply, result, Some("Pipeline loaded"));
                 }
-                PipelineCommand::SaveOutput { path, reply } => {
+                PipelineCommand::SaveOutput { path, scope, reply } => {
                     let result = match self.flush_processing(&mut pending_processing_from).await {
-                        Ok(()) => self.save_output(&path).await,
+                        Ok(()) => self.save_output(&path, scope).await,
                         Err(error) => Err(error),
                     };
                     // Save replies already produce GUI feedback, unlike background processing.
@@ -340,6 +492,16 @@ impl Pipeline {
                         eprintln!("Image save failed: {error:#}");
                     }
                     let _ = reply.send(result.map_err(|e| format!("{e:#}")));
+                }
+                PipelineCommand::SelectView {
+                    coordinates,
+                    load_generation,
+                } => {
+                    if load_generation == self.load_generation
+                        && let Err(error) = self.select_view(coordinates)
+                    {
+                        self.report_error("Image selection failed", &error);
+                    }
                 }
                 PipelineCommand::RequestOverlays => self.publish_overlays(),
                 PipelineCommand::InteractionStart(x, y) => {
@@ -369,6 +531,7 @@ impl Pipeline {
             self.report_error("Pipeline processing failed", &error);
         }
         self.ensure_no_remaining_gpu_errors();
+        self.flag_stale_output_frame();
         Ok(())
     }
     /// Report a file operation result and send its command reply.
@@ -388,9 +551,13 @@ impl Pipeline {
         }
         let _ = reply.send(result.map_err(|error| format!("{error:#}")));
     }
-    /// Load equally sized images as BGRA layers and invalidate previous processing.
-    fn load_images(&mut self, files: &[std::path::PathBuf]) -> anyhow::Result<()> {
-        use anyhow::{Context as _, ensure};
+    /// Load images as BGRA planes in the requested arrangement, invalidating previous processing
+    /// and clearing the displayed frame.
+    fn load_images(
+        &mut self,
+        files: &[PathBuf],
+        arrangement: &ImageArrangement,
+    ) -> anyhow::Result<()> {
         ensure!(!files.is_empty(), "No input images provided");
         let _ = self
             .output_sender
@@ -398,6 +565,7 @@ impl Pipeline {
                 stage: 0,
                 total: 1,
                 name: "Loading images".into(),
+                planes: None,
             }));
         let mut images = Vec::with_capacity(files.len());
         for file in files {
@@ -406,17 +574,12 @@ impl Pipeline {
                 .decode()
                 .with_context(|| format!("Failed to decode {}", file.display()))?
                 .into_rgba8();
-            if let Some(first) = images.first() {
-                ensure!(
-                    image.dimensions() == RgbaImage::dimensions(first),
-                    "All images must have the same dimensions"
-                );
-            }
             for pixel in image.pixels_mut() {
                 pixel.0.swap(0, 2);
             }
-            images.push(image);
+            images.push(Arc::new(image));
         }
+        let images = ImageCollection::arrange(images, arrangement)?;
         let generation = self
             .load_generation
             .checked_add(1)
@@ -424,12 +587,30 @@ impl Pipeline {
         for tool in self.tool_manager.tools.values_mut() {
             tool.cancel_interaction();
             tool.invalidate_cache();
+            tool.replace_input(images.get_shape());
         }
         self.gesture_owner = None;
-        self.input_images = images.into_iter().map(Arc::new).collect();
+        self.set_view(Coordinates::default());
+        self.last_output = ImageCollection::default();
+        self.input_images = images;
         self.load_generation = generation;
         self.output_is_current = false;
+        // The previous load's frame no longer matches the output, so viewers must stop
+        // offering its images for selection.
+        self.output_frame_sender.send_replace(None);
         Ok(())
+    }
+    /// Show another plane and direct per-position tool edits to its position. After a failed
+    /// run the plane comes from the last successful output, so edits stay on the plane shown.
+    fn select_view(&mut self, coordinates: Coordinates) -> anyhow::Result<()> {
+        let shape = self.last_output.get_shape();
+        ensure!(
+            shape.contains(coordinates),
+            "Image {} is not loaded",
+            coordinates.describe(shape)
+        );
+        self.set_view(coordinates);
+        self.publish_output_frame()
     }
     /// Route canvas input to the selected enabled tool.
     fn route_interaction_input(&mut self, id: Option<ToolId>, input: ToolInput) {
@@ -474,7 +655,37 @@ impl Pipeline {
         while let Some(error) = self.gpu.take_uncaptured_error() {
             self.invalidate_output();
             self.report_error("GPU failure", &error.into());
-            let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
+            self.finish_pipeline_activity();
+        }
+    }
+    /// Tell the frontend that pipeline activity has ended, including background overlay work.
+    fn finish_pipeline_activity(&mut self) {
+        self.overlay_activity_shown = false;
+        let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
+    }
+    /// Show a tool's background overlay work as pipeline activity, as when it ran inside a
+    /// pipeline stage, and end the activity once no enabled tool has overlay work pending.
+    fn publish_overlay_activity(&mut self) {
+        let pending = self
+            .tool_manager
+            .tools
+            .values()
+            .find(|tool| tool.is_enabled() && tool.has_pending_overlay())
+            .map(|tool| format!("{:?}", tool.iam()));
+        match pending {
+            Some(name) if !self.overlay_activity_shown => {
+                self.overlay_activity_shown = true;
+                let _ =
+                    self.output_sender
+                        .send(FrontendMessage::PipelineProgress(PipelineProgress {
+                            stage: 0,
+                            total: 1,
+                            name,
+                            planes: None,
+                        }));
+            }
+            None if self.overlay_activity_shown => self.finish_pipeline_activity(),
+            _ => {}
         }
     }
     /// Publish the merged tool overlays to the frontend.
@@ -500,7 +711,7 @@ impl Pipeline {
             }
         }
         self.overlays_dirty |= self.tool_manager.publish();
-        if std::mem::take(&mut self.overlays_dirty) {
+        if mem::take(&mut self.overlays_dirty) {
             self.publish_overlays();
         }
     }
@@ -516,7 +727,7 @@ impl Pipeline {
         }
         self.tool_manager.reconcile(pending);
         for (index, tool) in self.tool_manager.tools.values_mut().enumerate() {
-            if tool.reconcile_state() && tool.is_enabled() && tool.supports_processing() {
+            if tool.reconcile_state() && tool.is_enabled() {
                 pending.request_processing(index);
             }
         }
@@ -524,12 +735,13 @@ impl Pipeline {
             && !self.input_images.is_empty()
         {
             let result = self.process_from(index).await;
-            let _ = self.output_sender.send(FrontendMessage::PipelineFinished);
+            self.finish_pipeline_activity();
             result
         } else {
             Ok(())
         };
         self.publish_events();
+        self.publish_overlay_activity();
         result
     }
 }

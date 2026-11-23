@@ -1,21 +1,67 @@
 use async_trait::async_trait;
-use image::RgbaImage;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::{
-    BackendToolType, PersistedState, PipelineObjectMessage, ToolInput, ToolState,
-    overlay::ToolOverlay,
+    BackendToolType, ImageCollection, PersistedState, PipelineObjectMessage, PlaneProgress,
+    Position, Shape, ToolInput, ToolState, overlay::ToolOverlay,
 };
 
 /// Named files stored alongside a tool's configuration in a pipeline archive.
 pub type ToolAssets = HashMap<String, Vec<u8>>;
 
+/// Publish an active stage's plane counts from the thread processing them.
+pub type ReportPlaneProgress = Box<dyn FnMut(PlaneProgress) + Send>;
+
+/// Adapts iterators so a processing loop reports its progress in planes.
+pub trait PlaneProgressExt: ExactSizeIterator + Sized {
+    /// Report one completed plane per iteration.
+    fn report_progress(self, report_planes: ReportPlaneProgress) -> PlaneProgressIter<Self> {
+        PlaneProgressIter {
+            total: self.len(),
+            completed: 0,
+            items: self,
+            report_planes,
+        }
+    }
+}
+
+impl<I: ExactSizeIterator> PlaneProgressExt for I {}
+
+/// Iterator that counts an item's plane as finished when the loop asks for the next item.
+pub struct PlaneProgressIter<I> {
+    items: I,
+    completed: usize,
+    total: usize,
+    report_planes: ReportPlaneProgress,
+}
+
+impl<I: Iterator> Iterator for PlaneProgressIter<I> {
+    type Item = I::Item;
+
+    /// Report the planes finished so far, then yield the next item.
+    fn next(&mut self) -> Option<I::Item> {
+        (self.report_planes)(PlaneProgress {
+            completed: self.completed,
+            total: self.total,
+        });
+        let item = self.items.next()?;
+        self.completed = self.completed.saturating_add(1);
+        Some(item)
+    }
+}
+
 /// Trait for image processing tools (backend)
 #[async_trait]
 pub trait ToolBackend: Send + Sync {
-    /// Process input images and return modified images
-    async fn process(&mut self, output_images: &mut Vec<Arc<RgbaImage>>) -> anyhow::Result<()>;
+    /// Process the images of the collection in place. Stages that work plane by plane report
+    /// one completed plane per output plane.
+    /// # Errors
+    /// Returns an error if processing fails.
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()>;
 
     /// Check if this tool is currently enabled
     fn is_enabled(&self) -> bool;
@@ -43,6 +89,13 @@ pub trait ToolBackend: Send + Sync {
     }
     /// Cancel any active canvas interaction owned by this tool.
     fn cancel_interaction(&mut self) {}
+    /// Direct canvas edits and per-position annotations to the given position.
+    fn select_position(&mut self, _position: Position) {}
+    /// Return whether the tool is computing an overlay in the background, which the viewer shows
+    /// as pipeline activity.
+    fn has_pending_overlay(&self) -> bool {
+        false
+    }
     /// Report and consume pending overlay changes; return false by default.
     fn take_overlay_changes(&mut self) -> bool {
         false
@@ -64,11 +117,6 @@ pub trait ToolBackend: Send + Sync {
 
     /// Identify
     fn iam(&self) -> BackendToolType;
-
-    /// Supports processing
-    fn supports_processing(&self) -> bool {
-        true
-    }
 
     /// Load parsed settings into a detached candidate.
     /// # Errors
@@ -121,13 +169,19 @@ pub trait ToolBackend: Send + Sync {
         None
     }
 
-    /// Return the cached output only if it is still valid for the tool's current state.
-    fn valid_cached_output(&self) -> Option<Vec<Arc<RgbaImage>>> {
+    /// Return cached output for the supplied input and current processing settings.
+    fn valid_cached_output(&self, _input: &ImageCollection) -> Option<ImageCollection> {
         None
     }
 
-    /// Cache the output
-    fn set_cached_output(&mut self, _output: Vec<Arc<RgbaImage>>) {}
+    /// Refresh transient state when a processing pass restores this tool's output.
+    fn refresh_after_cache_hit(&mut self) {}
+
+    /// Cache the output of a successful run for the supplied input.
+    fn set_cached_output(&mut self, _input: &ImageCollection, _output: ImageCollection) {}
+
+    /// Clear a bypassed tool's retained input and output if its upstream images have changed.
+    fn reconcile_bypassed_input(&mut self, _input: &ImageCollection) {}
 
     /// Invalidate reusable output while retaining input needed for canvas interactions.
     fn invalidate_cached_output(&mut self) {
@@ -136,6 +190,10 @@ pub trait ToolBackend: Send + Sync {
 
     /// Invalidate all processing caches, including cached input.
     fn invalidate_cache(&mut self) {}
+
+    /// Discard state tied to the previous input images, which images of `shape` replace, as
+    /// when a new collection is loaded.
+    fn replace_input(&mut self, _shape: Shape) {}
 
     /// Get overlay elements to render on the primary viewer.
     /// Returns None if the tool doesn't produce overlays.

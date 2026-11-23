@@ -1,17 +1,17 @@
-use crate::tools::base::ToolEvents;
+use crate::tools::{base::ToolEvents, cache::ToolCache};
 use num_traits::ToPrimitive;
 use strawberry_types::RgbaColor;
 
 use crate::nervetracer::io::{
     export_nervetracer_to_xml_file, import_nervetracer_from_xml_file_into,
 };
-use std::sync::Arc;
+use std::mem;
 use strawberry_processing::nervetracer::create_path;
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, FrontendMessage, NerveTracerMessage, NerveTracerState, PipelineObjectMessage,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, FrontendMessage, ImageCollection, NerveTracerMessage, NerveTracerState,
+    PipelineObjectMessage, Position, ReportPlaneProgress, Shape, ToolBackend, ToolInput, ToolState,
     overlay::{OverlayElement, ToolOverlay},
 };
 
@@ -24,8 +24,7 @@ fn pixel_center((x, y): (u64, u64)) -> Option<(f32, f32)> {
 pub struct NerveTracer {
     pub state: NerveTracerState,
     pub events: ToolEvents,
-    pub cache: crate::tools::cache::ToolCache<NerveTracerState>,
-    pub cached_input: Option<Arc<image::RgbaImage>>,
+    pub cache: ToolCache<NerveTracerState>,
 }
 
 #[async_trait]
@@ -37,6 +36,16 @@ impl ToolBackend for NerveTracer {
     /// Cancel the active canvas interaction.
     fn cancel_interaction(&mut self) {
         self.state.first_point = None;
+    }
+    /// Drop the previous images' traces, which may lie on slices the new images lack, and
+    /// number positions by the new images' shape.
+    fn replace_input(&mut self, shape: Shape) {
+        self.state.traces.clear();
+        self.state.shape = shape;
+    }
+    /// Trace on, and show the paths of, the given position.
+    fn select_position(&mut self, position: Position) {
+        self.state.traces.select(position);
     }
     /// Return whether this tool is enabled.
     fn is_enabled(&self) -> bool {
@@ -56,79 +65,54 @@ impl ToolBackend for NerveTracer {
         ToolState::NerveTracerState(self.state.clone())
     }
 
-    /// Cache the selected input layer for tracing and refresh the available layer count.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        self.state.total_images = input.len();
-
-        // Clamp selected_image_index if it's out of bounds
-        if self.state.selected_image_index >= input.len() && !input.is_empty() {
-            self.state.selected_image_index = input.len().saturating_sub(1);
+    /// Remember the images for tracing and keep the traced channel within their channels.
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        _report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
+        self.state.shape = images.get_shape();
+        let channels = self.state.shape.c;
+        if self.state.selected_channel >= channels && channels > 0 {
+            self.state.selected_channel = channels.saturating_sub(1);
         }
-
-        // Cache the selected image
-        if input.is_empty() {
-            self.cached_input = None;
-        } else {
-            self.cached_input = input.get(self.state.selected_image_index).cloned();
-        }
-
+        self.cache.remember_input(images);
         Ok(())
     }
 
     /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         match message {
-            ToolInput::HandleClick(x, y) => {
-                if !self.state.is_enabled {
-                    return Ok(());
-                }
-                let Some(image) = &self.cached_input else {
-                    return Ok(());
-                };
-
-                match self.state.first_point {
-                    None => {
-                        // First click - store the point
-                        self.state.first_point = Some((x, y));
-                    }
-                    Some(first) => {
-                        // Second click - create path segment
-                        let new_path = create_path(first, (x, y), image);
-                        self.state.first_point = None;
-                        if let Some(new_path) = new_path {
-                            self.state.current_path_segments.push(new_path);
-                        }
-                    }
-                }
-            }
+            ToolInput::HandleClick(x, y) => self.trace_to_point((x, y)),
 
             ToolInput::Message(PipelineObjectMessage::NerveTracerMessage(message)) => match message
             {
                 NerveTracerMessage::CommitCurrentPathSegments() => {
-                    self.state
-                        .paths
-                        .push(self.state.current_path_segments.clone());
-                    self.state.current_path_segments.clear();
+                    let traces = self.state.traces.get_selected_mut();
+                    let segments = mem::take(&mut traces.current_path_segments);
+                    traces.paths.push(segments);
                 }
                 NerveTracerMessage::DeletePath(id) => {
-                    if id < self.state.paths.len() {
-                        self.state.paths.remove(id);
+                    let paths = &mut self.state.traces.get_selected_mut().paths;
+                    if id < paths.len() {
+                        paths.remove(id);
                     }
                 }
                 NerveTracerMessage::DeletePathSegmentInCommitedPath(path_id, segment_id) => {
-                    if let Some(path) = self.state.paths.get_mut(path_id)
+                    if let Some(path) = self.state.traces.get_selected_mut().paths.get_mut(path_id)
                         && segment_id < path.len()
                     {
                         path.remove(segment_id);
                     }
                 }
                 NerveTracerMessage::DeleteUncomittedPathSegment(id) => {
-                    if id < self.state.current_path_segments.len() {
-                        self.state.current_path_segments.remove(id);
+                    let segments = &mut self.state.traces.get_selected_mut().current_path_segments;
+                    if id < segments.len() {
+                        segments.remove(id);
                     }
                 }
-                NerveTracerMessage::LoadTraces(path) => {
-                    match import_nervetracer_from_xml_file_into(&path, &mut self.state) {
+                NerveTracerMessage::LoadTraces(path, placement) => {
+                    match import_nervetracer_from_xml_file_into(&path, &mut self.state, placement) {
                         Ok(()) => {
                             self.events.emit(FrontendMessage::success(
                                 "Traces loaded successfully!".to_string(),
@@ -158,8 +142,8 @@ impl ToolBackend for NerveTracer {
                         }
                     }
                 }
-                NerveTracerMessage::SetSelectedImageIndex(index) => {
-                    self.state.selected_image_index = index;
+                NerveTracerMessage::SelectChannel(index) => {
+                    self.state.selected_channel = index;
                 }
             },
             _ => {}
@@ -173,40 +157,11 @@ impl ToolBackend for NerveTracer {
         BackendToolType::NerveTracer
     }
 
-    /// Reconcile settings and report whether processing is needed.
-    fn reconcile_state(&mut self) -> bool {
-        let (invalidate, process) = self.cache.sync.reconcile(&self.state);
-        if invalidate {
-            self.invalidate_cache();
-        }
-        process
-    }
+    crate::impl_tool_cache!();
 
-    /// Record the settings acknowledged by processing.
-    fn acknowledge_processed_state(&mut self) {
-        self.cache.sync.acknowledge(&self.state);
-    }
-
-    /// Return cached output when its processing settings still match.
-    fn valid_cached_output(&self) -> Option<Vec<Arc<image::RgbaImage>>> {
-        self.cache.valid_output(&self.state)
-    }
-
-    /// Cache processed images together with their settings.
-    fn set_cached_output(&mut self, output: Vec<Arc<image::RgbaImage>>) {
-        self.cache.cached_output = Some(output);
-        self.cache.cached_state = Some(self.state.clone());
-    }
-
-    /// Discard cached output while preserving input needed for interaction.
+    /// Discard cached output while keeping the remembered input, so clicks still trace.
     fn invalidate_cached_output(&mut self) {
         self.cache.invalidate();
-    }
-
-    /// Discard cached processing data.
-    fn invalidate_cache(&mut self) {
-        self.invalidate_cached_output();
-        self.cached_input = None;
     }
 
     /// Build the canvas overlays for this tool.
@@ -239,7 +194,7 @@ impl ToolBackend for NerveTracer {
         }
 
         // Draw uncommitted segments
-        for segment in &self.state.current_path_segments {
+        for segment in self.state.get_current_path_segments() {
             let points: Vec<(f32, f32)> = segment
                 .iter()
                 .copied()
@@ -256,7 +211,7 @@ impl ToolBackend for NerveTracer {
         }
 
         // Draw committed paths
-        for path in &self.state.paths {
+        for path in self.state.get_paths() {
             for segment in path {
                 let points: Vec<(f32, f32)> = segment
                     .iter()
@@ -291,65 +246,44 @@ impl NerveTracer {
     #[must_use]
     pub fn new(events: ToolEvents) -> Self {
         let state = NerveTracerState {
-            is_enabled: false,
-            paths: vec![],
-            current_path_segments: vec![],
-            first_point: None,
-            selected_image_index: 0,
-            total_images: 0,
+            shape: Shape::SINGLE_PLANE,
+            ..NerveTracerState::default()
         };
         Self {
-            state: state.clone(),
+            cache: ToolCache::new(&state),
+            state,
             events,
-            cache: crate::tools::cache::ToolCache::new(&state),
-            cached_input: None,
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Verify trace overlays use pixel centers without modifying stored paths.
-    #[test]
-    fn trace_markers_and_segments_use_pixel_centers_without_changing_stored_paths()
-    -> anyhow::Result<()> {
-        let mut tracer = NerveTracer::new(ToolEvents::default());
-        tracer.state.is_enabled = true;
-        tracer.state.first_point = Some((0, 0));
-        tracer.state.current_path_segments = vec![vec![(10, 20), (30, 20)]];
-        tracer.state.paths = vec![vec![vec![(5, 6), (7, 8)]]];
-        let state = tracer.state.clone();
-        let overlay = tracer
-            .get_overlays(strawberry_types::ToolId(1))
-            .ok_or_else(|| anyhow::anyhow!("Trace overlay missing"))?;
-        let expected = vec![
-            OverlayElement::Point {
-                x: 0.5,
-                y: 0.5,
-                radius: 2.0,
-                color: RgbaColor::new(255, 50, 100, 255),
-            },
-            OverlayElement::Polyline {
-                points: vec![(10.5, 20.5), (30.5, 20.5)],
-                color: RgbaColor::new(255, 200, 0, 255),
-                stroke_width: 2.0,
-            },
-            OverlayElement::Polyline {
-                points: vec![(5.5, 6.5), (7.5, 8.5)],
-                color: RgbaColor::new(0, 200, 255, 255),
-                stroke_width: 2.0,
-            },
-        ];
-        anyhow::ensure!(
-            overlay.elements == expected,
-            "Trace overlays are not centered on their pixels"
-        );
-        anyhow::ensure!(
-            tracer.state == state,
-            "Rendering changed stored trace coordinates"
-        );
-        Ok(())
+    /// Start a path segment at `point`, or finish the pending one there by tracing the selected
+    /// channel of the viewed position.
+    fn trace_to_point(&mut self, point: (u64, u64)) {
+        if !self.state.is_enabled {
+            return;
+        }
+        let coordinates = self
+            .state
+            .traces
+            .get_selected_position()
+            .with_channel(self.state.selected_channel);
+        let Some(image) = self
+            .cache
+            .get_input()
+            .and_then(|input| input.get_plane(coordinates))
+        else {
+            return;
+        };
+        let Some(first) = self.state.first_point.take() else {
+            self.state.first_point = Some(point);
+            return;
+        };
+        if let Some(segment) = create_path(first, point, image) {
+            self.state
+                .traces
+                .get_selected_mut()
+                .current_path_segments
+                .push(segment);
+        }
     }
 }

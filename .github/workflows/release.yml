@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            label: macos-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            label: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig-dev libssl-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Restore cargo-chef
+        id: chef-tool
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-chef*
+          key: cargo-chef-0.1.78-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
+      - name: Install cargo-chef
+        if: steps.chef-tool.outputs.cache-hit != 'true'
+        run: cargo install cargo-chef --version 0.1.78 --locked
+      - name: Prepare dependency recipe
+        run: cargo chef prepare --recipe-path recipe.json
+      # The cache holds only cooked dependencies, so it is keyed on the recipe and
+      # saved before workspace crates are built; source-only pushes reuse it as-is.
+      - name: Restore cooked dependencies
+        id: chef-deps
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: chef-${{ matrix.target }}-${{ hashFiles('recipe.json', 'rust-toolchain.toml') }}
+      - name: Cook dependencies
+        if: steps.chef-deps.outputs.cache-hit != 'true'
+        run: cargo chef cook --release --locked --package strawberry-frontend --target ${{ matrix.target }} --recipe-path recipe.json
+      - name: Save cooked dependencies
+        if: steps.chef-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.chef-deps.outputs.cache-primary-key }}
+      - name: Build Strawberry
+        if: github.ref_type == 'branch'
+        run: cargo build --release --locked --package strawberry-frontend --target ${{ matrix.target }}
+      - name: Install cargo-bundle
+        if: github.ref_type == 'tag'
+        run: cargo install cargo-bundle --version 0.12.0 --locked
+      - name: Bundle
+        if: github.ref_type == 'tag'
+        run: cargo bundle --release --package strawberry-frontend -t ${{ matrix.target }}
+      - name: Collect bundles
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          mkdir dist
+          for bundle in target/${{ matrix.target }}/release/bundle/*/*.{dmg,deb,AppImage,msi,exe}; do
+            cp "$bundle" "dist/Strawberry-$GITHUB_REF_NAME-${{ matrix.label }}.${bundle##*.}"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.ref_type == 'tag'
+        with:
+          name: ${{ matrix.label }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --prerelease --generate-notes --verify-tag

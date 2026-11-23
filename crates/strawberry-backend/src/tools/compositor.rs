@@ -1,5 +1,5 @@
 use crate::tools::base::ToolEvents;
-use anyhow::Result;
+use anyhow::{Result, anyhow, ensure};
 use std::sync::Arc;
 
 use crate::impl_tool_backend_basics;
@@ -9,8 +9,9 @@ use strawberry_processing::{GpuImageProcessor, compositor::GpuCompositor};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, CompositorMessage, CompositorState, FrontendMessage, PipelineObjectMessage,
-    ToolBackend, ToolInput, ToolState,
+    BackendToolType, CompositorMessage, CompositorState, Dimension, FrontendMessage,
+    ImageCollection, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress, ToolBackend,
+    ToolInput, ToolState,
 };
 
 pub struct Compositor {
@@ -34,67 +35,75 @@ impl ToolBackend for Compositor {
         BackendToolType::Compositor
     }
 
-    /// Composite enabled input layers into a single BGRA image.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        self.state.real_layers_len = input.len();
-
-        if input.len() == 1 {
+    /// Composite the enabled channels at each position into a single BGRA image; positions
+    /// holding a single channel are left untouched.
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
+        let channel_count = images.get_shape().c;
+        self.state.channel_count = channel_count;
+        if self.state.enabled_channels.len() < channel_count {
+            self.state.enabled_channels.resize(channel_count, true);
+        }
+        if channel_count <= 1 {
             return Ok(());
         }
-
-        let images: Vec<Arc<image::RgbaImage>> = input
-            .clone()
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, image)| {
-                if self.state.enabled_layers.get(i).copied().unwrap_or(false) {
-                    Some(image)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let composited = self.compositer.composite_images(&images).await?;
-
-        *input = vec![Arc::new(composited)];
-
-        Ok(())
+        ensure!(
+            self.state
+                .enabled_channels
+                .iter()
+                .take(channel_count)
+                .any(|&enabled| enabled),
+            "Compositor has no enabled channels"
+        );
+        let mut lanes = images.get_lanes(Dimension::C);
+        for lane in lanes.iter_mut().report_progress(report_planes) {
+            let enabled: Vec<_> = lane
+                .iter()
+                .zip(&self.state.enabled_channels)
+                .filter(|&(_, &enabled)| enabled)
+                .map(|(image, _)| image.clone())
+                .collect();
+            *lane = vec![Arc::new(self.compositer.composite_images(&enabled).await?)];
+        }
+        images.replace_lanes(Dimension::C, lanes)
     }
 
     /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         if let ToolInput::Message(PipelineObjectMessage::CompositorMessage(message)) = message {
             match message {
-                CompositorMessage::ToggleVisibility(value, layer_index) => {
-                    let mut mutated = self.state.enabled_layers.clone();
-                    let index = usize::from(layer_index);
+                CompositorMessage::ToggleVisibility(value, channel_index) => {
+                    let mut mutated = self.state.enabled_channels.clone();
+                    let index = usize::from(channel_index);
+                    // Toggles kept for channels of an earlier, wider image are not shown, so
+                    // they must not change either.
+                    let channel_count = self.state.channel_count.min(mutated.len());
 
-                    if index >= mutated.len() {
+                    if index >= channel_count {
                         let error_msg = format!(
-                            "Compositor: Layer index {} out of bounds (max: {})",
-                            index,
-                            mutated.len()
+                            "Compositor: Channel index {index} out of bounds for {channel_count} channel(s)"
                         );
                         self.base
                             .events
                             .emit(FrontendMessage::error(error_msg.clone()));
-                        return Err(anyhow::anyhow!(error_msg));
+                        return Err(anyhow!(error_msg));
                     }
 
-                    if let Some(layer) = mutated.get_mut(index) {
-                        *layer = value;
+                    if let Some(channel) = mutated.get_mut(index) {
+                        *channel = value;
                     }
 
-                    let end_range = std::cmp::min(self.state.real_layers_len, mutated.len());
                     if mutated
-                        .get(0..end_range)
+                        .get(0..channel_count)
                         .is_none_or(|slice| slice.iter().all(|&x| !x))
                     {
                         return Ok(());
                     }
 
-                    self.state.enabled_layers = mutated;
+                    self.state.enabled_channels = mutated;
                 }
             }
         }
@@ -112,8 +121,8 @@ impl Compositor {
     ) -> Result<Self> {
         let state = CompositorState {
             is_enabled: false,
-            enabled_layers: vec![true; 8],
-            real_layers_len: 0,
+            enabled_channels: Vec::new(),
+            channel_count: 0,
         };
         Ok(Self {
             state: state.clone(),

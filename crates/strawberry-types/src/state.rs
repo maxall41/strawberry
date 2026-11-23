@@ -1,4 +1,4 @@
-use crate::{BgraColor, RgbColor};
+use crate::{BgraColor, Position, RgbColor, Shape};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::collections::{BTreeMap, HashMap, HashSet, btree_map};
@@ -40,10 +40,11 @@ pub enum CounterTool {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompositorState {
     pub is_enabled: bool,
-    pub enabled_layers: Vec<bool>,
-    /// Don't include runtime layer metadata in persisted state
+    #[serde(alias = "enabled_layers")]
+    pub enabled_channels: Vec<bool>,
+    /// Number of channels in the last processed images; runtime-only.
     #[serde(skip)]
-    pub real_layers_len: usize,
+    pub channel_count: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -85,16 +86,44 @@ pub struct GrayscaleState {
 type PathSegment = Vec<(u64, u64)>;
 type Path = Vec<PathSegment>;
 
+/// Paths traced on one position.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PositionTraces {
+    pub paths: Vec<Path>,
+    pub current_path_segments: Vec<PathSegment>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NerveTracerState {
     pub is_enabled: bool,
-    pub paths: Vec<Path>,
-    pub current_path_segments: Vec<PathSegment>,
-    pub first_point: Option<(u64, u64)>,
-    pub selected_image_index: usize,
-    /// Don't include runtime image count metadata in persisted state
+    /// Traces are saved only to dedicated trace files, never to pipeline archives.
     #[serde(skip)]
-    pub total_images: usize,
+    pub traces: PerPosition<PositionTraces>,
+    #[serde(skip)]
+    pub first_point: Option<(u64, u64)>,
+    #[serde(alias = "selected_layer", alias = "selected_image_index")]
+    pub selected_channel: usize,
+    /// Shape of the images being traced, which numbers trace positions in files.
+    #[serde(skip)]
+    pub shape: Shape,
+}
+
+impl NerveTracerState {
+    /// Return the committed paths traced on the selected position.
+    #[must_use]
+    pub fn get_paths(&self) -> &[Path] {
+        self.traces
+            .get_selected()
+            .map_or(&[], |traces| traces.paths.as_slice())
+    }
+
+    /// Return the uncommitted segments traced on the selected position.
+    #[must_use]
+    pub fn get_current_path_segments(&self) -> &[PathSegment] {
+        self.traces
+            .get_selected()
+            .map_or(&[], |traces| traces.current_path_segments.as_slice())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,12 +232,108 @@ where
     Ok(result)
 }
 
+/// Values kept separately for each X, Y, Z, T position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerPosition<T> {
+    // Tool state is cloned for every published snapshot, so the map is shared; each value is
+    // shared too, so editing one position copies only that position's value.
+    positions: Arc<BTreeMap<Position, Arc<T>>>,
+    selected: Position,
+}
+
+impl<T> Default for PerPosition<T> {
+    /// Create an empty collection with the first position selected.
+    fn default() -> Self {
+        Self {
+            positions: Arc::default(),
+            selected: Position::default(),
+        }
+    }
+}
+
+impl<T: Clone + Default> PerPosition<T> {
+    /// Return the selected position.
+    #[must_use]
+    pub const fn get_selected_position(&self) -> Position {
+        self.selected
+    }
+
+    /// Select the position that subsequent edits apply to.
+    pub const fn select(&mut self, position: Position) {
+        self.selected = position;
+    }
+
+    /// Return the selected position's value, if one has been recorded.
+    #[must_use]
+    pub fn get_selected(&self) -> Option<&T> {
+        self.positions.get(&self.selected).map(Arc::as_ref)
+    }
+
+    /// Return the selected position's value, creating an empty one if needed.
+    pub fn get_selected_mut(&mut self) -> &mut T {
+        self.get_position_mut(self.selected)
+    }
+
+    /// Return a position's value, creating an empty one if needed.
+    pub fn get_position_mut(&mut self, position: Position) -> &mut T {
+        Arc::make_mut(
+            Arc::make_mut(&mut self.positions)
+                .entry(position)
+                .or_default(),
+        )
+    }
+
+    /// Iterate over recorded positions and their values in frame-major order.
+    pub fn iter(&self) -> impl Iterator<Item = (Position, &T)> {
+        self.positions
+            .iter()
+            .map(|(&position, value)| (position, value.as_ref()))
+    }
+
+    /// Iterate over the recorded positions on the selected position's mosaic tile, in
+    /// frame-major order.
+    pub fn iter_selected_tile(&self) -> impl Iterator<Item = (Position, &T)> {
+        let selected = self.selected;
+        self.iter()
+            .filter(move |(position, _)| position.shares_tile_with(selected))
+    }
+
+    /// Iterate mutably over every recorded position's value.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        Arc::make_mut(&mut self.positions)
+            .values_mut()
+            .map(Arc::make_mut)
+    }
+
+    /// Replace the values of the given positions, keeping every other position's value.
+    pub fn replace_positions(&mut self, values: impl IntoIterator<Item = (Position, T)>) {
+        let positions = Arc::make_mut(&mut self.positions);
+        for (position, value) in values {
+            positions.insert(position, Arc::new(value));
+        }
+    }
+
+    /// Remove every position's value, keeping the selected position.
+    pub fn clear(&mut self) {
+        self.positions = Arc::default();
+    }
+}
+
+/// Counts placed on, or detected in, one position.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PositionCounts {
+    pub manual: HashMap<u16, Vec<CountData>>,
+    pub auto: Vec<CountData>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CounterState {
     pub is_enabled: bool,
-    #[serde(deserialize_with = "deserialize_count_type_map")]
-    pub manual_counts: HashMap<u16, Vec<CountData>>,
-    pub auto_counts: Vec<CountData>,
+    #[serde(skip)]
+    pub counts: PerPosition<PositionCounts>,
+    /// Shape of the images being counted, which numbers count positions in files.
+    #[serde(skip)]
+    pub shape: Shape,
     pub mode: CounterMode,
     pub active_tool: Option<CounterTool>,
     pub active_count_type: Option<u16>,
@@ -219,10 +344,30 @@ pub struct CounterState {
     pub count_type_names: HashMap<u16, String>,
 }
 
+impl CounterState {
+    /// Return the selected position's manual counts of one type.
+    #[must_use]
+    pub fn get_manual_counts(&self, count_type: u16) -> &[CountData] {
+        self.counts
+            .get_selected()
+            .and_then(|counts| counts.manual.get(&count_type))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Return the counts detected in the selected position.
+    #[must_use]
+    pub fn get_auto_counts(&self) -> &[CountData] {
+        self.counts
+            .get_selected()
+            .map_or(&[], |counts| counts.auto.as_slice())
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecomposerState {
     pub is_enabled: bool,
-    pub enabled_layers: Vec<bool>,
+    #[serde(alias = "enabled_layers")]
+    pub enabled_channels: Vec<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -585,9 +730,12 @@ pub struct AutomaticSegmentationState {
     pub active_class: ClassId,
     pub brush: AnnotationKind,
     pub brush_radius: BrushRadius,
-    pub selected_layer: usize,
+    #[serde(alias = "selected_layer")]
+    pub selected_channel: usize,
     #[serde(skip)]
-    pub total_layers: usize,
+    pub channel_count: usize,
+    #[serde(skip)]
+    pub selected_position: Position,
     pub features: FeatureConfig,
     pub forest: ForestConfig,
     pub inference: InferenceConfig,
@@ -613,7 +761,6 @@ pub struct AutomaticSegmentationState {
     pub model_ready: bool,
     #[serde(skip)]
     pub oob_error: Option<f64>,
-    /// Invalidates pipeline output only when the trained or loaded model changes.
     #[serde(skip)]
     pub model_revision: u64,
 }
@@ -756,8 +903,9 @@ impl Default for AutomaticSegmentationState {
             active_class: ClassId::new(1),
             brush: AnnotationKind::default(),
             brush_radius: BrushRadius::default(),
-            selected_layer: 0,
-            total_layers: 0,
+            selected_channel: 0,
+            channel_count: 0,
+            selected_position: Position::default(),
             features: FeatureConfig::default(),
             forest: ForestConfig::default(),
             inference: InferenceConfig::default(),

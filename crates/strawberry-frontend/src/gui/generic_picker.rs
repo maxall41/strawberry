@@ -1,12 +1,14 @@
 use std::{ops::Range, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt, App, Context, FontWeight, HighlightStyle, KeyDownEvent, Pixels,
-    ScrollStrategy, StyledText, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
+    Animation, AnimationExt, App, Context, Div, ElementId, FontWeight, HighlightStyle,
+    KeyDownEvent, Pixels, ScrollStrategy, Stateful, StyledText, UniformListScrollHandle, Window,
+    div, prelude::*, px, transparent_black, uniform_list,
 };
 
 use super::{
     fuzzy::FuzzyMatcher,
+    text_buffer::TextBuffer,
     theme,
     tool_panel::{ListDirection, next_list_index},
 };
@@ -31,8 +33,7 @@ pub enum PickerAction {
 pub struct GenericPicker {
     labels: Vec<&'static str>,
     matcher: FuzzyMatcher,
-    query: String,
-    cursor: usize,
+    query: TextBuffer,
     matches: Vec<Candidate>,
     selected: usize,
     list_scroll: UniformListScrollHandle,
@@ -44,8 +45,7 @@ impl GenericPicker {
         let mut picker = Self {
             labels: labels.into_iter().collect(),
             matcher: FuzzyMatcher::new(),
-            query: String::new(),
-            cursor: 0,
+            query: TextBuffer::default(),
             matches: Vec::new(),
             selected: 0,
             list_scroll: UniformListScrollHandle::new(),
@@ -61,7 +61,7 @@ impl GenericPicker {
 
     /// Rebuild filtered picker results and reset the selected row.
     fn recompute(&mut self) {
-        self.matcher.set_query(&self.query);
+        self.matcher.set_query(self.query.text());
 
         let mut matches: Vec<Candidate> = self
             .labels
@@ -104,57 +104,17 @@ impl GenericPicker {
             .scroll_to_item(self.selected, ScrollStrategy::Nearest);
     }
 
-    /// Byte offset of the char boundary before the cursor, or the cursor itself at the start.
-    fn prev_boundary(&self) -> usize {
-        self.query
-            .get(..self.cursor)
-            .unwrap_or_default()
-            .chars()
-            .next_back()
-            .map_or(self.cursor, |c| self.cursor.saturating_sub(c.len_utf8()))
-    }
-
-    /// Byte offset of the char boundary after the cursor, or the cursor itself at the end.
-    fn next_boundary(&self) -> usize {
-        self.query
-            .get(self.cursor..)
-            .unwrap_or_default()
-            .chars()
-            .next()
-            .map_or(self.cursor, |c| self.cursor.saturating_add(c.len_utf8()))
-    }
-
     /// Insert text at the query cursor and refresh matching results.
     fn insert(&mut self, text: &str) {
-        self.query.insert_str(self.cursor, text);
-        self.cursor = self.cursor.saturating_add(text.len());
+        self.query.insert(text);
         self.recompute();
     }
 
-    /// Delete the char before the cursor, or everything before it when `to_start`.
-    fn delete_backward(&mut self, to_start: bool) {
-        let from = if to_start { 0 } else { self.prev_boundary() };
-        if from == self.cursor {
-            return;
+    /// Delete the query text between the cursor and `offset`, refreshing matches if it changed.
+    fn delete_to(&mut self, offset: usize) {
+        if self.query.delete_to(offset) {
+            self.recompute();
         }
-        self.query.replace_range(from..self.cursor, "");
-        self.cursor = from;
-        self.recompute();
-    }
-
-    /// Delete the character after the query cursor and refresh matches.
-    fn delete_forward(&mut self) {
-        let to = self.next_boundary();
-        if to == self.cursor {
-            return;
-        }
-        self.query.replace_range(self.cursor..to, "");
-        self.recompute();
-    }
-
-    /// Set the insertion cursor’s byte offset within the query.
-    const fn move_cursor(&mut self, to: usize) {
-        self.cursor = to;
     }
 
     /// Insert the first clipboard text line into the search query.
@@ -193,35 +153,42 @@ impl GenericPicker {
                 None
             }
             "left" => {
-                self.move_cursor(if modifiers.platform {
+                let cursor = self.query.cursor();
+                self.query.move_cursor(if modifiers.platform {
                     0
                 } else {
-                    self.prev_boundary()
+                    self.query.find_boundary_before(cursor)
                 });
                 None
             }
             "right" => {
-                self.move_cursor(if modifiers.platform {
-                    self.query.len()
+                let cursor = self.query.cursor();
+                self.query.move_cursor(if modifiers.platform {
+                    self.query.text().len()
                 } else {
-                    self.next_boundary()
+                    self.query.find_boundary_after(cursor)
                 });
                 None
             }
             "home" => {
-                self.move_cursor(0);
+                self.query.move_cursor(0);
                 None
             }
             "end" => {
-                self.move_cursor(self.query.len());
+                self.query.move_cursor(self.query.text().len());
                 None
             }
             "backspace" => {
-                self.delete_backward(modifiers.platform || modifiers.alt);
+                let cursor = self.query.cursor();
+                self.delete_to(if modifiers.platform || modifiers.alt {
+                    0
+                } else {
+                    self.query.find_boundary_before(cursor)
+                });
                 None
             }
             "delete" => {
-                self.delete_forward();
+                self.delete_to(self.query.find_boundary_after(self.query.cursor()));
                 None
             }
             _ if modifiers.platform || modifiers.control || modifiers.function => return None,
@@ -247,11 +214,12 @@ impl GenericPicker {
         let style = window.text_style();
         let font_size = QUERY_FONT_SIZE.to_pixels(window.rem_size());
         let line_height = px(f32::from(font_size) * 1.3).round();
+        let query = self.query.text().to_owned();
         let shaped = window.text_system().shape_line(
-            self.query.clone().into(),
+            query.clone().into(),
             font_size,
             &[gpui::TextRun {
-                len: self.query.len(),
+                len: query.len(),
                 font: style.font(),
                 color: style.color,
                 background_color: None,
@@ -262,7 +230,7 @@ impl GenericPicker {
         );
         let caret = div()
             .absolute()
-            .left(shaped.x_for_index(self.cursor))
+            .left(shaped.x_for_index(self.query.cursor()))
             .top_0()
             .w(px(1.5))
             .h(line_height)
@@ -295,17 +263,17 @@ impl GenericPicker {
                     .flex_1()
                     .min_w_0()
                     .h(line_height)
-                    .child(if self.query.is_empty() {
+                    .child(if query.is_empty() {
                         div().text_color(theme::TEXT_MUTED).child(placeholder)
                     } else {
-                        div().child(self.query.clone())
+                        div().child(query)
                     })
                     .child(caret),
             )
     }
 
     /// Build the row for the generic picker view.
-    pub fn render_row(&self, row: usize) -> Option<(usize, gpui::Stateful<gpui::Div>)> {
+    pub fn render_row(&self, row: usize) -> Option<(usize, Stateful<Div>)> {
         let candidate = self.matches.get(row)?;
         let label = *self.labels.get(candidate.index)?;
         let selected = row == self.selected;
@@ -321,29 +289,10 @@ impl GenericPicker {
             )
         }));
 
-        let element = div()
-            .id(("search-picker-row", row))
+        let element = build_picker_row(("search-picker-row", row), selected)
             .h(px(ROW_HEIGHT))
-            .w_full()
-            .flex()
-            .items_center()
             .justify_between()
-            .gap_2()
-            .px_3()
             .text_sm()
-            .cursor_pointer()
-            .border_l_2()
-            .border_color(if selected {
-                theme::ACCENT
-            } else {
-                gpui::transparent_black().into()
-            })
-            .bg(if selected {
-                theme::CONTROL_ACTIVE
-            } else {
-                theme::SURFACE
-            })
-            .when(!selected, |el| el.hover(|style| style.bg(theme::CONTROL)))
             .child(label);
         Some((candidate.index, element))
     }
@@ -382,6 +331,32 @@ impl GenericPicker {
         .h(height)
         .into_any_element()
     }
+}
+
+/// Build a floating list row with the shared hover style and keyboard-highlight marker.
+pub fn build_picker_row(id: impl Into<ElementId>, highlighted: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .w_full()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .cursor_pointer()
+        .border_l_2()
+        .border_color(if highlighted {
+            theme::ACCENT
+        } else {
+            transparent_black().into()
+        })
+        .bg(if highlighted {
+            theme::CONTROL_ACTIVE
+        } else {
+            theme::SURFACE
+        })
+        .when(!highlighted, |el| {
+            el.hover(|style| style.bg(theme::CONTROL))
+        })
 }
 
 /// Build the shared floating picker container.

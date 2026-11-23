@@ -1,3 +1,7 @@
 /target
 .DS_Store
+<<<<<<< HEAD
 TODO.md
+=======
+.claude/
+>>>>>>> e95d473948a1195ee63db8281473bd2aa1f17d02

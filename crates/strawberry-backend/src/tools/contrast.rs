@@ -9,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, contrast::GpuContrast};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, ContrastMessage, ContrastState, PipelineObjectMessage, ToolBackend, ToolInput,
-    ToolState,
+    BackendToolType, ContrastMessage, ContrastState, ImageCollection, PipelineObjectMessage,
+    PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Contrast {
@@ -34,9 +34,13 @@ impl ToolBackend for Contrast {
         BackendToolType::Contrast
     }
 
-    /// Apply the configured contrast adjustment to each input layer.
-    async fn process(&mut self, input: &mut Vec<Arc<image::RgbaImage>>) -> anyhow::Result<()> {
-        for image in input {
+    /// Apply the configured contrast adjustment to every input plane.
+    async fn process(
+        &mut self,
+        images: &mut ImageCollection,
+        report_planes: ReportPlaneProgress,
+    ) -> anyhow::Result<()> {
+        for image in images.planes_mut().report_progress(report_planes) {
             *image = Arc::new(
                 self.processor
                     .apply_contrast(image, self.state.min, self.state.max)

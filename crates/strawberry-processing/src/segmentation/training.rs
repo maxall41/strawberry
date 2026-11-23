@@ -1,6 +1,6 @@
 use super::cache::FeatureCache;
 use super::{
-    FeatureConfig, FeatureExtractor, Forest, ForestConfig, InferenceConfig, SegmentationModel,
+    FeatureConfig, FeatureExtractor, Forest, ForestConfig, InferenceConfig, TilePredictor,
     pixel_coordinates,
 };
 use crate::tiling::TileInfo;
@@ -12,6 +12,7 @@ use smartcore::{
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
+    sync::Arc,
 };
 
 pub(super) struct TrainingData {
@@ -128,7 +129,7 @@ impl TrainingData {
     /// Append features from first-stage class probabilities to the labeled training rows.
     pub async fn add_context(
         &mut self,
-        first_stage_forest: &Forest,
+        first_stage_forest: &Arc<Forest>,
         extractor: &FeatureExtractor,
         features: &FeatureConfig,
         images: &[Cow<'_, image::RgbaImage>],
@@ -145,16 +146,24 @@ impl TrainingData {
                 continue;
             }
             // Include unlabeled neighbors when constructing the probability context map.
-            let context = SegmentationModel::predict_batches(
-                first_stage_forest,
-                class_count,
-                image.dimensions(),
-                self.feature_count,
-                inference,
-                &indices,
-                async |batch: &[usize]| cache.load_batch(batch),
-            )
-            .await?;
+            let mut predictor = TilePredictor::new(inference, class_count, || {});
+            let output = predictor.add_image(image.dimensions(), indices.len())?;
+            for &index in &indices {
+                predictor
+                    .submit(
+                        output,
+                        first_stage_forest,
+                        cache.load(index)?,
+                        self.feature_count,
+                    )
+                    .await?;
+            }
+            predictor.finish_running().await?;
+            let context = predictor
+                .into_outputs()
+                .into_iter()
+                .next()
+                .context("Missing context planes")?;
             for index in indices {
                 let entry = cache.tiles.get(index).context("Missing cached tile")?;
                 if entry.samples.is_empty() {
@@ -188,8 +197,9 @@ impl TrainingData {
         Ok(())
     }
 
-    /// Train a random forest and return its out-of-bag classification error.
-    pub fn fit(&self, parameters: &ForestConfig) -> Result<(Forest, f64)> {
+    /// Train a random forest, shared so tiles can predict in parallel, and return its out-of-bag
+    /// classification error.
+    pub fn fit(&self, parameters: &ForestConfig) -> Result<(Arc<Forest>, f64)> {
         let rows = &self.rows;
         let labels = &self.labels;
         ensure!(
@@ -218,6 +228,6 @@ impl TrainingData {
             oob_error * 100.0,
             labels.len(),
         );
-        Ok((forest, oob_error))
+        Ok((Arc::new(forest), oob_error))
     }
 }

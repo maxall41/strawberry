@@ -1,4 +1,4 @@
-use crate::gui::actions::actions;
+use crate::gui::actions::{ToggleChannel, actions, create_channel_shortcuts};
 use crate::gui::theme;
 use strawberry_types::{CommandSender, ToolId};
 // Implements UI for Decomposer tool
@@ -13,6 +13,7 @@ use crate::gui::ToggleButton;
 use crate::tools::{FrontendMessageHandler, spawn_message_processor};
 use strawberry_types::{DecomposerMessage, DecomposerState, PipelineObjectMessage, ToolState};
 
+use strawberry_processing::decomposer::GpuDecomposer;
 use strawberry_types::ToolFrontend;
 
 pub struct DecomposerView {
@@ -41,25 +42,25 @@ impl DecomposerView {
         spawn_message_processor(self, window, cx);
     }
 
-    /// Send a layer visibility change to the backend.
-    fn toggle_layer(
+    /// Send a channel visibility change to the backend.
+    fn toggle_channel(
         &self,
         current_value: bool,
-        layer_index: usize,
+        channel_index: usize,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        let Ok(layer_index) = u16::try_from(layer_index) else {
-            eprintln!("Layer index exceeds the backend command range");
+        let Ok(channel_index) = u16::try_from(channel_index) else {
+            eprintln!("Channel index exceeds the backend command range");
             return;
         };
         if let Err(e) = self
             .base
             .send_to_backend(PipelineObjectMessage::DecomposerMessage(
-                DecomposerMessage::ToggleVisibility(!current_value, layer_index),
+                DecomposerMessage::ToggleVisibility(!current_value, channel_index),
             ))
         {
-            eprintln!("Failed to send toggle layer command: {e}");
+            eprintln!("Failed to send toggle channel command: {e}");
         }
     }
 
@@ -86,10 +87,10 @@ impl DecomposerView {
         self.toggle_enabled(current_enabled, window, cx);
     }
 
-    /// Toggle a layer using its position in the current state.
-    fn toggle_layer_by_index(
-        &self,
-        layer_index: usize,
+    /// Handle the keyboard action toggling a channel by its position in the current state.
+    fn toggle_channel_action(
+        &mut self,
+        action: &ToggleChannel,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -97,100 +98,10 @@ impl DecomposerView {
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(&current_value) = state.enabled_layers.get(layer_index) {
+        if let Some(&current_value) = state.enabled_channels.get(action.index) {
             drop(state);
-            self.toggle_layer(current_value, layer_index, window, cx);
+            self.toggle_channel(current_value, action.index, window, cx);
         }
-    }
-
-    /// Handle the keyboard action to toggle layer 1.
-    fn toggle_layer_1_action(
-        &mut self,
-        _: &DecomposerToggleLayer1,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_layer_by_index(0, window, cx);
-    }
-
-    /// Handle the keyboard action to toggle layer 2.
-    fn toggle_layer_2_action(
-        &mut self,
-        _: &DecomposerToggleLayer2,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_layer_by_index(1, window, cx);
-    }
-
-    /// Handle the keyboard action to toggle layer 3.
-    fn toggle_layer_3_action(
-        &mut self,
-        _: &DecomposerToggleLayer3,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_layer_by_index(2, window, cx);
-    }
-
-    /// Handle the keyboard action to toggle layer 4.
-    fn toggle_layer_4_action(
-        &mut self,
-        _: &DecomposerToggleLayer4,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_layer_by_index(3, window, cx);
-    }
-
-    /// Handle the keyboard action to toggle layer 5.
-    fn toggle_layer_5_action(
-        &mut self,
-        _: &DecomposerToggleLayer5,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_layer_by_index(4, window, cx);
-    }
-
-    /// Handle the keyboard action to toggle layer 6.
-    fn toggle_layer_6_action(
-        &mut self,
-        _: &DecomposerToggleLayer6,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_layer_by_index(5, window, cx);
-    }
-
-    /// Handle the keyboard action to toggle layer 7.
-    fn toggle_layer_7_action(
-        &mut self,
-        _: &DecomposerToggleLayer7,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_layer_by_index(6, window, cx);
-    }
-
-    /// Handle the keyboard action to toggle layer 8.
-    fn toggle_layer_8_action(
-        &mut self,
-        _: &DecomposerToggleLayer8,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_layer_by_index(7, window, cx);
-    }
-
-    /// Handle the keyboard action to toggle layer 9.
-    fn toggle_layer_9_action(
-        &mut self,
-        _: &DecomposerToggleLayer9,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_layer_by_index(8, window, cx);
     }
 
     // Status component showing enabled/disabled state
@@ -211,21 +122,21 @@ impl DecomposerView {
         .render(cx)
     }
 
-    // Individual layer item component
-    /// Build the layer item for the decomposer view.
-    fn render_layer_item(
+    // Individual channel item component
+    /// Build the channel item for the decomposer view.
+    fn render_channel_item(
         index: usize,
         is_enabled: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         ToggleButton::new(
-            format!("Layer {}", index.saturating_add(1)),
+            format!("Channel {}", index.saturating_add(1)),
             is_enabled,
             move |this: &mut Self,
                   _event: &MouseDownEvent,
                   window: &mut Window,
                   cx: &mut Context<Self>| {
-                this.toggle_layer(is_enabled, index, window, cx);
+                this.toggle_channel(is_enabled, index, window, cx);
             },
         )
         .with_text("On".to_string(), "Off".to_string())
@@ -234,9 +145,9 @@ impl DecomposerView {
         .render(cx)
     }
 
-    // Layers section component
-    /// Build the layers section for the decomposer view.
-    fn render_layers_section(
+    // Channels section component
+    /// Build the channels section for the decomposer view.
+    fn render_channels_section(
         state: &DecomposerState,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
@@ -244,31 +155,22 @@ impl DecomposerView {
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().font_weight(gpui::FontWeight::BOLD).child("Layers:"))
+            .child(div().font_weight(gpui::FontWeight::BOLD).child("Channels:"))
             .child(
                 div().flex().flex_col().gap_1().children(
                     state
-                        .enabled_layers
+                        .enabled_channels
                         .iter()
                         .enumerate()
-                        .map(|(index, &is_enabled)| Self::render_layer_item(index, is_enabled, cx)),
+                        .map(|(index, &is_enabled)| {
+                            Self::render_channel_item(index, is_enabled, cx)
+                        }),
                 ),
             )
     }
 }
 
-actions!([
-    DecomposerToggleActivity,
-    DecomposerToggleLayer1,
-    DecomposerToggleLayer2,
-    DecomposerToggleLayer3,
-    DecomposerToggleLayer4,
-    DecomposerToggleLayer5,
-    DecomposerToggleLayer6,
-    DecomposerToggleLayer7,
-    DecomposerToggleLayer8,
-    DecomposerToggleLayer9
-]);
+actions!([DecomposerToggleActivity,]);
 
 impl FrontendMessageHandler for DecomposerView {
     type State = DecomposerState;
@@ -340,17 +242,9 @@ impl Render for DecomposerView {
                 )
             })
             .on_action(cx.listener(Self::toggle_activity_action))
-            .on_action(cx.listener(Self::toggle_layer_1_action))
-            .on_action(cx.listener(Self::toggle_layer_2_action))
-            .on_action(cx.listener(Self::toggle_layer_3_action))
-            .on_action(cx.listener(Self::toggle_layer_4_action))
-            .on_action(cx.listener(Self::toggle_layer_5_action))
-            .on_action(cx.listener(Self::toggle_layer_6_action))
-            .on_action(cx.listener(Self::toggle_layer_7_action))
-            .on_action(cx.listener(Self::toggle_layer_8_action))
-            .on_action(cx.listener(Self::toggle_layer_9_action))
+            .on_action(cx.listener(Self::toggle_channel_action))
             .child(Self::render_status(&state, cx))
-            .child(Self::render_layers_section(&state, cx))
+            .child(Self::render_channels_section(&state, cx))
     }
 }
 
@@ -361,18 +255,15 @@ impl ToolFrontend for DecomposerView {
             return;
         }
 
-        cx.bind_keys([
-            KeyBinding::new("cmd-t", DecomposerToggleActivity, Some("DecomposerView")),
-            KeyBinding::new("cmd-1", DecomposerToggleLayer1, Some("DecomposerView")),
-            KeyBinding::new("cmd-2", DecomposerToggleLayer2, Some("DecomposerView")),
-            KeyBinding::new("cmd-3", DecomposerToggleLayer3, Some("DecomposerView")),
-            KeyBinding::new("cmd-4", DecomposerToggleLayer4, Some("DecomposerView")),
-            KeyBinding::new("cmd-5", DecomposerToggleLayer5, Some("DecomposerView")),
-            KeyBinding::new("cmd-6", DecomposerToggleLayer6, Some("DecomposerView")),
-            KeyBinding::new("cmd-7", DecomposerToggleLayer7, Some("DecomposerView")),
-            KeyBinding::new("cmd-8", DecomposerToggleLayer8, Some("DecomposerView")),
-            KeyBinding::new("cmd-9", DecomposerToggleLayer9, Some("DecomposerView")),
-        ]);
+        cx.bind_keys([KeyBinding::new(
+            "cmd-t",
+            DecomposerToggleActivity,
+            Some("DecomposerView"),
+        )]);
+        cx.bind_keys(create_channel_shortcuts(
+            GpuDecomposer::CHANNEL_COUNT,
+            "DecomposerView",
+        ));
 
         self.process_messages(window, cx);
     }
