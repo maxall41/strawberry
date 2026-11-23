@@ -92,9 +92,7 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             # cargo-bundle 0.12 appends .exe to the binary path only when --format names a Windows package
-            for format in msi exe; do
-              cargo bundle --release --package strawberry-frontend -t ${{ matrix.target }} --format "$format"
-            done
+            cargo bundle --release --package strawberry-frontend -t ${{ matrix.target }} --format exe
           else
             cargo bundle --release --package strawberry-frontend -t ${{ matrix.target }}
           fi
@@ -104,7 +102,7 @@ jobs:
         run: |
           shopt -s nullglob
           mkdir dist
-          for bundle in target/${{ matrix.target }}/release/bundle/*/*.{dmg,deb,AppImage,msi,exe}; do
+          for bundle in target/${{ matrix.target }}/release/bundle/*/*.{dmg,deb,AppImage,exe}; do
             cp "$bundle" "dist/Strawberry-$GITHUB_REF_NAME-${{ matrix.label }}.${bundle##*.}"
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
