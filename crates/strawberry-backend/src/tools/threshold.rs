@@ -9,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, threshold::GpuThreshold};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, ImageCollection, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress,
-    ThresholdMessage, ThresholdState, ToolBackend, ToolInput, ToolState,
+    BackendToolType, ImageCollection, PipelineObjectMessage, Plane, PlaneProgressExt,
+    ReportPlaneProgress, ThresholdMessage, ThresholdState, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Threshold {
@@ -40,17 +40,18 @@ impl ToolBackend for Threshold {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        for image in images.planes_mut().report_progress(report_planes) {
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
             let result = if self.state.auto_threshold {
                 self.processor
-                    .apply_auto_threshold(image, self.state.auto_method)
+                    .apply_auto_threshold(&input, self.state.auto_method)
                     .await
             } else {
                 self.processor
-                    .apply_threshold(image, self.state.threshold_value)
+                    .apply_threshold(&input, self.state.threshold_value)
                     .await
             };
-            *image = Arc::new(result?);
+            *plane = Plane::new(result?);
         }
         Ok(())
     }

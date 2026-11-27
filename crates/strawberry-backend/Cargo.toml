@@ -8,6 +8,7 @@ indexmap = "2.14.0"
 num-traits = "0.2"
 strawberry-types = { path = "../strawberry-types" }
 strawberry-processing = { path = "../strawberry-processing" }
+strawberry-memory = { path = "../strawberry-memory" }
 anyhow = "1.0"
 futures = "0.3"
 image = { git = "https://github.com/maxall41/image.git", branch = "single-channel-support" }

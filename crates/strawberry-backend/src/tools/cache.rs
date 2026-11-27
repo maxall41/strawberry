@@ -3,12 +3,11 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use image::RgbaImage;
 use strawberry_types::{
     AutomaticSegmentationState, ClassId, CompositorState, ContrastState, CounterMode, CounterState,
     DecomposerState, DifferenceOfGaussiansState, GaussianBlurState, GrayscaleState,
     ImageCollection, LocalMaximaState, MorphologyState, NerveTracerState, ObjectSizeFilterState,
-    RgbColor, RollingBallState, SegmentationOutputMode, Shape, SobelState, ThresholdState,
+    Plane, RgbColor, RollingBallState, SegmentationOutputMode, Shape, SobelState, ThresholdState,
     WatershedState,
 };
 
@@ -86,7 +85,7 @@ struct CachedRun<TSettings> {
     settings: TSettings,
     input_shape: Shape,
     // Weak references preserve plane identity without retaining the input pixels.
-    input_planes: Vec<Weak<RgbaImage>>,
+    input_planes: Vec<Weak<Plane>>,
     output: ImageCollection,
 }
 
@@ -94,7 +93,7 @@ struct CachedRun<TSettings> {
 fn matches_input(
     input: &ImageCollection,
     shape: Shape,
-    planes: impl Iterator<Item = *const RgbaImage>,
+    planes: impl Iterator<Item = *const Plane>,
 ) -> bool {
     input.get_shape() == shape
         && planes
@@ -188,6 +187,32 @@ impl<TState: SyncState> ToolCache<TState> {
         self.cached_run = None;
     }
 
+    /// Release the cached output if a plane it was computed from no longer exists, returning
+    /// whether it was released. Reuse needs the very same input planes, so such output can
+    /// never be returned again.
+    pub fn release_unreachable_output(&mut self) -> bool {
+        let unreachable = self.cached_run.as_ref().is_some_and(|cached| {
+            cached
+                .input_planes
+                .iter()
+                .any(|plane| plane.strong_count() == 0)
+        });
+        if unreachable {
+            self.invalidate();
+        }
+        unreachable
+    }
+
+    /// Return the collections kept between runs: the cached output and the remembered input.
+    #[must_use]
+    pub fn get_retained_images(&self) -> Vec<&ImageCollection> {
+        self.cached_run
+            .iter()
+            .map(|cached| &cached.output)
+            .chain(&self.cached_input)
+            .collect()
+    }
+
     /// Clear cached output, its settings, and the remembered input.
     pub fn invalidate_all(&mut self) {
         self.invalidate();
@@ -246,5 +271,107 @@ impl SyncState for AutomaticSegmentationState {
             || self.output_class != saved.output_class
             || self.model_revision != saved.model_revision
             || get_class_colors(self).ne(saved.class_colors.iter().copied())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolCache;
+    use image::{Rgba, RgbaImage};
+    use std::sync::Arc;
+    use strawberry_types::{
+        ImageArrangement, ImageCollection, Offload, Plane, SobelState, SpillFile,
+    };
+
+    fn make_stack(depth: usize) -> ImageCollection {
+        let planes = (0..depth)
+            .map(|_| Plane::new(RgbaImage::from_pixel(4, 4, Rgba([1, 2, 3, 255]))))
+            .collect();
+        ImageCollection::arrange(planes, &ImageArrangement::Stack).unwrap()
+    }
+
+    fn make_state() -> SobelState {
+        SobelState {
+            is_enabled: true,
+            threshold_value: 0.1,
+            use_threshold: false,
+        }
+    }
+
+    #[test]
+    fn cached_output_survives_offloading_its_input_and_output() {
+        let state = make_state();
+        let spill = SpillFile::new(tempfile::tempfile().unwrap());
+        let input = make_stack(2);
+        let output = make_stack(2);
+        let mut cache = ToolCache::new(&state);
+        cache.store_output(&state, &input, output.clone());
+
+        for plane in input.planes().chain(output.planes()) {
+            assert!(matches!(
+                plane.offload(&spill).unwrap(),
+                Offload::Released(_)
+            ));
+        }
+        let restored = cache.valid_output(&state, &input).unwrap();
+        assert!(
+            restored
+                .planes()
+                .zip(output.planes())
+                .all(|(restored, stored)| Arc::ptr_eq(restored, stored))
+        );
+
+        // Reading the pixels back does not make them different planes either.
+        for plane in input.planes() {
+            plane.load().unwrap();
+        }
+        assert!(cache.valid_output(&state, &input).is_some());
+    }
+
+    #[test]
+    fn output_computed_from_planes_that_are_gone_is_released_down_the_chain() {
+        let state = make_state();
+        let input = make_stack(1);
+        let first_output = make_stack(1);
+        let second_output = make_stack(1);
+        let mut first = ToolCache::new(&state);
+        let mut second = ToolCache::new(&state);
+        let mut third = ToolCache::new(&state);
+        first.store_output(&state, &input, first_output.clone());
+        second.store_output(&state, &first_output, second_output.clone());
+        third.store_output(&state, &second_output, make_stack(1));
+        // From here only the caches hold the intermediate planes, as in the pipeline.
+        drop((first_output, second_output));
+        assert!(!first.release_unreachable_output());
+        assert!(!second.release_unreachable_output());
+        assert!(!third.release_unreachable_output());
+
+        // The first stage recomputes and drops its output, which the second was computed
+        // from; releasing the second strands the third in turn.
+        first.invalidate_all();
+        assert!(!third.release_unreachable_output());
+        assert!(second.release_unreachable_output());
+        assert!(third.release_unreachable_output());
+        assert!(third.get_retained_images().is_empty());
+        assert!(!third.release_unreachable_output());
+
+        // Output computed from planes that still exist stays until they are gone.
+        first.store_output(&state, &input, make_stack(1));
+        assert!(!first.release_unreachable_output());
+        drop(input);
+        assert!(first.release_unreachable_output());
+    }
+
+    #[test]
+    fn a_remembered_input_keeps_its_cache_reachable() {
+        let state = make_state();
+        let upstream = make_stack(1);
+        let mut cache = ToolCache::new(&state);
+        cache.remember_input(&upstream);
+        cache.store_output(&state, &upstream, make_stack(1));
+        drop(upstream);
+
+        assert!(!cache.release_unreachable_output());
+        assert_eq!(cache.get_retained_images().len(), 2);
     }
 }

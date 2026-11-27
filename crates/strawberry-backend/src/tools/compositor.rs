@@ -10,8 +10,8 @@ use strawberry_processing::{GpuImageProcessor, compositor::GpuCompositor};
 use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, CompositorMessage, CompositorState, Dimension, FrontendMessage,
-    ImageCollection, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress, ToolBackend,
-    ToolInput, ToolState,
+    ImageCollection, PipelineObjectMessage, Plane, PlaneProgressExt, ReportPlaneProgress,
+    ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Compositor {
@@ -64,9 +64,11 @@ impl ToolBackend for Compositor {
                 .iter()
                 .zip(&self.state.enabled_channels)
                 .filter(|&(_, &enabled)| enabled)
-                .map(|(image, _)| image.clone())
-                .collect();
-            *lane = vec![Arc::new(self.compositer.composite_images(&enabled).await?)];
+                .map(|(plane, _)| plane.load())
+                .collect::<Result<_>>()?;
+            *lane = vec![Plane::new(
+                self.compositer.composite_images(&enabled).await?,
+            )];
         }
         images.replace_lanes(Dimension::C, lanes)
     }

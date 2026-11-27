@@ -9,7 +9,7 @@ use strawberry_processing::{GpuImageProcessor, contrast::GpuContrast};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, ContrastMessage, ContrastState, ImageCollection, PipelineObjectMessage,
+    BackendToolType, ContrastMessage, ContrastState, ImageCollection, PipelineObjectMessage, Plane,
     PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput, ToolState,
 };
 
@@ -40,10 +40,11 @@ impl ToolBackend for Contrast {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        for image in images.planes_mut().report_progress(report_planes) {
-            *image = Arc::new(
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
+            *plane = Plane::new(
                 self.processor
-                    .apply_contrast(image, self.state.min, self.state.max)
+                    .apply_contrast(&input, self.state.min, self.state.max)
                     .await?,
             );
         }

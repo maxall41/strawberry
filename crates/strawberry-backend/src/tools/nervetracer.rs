@@ -83,7 +83,7 @@ impl ToolBackend for NerveTracer {
     /// Apply tool commands and canvas input to this instance.
     fn handle_input(&mut self, message: ToolInput) -> anyhow::Result<()> {
         match message {
-            ToolInput::HandleClick(x, y) => self.trace_to_point((x, y)),
+            ToolInput::HandleClick(x, y) => self.trace_to_point((x, y))?,
 
             ToolInput::Message(PipelineObjectMessage::NerveTracerMessage(message)) => match message
             {
@@ -257,33 +257,34 @@ impl NerveTracer {
     }
 
     /// Start a path segment at `point`, or finish the pending one there by tracing the selected
-    /// channel of the viewed position.
-    fn trace_to_point(&mut self, point: (u64, u64)) {
+    /// channel of the viewed position, whose pixels are read back if they were offloaded.
+    fn trace_to_point(&mut self, point: (u64, u64)) -> anyhow::Result<()> {
         if !self.state.is_enabled {
-            return;
+            return Ok(());
         }
         let coordinates = self
             .state
             .traces
             .get_selected_position()
             .with_channel(self.state.selected_channel);
-        let Some(image) = self
+        let Some(plane) = self
             .cache
             .get_input()
             .and_then(|input| input.get_plane(coordinates))
         else {
-            return;
+            return Ok(());
         };
         let Some(first) = self.state.first_point.take() else {
             self.state.first_point = Some(point);
-            return;
+            return Ok(());
         };
-        if let Some(segment) = create_path(first, point, image) {
+        if let Some(segment) = create_path(first, point, &*plane.load()?) {
             self.state
                 .traces
                 .get_selected_mut()
                 .current_path_segments
                 .push(segment);
         }
+        Ok(())
     }
 }

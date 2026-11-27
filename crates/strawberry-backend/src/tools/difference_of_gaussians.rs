@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use strawberry_processing::{GpuImageProcessor, difference_of_gaussians::GpuDifferenceOfGaussians};
 use strawberry_types::{
     BackendToolType, DifferenceOfGaussiansMessage, DifferenceOfGaussiansState, ImageCollection,
-    PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput,
+    PipelineObjectMessage, Plane, PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput,
     ToolState,
 };
 
@@ -42,10 +42,11 @@ impl ToolBackend for DifferenceOfGaussians {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        for image in images.planes_mut().report_progress(report_planes) {
-            *image = Arc::new(
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
+            *plane = Plane::new(
                 self.processor
-                    .apply(image, self.state.small_sigma, self.state.large_sigma)
+                    .apply(&input, self.state.small_sigma, self.state.large_sigma)
                     .await?,
             );
         }

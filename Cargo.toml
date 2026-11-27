@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/strawberry-memory",
     "crates/strawberry-processing",
     "crates/strawberry-types",
     "crates/strawberry-backend",
@@ -9,6 +10,10 @@ members = [
 ]
 default-members = ["crates/strawberry-frontend"]
 
+
+[workspace.lints.rust]
+# `strawberry-memory` is the one crate allowed to lift this, for its system calls.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }

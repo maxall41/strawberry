@@ -96,5 +96,15 @@ macro_rules! impl_tool_cache {
         fn invalidate_cache(&mut self) {
             self.cache.invalidate_all();
         }
+
+        /// Release cached output that no input can match any more.
+        fn release_unreachable_cache(&mut self) -> bool {
+            self.cache.release_unreachable_output()
+        }
+
+        /// Return the image collections kept between runs.
+        fn get_retained_images(&self) -> Vec<&strawberry_types::ImageCollection> {
+            self.cache.get_retained_images()
+        }
     };
 }

@@ -74,6 +74,7 @@ impl Render for FeedbackModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let bar_color = match self.level {
             FeedbackLevel::Success => theme::SUCCESS,
+            FeedbackLevel::Warning => theme::WARNING,
             FeedbackLevel::Error => theme::DANGER,
         };
         div()

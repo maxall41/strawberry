@@ -122,7 +122,7 @@ impl ToolBackend for Counter {
             detected
                 .entry(coordinates.position())
                 .or_default()
-                .extend(detect_blob_centroids(plane)?);
+                .extend(detect_blob_centroids(&*plane.load()?)?);
         }
         for (position, auto) in detected {
             self.state.counts.get_position_mut(position).auto = auto;

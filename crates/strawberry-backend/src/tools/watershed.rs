@@ -9,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, watershed::GpuWatershed};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, ImageCollection, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress,
-    ToolBackend, ToolInput, ToolState, WatershedMessage, WatershedState,
+    BackendToolType, ImageCollection, PipelineObjectMessage, Plane, PlaneProgressExt,
+    ReportPlaneProgress, ToolBackend, ToolInput, ToolState, WatershedMessage, WatershedState,
 };
 
 pub struct Watershed {
@@ -40,10 +40,11 @@ impl ToolBackend for Watershed {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        for image in images.planes_mut().report_progress(report_planes) {
-            *image = Arc::new(
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
+            *plane = Plane::new(
                 self.processor
-                    .apply_watershed(image, self.state.sigma, self.state.min_distance)
+                    .apply_watershed(&input, self.state.sigma, self.state.min_distance)
                     .await?,
             );
         }

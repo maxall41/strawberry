@@ -11,7 +11,7 @@ use strawberry_processing::{GpuImageProcessor, local_maxima::GpuLocalMaxima};
 use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, ImageCollection, LocalMaximaMessage, LocalMaximaState, PipelineObjectMessage,
-    PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput, ToolState,
+    Plane, PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct LocalMaxima {
@@ -41,11 +41,12 @@ impl ToolBackend for LocalMaxima {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        for image in images.planes_mut().report_progress(report_planes) {
-            *image = Arc::new(
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
+            *plane = Plane::new(
                 self.processor
                     .apply_local_maxima(
-                        image,
+                        &input,
                         self.state.min_distance,
                         self.state.threshold.clone(),
                         self.state.exclude_border,

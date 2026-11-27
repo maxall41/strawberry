@@ -5,6 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
+use crate::Plane;
+
 /// A hyperstack dimension. X and Y number the tiles of a mosaic; pixels stay inside each image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Dimension {
@@ -442,10 +444,23 @@ impl ImageArrangement {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ImageCollection {
     /// Planes in T, Z, C, Y, X order.
-    planes: Array5<Arc<RgbaImage>>,
+    planes: Array5<Arc<Plane>>,
+}
+
+impl Default for ImageCollection {
+    /// Create a collection holding no planes.
+    fn default() -> Self {
+        // `Array5::default` needs default elements, which planes do not have; an empty
+        // shape never asks for one.
+        Self {
+            planes: Array5::from_shape_simple_fn(Shape::default().dims(), || {
+                Plane::new(RgbaImage::default())
+            }),
+        }
+    }
 }
 
 impl ImageCollection {
@@ -454,7 +469,7 @@ impl ImageCollection {
     /// # Errors
     /// Returns an error if no images are given, their coordinates do not form a complete grid,
     /// or the channels at one position differ in size.
-    pub fn arrange(images: Vec<Arc<RgbaImage>>, arrangement: &ImageArrangement) -> Result<Self> {
+    pub fn arrange(images: Vec<Arc<Plane>>, arrangement: &ImageArrangement) -> Result<Self> {
         let coordinates = arrangement.coordinates(images.len())?;
         let shape = Shape::from_coordinates(&coordinates)?;
         let mut placed: HashMap<_, _> = coordinates.into_iter().zip(images).collect();
@@ -467,7 +482,7 @@ impl ImageCollection {
             let mut channels = collection.channels_at(position);
             if let Some(first) = channels.next() {
                 ensure!(
-                    channels.all(|channel| channel.dimensions() == first.dimensions()),
+                    channels.all(|channel| channel.get_dimensions() == first.get_dimensions()),
                     "All channels of an image must have the same dimensions"
                 );
             }
@@ -476,10 +491,7 @@ impl ImageCollection {
     }
 
     /// Build a collection of `shape` from the plane at each coordinate.
-    fn from_fn(
-        shape: Shape,
-        plane: impl FnMut(Coordinates) -> Result<Arc<RgbaImage>>,
-    ) -> Result<Self> {
+    fn from_fn(shape: Shape, plane: impl FnMut(Coordinates) -> Result<Arc<Plane>>) -> Result<Self> {
         let planes = shape.coordinates().map(plane).collect::<Result<Vec<_>>>()?;
         Ok(Self {
             planes: Array5::from_shape_vec(shape.dims(), planes)?,
@@ -505,7 +517,7 @@ impl ImageCollection {
 
     /// Return the plane at the given coordinates.
     #[must_use]
-    pub fn get_plane(&self, coordinates: Coordinates) -> Option<&Arc<RgbaImage>> {
+    pub fn get_plane(&self, coordinates: Coordinates) -> Option<&Arc<Plane>> {
         self.planes.get((
             coordinates.t,
             coordinates.z,
@@ -516,17 +528,17 @@ impl ImageCollection {
     }
 
     /// Iterate over the channels at one position in channel order.
-    pub fn channels_at(&self, position: Position) -> impl Iterator<Item = &Arc<RgbaImage>> {
+    pub fn channels_at(&self, position: Position) -> impl Iterator<Item = &Arc<Plane>> {
         (0..self.get_shape().c).filter_map(move |c| self.get_plane(position.with_channel(c)))
     }
 
     /// Iterate over every plane in storage order.
-    pub fn planes(&self) -> impl ExactSizeIterator<Item = &Arc<RgbaImage>> {
+    pub fn planes(&self) -> impl ExactSizeIterator<Item = &Arc<Plane>> {
         self.planes.iter()
     }
 
     /// Iterate mutably over every plane.
-    pub fn planes_mut(&mut self) -> impl ExactSizeIterator<Item = &mut Arc<RgbaImage>> {
+    pub fn planes_mut(&mut self) -> impl ExactSizeIterator<Item = &mut Arc<Plane>> {
         self.planes.iter_mut()
     }
 
@@ -539,7 +551,7 @@ impl ImageCollection {
     }
 
     /// Iterate over one channel's plane at every position; empty if the channel is missing.
-    pub fn get_channel_planes(&self, channel: usize) -> impl Iterator<Item = &Arc<RgbaImage>> {
+    pub fn get_channel_planes(&self, channel: usize) -> impl Iterator<Item = &Arc<Plane>> {
         self.planes
             .slice_axis(Dimension::C.axis(), self.get_channel_slice(channel))
             .into_iter()
@@ -549,7 +561,7 @@ impl ImageCollection {
     pub fn get_channel_planes_mut(
         &mut self,
         channel: usize,
-    ) -> impl Iterator<Item = &mut Arc<RgbaImage>> {
+    ) -> impl Iterator<Item = &mut Arc<Plane>> {
         let slice = self.get_channel_slice(channel);
         self.planes
             .slice_axis_mut(Dimension::C.axis(), slice)
@@ -643,7 +655,7 @@ impl ImageCollection {
 
     /// Return the planes along one dimension for every combination of the other coordinates.
     #[must_use]
-    pub fn get_lanes(&self, dimension: Dimension) -> Vec<Vec<Arc<RgbaImage>>> {
+    pub fn get_lanes(&self, dimension: Dimension) -> Vec<Vec<Arc<Plane>>> {
         self.groups(&[dimension])
             .into_iter()
             .map(|group| group.planes.into_iter().collect())
@@ -657,7 +669,7 @@ impl ImageCollection {
     pub fn replace_lanes(
         &mut self,
         dimension: Dimension,
-        lanes: Vec<Vec<Arc<RgbaImage>>>,
+        lanes: Vec<Vec<Arc<Plane>>>,
     ) -> Result<()> {
         let groups = lanes
             .into_iter()

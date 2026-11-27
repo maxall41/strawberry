@@ -183,6 +183,18 @@ pub trait ToolBackend: Send + Sync {
     /// Clear a bypassed tool's retained input and output if its upstream images have changed.
     fn reconcile_bypassed_input(&mut self, _input: &ImageCollection) {}
 
+    /// Release cached output that no input can match any more, returning whether any was
+    /// released.
+    fn release_unreachable_cache(&mut self) -> bool {
+        false
+    }
+
+    /// Return the image collections this tool keeps between runs, so their planes can be
+    /// offloaded when memory runs short.
+    fn get_retained_images(&self) -> Vec<&ImageCollection> {
+        Vec::new()
+    }
+
     /// Invalidate reusable output while retaining input needed for canvas interactions.
     fn invalidate_cached_output(&mut self) {
         self.invalidate_cache();

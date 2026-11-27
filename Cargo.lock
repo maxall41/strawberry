@@ -5865,6 +5865,7 @@ dependencies = [
  "serde",
  "serde-value",
  "serde_json",
+ "strawberry-memory",
  "strawberry-processing",
  "strawberry-types",
  "tempfile",
@@ -5908,6 +5909,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "strawberry-memory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "mach2",
+ "rustix 1.1.4",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "strawberry-processing"
 version = "0.1.0"
 dependencies = [
@@ -5936,10 +5948,12 @@ dependencies = [
  "gpui",
  "image",
  "ndarray",
+ "range-alloc",
  "serde",
  "serde-value",
  "serde_derive",
  "strawberry-processing",
+ "tempfile",
  "tokio",
 ]
 

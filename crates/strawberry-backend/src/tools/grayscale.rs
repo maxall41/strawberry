@@ -9,7 +9,7 @@ use strawberry_processing::{GpuImageProcessor, grayscale::GpuGrayscale};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, GrayscaleState, ImageCollection, PlaneProgressExt, ReportPlaneProgress,
+    BackendToolType, GrayscaleState, ImageCollection, Plane, PlaneProgressExt, ReportPlaneProgress,
     ToolBackend, ToolInput, ToolState,
 };
 
@@ -40,8 +40,9 @@ impl ToolBackend for Grayscale {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        for image in images.planes_mut().report_progress(report_planes) {
-            *image = Arc::new(self.processor.apply_grayscale(image).await?);
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
+            *plane = Plane::new(self.processor.apply_grayscale(&input).await?);
         }
         Ok(())
     }

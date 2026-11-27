@@ -10,7 +10,7 @@ use strawberry_processing::{GpuImageProcessor, gaussian_blur::GpuGaussianBlur};
 use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, GaussianBlurMessage, GaussianBlurState, ImageCollection,
-    PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput,
+    PipelineObjectMessage, Plane, PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput,
     ToolState,
 };
 
@@ -41,8 +41,9 @@ impl ToolBackend for GaussianBlur {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        for image in images.planes_mut().report_progress(report_planes) {
-            *image = Arc::new(self.processor.apply_blur(image, self.state.sigma).await?);
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
+            *plane = Plane::new(self.processor.apply_blur(&input, self.state.sigma).await?);
         }
         Ok(())
     }

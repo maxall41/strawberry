@@ -9,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, sobel::GpuSobel};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, ImageCollection, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress,
-    SobelMessage, SobelState, ToolBackend, ToolInput, ToolState,
+    BackendToolType, ImageCollection, PipelineObjectMessage, Plane, PlaneProgressExt,
+    ReportPlaneProgress, SobelMessage, SobelState, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Sobel {
@@ -46,8 +46,9 @@ impl ToolBackend for Sobel {
             None
         };
 
-        for image in images.planes_mut().report_progress(report_planes) {
-            *image = Arc::new(self.processor.apply_sobel(image, threshold).await?);
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
+            *plane = Plane::new(self.processor.apply_sobel(&input, threshold).await?);
         }
         Ok(())
     }

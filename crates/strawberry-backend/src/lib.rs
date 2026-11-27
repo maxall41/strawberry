@@ -5,7 +5,7 @@ use std::{
     mem,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use image::{ImageReader, RgbaImage};
@@ -19,16 +19,20 @@ use strawberry_processing::{
 // Import all types from strawberry-types
 use strawberry_types::{
     CommandSender, Coordinates, Dimension, ExportScope, FrontendMessage, ImageArrangement,
-    ImageCollection, OutputFrame, PendingProcessing, PipelineCommand, PipelineProgress, ToolId,
-    ToolInput, overlay,
+    ImageCollection, OutputFrame, PendingProcessing, PipelineCommand, PipelineProgress, Plane,
+    ToolId, ToolInput, overlay,
 };
 
+use offload::{
+    IDLE_SLICE, OffloadQueue, PlaneOffloader, PressureLevel, StageImages, rank_offload_candidates,
+};
 use tools::{ToolManager, manager::ToolInstance};
 use utils::file_io::ImageArchiveWriter;
 
 pub mod counter;
 pub mod hyperstack;
 pub mod nervetracer;
+mod offload;
 mod segmentation;
 pub mod tools;
 mod utils;
@@ -64,6 +68,11 @@ pub struct Pipeline {
     colorspace_converter: GpuColorspaceConverter,
     /// Composites the channels at the displayed position for `ExportScope::CompositeView`.
     fallback_compositor: GpuCompositor,
+    /// Moves cached planes to disk while memory is short.
+    offloader: Arc<PlaneOffloader>,
+    /// The tool whose settings changed last. The images it reads are the ones the next edit
+    /// needs, so they are the last to leave memory.
+    edit_point: Option<ToolId>,
 }
 
 impl Pipeline {
@@ -83,6 +92,7 @@ impl Pipeline {
         let gpu_image_processor = Arc::new(GpuImageProcessor::new().await?);
 
         let tool_manager = ToolManager::new(gpu_image_processor.clone());
+        let offloader = Arc::new(PlaneOffloader::new(output_tx.clone()));
         let pipeline = Self {
             tool_manager,
             command_receiver: command_rx,
@@ -99,6 +109,8 @@ impl Pipeline {
             gpu: gpu_image_processor.clone(),
             fallback_compositor: GpuCompositor::new(gpu_image_processor.clone()).await?,
             colorspace_converter: GpuColorspaceConverter::new(gpu_image_processor).await?,
+            offloader,
+            edit_point: None,
         };
 
         Ok((pipeline, command_tx, output_rx, frame_rx))
@@ -167,12 +179,11 @@ impl Pipeline {
             .filter(|tool| tool.is_enabled())
             .count();
         let mut next_stage = 0_usize;
-        for tool in self
-            .tool_manager
-            .tools
-            .values_mut()
-            .skip(earliest_processing_index)
-        {
+        // Stages are visited by index so the whole pipeline can be read between them.
+        for index in earliest_processing_index..self.tool_manager.tools.len() {
+            let Some((_, tool)) = self.tool_manager.tools.get_index_mut(index) else {
+                break;
+            };
             if !tool.is_enabled() {
                 tool.reconcile_bypassed_input(&images);
                 continue;
@@ -187,18 +198,28 @@ impl Pipeline {
             }
 
             tool.invalidate_cache();
-            let input = images.clone();
             let name = format!("{:?}", tool.iam());
+            self.release_unreachable_caches(index);
+            let input = images.clone();
+            let mut offload_queue = self.rank_offload_candidates(Some(index));
+            let offloader = Arc::clone(&self.offloader);
             let output_sender = self.output_sender.clone();
-            let publish_progress = move |planes| {
+            let stage_name = name.clone();
+            let mut publish_progress = move |planes| {
                 let _ = output_sender.send(FrontendMessage::PipelineProgress(PipelineProgress {
                     stage,
                     total: total_stages,
-                    name: name.clone(),
+                    name: stage_name.clone(),
                     planes,
                 }));
+                // A stage adds a plane with every step, so memory is relieved as it runs
+                // and not only once it has finished.
+                offloader.relieve_memory_pressure(&mut offload_queue, None);
             };
             publish_progress(None);
+            let Some((_, tool)) = self.tool_manager.tools.get_index_mut(index) else {
+                break;
+            };
             let result = tool
                 .process(
                     &mut images,
@@ -207,7 +228,7 @@ impl Pipeline {
                 .await;
             tool.acknowledge_processed_state();
             let result = result
-                .with_context(|| format!("{:?} processing failed", tool.iam()))
+                .with_context(|| format!("{name} processing failed"))
                 .and_then(|()| {
                     self.gpu
                         .ensure_device_availability("Complete pipeline stage")
@@ -249,17 +270,17 @@ impl Pipeline {
         self.view = coordinates;
     }
 
-    /// Return the viewed output plane.
+    /// Return the pixels of the viewed output plane, read back if they were offloaded.
     fn get_displayed_image(&self) -> anyhow::Result<Arc<RgbaImage>> {
         self.last_output
             .get_plane(self.view)
-            .cloned()
             .ok_or_else(|| {
                 anyhow!(
                     "No output image available for {}",
                     self.view.describe(self.last_output.get_shape())
                 )
-            })
+            })?
+            .load()
     }
 
     /// Publish the displayed image to the viewer.
@@ -291,11 +312,11 @@ impl Pipeline {
 
     /// Composite the channels at the displayed position into one image.
     async fn composite_displayed_position(&self) -> anyhow::Result<Arc<RgbaImage>> {
-        let channels: Vec<_> = self
+        let channels = self
             .last_output
             .channels_at(self.view.position())
-            .cloned()
-            .collect();
+            .map(|plane| plane.load())
+            .collect::<anyhow::Result<Vec<_>>>()?;
         match channels.as_slice() {
             [image] => Ok(image.clone()),
             _ => Ok(Arc::new(
@@ -315,7 +336,7 @@ impl Pipeline {
     }
 
     /// Return every output plane, named by its coordinates for export.
-    fn get_named_views(&self) -> Vec<(String, Arc<RgbaImage>)> {
+    fn get_named_views(&self) -> Vec<(String, Arc<Plane>)> {
         let shape = self.last_output.get_shape();
         shape
             .coordinates()
@@ -349,7 +370,10 @@ impl Pipeline {
                 // Converting and appending one plane at a time holds one RGBA plane, not the stack.
                 let mut archive = ImageArchiveWriter::create(file)?;
                 for (name, plane) in self.get_named_views() {
-                    archive.append(&name, &self.convert_output_plane(&plane).await?)?;
+                    let converted = self.convert_output_plane(&*plane.load()?).await?;
+                    archive.append(&name, &converted)?;
+                    // Reading an offloaded stack back for export must not fill memory again.
+                    self.relieve_memory_pressure(None);
                 }
                 return archive.finish();
             }
@@ -532,6 +556,7 @@ impl Pipeline {
         }
         self.ensure_no_remaining_gpu_errors();
         self.flag_stale_output_frame();
+        self.relieve_memory_pressure(Some(IDLE_SLICE));
         Ok(())
     }
     /// Report a file operation result and send its command reply.
@@ -577,7 +602,7 @@ impl Pipeline {
             for pixel in image.pixels_mut() {
                 pixel.0.swap(0, 2);
             }
-            images.push(Arc::new(image));
+            images.push(Plane::new(image));
         }
         let images = ImageCollection::arrange(images, arrangement)?;
         let generation = self
@@ -630,6 +655,67 @@ impl Pipeline {
         let _ = self
             .output_sender
             .send(FrontendMessage::error(format!("{context}: {error:#}")));
+    }
+    /// Release the caches of stages after `index` that were computed from planes which no
+    /// longer exist. Each release may leave the next stage in the same position, so one
+    /// pass in stage order frees the whole chain.
+    fn release_unreachable_caches(&mut self, index: usize) {
+        for tool in self
+            .tool_manager
+            .tools
+            .values_mut()
+            .skip(index.saturating_add(1))
+        {
+            tool.release_unreachable_cache();
+        }
+    }
+    /// Return the stage whose images the tool at `index` reads: the nearest enabled tool
+    /// before it, or the loaded input. Stage 0 is the input and stage `i + 1` is tool `i`.
+    fn get_input_stage(&self, index: usize) -> usize {
+        self.tool_manager
+            .tools
+            .values()
+            .take(index)
+            .rposition(|tool| tool.is_enabled())
+            .map_or(0, |tool| tool.saturating_add(1))
+    }
+    /// Rank every plane the pipeline keeps for offloading, coldest first. The images read
+    /// by the tool being edited, and by `tool_in_flight` while it runs, are kept hot.
+    fn rank_offload_candidates(&self, tool_in_flight: Option<usize>) -> OffloadQueue {
+        let tools = &self.tool_manager.tools;
+        let mut stages = vec![StageImages {
+            collections: vec![&self.input_images],
+            is_enabled: true,
+        }];
+        stages.extend(tools.values().map(|tool| StageImages {
+            collections: tool.get_retained_images(),
+            is_enabled: tool.is_enabled(),
+        }));
+        stages.push(StageImages {
+            collections: vec![&self.last_output],
+            is_enabled: true,
+        });
+        // Until a tool has been edited, the last one is the likeliest to be worked on.
+        let edited_tool = self
+            .edit_point
+            .and_then(|id| tools.get_index_of(&id))
+            .unwrap_or_else(|| tools.len().saturating_sub(1));
+        let hot_stages: Vec<_> = [Some(edited_tool), tool_in_flight]
+            .into_iter()
+            .flatten()
+            .map(|tool| self.get_input_stage(tool))
+            .collect();
+        rank_offload_candidates(&stages, &hot_stages, self.view.position())
+    }
+    /// Move the coldest cached planes to disk while memory is short. A `time_budget` cuts
+    /// the work into slices, so commands queued in the meantime are not held up.
+    fn relieve_memory_pressure(&self, time_budget: Option<Duration>) {
+        if self.offloader.get_pressure().level == PressureLevel::Normal {
+            return;
+        }
+        let mut queue = self.rank_offload_candidates(None);
+        self.offloader
+            .relieve_memory_pressure(&mut queue, time_budget);
     }
     /// Mark output stale and discard every tool output cache.
     fn invalidate_output(&mut self) {
@@ -726,10 +812,15 @@ impl Pipeline {
             }
         }
         self.tool_manager.reconcile(pending);
-        for (index, tool) in self.tool_manager.tools.values_mut().enumerate() {
+        let mut edited = None;
+        for (index, (id, tool)) in self.tool_manager.tools.iter_mut().enumerate() {
             if tool.reconcile_state() && tool.is_enabled() {
+                edited.get_or_insert(*id);
                 pending.request_processing(index);
             }
+        }
+        if edited.is_some() {
+            self.edit_point = edited;
         }
         let result = if let Some(index) = pending.take()
             && !self.input_images.is_empty()

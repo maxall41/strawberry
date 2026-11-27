@@ -1,12 +1,11 @@
 use crate::tools::base::ToolEvents;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use image::Rgba;
 use lutz::{Pixel, lutz};
 use strawberry_types::{
     BackendToolType, ImageCollection, ObjectSizeFilterMessage, ObjectSizeFilterMode,
-    ObjectSizeFilterState, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress,
+    ObjectSizeFilterState, PipelineObjectMessage, Plane, PlaneProgressExt, ReportPlaneProgress,
     ToolBackend, ToolInput, ToolState,
 };
 
@@ -42,9 +41,10 @@ impl ToolBackend for ObjectSizeFilter {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        for image in images.planes_mut().report_progress(report_planes) {
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
             let mut output = None;
-            for pixels in lutz::<_, Vec<Pixel>>(BinaryImageWrapper::new(image, 128)) {
+            for pixels in lutz::<_, Vec<Pixel>>(BinaryImageWrapper::new(&input, 128)) {
                 let area = u64::try_from(pixels.len())?;
                 let size = u64::from(self.state.size);
                 let remove = match self.state.mode {
@@ -52,7 +52,7 @@ impl ToolBackend for ObjectSizeFilter {
                     ObjectSizeFilterMode::RemoveLargerThan => area > size,
                 };
                 if remove {
-                    let output = output.get_or_insert_with(|| image.as_ref().clone());
+                    let output = output.get_or_insert_with(|| input.as_ref().clone());
                     for pixel in pixels {
                         let target = output.get_pixel_mut(pixel.x, pixel.y);
                         *target = Rgba([0, 0, 0, target[3]]);
@@ -60,7 +60,7 @@ impl ToolBackend for ObjectSizeFilter {
                 }
             }
             if let Some(output) = output {
-                *image = Arc::new(output);
+                *plane = Plane::new(output);
             }
         }
         Ok(())

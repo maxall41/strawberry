@@ -9,8 +9,8 @@ use strawberry_processing::{GpuImageProcessor, rolling_ball::GpuRollingBall};
 
 use async_trait::async_trait;
 use strawberry_types::{
-    BackendToolType, ImageCollection, PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress,
-    RollingBallMessage, RollingBallState, ToolBackend, ToolInput, ToolState,
+    BackendToolType, ImageCollection, PipelineObjectMessage, Plane, PlaneProgressExt,
+    ReportPlaneProgress, RollingBallMessage, RollingBallState, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct RollingBall {
@@ -40,10 +40,11 @@ impl ToolBackend for RollingBall {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        for image in images.planes_mut().report_progress(report_planes) {
-            *image = Arc::new(
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
+            *plane = Plane::new(
                 self.processor
-                    .apply_rolling_ball(image, self.state.ball_radius)
+                    .apply_rolling_ball(&input, self.state.ball_radius)
                     .await?,
             );
         }

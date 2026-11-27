@@ -2,3 +2,5 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
+# A plane is keyed by its address, which moving its pixels in or out of memory never changes.
+ignore-interior-mutability = ["strawberry_types::plane::Plane", ".."]

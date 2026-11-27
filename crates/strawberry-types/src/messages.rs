@@ -177,6 +177,8 @@ pub enum PipelineObjectMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedbackLevel {
     Success,
+    /// Something the user should know about that did not fail.
+    Warning,
     Error,
 }
 
@@ -223,6 +225,11 @@ impl FrontendMessage {
     /// Create a success feedback message.
     pub fn success(message: impl Into<String>) -> Self {
         Self::UserFeedback(message.into(), FeedbackLevel::Success)
+    }
+
+    /// Create a warning feedback message, for conditions that are not failures.
+    pub fn warning(message: impl Into<String>) -> Self {
+        Self::UserFeedback(message.into(), FeedbackLevel::Warning)
     }
 }
 

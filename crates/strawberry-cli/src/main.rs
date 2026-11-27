@@ -864,6 +864,11 @@ impl CliProcessor {
         match message {
             Ok(FrontendMessage::UserFeedback(text, level)) => match level {
                 FeedbackLevel::Error => Err(anyhow!("{text}")),
+                // A warning reports a condition the run survives, so the group carries on.
+                FeedbackLevel::Warning => {
+                    eprintln!("  {} {}", "!".yellow(), text);
+                    Ok(())
+                }
                 FeedbackLevel::Success => {
                     if self.args.verbose {
                         println!("  {} {}", "•".green(), text);

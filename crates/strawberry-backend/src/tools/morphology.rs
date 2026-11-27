@@ -13,7 +13,7 @@ use strawberry_processing::{
 use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, ImageCollection, MorphologyMessage, MorphologyState, PipelineObjectMessage,
-    PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput, ToolState,
+    Plane, PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput, ToolState,
 };
 
 pub struct Morphology {
@@ -43,10 +43,11 @@ impl ToolBackend for Morphology {
         images: &mut ImageCollection,
         report_planes: ReportPlaneProgress,
     ) -> anyhow::Result<()> {
-        for image in images.planes_mut().report_progress(report_planes) {
-            *image = Arc::new(
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
+            *plane = Plane::new(
                 self.processor
-                    .apply_morphology(image, self.state.operation, self.state.element_size)
+                    .apply_morphology(&input, self.state.operation, self.state.element_size)
                     .await?,
             );
         }

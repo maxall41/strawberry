@@ -13,7 +13,7 @@ use strawberry_processing::{
 use async_trait::async_trait;
 use strawberry_types::{
     BackendToolType, DecomposerMessage, DecomposerState, FrontendMessage, ImageCollection,
-    PipelineObjectMessage, PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput,
+    PipelineObjectMessage, Plane, PlaneProgressExt, ReportPlaneProgress, ToolBackend, ToolInput,
     ToolState,
 };
 
@@ -56,17 +56,18 @@ impl ToolBackend for Decomposer {
                 .emit(FrontendMessage::error(error_msg.clone()));
             bail!(error_msg);
         }
-        for image in images.planes_mut().report_progress(report_planes) {
+        for plane in images.planes_mut().report_progress(report_planes) {
+            let input = plane.load()?;
             let enabled: Vec<RgbaImage> = self
                 .processor
-                .apply_decomposition(image)
+                .apply_decomposition(&input)
                 .await?
                 .into_iter()
                 .zip(&self.state.enabled_channels)
                 .filter(|&(_, &enabled)| enabled)
                 .map(|(channel, _)| channel)
                 .collect();
-            *image = Arc::new(self.compositer.composite_images(&enabled).await?);
+            *plane = Plane::new(self.compositer.composite_images(&enabled).await?);
         }
         Ok(())
     }

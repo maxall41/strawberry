@@ -1,0 +1,20 @@
+name: Memory probe
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The probe's system calls differ per operating system and only run for real here.
+      - name: Test the memory probe
+        run: cargo test --package strawberry-memory --locked

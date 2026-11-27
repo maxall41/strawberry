@@ -26,8 +26,8 @@ use strawberry_processing::{
 use strawberry_types::{
     AnnotationKind, AnnotationStroke, AutomaticSegmentationMessage, AutomaticSegmentationState,
     BackendToolType, BgraColor, CLASS_PALETTE, ClassId, DatasetImportMode, DatasetOperation,
-    FrontendMessage, ImageCollection, MAX_CLASSES, PipelineObjectMessage, PlaneProgress, Position,
-    ReportPlaneProgress, RgbaColor, SampleId, SegmentationClass, SegmentationClasses,
+    FrontendMessage, ImageCollection, MAX_CLASSES, PipelineObjectMessage, Plane, PlaneProgress,
+    Position, ReportPlaneProgress, RgbaColor, SampleId, SegmentationClass, SegmentationClasses,
     SegmentationOutputMode, Shape, StrokeId, ToolAssets, ToolBackend, ToolInput, ToolState,
     overlay::{CircleStyle, OverlayElement, ToolOverlay},
 };
@@ -37,7 +37,7 @@ const MODEL_ASSET: &str = "model.sbm";
 
 #[derive(Clone)]
 struct Sample {
-    image: Arc<RgbaImage>,
+    image: Arc<Plane>,
 }
 
 struct DatasetJob {
@@ -54,7 +54,7 @@ struct TrainingJob {
 /// A background prediction of one input image for the overlay preview.
 struct PreviewJob {
     receiver: flume::Receiver<Result<Vec<Vec<image::GrayImage>>>>,
-    image: Arc<RgbaImage>,
+    image: Arc<Plane>,
     model: Arc<SegmentationModel>,
 }
 
@@ -172,7 +172,7 @@ impl PreparedDataset {
                     .insert(next_stroke_id, stroke);
             }
             samples.push(Sample {
-                image: sample.image,
+                image: Plane::new(sample.image),
             });
         }
         Ok(Self {
@@ -185,8 +185,9 @@ impl PreparedDataset {
     }
 }
 
-/// Collect classes and annotated samples into a dataset snapshot.
-fn dataset_snapshot(state: &AutomaticSegmentationState, samples: &[Sample]) -> Dataset {
+/// Collect classes and annotated samples into a dataset snapshot, reading back the pixels of
+/// samples that were offloaded.
+fn dataset_snapshot(state: &AutomaticSegmentationState, samples: &[Sample]) -> Result<Dataset> {
     let classes = state.classes.without_annotations();
     let samples = samples
         .iter()
@@ -197,13 +198,15 @@ fn dataset_snapshot(state: &AutomaticSegmentationState, samples: &[Sample]) -> D
                 .into_values()
                 .map(|(kind, stroke)| (kind, stroke.clone()))
                 .collect::<Vec<_>>();
-            (!annotations.is_empty()).then(|| DatasetSample {
-                image: sample.image.clone(),
-                annotations,
+            (!annotations.is_empty()).then(|| {
+                Ok(DatasetSample {
+                    image: sample.image.load()?,
+                    annotations,
+                })
             })
         })
-        .collect();
-    Dataset { classes, samples }
+        .collect::<Result<_>>()?;
+    Ok(Dataset { classes, samples })
 }
 
 /// Match model class identities to incoming classes by name.
@@ -313,9 +316,9 @@ pub struct AutomaticSegmentation {
     extractor: Arc<FeatureExtractor>,
     model: Option<Arc<SegmentationModel>>,
     model_class_ids: Vec<ClassId>,
-    inference_cache: HashMap<ByAddress<Arc<RgbaImage>>, InferenceCache>,
+    inference_cache: HashMap<ByAddress<Arc<Plane>>, InferenceCache>,
     samples: Vec<Sample>,
-    input: Option<Arc<RgbaImage>>,
+    input: Option<Arc<Plane>>,
     current: Option<SampleId>,
     stroke: Option<PendingStroke>,
     annotation_masks: AnnotationMask,
@@ -385,7 +388,7 @@ impl AutomaticSegmentation {
             self.stroke.is_none(),
             "Finish the current stroke before saving"
         );
-        let dataset = dataset_snapshot(&self.state, &self.samples);
+        let dataset = dataset_snapshot(&self.state, &self.samples)?;
         ensure!(
             !dataset.samples.is_empty(),
             "Annotate an image before saving a dataset"
@@ -425,7 +428,8 @@ impl AutomaticSegmentation {
             Vec::new()
         };
         let existing = (mode == DatasetImportMode::Merge)
-            .then(|| dataset_snapshot(&self.state, &self.samples));
+            .then(|| dataset_snapshot(&self.state, &self.samples))
+            .transpose()?;
         let next_stroke_id = self.next_stroke_id;
         let model_class_ids = self.model_class_ids.clone();
         let (tx, receiver) = flume::bounded(1);
@@ -658,7 +662,7 @@ impl AutomaticSegmentation {
     /// Return the cached prediction for an input image under `model`.
     fn get_cached_inference(
         &self,
-        input: &Arc<RgbaImage>,
+        input: &Arc<Plane>,
         model: &Arc<SegmentationModel>,
     ) -> Option<&InferenceCache> {
         self.inference_cache
@@ -669,7 +673,7 @@ impl AutomaticSegmentation {
     /// stopping early once the returned receiver is dropped.
     fn spawn_prediction(
         &self,
-        images: Vec<Arc<RgbaImage>>,
+        planes: Vec<Arc<Plane>>,
         model: Arc<SegmentationModel>,
         report_completed_planes: impl FnMut(usize) + Send + 'static,
     ) -> flume::Receiver<Result<Vec<Vec<image::GrayImage>>>> {
@@ -678,20 +682,29 @@ impl AutomaticSegmentation {
         let (tx, rx) = flume::bounded(1);
         spawn_blocking(move || {
             let is_abandoned = || tx.is_disconnected();
-            let _ = tx.send(block_on(model.predict_with_progress(
-                &extractor,
-                &images,
-                &inference,
-                report_completed_planes,
-                is_abandoned,
-            )));
+            let _ = tx.send(block_on(async {
+                // Loading in the worker keeps the pixels in memory only while it predicts.
+                let images = planes
+                    .iter()
+                    .map(|plane| plane.load())
+                    .collect::<Result<Vec<_>>>()?;
+                model
+                    .predict_with_progress(
+                        &extractor,
+                        &images,
+                        &inference,
+                        report_completed_planes,
+                        is_abandoned,
+                    )
+                    .await
+            }));
         });
         rx
     }
     /// Remember an image's prediction under `model`.
     fn cache_inference(
         &mut self,
-        image: Arc<RgbaImage>,
+        image: Arc<Plane>,
         model: Arc<SegmentationModel>,
         output: Arc<Vec<image::GrayImage>>,
     ) {
@@ -708,7 +721,7 @@ impl AutomaticSegmentation {
     /// reporting progress across the uncached planes before storing the results.
     async fn cache_predictions<'a>(
         &mut self,
-        images: impl Iterator<Item = &'a Arc<RgbaImage>>,
+        images: impl Iterator<Item = &'a Arc<Plane>>,
         model: &Arc<SegmentationModel>,
         mut report_planes: ReportPlaneProgress,
     ) -> Result<()> {
@@ -837,7 +850,7 @@ impl AutomaticSegmentation {
         {
             let strokes = self.state.ordered_annotations(index);
             self.annotation_masks.rebuild(
-                sample.image.dimensions(),
+                sample.image.get_dimensions(),
                 strokes
                     .into_values()
                     .filter(|&(kind, stroke)| annotation_visible(&self.state, kind, stroke))
@@ -905,16 +918,18 @@ impl AutomaticSegmentation {
             .iter()
             .enumerate()
             .filter(|(index, _)| self.state.sample_annotations(*index).next().is_some())
-            .map(|(index, sample)| TrainingSample {
-                image: sample.image.clone(),
-                annotations: self
-                    .state
-                    .ordered_annotations(index)
-                    .into_values()
-                    .map(|(kind, stroke)| (kind, stroke.clone()))
-                    .collect(),
+            .map(|(index, sample)| {
+                Ok(TrainingSample {
+                    image: sample.image.load()?,
+                    annotations: self
+                        .state
+                        .ordered_annotations(index)
+                        .into_values()
+                        .map(|(kind, stroke)| (kind, stroke.clone()))
+                        .collect(),
+                })
             })
-            .collect();
+            .collect::<Result<_>>()?;
         let features = self.state.features.clone();
         let forest = self.state.forest.clone();
         let inference = self.state.inference.clone();
@@ -1177,10 +1192,10 @@ impl AutomaticSegmentation {
         let Some(sample) = self.samples.get(index) else {
             return;
         };
-        if x >= sample.image.width() || y >= sample.image.height() {
+        let (width, height) = sample.image.get_dimensions();
+        if x >= width || y >= height {
             return;
         }
-        let (width, height) = sample.image.dimensions();
         self.overlays_dirty = true;
         if let Some(stroke) = &mut self.stroke {
             let appended =
@@ -1443,7 +1458,7 @@ impl ToolBackend for AutomaticSegmentation {
                 .context("Missing plane prediction")?
                 .output
                 .clone();
-            *slot = Arc::new(self.render_prediction(&output)?);
+            *slot = Plane::new(self.render_prediction(&output)?);
         }
         Ok(())
     }
